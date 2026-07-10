@@ -1,51 +1,58 @@
-# Contribuir a Edecán
+# Contributing to Edecán
 
-Gracias por tu interés en contribuir. Este documento resume las convenciones del monorepo. El contrato técnico completo y vinculante está en [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 — cualquier cambio que lo toque debe actualizar ese documento en el mismo PR.
+Thanks for your interest in contributing. This document summarizes the monorepo's conventions. The full, binding technical contract lives in [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 — any change that touches it must update that document in the same PR.
 
-## Estructura del monorepo
+## Monorepo layout
 
-- `apps/*` — aplicaciones delgadas: `api` (FastAPI), `worker` (consumidor de jobs), `web` (Next.js), `companion` (agente local de escritorio), `desktop` (shell Tauri, desde v3), `local` (backend empaquetado de la app de escritorio, desde v3) y `mobile` (proyectos nativos iOS/Android).
-- `packages/*` — paquetes Python instalables y reutilizables, prefijo `edecan_` (`edecan_schemas`, `edecan_db`, `edecan_llm`, `edecan_core`, `edecan_toolkit`, `edecan_connectors`, `edecan_voice`, `edecan_evals`, entre otros — 28 miembros hoy en el workspace uv, ver `[tool.uv.workspace].members` en `pyproject.toml`).
-- `premium/` — capa comercial (`edecan_premium`), licencia separada — ver [`NOTICE`](./NOTICE).
-- `infra/` — infraestructura como código (Terraform, Dockerfiles); se escribe y se revisa, **nunca se aplica automáticamente**.
-- `docs/` — documentación extendida (self-hosting, conectores, cumplimiento, runbooks).
+- `apps/*` — thin applications: `api` (FastAPI), `worker` (job consumer), `web` (Next.js), `companion` (opt-in local desktop agent), `desktop` (Tauri shell, since v3), `local` (the desktop app's packaged backend, since v3), and `mobile` (native iOS/Android projects).
+- `packages/*` — installable, reusable Python packages, prefixed `edecan_` (`edecan_schemas`, `edecan_db`, `edecan_llm`, `edecan_core`, `edecan_toolkit`, `edecan_connectors`, `edecan_voice`, `edecan_evals`, and more — 28 members today in the uv workspace, see `[tool.uv.workspace].members` in `pyproject.toml`).
+- `premium/` — the commercial layer (`edecan_premium`), under a separate license — see [`NOTICE`](./NOTICE). Not part of this public core export.
+- `infra/` — infrastructure as code (Terraform, Dockerfiles); written and reviewed, **never applied automatically**. Not part of this public core export either.
+- `docs/` — extended documentation (self-hosting, connectors, compliance, runbooks). Mostly in Spanish, since the product itself targets Spanish-speaking users first.
 
-## Convenciones de código
+## Code conventions
 
-- Python **3.12**, gestionado con **uv** (workspace declarado en el `pyproject.toml` raíz). Cada paquete vive en `packages/<dir>/edecan_<nombre>/` con sus propios `pyproject.toml` y `tests/`.
-  - **Nunca corras `uv sync`/`uv run <comando>` sueltos (sin `--all-packages`) en la raíz**: el `pyproject.toml` raíz no tiene `dependencies` propias, así que eso poda en silencio los paquetes editables del workspace (verás `ModuleNotFoundError` en pytest después). Usa `make test`/`make lint`/`make fmt` (ya protegidos) o `uv sync --all-packages` / `uv run --all-packages <comando>` si invocás `uv` directo.
-- Formateo y lint con **ruff**, línea máxima de **100** caracteres. Type hints obligatorios.
-- Tests con **pytest** + **pytest-asyncio**; deben ser **offline y deterministas** — usa `respx`/fakes para HTTP, nunca llamadas de red reales ni a servicios de pago.
-- **Los tests de un paquete no importan paquetes hermanos**: usan los *fakes*/stubs que implementan los contratos definidos en `ARCHITECTURE.md` §10. Importar paquetes hermanos en código de producción (no de tests) sí está permitido, por nombre de módulo.
-- Frontend en `apps/web`: **Next.js 14 (App Router) + TypeScript + Tailwind**.
-- UI y documentación por defecto en **español**.
+- Python **3.12**, managed with **uv** (workspace declared in the root `pyproject.toml`). Each package lives at `packages/<dir>/edecan_<name>/` with its own `pyproject.toml` and `tests/`.
+  - **Never run a bare `uv sync`/`uv run <command>` (without `--all-packages`) at the root**: the root `pyproject.toml` has no `dependencies` of its own, so that silently prunes the workspace's editable packages (you'll see `ModuleNotFoundError` in pytest afterward). Use `make test`/`make lint`/`make fmt` (already guarded) or `uv sync --all-packages` / `uv run --all-packages <command>` if you're calling `uv` directly.
+- Formatting and linting with **ruff**, max line length **100**. Type hints are required.
+- Tests with **pytest** + **pytest-asyncio**; must be **offline and deterministic** — use `respx`/fakes for HTTP, never real network calls or calls to paid services.
+- **A package's tests never import sibling packages**: they use the fakes/stubs that implement the contracts defined in `ARCHITECTURE.md` §10. Importing sibling packages in production code (not tests) is fine, by module name.
+- Frontend in `apps/web`: **Next.js 14 (App Router) + TypeScript + Tailwind**.
+- UI and docs default to **Spanish**.
 
-## Reglas duras (no negociables)
+## Hard rules (non-negotiable)
 
-1. **Cero secretos reales.** Solo placeholders `TU_X_AQUI` en `.env.example`/docs. Nunca API keys, tokens ni datos personales reales de nadie.
-2. **LinkedIn está prohibido** en cualquier forma: código, scopes, URLs, texto de UI o documentación. El test `test_no_linkedin` en `packages/connectors/` debe seguir pasando siempre.
-3. **Solo APIs oficiales.** Cada tenant conecta sus propias credenciales vía OAuth. Nunca scraping ni credenciales compartidas o hardcodeadas.
-4. **Nunca ejecutar** desde el flujo de desarrollo, CI o agentes automatizados de este repo: `terraform apply`, comandos `aws` con efectos reales, `docker push`, ni pruebas con red real hacia servicios de pago. `infra/terraform` se escribe y se revisa como código; su aplicación es un paso manual fuera de este repositorio.
-5. Cambios a los contratos de `ARCHITECTURE.md` §10 (nombres de tablas, firmas, rutas, tipos de jobs, nombres de herramientas) requieren coordinación explícita, porque otros paquetes se desarrollan en paralelo contra esos mismos contratos.
+1. **Zero real secrets.** Only `YOUR_X_HERE`-style placeholders in `.env.example`/docs. Never real API keys, tokens, or anyone's real personal data.
+2. **LinkedIn is banned** in any form: code, scopes, URLs, UI copy, or documentation. The `test_no_linkedin` test in `packages/connectors/` must always keep passing.
+3. **Official APIs only.** Each tenant connects their own credentials via OAuth. Never scraping, never shared or hardcoded credentials.
+4. **Never run**, from this repo's dev flow, CI, or automated agents: `terraform apply`, `aws` commands with real effects, `docker push`, or tests that hit real network calls to paid services. `infra/terraform` is written and reviewed like any other code; applying it is always a manual step outside this repository.
+5. Changes to the contracts in `ARCHITECTURE.md` §10 (table names, signatures, routes, job types, tool names) require explicit coordination, since other packages are developed in parallel against those same contracts.
 
-## Acuerdo de licencia de contribuyente (CLA)
+## Contributor License Agreement (CLA)
 
-Al abrir un PR contra el núcleo de este repositorio (cualquier ruta fuera de `premium/`), aceptas que tu contribución se licencia bajo **Apache License 2.0** (los mismos términos que cubren el resto del proyecto — ver [`LICENSE`](./LICENSE) §5, "Submission of Contributions"), sin condiciones adicionales. No hace falta firmar un documento CLA aparte para contribuir al núcleo: el acto de enviar el PR ya constituye ese acuerdo ("inbound = outbound").
+By opening a PR against this repository's core (any path outside `premium/`), you agree that your contribution is licensed under **Apache License 2.0** (the same terms covering the rest of the project — see [`LICENSE`](./LICENSE) §5, "Submission of Contributions"), with no additional conditions. There's no separate CLA document to sign for core contributions: submitting the PR is itself that agreement ("inbound = outbound").
 
-Si tu contribución toca `premium/` (software bajo licencia comercial, ver [`NOTICE`](./NOTICE) y `premium/LICENSE-COMMERCIAL.md`), se requiere un acuerdo de licencia de contribuyente firmado por separado con el Proyecto Edecán antes de que el PR pueda revisarse; contacta a los mantenedores por el canal indicado en [`SECURITY.md`](./SECURITY.md) para gestionarlo.
+If your contribution touches `premium/` (commercially licensed software, see [`NOTICE`](./NOTICE) and `premium/LICENSE-COMMERCIAL.md`), a separately signed contributor license agreement with the Edecán Project is required before the PR can be reviewed; reach out to the maintainers through the channel described in [`SECURITY.md`](./SECURITY.md) to arrange it.
 
-## Flujo de trabajo
+## Workflow
 
-1. Abre un issue o discute el cambio propuesto antes de invertir mucho tiempo en un PR grande.
-2. Crea una rama descriptiva y mantén el PR pequeño y enfocado en un solo objetivo.
-3. Asegúrate de que `make lint` y `make test` pasen localmente antes de abrir el PR.
-4. Describe en el PR qué cambia y por qué; si el cambio toca un contrato de `ARCHITECTURE.md` §10, actualiza el documento en el mismo PR.
-5. Si tu cambio agrega una nueva herramienta del agente, un nuevo tipo de job, una nueva ruta HTTP o una nueva variable de entorno, refléjalo también en `ARCHITECTURE.md` y en `.env.example` según corresponda.
+1. Open an issue or discuss the proposed change before investing a lot of time in a large PR.
+2. Create a descriptive branch and keep the PR small, focused on a single goal.
+3. Make sure `make lint` and `make test` pass locally before opening the PR.
+4. Describe what changes and why in the PR; if the change touches an `ARCHITECTURE.md` §10 contract, update that document in the same PR.
+5. If your change adds a new agent tool, a new job type, a new HTTP route, or a new environment variable, reflect that in `ARCHITECTURE.md` and `.env.example` as appropriate.
 
-## Cómo correr el entorno local
+## How to fork and open a pull request
 
-Ver la sección "Modo desarrollador (self-host desde el código fuente)" en [`README.md`](./README.md).
+1. Click "Fork" on the repo page to get your own copy under your GitHub account.
+2. Clone your fork, create a branch, and make your change there.
+3. Push the branch to your fork and open a pull request back against `isaccmanuel/edecan`.
+4. A maintainer reviews it and merges when it's ready. Forking and opening a PR never grants write access to the original repo — only a maintainer can merge.
 
-## Reportar problemas de seguridad
+## Running the local environment
 
-No uses issues públicos para vulnerabilidades — sigue el proceso descrito en [`SECURITY.md`](./SECURITY.md).
+See the "Developer mode (self-host from source)" section in [`README.md`](./README.md).
+
+## Reporting security issues
+
+Don't use public issues for vulnerabilities — follow the process described in [`SECURITY.md`](./SECURITY.md).

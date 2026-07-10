@@ -2,7 +2,7 @@
   <img src="apps/desktop/src-tauri/icons/icon.png" width="120" alt="Edecán logo" />
 </p>
 
-<h1 align="center">Edecán</h1>
+<h1 align="center">Edecan</h1>
 
 <p align="center">
   <i>Your personal AI, on your own machine.</i>
@@ -32,7 +32,7 @@ A downloadable, installable desktop app (macOS/Windows) that gives you a persona
 
 The full source is included and self-hostable if you want to customize or run your own instance — but that's a bonus. The product is the installed app, working out of the box.
 
-## Why Edecán?
+## Why Edecan?
 
 **Bring-your-own-everything.** Use what you already have: your Claude Code subscription, your Codex account, free local Ollama, your own Anthropic/OpenAI-compatible/Gemini API key, your own Twilio, your own Deepgram/ElevenLabs. Zero lock-in, zero markup on third-party usage — we never operate or bill third-party accounts on a customer's behalf.
 

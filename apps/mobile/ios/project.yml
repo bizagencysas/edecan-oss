@@ -1,0 +1,123 @@
+# project.yml — proyecto Xcode de Edecán generado con xcodegen.
+#
+# NUNCA se edita `Edecan.xcodeproj` a mano ni se versiona (ver `.gitignore`
+# en este mismo directorio): este archivo es la única fuente de verdad del
+# proyecto. Cualquier cambio de targets/settings va aquí.
+#
+# Pipeline conocido (mismo patrón que el dueño ya usa en sus otros proyectos
+# iOS, ver `docs/movil-ios.md` y `fastlane/Fastfile`):
+#   1. Bump de versión: subir `CURRENT_PROJECT_VERSION` abajo (o correr
+#      `fastlane bump`, que hace el mismo `sed`).
+#   2. `xcodegen generate` — regenera `Edecan.xcodeproj` desde este archivo.
+#   3. `LC_ALL=en_US.UTF-8 fastlane adhoc` — build + firma ad-hoc con la
+#      cuenta Apple Developer del CLIENTE (nunca la del dueño de Edecán).
+#
+# NOTA IMPORTANTE sobre el bundle id: `cc.edecan.app` de abajo es un
+# PLACEHOLDER de desarrollo. Cada CLIENTE que compile esta app debe
+# cambiarlo por uno propio (ej. `com.tuempresa.edecan`) antes de firmar con
+# su cuenta Apple Developer — un bundle id no se puede repetir entre cuentas
+# distintas. Ver `docs/movil-ios.md` sección "Antes de compilar".
+
+name: Edecan
+
+options:
+  bundleIdPrefix: cc.edecan
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  # Swift 6 estricto en todo el proyecto (concurrencia completa) — mismo
+  # criterio que EdecanKit/Package.swift.
+  transitivelyLinkDependencies: true
+
+settings:
+  base:
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.0"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
+    ENABLE_PREVIEWS: "YES"
+    DEVELOPMENT_TEAM: "" # cada cliente pone SU Team ID aquí o en Xcode ->
+    # Signing & Capabilities. Ver docs/movil-ios.md. NUNCA un Team ID real
+    # va en este repo (ARCHITECTURE.md §0 — cero secretos/credenciales
+    # reales).
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  EdecanKit:
+    path: EdecanKit
+
+targets:
+  EdecanApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: EdecanApp
+        excludes:
+          - "**/*.md"
+    resources:
+      - path: EdecanApp/Resources
+    info:
+      path: EdecanApp/Info.plist
+      properties:
+        CFBundleDisplayName: Edecán
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSMicrophoneUsageDescription: "Edecán necesita el micrófono para el modo de voz — mantén presionado el botón de la pestaña Voz para hablar con el asistente (ver docs/movil-ios.md)."
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.edecan.app
+        PRODUCT_NAME: Edecán
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
+    dependencies:
+      - package: EdecanKit
+      - target: EdecanWidgetsExtension
+
+  EdecanWidgetsExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: EdecanWidgets
+    info:
+      path: EdecanWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Edecán Widgets
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.edecan.app.widgets
+        PRODUCT_NAME: EdecanWidgets
+        SKIP_INSTALL: "YES"
+    dependencies:
+      - package: EdecanKit
+
+schemes:
+  EdecanApp:
+    build:
+      targets:
+        EdecanApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release

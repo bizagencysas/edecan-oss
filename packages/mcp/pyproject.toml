@@ -1,0 +1,52 @@
+[project]
+name = "edecan-mcp"
+version = "0.1.0"
+description = "Edecán — MCP (Model Context Protocol) bring-your-own: cada tenant conecta SUS propios servidores MCP y sus tools aparecen en el agente. Ver ARCHITECTURE.md §15 (WP-V6-07)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "edecan-core",
+    "edecan-schemas",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# RESUELTO: este paquete YA está registrado (mismo criterio que
+# `packages/ads`/`packages/travel`, ARCHITECTURE.md §13.h/§14.f — WP-V6-07 no
+# podía tocar `pyproject.toml` de la raíz, `apps/api/pyproject.toml` ni
+# `apps/worker/pyproject.toml`, y §15.g nunca asignó este registro a ningún
+# otro WP, así que quedó pendiente por un tiempo tras aterrizar el resto del
+# paquete): "packages/mcp" está en `[tool.uv.workspace].members` de la raíz, y
+# "edecan-mcp" es dependencia directa de `apps/api`/`apps/worker` — así los
+# Dockerfiles de producción (`uv sync --no-dev --package edecan-api`/
+# `edecan-worker`) no excluyen este paquete en silencio, mismo motivo que ya
+# documentan `edecan-ads`/`edecan-travel`/`edecan-voice` en ARCHITECTURE.md
+# §13.h/§14.f. `apps/api/edecan_api/deps.py` y `apps/worker/edecan_worker/
+# deps.py` de todas formas siguen importando `edecan_mcp` con `try/except
+# ImportError` (mismo patrón que `edecan_llm.config.LLMProviderConfig` en
+# `apps/api/edecan_api/deps.py`) y fallando ABIERTO a "sin tools MCP" ante
+# cualquier otro problema (servidor MCP caído, flag apagado, etc.) — eso no
+# cambia; esta nota solo documentaba el registro del paquete en sí, que ya
+# quedó hecho.

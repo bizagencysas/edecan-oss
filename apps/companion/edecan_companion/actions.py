@@ -1,0 +1,1043 @@
+"""Acciones que el companion puede ejecutar en el equipo del usuario.
+
+Contrato (ARCHITECTURE.md §10.7, §10.12): `execute(action, params, config,
+approver)` es el único punto de entrada. Por cada llamada:
+
+1. Si `action` no es una de las soportadas → error, sin pedir aprobación.
+2. Se pide aprobación vía `approver(action, params, config)` — por defecto
+   (`approval.default_approver`) es una pregunta interactiva en la terminal,
+   salvo que la acción esté en `config.auto_approve`.
+3. Si se aprueba, se corre el handler correspondiente en un hilo aparte
+   (son funciones bloqueantes: IO de archivos o `subprocess`) y se devuelve
+   su resultado.
+4. CADA llamada deja constancia en la bitácora de auditoría
+   (`audit.log_action`), se haya aprobado o no, haya salido bien o no.
+
+Las acciones de archivos (`read_dir`, `read_file`, `write_file`) están
+restringidas a `config.sandbox_dir`: cualquier ruta que se resuelva fuera de
+esa carpeta (rutas "..", absolutas, o enlaces simbólicos que apunten afuera)
+se rechaza. `run_command` solo permite ejecutables listados en
+`config.allowed_commands`, y siempre corre con `shell=False` y con timeout —
+nunca interpreta ";", "&&", tuberías ni ningún otro metacarácter de shell.
+
+`input_pointer`/`input_key` (control remoto de teclado/mouse, WP-V4-10) son
+las acciones de mayor impacto de todo este módulo: además del pipeline de
+arriba, exigen `config.remote_input_enabled=true` (apagado por defecto,
+opt-in explícito del dueño de la máquina) y, en macOS, el permiso de
+Accesibilidad concedido a mano en Ajustes del Sistema — nunca automatizado.
+Ver `docs/control-remoto.md` §7 y el docstring de `_QuartzInputBackend`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import contextlib
+import logging
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+from collections.abc import Awaitable, Callable, Iterator
+from pathlib import Path
+from typing import Any, Protocol
+
+from edecan_companion import audit
+from edecan_companion.config import CompanionConfig
+
+logger = logging.getLogger(__name__)
+
+MAX_READ_FILE_BYTES = 256 * 1024
+MAX_COMMAND_OUTPUT_BYTES = 10 * 1024
+COMMAND_TIMEOUT_SECONDS = 30
+HELPER_SUBPROCESS_TIMEOUT_SECONDS = 15
+
+# -- IDE embebido (ROADMAP_V2.md §7.8, WP-V2-08) -----------------------------
+
+MAX_TREE_DEPTH = 5
+MAX_TREE_ENTRIES = 500
+MAX_SEARCH_FILES = 2000
+MAX_SEARCH_MATCHES = 200
+MAX_SEARCH_LINE_CHARS = 200
+MAX_SEARCH_FILE_BYTES = 256 * 1024
+
+# Carpetas que `list_tree`/`search_files` nunca recorren ni cuentan contra
+# sus topes -- ruido casi siempre irrelevante para un IDE (control de
+# versiones, dependencias instaladas, cachés de bytecode/venv).
+_IGNORED_TREE_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__", ".venv"})
+
+# Acciones del IDE embebido, gateadas además por `config.ide_enabled`
+# (`execute()` las corta ANTES de pedir aprobación si está en `false`).
+_IDE_ACTIONS = frozenset({"list_tree", "search_files", "apply_edit", "screenshot"})
+
+# -- Control remoto de teclado/mouse (WP-V4-10, docs/control-remoto.md §7) --
+#
+# Gateadas además por `config.remote_input_enabled` (mismo patrón que
+# `_IDE_ACTIONS`/`ide_enabled`: `execute()` las corta ANTES de pedir
+# aprobación si está en `false`) y, por encima de eso, por la regla de
+# aprobación "más dura" de `approval.py` (recordada solo por sesión de
+# control activa + `remote_input_remember_minutes`, nunca por `auto_approve`
+# -- ver el docstring de `approval._approve_input_action`).
+_INPUT_ACTIONS = frozenset({"input_pointer", "input_key"})
+
+_POINTER_ACTIONS: tuple[str, ...] = ("move", "click", "double_click", "right_click")
+_MOUSE_BUTTONS: tuple[str, ...] = ("left", "right", "middle")
+_SPECIAL_KEYS: tuple[str, ...] = (
+    "enter",
+    "tab",
+    "escape",
+    "backspace",
+    "arrow_up",
+    "arrow_down",
+    "arrow_left",
+    "arrow_right",
+)
+
+# Keycodes virtuales estándar de macOS (`Events.h`, iguales en cualquier
+# distribución de teclado -- son posiciones físicas de tecla, no símbolos).
+_SPECIAL_KEYCODES: dict[str, int] = {
+    "enter": 36,
+    "tab": 48,
+    "escape": 53,
+    "backspace": 51,
+    "arrow_up": 126,
+    "arrow_down": 125,
+    "arrow_left": 123,
+    "arrow_right": 124,
+}
+
+
+class ActionError(Exception):
+    """Error esperado (validación, permisos, IO) — seguro de mostrar tal cual al usuario."""
+
+
+class Approver(Protocol):
+    def __call__(
+        self, action: str, params: dict[str, Any], config: CompanionConfig
+    ) -> Awaitable[bool]: ...
+
+
+ActionHandler = Callable[[dict[str, Any], CompanionConfig], dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Sandbox de archivos
+# ---------------------------------------------------------------------------
+
+
+def _resolve_in_sandbox(config: CompanionConfig, raw_path: str | None) -> Path:
+    """Resuelve `raw_path` dentro de `config.sandbox_dir`; lanza `ActionError` si escapa.
+
+    `raw_path` siempre se trata como relativo al sandbox (se descarta
+    cualquier apariencia de ruta absoluta) y se resuelve siguiendo enlaces
+    simbólicos (`Path.resolve`), así que tanto un "../.." como un symlink
+    que apunte fuera del sandbox terminan rechazados por el chequeo final
+    de `relative_to`.
+    """
+    raw_path = (raw_path or ".").strip() or "."
+
+    # Nunca interpretar el path del usuario como absoluto: siempre relativo
+    # al sandbox, aunque venga con "/" al inicio.
+    relative = raw_path.replace("\\", "/").lstrip("/")
+    candidate = (config.sandbox_dir / relative).resolve()
+
+    try:
+        candidate.relative_to(config.sandbox_dir)
+    except ValueError:
+        raise ActionError(f"ruta fuera del sandbox permitido: {raw_path!r}") from None
+
+    return candidate
+
+
+def _is_within_sandbox(path: Path, config: CompanionConfig) -> bool:
+    """`True` si `path` (resolviendo symlinks) sigue dentro de `config.sandbox_dir`.
+
+    A diferencia de `_resolve_in_sandbox` (que valida una ruta *pedida* por
+    el asistente, y lanza `ActionError` si escapa), esto valida en silencio
+    rutas *descubiertas* al recorrer el sandbox (`list_tree`/`search_files`):
+    un symlink a una carpeta o archivo de fuera del sandbox no debe ni
+    recorrerse ni leerse, aunque su nombre en sí ya se podía listar antes
+    (mismo comportamiento que `read_dir`, que nunca revisó esto para sus
+    entradas directas).
+    """
+    try:
+        path.resolve().relative_to(config.sandbox_dir)
+    except (OSError, RuntimeError, ValueError):
+        # ValueError: resuelve pero cae fuera del sandbox. OSError/RuntimeError:
+        # símlink roto o loop de símlinks -- en cualquier caso, no es seguro.
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Handlers — síncronos y bloqueantes a propósito (se corren con asyncio.to_thread)
+# ---------------------------------------------------------------------------
+
+
+def _open_app(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    app = params.get("app")
+    if not isinstance(app, str) or not app.strip():
+        raise ActionError("falta el parámetro 'app' (texto)")
+    app = app.strip()
+
+    if app not in config.allowed_apps:
+        raise ActionError(f"app no permitida (agrégala a allowed_apps en companion.yaml): {app!r}")
+
+    if sys.platform == "darwin":
+        argv = ["open", "-a", app]
+    elif sys.platform.startswith("linux"):
+        argv = ["xdg-open", app]
+    else:
+        raise ActionError(f"abrir apps no está soportado en esta plataforma: {sys.platform!r}")
+
+    try:
+        subprocess.run(
+            argv,
+            check=True,
+            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ActionError(f"no se encontró el comando del sistema: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError("se agotó el tiempo de espera abriendo la app") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() if exc.stderr else str(exc)
+        raise ActionError(f"no se pudo abrir {app!r}: {detail}") from exc
+
+    return {"app": app, "launched": True}
+
+
+def _read_dir(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    target = _resolve_in_sandbox(config, params.get("path"))
+    if not target.exists():
+        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+    if not target.is_dir():
+        raise ActionError(f"no es una carpeta: {target.relative_to(config.sandbox_dir)}")
+
+    entries: list[dict[str, Any]] = []
+    for entry in sorted(target.iterdir(), key=lambda p: p.name):
+        try:
+            is_dir = entry.is_dir()
+            size = None if is_dir else entry.stat().st_size
+        except OSError:
+            continue  # entrada ilegible (p. ej. symlink roto): se omite, no se aborta el listado
+        entries.append({"name": entry.name, "is_dir": is_dir, "size_bytes": size})
+
+    return {"path": str(target.relative_to(config.sandbox_dir)), "entries": entries}
+
+
+def _read_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    target = _resolve_in_sandbox(config, params.get("path"))
+    if not target.exists() or not target.is_file():
+        raise ActionError(f"no existe el archivo: {target.relative_to(config.sandbox_dir)}")
+
+    size = target.stat().st_size
+    if size > MAX_READ_FILE_BYTES:
+        raise ActionError(f"archivo demasiado grande ({size} bytes; máximo {MAX_READ_FILE_BYTES})")
+
+    raw = target.read_bytes()
+    try:
+        content, encoding = raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        content, encoding = base64.b64encode(raw).decode("ascii"), "base64"
+
+    return {
+        "path": str(target.relative_to(config.sandbox_dir)),
+        "content": content,
+        "encoding": encoding,
+        "size_bytes": size,
+    }
+
+
+def _write_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    raw_content = params.get("content")
+    if not isinstance(raw_content, str):
+        raise ActionError("falta el parámetro 'content' (texto)")
+
+    encoding = params.get("encoding", "utf-8")
+    if encoding == "base64":
+        try:
+            data = base64.b64decode(raw_content, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ActionError(f"'content' no es base64 válido: {exc}") from exc
+    elif encoding == "utf-8":
+        data = raw_content.encode("utf-8")
+    else:
+        raise ActionError(f"'encoding' no soportado: {encoding!r} (usa 'utf-8' o 'base64')")
+
+    target = _resolve_in_sandbox(config, params.get("path"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+
+    return {"path": str(target.relative_to(config.sandbox_dir)), "bytes_written": len(data)}
+
+
+# ---------------------------------------------------------------------------
+# Portapapeles
+# ---------------------------------------------------------------------------
+
+
+def _clipboard_get(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    if sys.platform == "darwin":
+        argv = ["pbpaste"]
+    elif sys.platform.startswith("linux"):
+        argv = ["xclip", "-selection", "clipboard", "-o"]
+    else:
+        raise ActionError(f"portapapeles no soportado en esta plataforma: {sys.platform!r}")
+
+    try:
+        proc = subprocess.run(
+            argv,
+            check=True,
+            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ActionError(
+            f"no se encontró {argv[0]!r}; instálalo para poder usar el portapapeles ({exc})"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError("se agotó el tiempo de espera leyendo el portapapeles") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() if exc.stderr else str(exc)
+        raise ActionError(f"no se pudo leer el portapapeles: {detail}") from exc
+
+    return {"text": proc.stdout}
+
+
+def _clipboard_set(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    text = params.get("text")
+    if not isinstance(text, str):
+        raise ActionError("falta el parámetro 'text' (texto)")
+
+    if sys.platform == "darwin":
+        argv = ["pbcopy"]
+    elif sys.platform.startswith("linux"):
+        argv = ["xclip", "-selection", "clipboard"]
+    else:
+        raise ActionError(f"portapapeles no soportado en esta plataforma: {sys.platform!r}")
+
+    try:
+        subprocess.run(
+            argv,
+            input=text,
+            check=True,
+            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ActionError(
+            f"no se encontró {argv[0]!r}; instálalo para poder usar el portapapeles ({exc})"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError("se agotó el tiempo de espera escribiendo el portapapeles") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() if exc.stderr else str(exc)
+        raise ActionError(f"no se pudo escribir el portapapeles: {detail}") from exc
+
+    return {"written_chars": len(text)}
+
+
+# ---------------------------------------------------------------------------
+# Comandos
+# ---------------------------------------------------------------------------
+
+
+def _truncate_utf8(text: str, limit_bytes: int) -> tuple[str, bool]:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= limit_bytes:
+        return text, False
+    return encoded[:limit_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _run_command(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    command = params.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ActionError("falta el parámetro 'command' (texto)")
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise ActionError(f"comando mal formado: {exc}") from exc
+
+    if not argv:
+        raise ActionError("comando vacío")
+
+    executable = argv[0]
+    if executable not in config.allowed_commands:
+        raise ActionError(
+            f"comando no permitido (agrega {executable!r} a allowed_commands en companion.yaml)"
+        )
+
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=config.sandbox_dir,
+            shell=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ActionError(f"no se encontró el ejecutable {executable!r}: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError(
+            f"el comando superó el tiempo límite de {COMMAND_TIMEOUT_SECONDS}s"
+        ) from exc
+
+    stdout, stdout_truncated = _truncate_utf8(proc.stdout, MAX_COMMAND_OUTPUT_BYTES)
+    stderr, stderr_truncated = _truncate_utf8(proc.stderr, MAX_COMMAND_OUTPUT_BYTES)
+
+    return {
+        "returncode": proc.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "truncated": stdout_truncated or stderr_truncated,
+    }
+
+
+# ---------------------------------------------------------------------------
+# IDE embebido (ROADMAP_V2.md §7.8, WP-V2-08): list_tree, search_files,
+# apply_edit, screenshot -- las cuatro pasan por el mismo pipeline de
+# aprobación+auditoría+sandbox que el resto (ver `execute()` más abajo).
+# ---------------------------------------------------------------------------
+
+
+def _clamp_int(raw: Any, *, default: int, minimum: int, maximum: int) -> int:
+    """`int(raw)` acotado a `[minimum, maximum]`; `default` si falta o no es convertible.
+
+    Nunca lanza: un `max_depth`/`max_entries` inválido o desmedido degrada en
+    silencio al tope permitido en vez de fallar la acción completa.
+    """
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _iter_dir_safe(dir_path: Path) -> list[tuple[str, bool]]:
+    """`[(nombre, es_carpeta)]` de `dir_path`; carpeta/entradas ilegibles se omiten (no abortan)."""
+    try:
+        children = list(dir_path.iterdir())
+    except OSError:
+        return []
+    result: list[tuple[str, bool]] = []
+    for child in children:
+        try:
+            result.append((child.name, child.is_dir()))
+        except OSError:
+            continue
+    return result
+
+
+def _list_tree(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Árbol recursivo de `path` (default: raíz del sandbox), acotado en profundidad y tamaño.
+
+    `max_depth` (≤ `MAX_TREE_DEPTH`) y `max_entries` (≤ `MAX_TREE_ENTRIES`,
+    contado sobre TODO el árbol, no por carpeta) se recortan en silencio al
+    tope si se pide más -- nunca lanzan error, así "pide un árbol enorme"
+    degrada a "árbol truncado" (`truncated: true`) en vez de fallar la
+    acción. `_IGNORED_TREE_DIR_NAMES` se ignora siempre (ni se lista ni
+    cuenta para `max_entries`). Una carpeta que llegó al límite de
+    profundidad, o que es un symlink que escapa del sandbox
+    (`_is_within_sandbox`), se lista como hoja (`children: None`) en vez de
+    expandirse.
+    """
+    target = _resolve_in_sandbox(config, params.get("path"))
+    if not target.exists():
+        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+    if not target.is_dir():
+        raise ActionError(f"no es una carpeta: {target.relative_to(config.sandbox_dir)}")
+
+    max_depth = _clamp_int(
+        params.get("max_depth"), default=MAX_TREE_DEPTH, minimum=1, maximum=MAX_TREE_DEPTH
+    )
+    max_entries = _clamp_int(
+        params.get("max_entries"), default=MAX_TREE_ENTRIES, minimum=1, maximum=MAX_TREE_ENTRIES
+    )
+    state = {"remaining": max_entries, "truncated": False}
+
+    def _walk(dir_path: Path, depth: int) -> list[dict[str, Any]]:
+        nodes: list[dict[str, Any]] = []
+        entries = sorted(_iter_dir_safe(dir_path), key=lambda e: (not e[1], e[0]))
+        for name, is_dir in entries:
+            if is_dir and name in _IGNORED_TREE_DIR_NAMES:
+                continue
+            if state["remaining"] <= 0:
+                state["truncated"] = True
+                break
+            state["remaining"] -= 1
+            child_path = dir_path / name
+            node: dict[str, Any] = {"name": name, "is_dir": is_dir}
+            if is_dir:
+                can_descend = depth + 1 < max_depth and _is_within_sandbox(child_path, config)
+                node["children"] = _walk(child_path, depth + 1) if can_descend else None
+            else:
+                try:
+                    node["size_bytes"] = child_path.stat().st_size
+                except OSError:
+                    node["size_bytes"] = None
+            nodes.append(node)
+        return nodes
+
+    entries = _walk(target, depth=0)
+    return {
+        "path": str(target.relative_to(config.sandbox_dir)),
+        "entries": entries,
+        "truncated": state["truncated"],
+    }
+
+
+def _iter_files_safe(base: Path) -> Iterator[Path]:
+    """Archivos bajo `base` (o `base` mismo si ya es un archivo).
+
+    Usa `os.walk` con `followlinks=False` (su default): un symlink a una
+    carpeta puede listarse como nombre pero nunca se recorre su contenido,
+    así que no hace falta un chequeo de sandbox aparte para carpetas (sí para
+    archivos individuales -- ver `_is_within_sandbox` en `_search_files`).
+    Orden determinista (nombres ordenados) e ignora `_IGNORED_TREE_DIR_NAMES`.
+    """
+    if base.is_file():
+        yield base
+        return
+    if not base.is_dir():
+        return
+    for root, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if d not in _IGNORED_TREE_DIR_NAMES)
+        for filename in sorted(filenames):
+            yield Path(root) / filename
+
+
+def _search_files(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Busca `query` (substring, sin distinguir mayúsculas) línea por línea bajo `path`.
+
+    Recorrido acotado a `MAX_SEARCH_FILES` archivos considerados y
+    `MAX_SEARCH_MATCHES` coincidencias devueltas -- lo que se cumpla primero
+    corta la búsqueda y marca `truncated`. Solo mira archivos de texto: se
+    saltan en silencio los que pesan más de `MAX_SEARCH_FILE_BYTES` o que no
+    decodifican como UTF-8 (se asumen binarios). Cada línea coincidente se
+    recorta a `MAX_SEARCH_LINE_CHARS` caracteres. Un archivo descubierto por
+    el recorrido que resulte ser un symlink apuntando fuera del sandbox se
+    salta (`_is_within_sandbox`) -- nunca se lee contenido de fuera del
+    sandbox, aunque el recorrido lo haya "encontrado" por su nombre.
+    """
+    query = params.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise ActionError("falta el parámetro 'query' (texto)")
+    needle = query.lower()
+
+    base = _resolve_in_sandbox(config, params.get("path"))
+    if not base.exists():
+        raise ActionError(f"no existe: {base.relative_to(config.sandbox_dir)}")
+
+    matches: list[dict[str, Any]] = []
+    files_scanned = 0
+    truncated = False
+
+    for file_path in _iter_files_safe(base):
+        if files_scanned >= MAX_SEARCH_FILES or len(matches) >= MAX_SEARCH_MATCHES:
+            truncated = True
+            break
+        files_scanned += 1
+
+        if not _is_within_sandbox(file_path, config):
+            continue
+        try:
+            if file_path.stat().st_size > MAX_SEARCH_FILE_BYTES:
+                continue
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # binario: no es un archivo de texto, se omite
+
+        rel = str(file_path.relative_to(config.sandbox_dir))
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if len(matches) >= MAX_SEARCH_MATCHES:
+                truncated = True
+                break
+            if needle in line.lower():
+                texto = line if len(line) <= MAX_SEARCH_LINE_CHARS else line[:MAX_SEARCH_LINE_CHARS]
+                matches.append({"path": rel, "line": lineno, "texto": texto})
+
+    return {"query": query, "matches": matches, "truncated": truncated}
+
+
+def _apply_edit(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Reemplaza `old_string` por `new_string` en `path` -- edición quirúrgica, no reescritura.
+
+    Sin `replace_all`, `old_string` debe aparecer EXACTAMENTE una vez (si no,
+    `ActionError` con el conteo real, para que quien pidió la edición pase un
+    fragmento más específico o use `replace_all=true` a propósito). La
+    escritura es atómica: se escribe a un archivo temporal en la MISMA
+    carpeta (mismo filesystem) y se hace `os.replace` (rename atómico) sobre
+    el destino -- nunca queda el archivo a medio escribir. Solo texto UTF-8;
+    reutiliza el mismo tope `MAX_READ_FILE_BYTES` que `read_file`.
+    """
+    old_string = params.get("old_string")
+    if not isinstance(old_string, str) or old_string == "":
+        raise ActionError("falta el parámetro 'old_string' (texto no vacío)")
+    new_string = params.get("new_string")
+    if not isinstance(new_string, str):
+        raise ActionError("falta el parámetro 'new_string' (texto)")
+    replace_all = bool(params.get("replace_all", False))
+
+    target = _resolve_in_sandbox(config, params.get("path"))
+    if not target.exists() or not target.is_file():
+        raise ActionError(f"no existe el archivo: {target.relative_to(config.sandbox_dir)}")
+
+    size = target.stat().st_size
+    if size > MAX_READ_FILE_BYTES:
+        raise ActionError(f"archivo demasiado grande ({size} bytes; máximo {MAX_READ_FILE_BYTES})")
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ActionError(
+            "el archivo no es texto UTF-8 legible; apply_edit no soporta binarios"
+        ) from exc
+
+    count = content.count(old_string)
+    if count == 0:
+        raise ActionError("old_string no se encontró en el archivo")
+    if not replace_all and count > 1:
+        raise ActionError(
+            f"old_string no es único: aparece {count} veces; usa replace_all=true o pasa un "
+            "fragmento más largo que solo coincida una vez"
+        )
+
+    new_content = (
+        content.replace(old_string, new_string)
+        if replace_all
+        else content.replace(old_string, new_string, 1)
+    )
+    replacements = count if replace_all else 1
+
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_content)
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_name)
+        raise
+
+    return {
+        "path": str(target.relative_to(config.sandbox_dir)),
+        "replacements": replacements,
+        "bytes_written": len(new_content.encode("utf-8")),
+    }
+
+
+def _png_dimensions_via_sips(path: str) -> tuple[int, int]:
+    """`(width, height)` de un PNG vía `sips` (utilidad del sistema en macOS).
+
+    No agrega una dependencia de Pillow solo para esto (no es dependencia del
+    paquete, ver `pyproject.toml`): si `sips` no está, falla, o su salida no
+    se puede interpretar, devuelve `(0, 0)` en vez de fallar toda la acción
+    -- el PNG en sí siempre es válido y quien lo consuma puede leer sus
+    dimensiones del propio archivo si de verdad las necesita.
+    """
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", path],
+            check=True,
+            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0, 0
+
+    width = height = 0
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pixelWidth:"):
+            width = _safe_int(stripped.split(":", 1)[1])
+        elif stripped.startswith("pixelHeight:"):
+            height = _safe_int(stripped.split(":", 1)[1])
+    return width, height
+
+
+def _safe_int(raw: str) -> int:
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return 0
+
+
+def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Captura la pantalla completa (o `display` si se indica) a PNG en base64.
+
+    SOLO macOS: usa el binario del sistema `/usr/sbin/screencapture` (`-x`
+    sin sonido de obturador, `-t png`); en cualquier otro `sys.platform` esto
+    ni siquiera lo intenta. La PRIMERA vez que corre, macOS exige el permiso
+    de "Grabación de pantalla" para el proceso que ejecuta el companion
+    (Terminal, iTerm, etc.) — es un clic humano en Ajustes del Sistema →
+    Privacidad y Seguridad que esta acción NUNCA evade ni automatiza: si el
+    permiso no está concedido, `screencapture` no deja una imagen utilizable
+    y esta función lo reporta como `ActionError` en vez de devolver un PNG
+    vacío o negro sin explicación. Las dimensiones se leen con `sips`
+    (`_png_dimensions_via_sips`); si eso falla, `width`/`height` quedan en 0
+    pero la imagen igual se devuelve (ver su docstring).
+    """
+    if sys.platform != "darwin":
+        raise ActionError("captura no soportada en esta plataforma")
+
+    argv = ["/usr/sbin/screencapture", "-x", "-t", "png"]
+    display = params.get("display")
+    if display is not None:
+        try:
+            argv.extend(["-D", str(int(display))])
+        except (TypeError, ValueError):
+            raise ActionError("'display' debe ser un número entero") from None
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        try:
+            subprocess.run(
+                [*argv, tmp_path],
+                check=True,
+                timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise ActionError(f"no se encontró el comando del sistema: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ActionError("se agotó el tiempo de espera capturando la pantalla") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = exc.stderr.strip() if exc.stderr else str(exc)
+            raise ActionError(f"no se pudo capturar la pantalla: {detail}") from exc
+
+        image_bytes = Path(tmp_path).read_bytes() if os.path.exists(tmp_path) else b""
+        if not image_bytes:
+            raise ActionError(
+                "screencapture no generó una imagen; revisa el permiso de 'Grabación de "
+                "pantalla' en Ajustes del Sistema → Privacidad y Seguridad"
+            )
+
+        width, height = _png_dimensions_via_sips(tmp_path)
+        return {
+            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+            "width": width,
+            "height": height,
+        }
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Control remoto de teclado/mouse (WP-V4-10, docs/control-remoto.md §7):
+# input_pointer, input_key -- nivel TeamViewer. CGEvent (macOS) queda
+# ABSTRAÍDO detrás de `InputBackend` a propósito: ni un test ni un bug de
+# aprobación debe poder mover el mouse real o escribir texto real en esta
+# máquina (CI o de un desarrollador) -- solo `_QuartzInputBackend`, la única
+# implementación real, toca `Quartz` de verdad, y solo se construye cuando de
+# verdad hace falta ejecutar la acción (nunca al importar este módulo).
+# ---------------------------------------------------------------------------
+
+
+class InputBackend(Protocol):
+    """Backend de bajo nivel que sintetiza input de teclado/mouse.
+
+    `_input_pointer`/`_input_key` SOLO hablan con esta interfaz, nunca con
+    `Quartz` directo -- así los tests pueden inyectar un doble que graba
+    llamadas (ver `tests/test_actions_input.py::_FakeInputBackend`) sin tocar
+    el mouse/teclado real de la máquina que corre la suite.
+    """
+
+    def move_pointer(self, x: int, y: int) -> None: ...
+    def click_pointer(self, x: int, y: int, button: str) -> None: ...
+    def type_text(self, text: str) -> None: ...
+    def press_key(self, key: str) -> None: ...
+
+
+class _QuartzInputBackend:
+    """Implementación real vía Quartz `CGEvent` -- SOLO macOS.
+
+    `pyobjc-framework-Quartz` es una dependencia OPCIONAL de este paquete
+    (`[project.optional-dependencies]` en `pyproject.toml`, grupo
+    `remote-input`) -- por eso `Quartz` se importa de forma perezosa, DENTRO
+    de `__init__`, nunca a nivel de módulo: el resto de `edecan_companion`
+    (incluidas TODAS las demás acciones) debe seguir funcionando en una
+    máquina sin ese paquete instalado, o en Linux/Windows, donde no existe.
+
+    macOS exige que el proceso que llama a `CGEvent*` tenga el permiso de
+    **Accesibilidad** concedido en Ajustes del Sistema → Privacidad y
+    Seguridad → Accesibilidad -- un clic humano explícito que este backend
+    NUNCA solicita ni evade (mismo principio que `_screenshot` con el permiso
+    de Grabación de pantalla, ver su docstring). Si el permiso no está
+    concedido, `Quartz.AXIsProcessTrusted()` devuelve `False` *antes* de
+    intentar sintetizar ningún evento, y esto falla con un `ActionError`
+    claro y accionable en vez de simplemente no hacer nada en silencio.
+    """
+
+    def __init__(self) -> None:
+        try:
+            import Quartz  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ActionError(
+                "el control remoto de teclado/mouse requiere el paquete opcional "
+                "'pyobjc-framework-Quartz' -- instálalo con: pip install "
+                "'edecan-companion[remote-input]' (o: pip install pyobjc-framework-Quartz)"
+            ) from exc
+
+        if not Quartz.AXIsProcessTrusted():
+            raise ActionError(
+                "este proceso no tiene el permiso de Accesibilidad concedido en macOS. "
+                "Ve a Ajustes del Sistema → Privacidad y Seguridad → Accesibilidad y "
+                "actívalo para la aplicación/terminal que ejecuta el companion. Ese "
+                "permiso SOLO se puede conceder con un clic humano en esa pantalla -- "
+                "el companion nunca lo solicita ni lo evade automáticamente."
+            )
+
+        self._Quartz = Quartz
+
+    def _mouse_button_constant(self, button: str) -> Any:
+        Quartz = self._Quartz
+        return {
+            "left": Quartz.kCGMouseButtonLeft,
+            "right": Quartz.kCGMouseButtonRight,
+            "middle": Quartz.kCGMouseButtonCenter,
+        }[button]
+
+    def move_pointer(self, x: int, y: int) -> None:
+        Quartz = self._Quartz
+        event = Quartz.CGEventCreateMouseEvent(
+            None, Quartz.kCGEventMouseMoved, (x, y), Quartz.kCGMouseButtonLeft
+        )
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def click_pointer(self, x: int, y: int, button: str) -> None:
+        Quartz = self._Quartz
+        mouse_button = self._mouse_button_constant(button)
+        down_type, up_type = {
+            "left": (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp),
+            "right": (Quartz.kCGEventRightMouseDown, Quartz.kCGEventRightMouseUp),
+            "middle": (Quartz.kCGEventOtherMouseDown, Quartz.kCGEventOtherMouseUp),
+        }[button]
+        for event_type in (down_type, up_type):
+            event = Quartz.CGEventCreateMouseEvent(None, event_type, (x, y), mouse_button)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def type_text(self, text: str) -> None:
+        Quartz = self._Quartz
+        for char in text:
+            for key_down in (True, False):
+                event = Quartz.CGEventCreateKeyboardEvent(None, 0, key_down)
+                Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def press_key(self, key: str) -> None:
+        Quartz = self._Quartz
+        keycode = _SPECIAL_KEYCODES[key]
+        for key_down in (True, False):
+            event = Quartz.CGEventCreateKeyboardEvent(None, keycode, key_down)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _get_input_backend() -> InputBackend:
+    """Punto de extensión único para obtener el `InputBackend` a usar.
+
+    Se construye uno NUEVO en cada llamada a propósito (no se cachea): el
+    permiso de Accesibilidad puede concederse en cualquier momento mientras
+    el companion sigue corriendo, y así se refleja de inmediato sin tener que
+    reiniciar el proceso. Los tests monkeypatchean esta función entera
+    (`monkeypatch.setattr(actions, "_get_input_backend", lambda: fake)`) --
+    mismo criterio que el resto del archivo monkeypatchea `subprocess.run`/
+    `sys.platform`, así nunca construyen un `_QuartzInputBackend` real.
+    """
+    if sys.platform != "darwin":
+        raise ActionError("el control remoto de teclado/mouse no está soportado en esta plataforma")
+    return _QuartzInputBackend()
+
+
+def _input_pointer(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """`{x, y, accion: move|click|double_click|right_click, button?}`.
+
+    `button` (default `"left"`) elige qué botón usar para `click`/
+    `double_click`; `right_click` siempre usa el botón derecho sin importar
+    lo que traiga `button`. Todo gesto que no sea `move` primero MUEVE el
+    puntero a `(x, y)` y luego hace clic ahí -- nunca asume que el puntero ya
+    estaba en esa posición.
+    """
+    x = params.get("x")
+    y = params.get("y")
+    if not isinstance(x, int) or isinstance(x, bool):
+        raise ActionError("falta o es inválido el parámetro 'x' (entero)")
+    if not isinstance(y, int) or isinstance(y, bool):
+        raise ActionError("falta o es inválido el parámetro 'y' (entero)")
+
+    accion = params.get("accion")
+    if accion not in _POINTER_ACTIONS:
+        raise ActionError(f"'accion' inválida: {accion!r} (usa una de {_POINTER_ACTIONS})")
+
+    button = params.get("button") or "left"
+    if button not in _MOUSE_BUTTONS:
+        raise ActionError(f"'button' inválido: {button!r} (usa una de {_MOUSE_BUTTONS})")
+    if accion == "right_click":
+        button = "right"
+
+    backend = _get_input_backend()
+    backend.move_pointer(x, y)
+    if accion in ("click", "double_click", "right_click"):
+        backend.click_pointer(x, y, button)
+        if accion == "double_click":
+            backend.click_pointer(x, y, button)
+
+    return {"x": x, "y": y, "accion": accion, "button": button}
+
+
+def _input_key(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """`{texto? | tecla?: enter|tab|escape|backspace|arrow_*}` -- exactamente una de las dos.
+
+    `texto` escribe cada carácter tal cual (Unicode, vía
+    `CGEventKeyboardSetUnicodeString` -- no depende del layout de teclado);
+    `tecla` sintetiza una tecla especial por su keycode virtual
+    (`_SPECIAL_KEYCODES`). Enviar ambas, o ninguna, es un error de validación
+    -- no hay una interpretación razonable de "las dos a la vez".
+    """
+    texto = params.get("texto")
+    tecla = params.get("tecla")
+    if (texto is None) == (tecla is None):
+        raise ActionError("envía exactamente uno de 'texto' o 'tecla' (no ambos, no ninguno)")
+
+    # Valida TODO el parámetro primero, adquiere el backend (que puede fallar
+    # por motivos ajenos al pedido -- falta Quartz, falta permiso de
+    # Accesibilidad) recién al final: un 'tecla' inválido debe reportarse
+    # como tal incluso en una máquina sin backend disponible.
+    if texto is not None:
+        if not isinstance(texto, str) or texto == "":
+            raise ActionError("'texto' debe ser texto no vacío")
+        backend = _get_input_backend()
+        backend.type_text(texto)
+        return {"tipo": "texto", "length": len(texto)}
+
+    if tecla not in _SPECIAL_KEYS:
+        raise ActionError(f"'tecla' inválida: {tecla!r} (usa una de {_SPECIAL_KEYS})")
+    backend = _get_input_backend()
+    backend.press_key(tecla)
+    return {"tipo": "tecla", "tecla": tecla}
+
+
+ACTIONS: dict[str, ActionHandler] = {
+    "open_app": _open_app,
+    "read_dir": _read_dir,
+    "read_file": _read_file,
+    "write_file": _write_file,
+    "clipboard_get": _clipboard_get,
+    "clipboard_set": _clipboard_set,
+    "run_command": _run_command,
+    "list_tree": _list_tree,
+    "search_files": _search_files,
+    "apply_edit": _apply_edit,
+    "screenshot": _screenshot,
+    "input_pointer": _input_pointer,
+    "input_key": _input_key,
+}
+
+
+# ---------------------------------------------------------------------------
+# Punto de entrada único
+# ---------------------------------------------------------------------------
+
+
+async def execute(
+    action: str,
+    params: dict[str, Any] | None,
+    config: CompanionConfig,
+    approver: Approver,
+) -> dict[str, Any]:
+    """Ejecuta `action` si está soportada y aprobada. Nunca lanza: siempre devuelve un dict.
+
+    Devuelve `{"ok": True, "result": {...}}` o `{"ok": False, "error": "..."}`
+    — `main.py` le agrega el `request_id` del mensaje original antes de
+    devolverlo al servidor.
+    """
+    params = params if isinstance(params, dict) else {}
+    handler = ACTIONS.get(action)
+
+    if handler is None:
+        logger.warning("Acción no soportada solicitada: %r", action)
+        audit.log_action(
+            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+        )
+        return {"ok": False, "error": f"acción no soportada: {action!r}"}
+
+    if action in _IDE_ACTIONS and not config.ide_enabled:
+        logger.info("Acción de IDE %r rechazada: ide_enabled=false en companion.yaml.", action)
+        audit.log_action(
+            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+        )
+        return {
+            "ok": False,
+            "error": (
+                "el IDE está deshabilitado en este companion "
+                "(ide_enabled=false en companion.yaml)"
+            ),
+        }
+
+    if action in _INPUT_ACTIONS and not config.remote_input_enabled:
+        logger.info(
+            "Acción de control remoto %r rechazada: remote_input_enabled=false en "
+            "companion.yaml.",
+            action,
+        )
+        audit.log_action(
+            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+        )
+        return {
+            "ok": False,
+            "error": (
+                "el control remoto de teclado/mouse está deshabilitado en este companion "
+                "(remote_input_enabled=false en companion.yaml)"
+            ),
+        }
+
+    try:
+        approved = bool(await approver(action, params, config))
+    except Exception:
+        logger.exception(
+            "El approver falló evaluando la acción %r; se rechaza por seguridad.", action
+        )
+        approved = False
+
+    if not approved:
+        audit.log_action(
+            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+        )
+        return {"ok": False, "error": "acción rechazada (sin aprobación del usuario)"}
+
+    try:
+        result = await asyncio.to_thread(handler, params, config)
+    except ActionError as exc:
+        audit.log_action(
+            action=action, params=params, approved=True, ok=False, log_path=config.audit_log_path
+        )
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Error inesperado ejecutando la acción %r", action)
+        audit.log_action(
+            action=action, params=params, approved=True, ok=False, log_path=config.audit_log_path
+        )
+        return {"ok": False, "error": "error interno del companion ejecutando la acción"}
+
+    audit.log_action(
+        action=action, params=params, approved=True, ok=True, log_path=config.audit_log_path
+    )
+    return {"ok": True, "result": result}

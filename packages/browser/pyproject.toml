@@ -1,0 +1,59 @@
+[project]
+name = "edecan-browser"
+version = "0.1.0"
+description = "Edecán — navegador de investigación headless: fetch httpx/Playwright, políticas de seguridad (robots.txt, SSRF, sin compras) y extracción de contenido legible (edecan_browser). Ver ARCHITECTURE.md §10.14 y ROADMAP_V2.md §4 WP-V2-03/§7.7."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-toolkit",
+    # No estaba en la lista original de dependencias del WP, pero
+    # `extraer_datos_web`/`comparar_precios` necesitan invocar de verdad
+    # `ctx.llm.complete("principal", flags, req)` (§10.6) para extraer datos
+    # estructurados de una página — igual que `edecan_toolkit.contenido`
+    # (ver su README: "se añadió edecan-llm... porque sin él la tool no
+    # podría redactar contenido de verdad"). Mismo motivo aquí.
+    "edecan-llm",
+]
+
+# Playwright es SIEMPRE opcional (ROADMAP_V2.md §7.11): jamás dependencia
+# dura ni requerida por tests. `edecan_browser.fetch.PlaywrightFetcher` hace
+# el import de forma diferida y guardeada — instalar este extra es lo único
+# que además hace falta para que `BROWSER_FETCH_PROVIDER=playwright` funcione
+# (más `playwright install chromium`, fuera del alcance de `pip`/`uv`).
+[project.optional-dependencies]
+playwright = ["playwright>=1.40"]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+browser = "edecan_browser:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-toolkit = { workspace = true }
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_browser"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

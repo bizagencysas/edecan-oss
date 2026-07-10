@@ -1,0 +1,816 @@
+import Foundation
+
+/// Cliente tipado a mano contra `/v1/*` (`docs/api.md`, `ARCHITECTURE.md`
+/// §10.12) usando `URLSession` + `async/await` — sin generar código, sin
+/// dependencias externas, para que quede claro exactamente qué pide y qué
+/// espera cada endpoint. Un `actor` porque guarda estado mutable (los
+/// tokens en memoria) que puede tocarse desde varias tareas a la vez (p.
+/// ej. una pantalla pidiendo `/v1/me` mientras otra manda un mensaje).
+///
+/// El envío de mensajes de chat (`POST /v1/conversations/{id}/messages`,
+/// SSE) NO vive aquí — ver ``SSEClient``. Este cliente sí sabe construir la
+/// URL/cabecera de autenticación que ese stream necesita
+/// (``tokenDeAccesoValido()`` / ``urlCompleta(_:)``), pero la lectura
+/// línea-por-línea del stream es responsabilidad de `SSEClient`.
+public actor APIClient {
+    /// Errores tipados en español — se muestran tal cual en la UI
+    /// (`OnboardingView`, `ChatView`), así que el texto ya viene listo para
+    /// una persona, no para un log.
+    public enum APIError: Error, LocalizedError, Sendable, Equatable {
+        case urlInvalida
+        case sinConexion(detalle: String)
+        case credencialesInvalidas
+        case sesionExpirada
+        case servidor(status: Int, mensaje: String)
+        case respuestaInvalida
+
+        public var errorDescription: String? {
+            switch self {
+            case .urlInvalida:
+                return "La URL del servidor no es válida."
+            case .sinConexion(let detalle):
+                return "No se pudo conectar con el servidor: \(detalle)"
+            case .credencialesInvalidas:
+                return "Correo, contraseña o código de verificación incorrectos."
+            case .sesionExpirada:
+                return "La sesión expiró. Vuelve a iniciar sesión."
+            case .servidor(let status, let mensaje):
+                return "El servidor respondió con un error (\(status)): \(mensaje)"
+            case .respuestaInvalida:
+                return "El servidor envió una respuesta que no se pudo interpretar."
+            }
+        }
+    }
+
+    private var baseURL: URL
+    private var accessToken: String?
+    private var refreshToken: String?
+    private let urlSession: URLSession
+    private let decoder: JSONDecoder
+    private let encoder: JSONEncoder
+
+    public init(baseURL: URL, urlSession: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.urlSession = urlSession
+        self.decoder = APIClient.crearDecoder()
+        self.encoder = APIClient.crearEncoder()
+        self.accessToken = Keychain.get(KeychainKeys.accessToken)
+        self.refreshToken = Keychain.get(KeychainKeys.refreshToken)
+    }
+
+    /// Cambia el servidor contra el que habla este cliente (p. ej. si el
+    /// onboarding vuelve atrás y el usuario corrige la URL).
+    public func actualizarBaseURL(_ url: URL) {
+        baseURL = url
+    }
+
+    public var haySesion: Bool {
+        refreshToken != nil
+    }
+
+    // MARK: - Autenticación
+
+    /// `POST /v1/auth/register`. Crea tenant + usuario `owner` + persona por
+    /// defecto y deja la sesión iniciada (mismos tokens que `login`) —
+    /// `docs/api.md` §"Autenticación y sesión". `409` si ya existe una cuenta
+    /// con ese correo (`APIError.servidor(status: 409, ...)`, mensaje del
+    /// backend tal cual).
+    @discardableResult
+    public func registrar(email: String, password: String, tenantName: String) async throws -> TokenPair {
+        struct Body: Encodable {
+            let email: String
+            let password: String
+            let tenantName: String
+            enum CodingKeys: String, CodingKey {
+                case email, password
+                case tenantName = "tenant_name"
+            }
+        }
+        let body = Body(email: email, password: password, tenantName: tenantName)
+        let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/register", body: body)
+        guardarTokens(tokens)
+        return tokens
+    }
+
+    /// `POST /v1/auth/login`. `totpCode` solo hace falta si la cuenta tiene
+    /// 2FA activado — se manda solo si no viene vacío.
+    @discardableResult
+    public func login(email: String, password: String, totpCode: String? = nil) async throws -> TokenPair {
+        struct Body: Encodable {
+            let email: String
+            let password: String
+            let totpCode: String?
+            enum CodingKeys: String, CodingKey {
+                case email, password
+                case totpCode = "totp_code"
+            }
+        }
+        let body = Body(email: email, password: password, totpCode: totpCodeOVacio(totpCode))
+        let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/login", body: body)
+        guardarTokens(tokens)
+        return tokens
+    }
+
+    /// `POST /v1/auth/refresh`. Igual que `/login`, exige `totp_code` si la
+    /// cuenta tiene 2FA — quien llame con una cuenta 2FA y no lo pase
+    /// recibirá `.credencialesInvalidas` del servidor.
+    @discardableResult
+    public func refrescar(totpCode: String? = nil) async throws -> TokenPair {
+        guard let refreshToken else { throw APIError.sesionExpirada }
+        struct Body: Encodable {
+            let refreshToken: String
+            let totpCode: String?
+            enum CodingKeys: String, CodingKey {
+                case refreshToken = "refresh_token"
+                case totpCode = "totp_code"
+            }
+        }
+        let body = Body(refreshToken: refreshToken, totpCode: totpCodeOVacio(totpCode))
+        let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/refresh", body: body)
+        guardarTokens(tokens)
+        return tokens
+    }
+
+    /// Cierra la sesión EN ESTE DISPOSITIVO: borra los tokens de memoria y
+    /// del Keychain. No es una llamada de red (la API v1 no tiene un
+    /// endpoint de logout — los refresh tokens simplemente expiran solos,
+    /// `ARCHITECTURE.md` §10.12).
+    public func cerrarSesion() {
+        accessToken = nil
+        refreshToken = nil
+        Keychain.delete(KeychainKeys.accessToken)
+        Keychain.delete(KeychainKeys.refreshToken)
+    }
+
+    /// Un access token utilizable ahora mismo, refrescando una vez si hace
+    /// falta. Pensado para quien construye su propia petición fuera de este
+    /// cliente (``SSEClient``, que abre su propio stream para el chat).
+    public func tokenDeAccesoValido() async throws -> String {
+        if let accessToken {
+            return accessToken
+        }
+        try await refrescar()
+        guard let accessToken else { throw APIError.sesionExpirada }
+        return accessToken
+    }
+
+    /// Resuelve `path` (p. ej. `"/v1/conversations/\(id)/messages"`) contra
+    /// la `baseURL` configurada. Público para que `SSEClient` arme su propia
+    /// `URLRequest` con la misma base que usa el resto del cliente.
+    public func urlCompleta(_ path: String) throws -> URL {
+        guard let url = URL(string: path, relativeTo: baseURL) else { throw APIError.urlInvalida }
+        return url
+    }
+
+    // MARK: - Perfil y conversaciones
+
+    /// `GET /v1/me`.
+    public func me() async throws -> Me {
+        try await conAutoRefresh { try await self.obtener("/v1/me") }
+    }
+
+    /// `GET /v1/conversations` — más recientes primero (orden que ya
+    /// aplica el backend).
+    public func listarConversaciones() async throws -> [Conversation] {
+        try await conAutoRefresh { try await self.obtener("/v1/conversations") }
+    }
+
+    /// `POST /v1/conversations`. `titulo` es opcional, igual que en la API.
+    @discardableResult
+    public func crearConversacion(titulo: String? = nil) async throws -> Conversation {
+        struct Body: Encodable { let title: String? }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/conversations", method: "POST", body: Body(title: titulo))
+        }
+    }
+
+    // MARK: - Negocios (`ARCHITECTURE.md` §11 ROADMAP_V2.md §7.4/§7.7 WP-V2-12,
+    // `docs/negocios.md` — pantalla 4 del mockup)
+
+    /// `GET /v1/negocios/kpis?mes=YYYY-MM` (default del propio servidor: mes
+    /// actual UTC — se omite el query param si `mes` es `nil`).
+    public func negociosKPIs(mes: String? = nil) async throws -> NegocioKPIs {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/negocios/kpis", [("mes", mes)])
+        }
+    }
+
+    /// `GET /v1/negocios/facturas?status=` — más recientes primero. `status`
+    /// filtra por uno de `draft|sent|paid|void`; `nil` trae todas.
+    public func listarFacturas(status: String? = nil) async throws -> [Factura] {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/negocios/facturas", [("status", status)])
+        }
+    }
+
+    // MARK: - Credenciales bring-your-own (`ARCHITECTURE.md` §12.b/§12.c,
+    // `apps/api/edecan_api/routers/credentials.py`)
+
+    /// `GET /v1/credentials` — nunca trae el secreto completo, solo `masked`.
+    public func credenciales() async throws -> CredentialsOut {
+        try await conAutoRefresh { try await self.obtener("/v1/credentials") }
+    }
+
+    /// `PUT /v1/credentials/llm` — "pegar y validar": si `payload.validate`
+    /// es `true` (default), el servidor prueba la credencial de verdad antes
+    /// de guardarla y responde `400` con el detalle EXACTO si el proveedor la
+    /// rechaza (`APIError.servidor(status: 400, mensaje:)`, listo para
+    /// mostrar tal cual en la UI).
+    public func conectarLLM(_ payload: LLMCredentialsIn) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta("/v1/credentials/llm", method: "PUT", body: payload)
+        }
+    }
+
+    /// `DELETE /v1/credentials/llm` — idempotente, `204` aunque no hubiera
+    /// nada conectado.
+    public func desconectarLLM() async throws {
+        try await conAutoRefresh { try await self.enviarSinCuerpo("/v1/credentials/llm", method: "DELETE") }
+    }
+
+    // MARK: - Setup / wizard de primer arranque (`ARCHITECTURE.md` §12.a/§12.d)
+
+    /// `GET /v1/setup/status`.
+    public func setupStatus() async throws -> SetupStatus {
+        try await conAutoRefresh { try await self.obtener("/v1/setup/status") }
+    }
+
+    /// `GET /v1/setup/detect` — autodetección de un clic; siempre devuelve
+    /// el shape vacío (`localMode: false`, todo en `false`/vacío) fuera de
+    /// modo local, nunca lanza.
+    public func setupDetect() async throws -> DetectLocalProviders {
+        try await conAutoRefresh { try await self.obtener("/v1/setup/detect") }
+    }
+
+    // MARK: - IDE embebido, solo lectura (`ARCHITECTURE.md` §11 ROADMAP_V2.md
+    // §7.6/§7.8, `apps/api/edecan_api/routers/ide.py`)
+
+    /// `GET /v1/ide/status` — `{"connected": bool}`; si es `false`, el resto
+    /// de rutas de IDE responden `503` (sin companion emparejado/conectado).
+    public func ideStatus() async throws -> IDEStatusOut {
+        try await conAutoRefresh { try await self.obtener("/v1/ide/status") }
+    }
+
+    /// `GET /v1/ide/tree?path=&max_depth=&max_entries=` — árbol recursivo del
+    /// sandbox del companion. Sin parámetros, el companion usa su raíz y sus
+    /// propios topes por defecto (`MAX_TREE_DEPTH`/`MAX_TREE_ENTRIES`).
+    public func ideTree(path: String? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil) async throws -> IDETree {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/ide/tree", [
+                ("path", path),
+                ("max_depth", maxDepth.map(String.init)),
+                ("max_entries", maxEntries.map(String.init)),
+            ])
+        }
+    }
+
+    /// `GET /v1/ide/file?path=` — lee un archivo completo del sandbox.
+    public func ideFile(path: String) async throws -> IDEFileOut {
+        try await conAutoRefresh { try await self.obtenerConQuery("/v1/ide/file", [("path", path)]) }
+    }
+
+    // MARK: - Voz web (`ARCHITECTURE.md` §10.9, `apps/api/edecan_api/routers/voice.py`)
+
+    /// `POST /v1/voice/transcribe` — sube `audioData` como `multipart/form-data`
+    /// (campo `audio`, más `language` opcional como campo de formulario) y
+    /// devuelve el texto transcrito. Requiere flag de plan `voice.web` y
+    /// cuota de minutos disponible — un plan/tenant sin ninguno de los dos
+    /// llega acá como `APIError.servidor(status: 403|429, ...)`.
+    public func transcribir(audioData: Data, mimeType: String, language: String? = nil) async throws -> String {
+        try await conAutoRefresh {
+            let out: TranscribeOut = try await self.subirAudioMultipart(
+                audioData: audioData, mimeType: mimeType, language: language
+            )
+            return out.text
+        }
+    }
+
+    /// `POST /v1/voice/speak {text, voice_id?}` — devuelve bytes de audio
+    /// crudos (`audio/wav` si el tenant no conectó una credencial de voz
+    /// propia — cae al `StubTTS`; `audio/mpeg` con un proveedor real).
+    public func hablar(texto: String, voiceId: String? = nil) async throws -> HablarResultado {
+        try await conAutoRefresh { try await self.pedirAudio(texto: texto, voiceId: voiceId) }
+    }
+
+    // MARK: - Dispositivos (WP-V4-01, contrato en paralelo — ver ``DeviceOut``)
+
+    /// `POST /v1/devices {nombre, plataforma, kind, fingerprint}` — registra
+    /// ESTE teléfono como dispositivo emparejado. Devuelve `nil` (nunca
+    /// lanza) si el servidor responde `404`: el router de WP-V4-01 puede no
+    /// haber aterrizado todavía en el servidor contra el que habla esta app,
+    /// y el emparejamiento v1 (sesión = emparejamiento, ``PairingStore``)
+    /// sigue funcionando exactamente igual sin esto. Cualquier OTRO error
+    /// (red, 401, 500...) sí se propaga — quien llama (`SessionStore`) lo
+    /// trata igual de best-effort, nunca bloquea login/registro por esto.
+    public func registrarDispositivo(
+        nombre: String, plataforma: String, kind: String, fingerprint: String?
+    ) async throws -> DeviceOut? {
+        struct Body: Encodable { let nombre: String; let plataforma: String; let kind: String; let fingerprint: String? }
+        let body = Body(nombre: nombre, plataforma: plataforma, kind: kind, fingerprint: fingerprint)
+        do {
+            return try await conAutoRefresh {
+                try await self.enviar("/v1/devices", method: "POST", body: body)
+            }
+        } catch APIError.servidor(let status, _) where status == 404 {
+            return nil
+        }
+    }
+
+    /// `POST /v1/devices/{id}/revoke` — mismo criterio de degradación que
+    /// ``registrarDispositivo``: un `404` (router todavía no aterrizado) se
+    /// ignora en silencio.
+    public func revocarDispositivo(id: String) async throws {
+        do {
+            try await conAutoRefresh {
+                try await self.enviarSinCuerpo("/v1/devices/\(id)/revoke", method: "POST")
+            }
+        } catch APIError.servidor(let status, _) where status == 404 {
+            return
+        }
+    }
+
+    // MARK: - Misiones (`ARCHITECTURE.md` §11/`ROADMAP_V2.md` §7.4/§7.9,
+    // `apps/api/edecan_api/routers/missions.py`) — sin SSE (ver
+    // ``MissionOut``): ``MisionesViewModel`` hace *polling* sobre estos
+    // métodos en vez de abrir un stream.
+
+    /// `GET /v1/missions` — más recientes primero (orden que ya aplica el backend).
+    public func listMissions() async throws -> [MissionOut] {
+        try await conAutoRefresh { try await self.obtener("/v1/missions") }
+    }
+
+    /// `POST /v1/missions {objetivo}` — encola el job `run_mission` y
+    /// devuelve la misión recién creada en `status="planning"`.
+    @discardableResult
+    public func createMission(objetivo: String) async throws -> MissionOut {
+        struct Body: Encodable { let objetivo: String }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/missions", method: "POST", body: Body(objetivo: objetivo))
+        }
+    }
+
+    /// `GET /v1/missions/{id}` — la misión + sus pasos (`agent_steps`) en orden.
+    public func getMission(id: String) async throws -> MissionDetailOut {
+        try await conAutoRefresh { try await self.obtener("/v1/missions/\(id)") }
+    }
+
+    /// `POST /v1/missions/{id}/confirm {approved}` — aprueba o rechaza el
+    /// paso `waiting_confirmation` pendiente. Si `approve` es `false`, el
+    /// servidor CANCELA la misión entera (no solo el paso); si es `true`,
+    /// reanuda ejecutando DIRECTO la herramienta aprobada, sin volver a
+    /// llamar al LLM (`missions.py::confirm_mission`).
+    @discardableResult
+    public func confirmMission(id: String, approve: Bool) async throws -> MissionOut {
+        struct Body: Encodable { let approved: Bool }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/missions/\(id)/confirm", method: "POST", body: Body(approved: approve))
+        }
+    }
+
+    /// `POST /v1/missions/{id}/cancel` — sin cuerpo de petición. `409` si la
+    /// misión ya está en un status terminal (`done`/`error`/`cancelled`,
+    /// ``MissionOut/esTerminal``).
+    @discardableResult
+    public func cancelMission(id: String) async throws -> MissionOut {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/missions/\(id)/cancel", method: "POST")
+        }
+    }
+
+    // MARK: - Automatizaciones (`ARCHITECTURE.md` §11/`ROADMAP_V2.md`
+    // §7.4/§7.6/§7.10, `apps/api/edecan_api/routers/automations.py`)
+
+    /// `GET /v1/automations` — más recientes primero.
+    public func listAutomations() async throws -> [AutomationOut] {
+        try await conAutoRefresh { try await self.obtener("/v1/automations") }
+    }
+
+    /// `PATCH /v1/automations/{id} {enabled}` — activa/desactiva sin tocar
+    /// el resto de la regla. `403` si se intenta activar por encima del
+    /// límite de automatizaciones activas del plan (`automations.py::_check_limit`).
+    @discardableResult
+    public func toggleAutomation(id: String, enabled: Bool) async throws -> AutomationOut {
+        struct Body: Encodable { let enabled: Bool }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/automations/\(id)", method: "PATCH", body: Body(enabled: enabled))
+        }
+    }
+
+    /// `POST /v1/automations` — "alta simple": SIEMPRE crea un disparador
+    /// `kind="schedule"` (agenda por `rrule` RFC 5545) con una acción
+    /// `kind="agent_instruction"` (la única que reconoce el backend hoy,
+    /// `edecan_automations.engine.validate_accion` — el servidor la fuerza
+    /// igual aunque no se mande, `automations.py::_normalize_accion_in`).
+    /// Crear un disparador `webhook` desde el teléfono queda fuera de
+    /// alcance de este cliente — sigue siendo terreno del panel web.
+    @discardableResult
+    public func createAutomation(
+        nombre: String, descripcion: String, rrule: String, instruccion: String, agente: String? = nil
+    ) async throws -> AutomationOut {
+        struct TriggerBody: Encodable { let kind: String; let rrule: String }
+        struct AccionBody: Encodable { let instruccion: String; let agente: String? }
+        struct Body: Encodable {
+            let nombre: String
+            let descripcion: String
+            let trigger: TriggerBody
+            let accion: AccionBody
+            let enabled: Bool
+        }
+        let body = Body(
+            nombre: nombre,
+            descripcion: descripcion,
+            trigger: TriggerBody(kind: "schedule", rrule: rrule),
+            accion: AccionBody(instruccion: instruccion, agente: agente),
+            enabled: true
+        )
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/automations", method: "POST", body: body)
+        }
+    }
+
+    /// `GET /v1/automations/{id}/runs` — hasta 50 corridas, más recientes primero.
+    public func listAutomationRuns(id: String) async throws -> [AutomationRunOut] {
+        try await conAutoRefresh { try await self.obtener("/v1/automations/\(id)/runs") }
+    }
+
+    // MARK: - Recordatorios (`ARCHITECTURE.md` §10.3/§10.12,
+    // `apps/api/edecan_api/routers/reminders.py`)
+
+    /// `GET /v1/reminders` — ordenados por `due_at` ascendente (orden que ya
+    /// aplica `Repo.list_reminders`).
+    public func listReminders() async throws -> [ReminderOut] {
+        try await conAutoRefresh { try await self.obtener("/v1/reminders") }
+    }
+
+    /// `POST /v1/reminders {message, due_at, channel}`. `canal` default
+    /// `"web"` — **nunca mandes `"mobile"` todavía**: ese valor existe como
+    /// concepto desde v5, pero la entrega push a este teléfono no está
+    /// conectada (`apps/worker/edecan_worker/handlers/send_reminder.py` solo
+    /// sabe entregar por chat hoy — `voice`/`phone` tampoco tienen ruta
+    /// propia, ver su docstring); hasta que esa ola aterrice, un recordatorio
+    /// creado desde la app se entrega exactamente igual que uno creado en el
+    /// panel web.
+    @discardableResult
+    public func createReminder(texto: String, fecha: Date, canal: String = "web") async throws -> ReminderOut {
+        struct Body: Encodable {
+            let message: String
+            let dueAt: Date
+            let channel: String
+            enum CodingKeys: String, CodingKey {
+                case message
+                case dueAt = "due_at"
+                case channel
+            }
+        }
+        let body = Body(message: texto, dueAt: fecha, channel: canal)
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/reminders", method: "POST", body: body)
+        }
+    }
+
+    /// `PUT /v1/reminders/{id} {status: "sent"}` — el backend no tiene un
+    /// status "completado" propio (solo `pending|sent|cancelled`,
+    /// `ARCHITECTURE.md` §10.3); esta app reutiliza `"sent"` (el mismo que
+    /// pone `send_reminder_scan` cuando el recordatorio vence solo) para "lo
+    /// marqué como hecho a mano" desde el swipe de ``RecordatoriosView`` —
+    /// ver ``ReminderOut/completado``.
+    @discardableResult
+    public func completeReminder(id: String) async throws -> ReminderOut {
+        struct Body: Encodable { let status: String }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/reminders/\(id)", method: "PUT", body: Body(status: "sent"))
+        }
+    }
+
+    // MARK: - Control remoto (WP-V6-08, `ARCHITECTURE.md` §13.c/§14,
+    // `apps/api/edecan_api/routers/remote.py`, `docs/control-remoto.md`) —
+    // vista (`kind="view"`) y control (`kind="control"`, input real de
+    // teclado/mouse) del Mac/PC companion. Sigue siendo *polling* HTTP
+    // (nunca WebRTC, ver §1.1 de ese documento): sin SSE ni socket propio en
+    // este cliente, cada frame/comando es una petición suelta.
+
+    /// `POST /v1/remote/sessions {consent: true, kind}`. `consent` SIEMPRE
+    /// `true` — el `422` que el backend devolvería si no lo fuera no aplica
+    /// aquí: este método solo se llama después de que ``RemotoView`` ya
+    /// mostró el diálogo de consentimiento explícito y el usuario lo aceptó,
+    /// nunca antes. `kind` default `"view"`; pasa `"control"` para además
+    /// poder mandar input de teclado/mouse más adelante (exige el flag de
+    /// plan `companion.remote_input` — `403` con mensaje claro si el plan no
+    /// lo trae, ver ``APIError/servidor(status:mensaje:)``).
+    @discardableResult
+    public func createRemoteSession(kind: String = "view") async throws -> RemoteSession {
+        struct Body: Encodable { let consent: Bool; let kind: String }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/remote/sessions", method: "POST", body: Body(consent: true, kind: kind)
+            )
+        }
+    }
+
+    /// `GET /v1/remote/sessions` — todas las sesiones del tenant (cualquier
+    /// estado), más recientes primero (orden que ya aplica el backend).
+    public func listRemoteSessions() async throws -> [RemoteSession] {
+        try await conAutoRefresh { try await self.obtener("/v1/remote/sessions") }
+    }
+
+    /// `GET /v1/remote/sessions/{id}`.
+    public func getRemoteSession(id: String) async throws -> RemoteSession {
+        try await conAutoRefresh { try await self.obtener("/v1/remote/sessions/\(id)") }
+    }
+
+    /// `GET /v1/remote/sessions/{id}/frame` — pide un frame nuevo al
+    /// companion; en la primera llamada de una sesión, esto es lo que
+    /// dispara la aprobación LOCAL en el companion y puede tardar hasta ~30s
+    /// (`docs/control-remoto.md`). Puede lanzar `APIError.servidor` con
+    /// `status`: `429` (pediste uno antes de `REMOTE_FRAME_MIN_INTERVAL_SECONDS`,
+    /// ~1s — el *polling* de ``RemotoViewModel`` usa 2s, ya lo respeta),
+    /// `403` (el usuario denegó la sesión en su companion), `409` (la sesión
+    /// ya `ended`), `501` (companion sin soporte de captura o con el IDE
+    /// deshabilitado), `502`/`503` (companion sin responder a tiempo o
+    /// desconectado) — todos con un `mensaje` en español ya listo para
+    /// mostrar (`routers/remote.py`, ver sus traducciones exactas).
+    public func getRemoteFrame(sessionId: String) async throws -> RemoteFrame {
+        try await conAutoRefresh { try await self.obtener("/v1/remote/sessions/\(sessionId)/frame") }
+    }
+
+    /// `POST /v1/remote/sessions/{id}/end` — idempotente, siempre `200`
+    /// incluso si la sesión ya estaba `ended`.
+    @discardableResult
+    public func endRemoteSession(id: String) async throws -> RemoteSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/remote/sessions/\(id)/end", method: "POST")
+        }
+    }
+
+    /// `POST /v1/remote/sessions/{id}/input` — solo sesiones `kind="control"`
+    /// ya `active`. Puede lanzar `APIError.servidor` con `status`: `403` (la
+    /// sesión no es de control, o el usuario denegó ESTE comando en su
+    /// companion — deniega la SESIÓN completa, no solo el comando), `409`
+    /// (todavía no `active`, o ya `ended`), `429` (rate limit propio, más
+    /// laxo que el de frames), `501` (companion sin soporte/deshabilitado, o
+    /// plataforma sin soporte), `502`/`503` (companion sin responder) — ver
+    /// el docstring de `routers/remote.py::send_input` para el detalle
+    /// completo de cada caso.
+    @discardableResult
+    public func sendRemoteInput(sessionId: String, input: RemoteInput) async throws -> RemoteInputResult {
+        try await conAutoRefresh {
+            try await self.enviar("/v1/remote/sessions/\(sessionId)/input", method: "POST", body: input)
+        }
+    }
+
+    // MARK: - Internals: HTTP
+
+    private func totpCodeOVacio(_ code: String?) -> String? {
+        guard let code, !code.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return code
+    }
+
+    private func guardarTokens(_ tokens: TokenPair) {
+        accessToken = tokens.accessToken
+        refreshToken = tokens.refreshToken
+        Keychain.set(tokens.accessToken, for: KeychainKeys.accessToken)
+        Keychain.set(tokens.refreshToken, for: KeychainKeys.refreshToken)
+    }
+
+    /// Ejecuta `operacion`; si falla porque el access token expiró,
+    /// refresca UNA vez y reintenta. Si el refresh también falla, propaga
+    /// el error del refresh (normalmente `.sesionExpirada`).
+    private func conAutoRefresh<T: Sendable>(_ operacion: @Sendable () async throws -> T) async throws -> T {
+        do {
+            return try await operacion()
+        } catch APIError.sesionExpirada {
+            try await refrescar()
+            return try await operacion()
+        }
+    }
+
+    private func obtener<Respuesta: Decodable>(_ path: String) async throws -> Respuesta {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = "GET"
+        return try await ejecutarAutenticado(request)
+    }
+
+    /// Igual que ``obtener(_:)`` pero con query params — cada par de `items`
+    /// se omite si el valor es `nil`/vacío (mismo criterio que usan los
+    /// endpoints opcionales del backend, p. ej. `mes`/`status`/`path`).
+    private func obtenerConQuery<Respuesta: Decodable>(
+        _ path: String, _ items: [(String, String?)]
+    ) async throws -> Respuesta {
+        var request = URLRequest(url: try urlConQuery(path, items))
+        request.httpMethod = "GET"
+        return try await ejecutarAutenticado(request)
+    }
+
+    private func enviar<Cuerpo: Encodable, Respuesta: Decodable>(
+        _ path: String, method: String, body: Cuerpo
+    ) async throws -> Respuesta {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        return try await ejecutarAutenticado(request)
+    }
+
+    /// Igual que ``enviar(_:method:body:)`` pero para endpoints `204 No
+    /// Content` — no hay nada que decodificar, solo confirmar que el status
+    /// fue exitoso (o lanzar el error tal cual si no).
+    private func enviarSinRespuesta<Cuerpo: Encodable>(_ path: String, method: String, body: Cuerpo) async throws {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        _ = try await ejecutarAutenticadoData(request)
+    }
+
+    /// POST/DELETE sin cuerpo y sin respuesta que decodificar (p. ej.
+    /// `DELETE /v1/credentials/llm`, `POST /v1/devices/{id}/revoke`).
+    private func enviarSinCuerpo(_ path: String, method: String) async throws {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = method
+        _ = try await ejecutarAutenticadoData(request)
+    }
+
+    /// Igual que ``enviarSinCuerpo(_:method:)`` pero decodificando la
+    /// respuesta JSON (p. ej. `POST /v1/missions/{id}/cancel`, que no lleva
+    /// cuerpo de petición pero sí devuelve la misión actualizada).
+    private func enviarSinCuerpoConRespuesta<Respuesta: Decodable>(_ path: String, method: String) async throws -> Respuesta {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = method
+        let (data, _) = try await ejecutarAutenticadoData(request)
+        return try decodificar(Respuesta.self, data)
+    }
+
+    /// Variante para `/login` y `/refresh`: no llevan `Authorization`, y un
+    /// 401 significa credenciales inválidas, no sesión expirada.
+    private func peticionSinSesion<Cuerpo: Encodable, Respuesta: Decodable>(
+        path: String, body: Cuerpo
+    ) async throws -> Respuesta {
+        var request = URLRequest(url: try urlCompleta(path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        let (data, response) = try await realizar(request)
+        let http = try httpResponse(response)
+        if http.statusCode == 401 {
+            throw APIError.credencialesInvalidas
+        }
+        try validarStatus(http, data: data)
+        return try decodificar(Respuesta.self, data)
+    }
+
+    /// Agrega `Authorization`, ejecuta la petición y valida el status —
+    /// devuelve el `Data` crudo de la respuesta sin decodificar nada, para
+    /// que tanto ``ejecutarAutenticado(_:)`` (JSON) como los endpoints que
+    /// devuelven bytes crudos (``pedirAudio(texto:voiceId:)``) o `204 No
+    /// Content` (``enviarSinRespuesta(_:method:body:)``) compartan la MISMA
+    /// lógica de auto-refresh/401/status — nunca duplicada.
+    private func ejecutarAutenticadoData(_ request: URLRequest) async throws -> (data: Data, response: HTTPURLResponse) {
+        guard let accessToken else { throw APIError.sesionExpirada }
+        var request = request
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await realizar(request)
+        let http = try httpResponse(response)
+        if http.statusCode == 401 {
+            throw APIError.sesionExpirada
+        }
+        try validarStatus(http, data: data)
+        return (data, http)
+    }
+
+    private func ejecutarAutenticado<Respuesta: Decodable>(_ request: URLRequest) async throws -> Respuesta {
+        let (data, _) = try await ejecutarAutenticadoData(request)
+        return try decodificar(Respuesta.self, data)
+    }
+
+    /// Query params codificados correctamente (`URLComponents`, no
+    /// concatenación a mano) sobre la URL que ya arma ``urlCompleta(_:)``.
+    /// `items` con valor `nil`/vacío se omiten.
+    private func urlConQuery(_ path: String, _ items: [(String, String?)]) throws -> URL {
+        let base = try urlCompleta(path)
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: true) else {
+            throw APIError.urlInvalida
+        }
+        let queryItems = items.compactMap { clave, valor -> URLQueryItem? in
+            guard let valor, !valor.isEmpty else { return nil }
+            return URLQueryItem(name: clave, value: valor)
+        }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        guard let url = components.url else { throw APIError.urlInvalida }
+        return url
+    }
+
+    // MARK: - Internals: multipart (voz)
+
+    /// `POST /v1/voice/transcribe` — `multipart/form-data` a mano (sin
+    /// dependencias externas): un campo de archivo `audio` + un campo de
+    /// texto `language` opcional, exactamente el contrato de
+    /// `apps/api/edecan_api/routers/voice.py::transcribe`
+    /// (`UploadFile` campo `audio` + `Form` campo `language`).
+    private func subirAudioMultipart<Respuesta: Decodable>(
+        audioData: Data, mimeType: String, language: String?
+    ) async throws -> Respuesta {
+        let boundary = "Edecan-\(UUID().uuidString)"
+        var body = Data()
+        body.appendCampoDeArchivo(nombre: "audio", filename: "voz.wav", mimeType: mimeType, contenido: audioData, boundary: boundary)
+        if let language, !language.trimmingCharacters(in: .whitespaces).isEmpty {
+            body.appendCampoDeTexto(nombre: "language", valor: language, boundary: boundary)
+        }
+        body.append("--\(boundary)--\r\n")
+
+        var request = URLRequest(url: try urlCompleta("/v1/voice/transcribe"))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        return try await ejecutarAutenticado(request)
+    }
+
+    /// `POST /v1/voice/speak` — a diferencia del resto de este cliente, la
+    /// respuesta exitosa NO es JSON (es audio binario), así que no puede
+    /// pasar por ``ejecutarAutenticado(_:)``/``decodificar(_:_:)``: usa
+    /// ``ejecutarAutenticadoData(_:)`` directo y arma ``HablarResultado`` con
+    /// los bytes crudos + el `Content-Type` real de la respuesta.
+    private func pedirAudio(texto: String, voiceId: String?) async throws -> HablarResultado {
+        struct Body: Encodable {
+            let text: String
+            let voiceId: String?
+            enum CodingKeys: String, CodingKey {
+                case text
+                case voiceId = "voice_id"
+            }
+        }
+        var request = URLRequest(url: try urlCompleta("/v1/voice/speak"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(Body(text: texto, voiceId: voiceId))
+        let (data, http) = try await ejecutarAutenticadoData(request)
+        let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "audio/mpeg"
+        return HablarResultado(audio: data, contentType: contentType)
+    }
+
+    private func realizar(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await urlSession.data(for: request)
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.sinConexion(detalle: error.localizedDescription)
+        }
+    }
+
+    private func httpResponse(_ response: URLResponse) throws -> HTTPURLResponse {
+        guard let http = response as? HTTPURLResponse else { throw APIError.respuestaInvalida }
+        return http
+    }
+
+    private func validarStatus(_ http: HTTPURLResponse, data: Data) throws {
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.servidor(status: http.statusCode, mensaje: Self.extraerMensajeDeError(data))
+        }
+    }
+
+    private func decodificar<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIError.respuestaInvalida
+        }
+    }
+
+    /// FastAPI manda `{"detail": "..."}` en sus errores — se usa tal cual
+    /// si existe; si no, un texto genérico en vez de fallar decodificando.
+    private static func extraerMensajeDeError(_ data: Data) -> String {
+        struct ErrorBody: Decodable { let detail: String? }
+        if let body = try? JSONDecoder().decode(ErrorBody.self, from: data), let detail = body.detail {
+            return detail
+        }
+        return "sin detalle"
+    }
+
+    // MARK: - Codificación
+
+    /// Decoder compartido: fechas ISO 8601, con o sin fracción de segundo
+    /// (Postgres `timestamptz` puede mandar cualquiera de las dos formas).
+    static func crearDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            let conFraccion = ISO8601DateFormatter()
+            conFraccion.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = conFraccion.date(from: raw) { return date }
+            let sinFraccion = ISO8601DateFormatter()
+            sinFraccion.formatOptions = [.withInternetDateTime]
+            if let date = sinFraccion.date(from: raw) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Fecha ISO 8601 inválida: \(raw)")
+        }
+        return decoder
+    }
+
+    private static func crearEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+}

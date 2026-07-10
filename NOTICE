@@ -1,0 +1,106 @@
+Edecán
+Copyright 2026 Proyecto Edecán
+
+Este producto incluye software desarrollado por el Proyecto Edecán.
+
+--------------------------------------------------------------------------
+Licenciamiento por directorio
+--------------------------------------------------------------------------
+
+Todo este repositorio se distribuye bajo la Apache License, Version 2.0
+(ver el archivo LICENSE), EXCEPTO el directorio:
+
+    premium/    (paquete Python `edecan_premium`)
+
+que es software propietario bajo licencia comercial separada y NO está
+cubierto por la Apache License. `premium/` implementa capacidades de la
+capa hospedada de pago: telefonía por tenant vía Twilio, campañas de voz
+y SMS con motor de cumplimiento, control de cuotas por plan y herramientas
+premium del agente (ver ARCHITECTURE.md §10.10).
+
+El acceso, uso, copia, modificación o distribución del contenido de
+`premium/` requiere un acuerdo de licencia comercial separado con el
+Proyecto Edecán. Si no cuentas con dicho acuerdo, no estás autorizado a
+usar ese directorio; el resto del repositorio (núcleo Apache-2.0) sigue
+siendo libre de usar, modificar y auto-hospedar sin restricciones más
+allá de las de la propia Apache License 2.0.
+
+El texto completo y autoritativo de esa licencia comercial vive en
+`premium/LICENSE-COMMERCIAL.md`. Ante cualquier conflicto entre este
+NOTICE y ese archivo, prevalece `premium/LICENSE-COMMERCIAL.md`.
+
+En tiempo de ejecución, la API (`apps/api`) detecta si `edecan_premium`
+está instalado (`importlib.util.find_spec("edecan_premium")`) y solo en
+ese caso monta sus rutas y herramientas; el núcleo funciona de forma
+completa y autónoma sin ese paquete.
+
+--------------------------------------------------------------------------
+Atribuciones de terceros (código Apache-2.0 adaptado, no copiado tal cual)
+--------------------------------------------------------------------------
+
+open-jarvis/OpenJarvis (https://github.com/open-jarvis/OpenJarvis),
+licenciado bajo la Apache License, Version 2.0.
+
+    Copyright open-jarvis/OpenJarvis contributors.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+    implied. See the License for the specific language governing
+    permissions and limitations under the License.
+
+`apps/desktop/scripts/download-ollama.sh` (y su espejo
+`download-ollama.ps1`) es una adaptación propia del script equivalente de
+OpenJarvis (`frontend/src-tauri/scripts/download-ollama.sh`): descarga el
+binario oficial de Ollama y lo deja con la convención de sidecar de Tauri
+(`externalBin`) para que la app de escritorio pueda ofrecer "Ollama ya
+instalado, cero fricción" sin depender de que el cliente lo instale aparte
+(ver `docs/desktop.md`, "Ollama embebido (opcional)"). El patrón de
+auto-provisioning de un sidecar de Ollama vía `bundle.externalBin` de Tauri
+también se inspira en ese mismo proyecto. Ningún archivo de OpenJarvis se
+copió tal cual — solo se adaptó el enfoque/script a las convenciones de
+este repo (comentarios en español, targets soportados, integración con
+`edecan_local.ollama_supervisor`).
+
+`scripts/instalar-selfhost.sh` (v5, `ARCHITECTURE.md` §14) adapta patrones
+del instalador de OpenJarvis (`scripts/install/install.sh`, ~745 líneas):
+detección de OS/arch, state-file idempotente de pasos, trap de error con
+diagnóstico, rechazo de Windows nativo con guía WSL2. Ningún archivo de
+OpenJarvis se copió tal cual — solo se adaptó el enfoque a las convenciones
+de este repo (comentarios en español, dependencias propias del proyecto:
+`uv`, Docker Compose self-host, migraciones de `edecan_db`).
+
+`packages/skills/edecan_skills` (v5, `ARCHITECTURE.md` §14) adapta de
+OpenJarvis (`src/openjarvis/skills/`) el modelo de trust tiers, validación
+de capacidades y límites de parser de su sistema de skills — ver
+`packages/db/edecan_db/models.py::Skill` (columnas `trust_tier`/
+`capabilities`, migración `0007_v5_expansion`) para el esquema resultante.
+Ningún archivo de OpenJarvis se copió tal cual — solo se adaptó el
+enfoque/modelo a las convenciones de este repo (multi-tenant con
+Row-Level Security, a diferencia del diseño single-user local de
+OpenJarvis).
+
+`packages/mcp/edecan_mcp` (v6, `ARCHITECTURE.md` §15, WP-V6-07) adapta de
+OpenJarvis (`src/openjarvis/mcp/{protocol,transport,client,loader}.py`,
+972 líneas) el cliente MCP (Model Context Protocol): los mensajes JSON-RPC
+2.0 (`protocol.py`), los tres transportes (in-process para tests, stdio por
+subprocess, *Streamable HTTP*) y el cliente que hace el *handshake*/lista/
+llama tools (`client.py`). Ningún archivo de OpenJarvis se copió tal
+cual — se reescribió por completo de síncrono a asíncrono (`asyncio`,
+`httpx.AsyncClient`, `asyncio.create_subprocess_exec`), con comentarios en
+español, y adaptado a las convenciones multi-tenant de este repo: el
+adaptador de tools (`tool_adapter.py`, sin equivalente directo en
+OpenJarvis — su `loader.py` resuelve un único usuario local) genera
+herramientas `dangerous=True` con nombre `mcp_{slug_servidor}_{slug_tool}`
+por CADA tenant que conecta su propio servidor, en vez del modelo
+single-user de la referencia. `seguridad.py` (protección SSRF, gate de modo
+local) es código nuevo de este repo sin equivalente en OpenJarvis — ver el
+docstring de ese módulo para el precedente que sí reutiliza
+(`edecan_browser/edecan_browser/policy.py`, del propio Proyecto Edecán, no
+de OpenJarvis).

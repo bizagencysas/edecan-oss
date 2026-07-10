@@ -1,0 +1,36 @@
+[project]
+name = "edecan-voice"
+version = "0.1.0"
+description = "edecan_voice — STT/TTS intercambiables (Deepgram, ElevenLabs, Polly) con stubs offline, voces del tenant y clonación autorizada. Ver ARCHITECTURE.md §4, §10.9 y WP-V5-10."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "httpx>=0.27",
+    "aioboto3>=13.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "edecan-core",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]` (`listar_voces`/`sintetizar_voz`,
+# WP-V5-10 — ver `edecan_voice.tools`).
+[project.entry-points."edecan.tools"]
+voice = "edecan_voice:get_all_tools"
+
+# Las dependencias de desarrollo (pytest, pytest-asyncio, respx, ruff) las
+# aporta el workspace uv de la raíz del repo (ver pyproject.toml raíz,
+# [tool.uv].dev-dependencies) — no se repiten aquí.
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_voice"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

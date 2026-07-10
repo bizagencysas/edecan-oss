@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Config de DESARROLLO — solo entra en el APK `debug` (mismo nombre que
+    ../../../main/res/xml/network_security_config.xml; Android resuelve el
+    recurso del source set más específico, `debug` gana sobre `main` en
+    variantes debug — nunca se filtra a `release`, que solo ve la versión
+    de `main`). Permite HTTP plano para que un desarrollador pueda apuntar
+    la app a `http://localhost:8000`, `http://10.0.2.2:8000` (alias del
+    emulador hacia el host) o un servidor en su LAN sin HTTPS mientras
+    prueba contra un self-host propio — nunca instalado por un cliente
+    real (ver DIRECCION_ACTUAL.md, "instalación local vía USB").
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

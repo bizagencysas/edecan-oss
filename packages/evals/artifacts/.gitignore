@@ -1,0 +1,5 @@
+# El JSON que escribe `edecan_evals.runner.escribir_artifact` en cada corrida
+# no se versiona (es salida generada, timestamped) — pero el directorio sí,
+# vía este .gitignore.
+*
+!.gitignore

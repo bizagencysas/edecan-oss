@@ -1,0 +1,48 @@
+[project]
+name = "edecan-business"
+version = "0.1.0"
+description = "Edecán — negocios: facturación con PDF real y KPIs de negocio (edecan_business). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §5/§7.4/§7.7 (WP-V2-12)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aioboto3>=13.0",
+    "fpdf2>=2.7",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+business = "edecan_business:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    # Solo para test_invoices.py::test_render_pdf_*_una_sola_pagina: parsear el PDF
+    # generado y contar páginas de verdad (detectó un bug real de layout — footer que
+    # empujaba una página 2 en blanco — que un simple `startswith(b"%PDF")` no atrapaba).
+    "pypdf>=5.0",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_business"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,101 @@
+# Suite: elección de herramienta correcta.
+#
+# 8 casos, cada uno con un mensaje que debería disparar EXACTAMENTE una
+# herramienta del toolkit (ARCHITECTURE.md §10.14). Solo se verifica
+# `tools_llamadas` (la secuencia de eventos `tool_start`) — no importa la
+# redacción exacta de la respuesta final, así que no hay `contiene`.
+#
+# El `guion` scriptea la respuesta del FakeLLMProvider: cuando el último
+# mensaje matchea el regex, responde con una llamada a la herramienta
+# indicada; cualquier mensaje que no matchee nada (p. ej. el resultado de la
+# herramienta que vuelve al modelo en el segundo turno del loop) cae al
+# valor por defecto de FakeLLMProvider ("Entendido.").
+nombre: tool_choice
+descripcion: >
+  Verifica que el agente elija la herramienta correcta para 8 solicitudes
+  representativas del toolkit no-premium.
+
+guion:
+  "recu[eé]rdame.*ma[nñ]ana":
+    tool: crear_recordatorio
+    args:
+      mensaje: "Llamar al doctor"
+      cuando: "mañana 09:00"
+  "cu[aá]nto.*gast[eé]":
+    tool: resumen_finanzas
+    args:
+      periodo: "este mes"
+  "mis documentos":
+    tool: consultar_documentos
+    args:
+      consulta: "contrato de arrendamiento"
+  "publica en x":
+    tool: publicar_social
+    args:
+      red: "x"
+      texto: "Lanzamos la nueva versión del producto."
+  "agendado para ma[nñ]ana|tengo.*en la agenda":
+    tool: agenda_eventos
+    args:
+      rango: "mañana"
+  "busca en la web|noticias de hoy":
+    tool: buscar_web
+    args:
+      consulta: "noticias de inteligencia artificial hoy"
+  "registra un gasto":
+    tool: registrar_transaccion
+    args:
+      monto: 350
+      categoria: "comida"
+  "qu[eé] hora es":
+    tool: hora_actual
+    args: {}
+
+casos:
+  - id: tc01_recordatorio
+    mensajes:
+      - "Recuérdame llamar al doctor mañana a las 9 de la mañana."
+    esperado:
+      tools_llamadas: ["crear_recordatorio"]
+
+  - id: tc02_resumen_finanzas
+    mensajes:
+      - "¿Cuánto gasté este mes?"
+    esperado:
+      tools_llamadas: ["resumen_finanzas"]
+
+  - id: tc03_consultar_documentos
+    mensajes:
+      - "Busca en mis documentos el contrato de arrendamiento."
+    esperado:
+      tools_llamadas: ["consultar_documentos"]
+
+  - id: tc04_publicar_social
+    mensajes:
+      - "Publica en X que lanzamos la nueva versión del producto."
+    esperado:
+      tools_llamadas: ["publicar_social"]
+
+  - id: tc05_agenda_eventos
+    mensajes:
+      - "¿Qué tengo en la agenda para mañana?"
+    esperado:
+      tools_llamadas: ["agenda_eventos"]
+
+  - id: tc06_buscar_web
+    mensajes:
+      - "Busca en la web las noticias de hoy sobre inteligencia artificial."
+    esperado:
+      tools_llamadas: ["buscar_web"]
+
+  - id: tc07_registrar_transaccion
+    mensajes:
+      - "Registra un gasto de 350 pesos en comida."
+    esperado:
+      tools_llamadas: ["registrar_transaccion"]
+
+  - id: tc08_hora_actual
+    mensajes:
+      - "¿Qué hora es?"
+    esperado:
+      tools_llamadas: ["hora_actual"]

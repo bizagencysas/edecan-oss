@@ -1,0 +1,61 @@
+[project]
+name = "edecan-advisory"
+version = "0.1.0"
+description = "Edecán — asesores informativos: legal, salud y educación con disclaimers obligatorios (edecan_advisory). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.4/§7.7/§8.3 (WP-V2-11)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "httpx>=0.27",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    # No estaba en el enunciado original del WP ("edecan-core, edecan-schemas,
+    # edecan-db, sqlalchemy, httpx, pypdf, python-docx"), pero dos cosas más
+    # son imprescindibles para que el paquete cumpla lo que promete:
+    # - `edecan-llm`: `legal.py`/`salud.py`/`educacion.py` importan
+    #   `edecan_llm.base.ChatMessage`/`CompletionRequest` en el top-level del
+    #   módulo (mismo patrón que `edecan_toolkit.contenido`/
+    #   `edecan_docanalysis.tablas` — ver ARCHITECTURE.md §10.6) para llamar
+    #   `ctx.llm.complete(...)`. `edecan_toolkit` y `edecan_docanalysis`
+    #   también la declaran explícita por el mismo motivo — aquí se sigue
+    #   el mismo criterio por consistencia y corrección.
+    # - `aioboto3`: `_texto.py` necesita un cliente S3 async real para bajar
+    #   el archivo de entrada (contrato/laboratorio) y subir el borrador
+    #   legal generado — mismo criterio que `edecan_docanalysis/pyproject.toml`
+    #   documenta para su propio `_s3.py`.
+    "edecan-llm",
+    "aioboto3>=13.0",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.1/§7.7):
+# resuelve a un callable sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+advisory = "edecan_advisory:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_advisory"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

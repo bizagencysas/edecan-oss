@@ -1,0 +1,43 @@
+[project]
+name = "edecan-companion"
+version = "0.1.0"
+description = "Edecán Companion — agente local de escritorio, opt-in: acceso controlado y auditable al equipo del usuario"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "websockets>=13.0",
+    "pyyaml>=6.0",
+]
+
+# Deliberadamente SIN dependencias de los demás paquetes del monorepo
+# (edecan_core, edecan_schemas, FastAPI, SQLAlchemy, ...): este es el único
+# paquete pensado para instalarse solo, en la máquina del propio usuario,
+# separado del servidor. Ver README.md y ARCHITECTURE.md §10.1/§10.12.
+
+# Control remoto de teclado/mouse (WP-V4-10, docs/control-remoto.md §7):
+# OPCIONAL y solo macOS -- el resto del companion (incluidas las demás
+# acciones) funciona sin este extra instalado; `actions._QuartzInputBackend`
+# importa `Quartz` de forma perezosa y falla con un mensaje claro si falta.
+# Instalación: `pip install 'edecan-companion[remote-input]'`.
+[project.optional-dependencies]
+remote-input = ["pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'"]
+
+[project.scripts]
+edecan-companion = "edecan_companion.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_companion"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

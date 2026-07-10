@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Edecán",
+  "version": "0.1.0",
+  "identifier": "cc.edecan.desktop",
+  "build": {
+    "frontendDist": "splash"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app", "nsis", "msi"],
+    "publisher": "Edecán",
+    "copyright": "Edecán — Apache-2.0 (núcleo). Ver ../../LICENSE y ../../NOTICE.",
+    "category": "Productivity",
+    "shortDescription": "Edecán — asistente personal de IA que corre en tu equipo",
+    "longDescription": "Edecán es un asistente personal de IA (\"mayordomo digital\") que corre localmente en tu equipo. Traés tus propias credenciales de LLM, voz y conectores — nada se ejecuta en servidores de terceros salvo lo que vos mismo configures en Ajustes.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/edecan-local"],
+    "resources": [],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "Spanish"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "dmg": {
+        "background": "assets/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    }
+  }
+}

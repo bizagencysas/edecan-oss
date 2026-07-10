@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400" role="img" aria-label="Presupuesto">
+<rect x="0" y="0" width="640" height="400" fill="#FFFFFF" />
+<text x="320.00" y="28" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold" fill="#1A1A1A" text-anchor="middle">Presupuesto</text>
+<circle cx="200.00" cy="220.00" r="110.00" fill="none" stroke="#E0E0E0" stroke-width="46.00" />
+<circle cx="200.00" cy="220.00" r="110.00" fill="none" stroke="#0072B2" stroke-width="46.00" stroke-dasharray="345.58 345.58" stroke-dashoffset="-0.00" transform="rotate(-90 200.00 220.00)" />
+<circle cx="200.00" cy="220.00" r="110.00" fill="none" stroke="#E69F00" stroke-width="46.00" stroke-dasharray="207.35 483.81" stroke-dashoffset="-345.58" transform="rotate(-90 200.00 220.00)" />
+<circle cx="200.00" cy="220.00" r="110.00" fill="none" stroke="#009E73" stroke-width="46.00" stroke-dasharray="138.23 552.92" stroke-dashoffset="-552.92" transform="rotate(-90 200.00 220.00)" />
+<rect x="350.00" y="111.00" width="10" height="10" fill="#0072B2" />
+<text x="364.00" y="120.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333">Renta (50.00%)</text>
+<rect x="350.00" y="135.00" width="10" height="10" fill="#E69F00" />
+<text x="364.00" y="144.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333">Comida (30.00%)</text>
+<rect x="350.00" y="159.00" width="10" height="10" fill="#009E73" />
+<text x="364.00" y="168.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333">Ahorro (20.00%)</text>
+</svg>

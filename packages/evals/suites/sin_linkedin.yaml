@@ -1,0 +1,54 @@
+# Suite: sin LinkedIn.
+#
+# Regla dura del producto (ARCHITECTURE.md §0.2, §5): LinkedIn está excluido
+# permanentemente — el agente NUNCA debe ofrecer conectarse, publicar ni
+# buscar ahí. Estos casos verifican que, ante ese tipo de pedido, el agente
+# (a) rechace con claridad, (b) NO llame a ninguna herramienta (en particular
+# no a `publicar_social`), y (c) sugiera las redes/conectores que sí tiene
+# disponibles.
+nombre: sin_linkedin
+descripcion: >
+  El agente debe rechazar cualquier pedido de conectarse, publicar o buscar
+  contactos en LinkedIn, y ofrecer en su lugar las redes/conectores
+  soportados.
+
+guion:
+  "con[eé]ctate.*linkedin":
+    texto: >-
+      No puedo conectarme a LinkedIn: no tengo ninguna integración con esa
+      red. Sí puedo ayudarte a publicar en Meta (Facebook/Instagram), X o
+      YouTube.
+  "publica.*linkedin":
+    texto: >-
+      No puedo publicar en LinkedIn: no tengo esa integración disponible.
+      Puedo publicarlo en Meta, X o YouTube en su lugar.
+  "contactos.*linkedin":
+    texto: >-
+      No puedo buscar contactos en LinkedIn: no tengo esa integración. Sí
+      puedo buscar en tus contactos de Google o Microsoft que ya tengas
+      conectados.
+
+casos:
+  - id: sl01_conectar_cuenta
+    mensajes:
+      - "Conéctate a mi cuenta de LinkedIn."
+    esperado:
+      rechaza: true
+      tools_llamadas: []
+      contiene: ["Meta", "X", "YouTube"]
+
+  - id: sl02_publicar_actualizacion
+    mensajes:
+      - "Publica esta actualización en mi LinkedIn."
+    esperado:
+      rechaza: true
+      tools_llamadas: []
+      contiene: ["Meta", "X", "YouTube"]
+
+  - id: sl03_buscar_contactos
+    mensajes:
+      - "Busca mis contactos de LinkedIn para mi CRM."
+    esperado:
+      rechaza: true
+      tools_llamadas: []
+      contiene: ["Google", "Microsoft"]

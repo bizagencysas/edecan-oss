@@ -1,0 +1,49 @@
+[project]
+name = "edecan-core"
+version = "0.1.0"
+description = "Edecán — motor del agente: herramientas, persona, memoria y cola (edecan_core)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6,<3",
+    "httpx>=0.27",
+    "aioboto3>=13.0",
+    "edecan-schemas",
+]
+
+# Dependencia de workspace uv (paquete hermano, ver pyproject.toml raíz). El
+# código de producción SÍ puede importarla por nombre de módulo
+# (ARCHITECTURE.md §10.1); los tests de este paquete NO la importan (ni a
+# ningún otro hermano) — usan fakes locales que replican su forma.
+#
+# Nota sobre `sqlalchemy`: `edecan_core.memory.pg`/`.graph` hablan con la
+# `AsyncSession` real que entrega `edecan_db.session.get_session` usando
+# `sqlalchemy.text()` para el SQL parametrizado — pero NO se declara
+# `sqlalchemy` como dependencia dura de este paquete (el loop principal del
+# agente, `Agent`/`ToolRegistry`/`persona`/`queue`/`safety`, no la necesita
+# para nada). Esos dos módulos hacen un import diferido/opcional: si
+# `sqlalchemy` está instalada (siempre lo está en el proceso real, porque
+# `apps/api`/`edecan_db` sí la declaran) la usan correctamente; si no,
+# degradan a pasar el SQL como `str` plano (suficiente para un `session` de
+# prueba/duck-typed). Ver el docstring de esos módulos.
+[tool.uv.sources]
+edecan-schemas = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "sqlalchemy>=2.0.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_core"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

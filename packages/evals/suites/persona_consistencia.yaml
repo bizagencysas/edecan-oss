@@ -1,0 +1,63 @@
+# Suite: consistencia de persona.
+#
+# Verifica que `formalidad` (0 tú..3 usted) y `emojis` de `PersonaConfig`
+# (ARCHITECTURE.md §10.5) se reflejen en el texto final. Como el
+# FakeLLMProvider solo mira el ÚLTIMO MENSAJE (nunca la persona) para decidir
+# qué responder, cada caso usa un mensaje de usuario DISTINTO para poder
+# scriptear una respuesta distinta por combinación formalidad/emojis — es la
+# respuesta canned la que "actúa" la persona, y `contiene`/`no_contiene`
+# comprueban que esa actuación es la esperada para cada combinación.
+nombre: persona_consistencia
+descripcion: >
+  Verifica que la formalidad (tú/usted) y el uso de emojis configurados en la
+  persona se reflejen en el texto final de la respuesta.
+
+guion:
+  "c[oó]mo est[aá]s hoy":
+    texto: "Estoy muy bien, gracias por preguntar. ¿En qué puedo ayudarle usted hoy?"
+  "qu[eé] tal todo":
+    texto: "¡Todo genial! 😊 ¿Y tú, cómo vas?"
+  "c[oó]mo va tu d[ií]a":
+    texto: "Mi día va muy bien, gracias. Cuénteme usted cómo ha estado el suyo. 🙂"
+  "c[oó]mo vas":
+    texto: "Todo bien por aquí. ¿Y tú, cómo vas?"
+
+casos:
+  - id: pc01_formal_sin_emoji
+    persona:
+      formalidad: 3
+      emojis: false
+    mensajes:
+      - "¿Cómo estás hoy?"
+    esperado:
+      contiene: ["usted"]
+      no_contiene: ["😀", "😊", "🙂", "🎉"]
+
+  - id: pc02_informal_con_emoji
+    persona:
+      formalidad: 0
+      emojis: true
+    mensajes:
+      - "¿Qué tal todo?"
+    esperado:
+      contiene: ["😊", "tú"]
+      no_contiene: ["usted"]
+
+  - id: pc03_formal_con_emoji
+    persona:
+      formalidad: 3
+      emojis: true
+    mensajes:
+      - "Cuéntame cómo va tu día."
+    esperado:
+      contiene: ["usted", "🙂"]
+
+  - id: pc04_informal_sin_emoji
+    persona:
+      formalidad: 0
+      emojis: false
+    mensajes:
+      - "Oye, ¿cómo vas?"
+    esperado:
+      contiene: ["tú"]
+      no_contiene: ["😀", "😊", "🙂", "🎉", "usted"]

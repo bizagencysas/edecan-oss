@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Edecán</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --fg-muted: #6b7280;
+    --accent: #3c36db;
+    --border: #e5e7eb;
+    --log-bg: #f3f4f6;
+    --error-bg: #fef2f2;
+    --error-border: #fecaca;
+    --error-fg: #991b1b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14141f;
+      --fg: #f1f1f6;
+      --fg-muted: #9a9aae;
+      --accent: #8b85f7;
+      --border: #2c2c3d;
+      --log-bg: #1c1c2b;
+      --error-bg: #2a1518;
+      --error-border: #5c2429;
+      --error-fg: #fca5a5;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 28px 32px;
+    text-align: center;
+  }
+  .mark {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+    flex-shrink: 0;
+  }
+  .mark svg { width: 28px; height: 28px; }
+  h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    letter-spacing: 0.2px;
+  }
+  #status {
+    font-size: 13px;
+    color: var(--fg-muted);
+    margin: 0 0 14px;
+    min-height: 16px;
+  }
+  .spinner {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2.5px solid var(--border);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #log-toggle {
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    text-decoration: underline;
+  }
+  #log {
+    display: none;
+    width: 100%;
+    max-width: 420px;
+    max-height: 120px;
+    overflow-y: auto;
+    background: var(--log-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #log.open { display: block; }
+
+  #error-panel {
+    display: none;
+    width: 100%;
+    max-width: 420px;
+    margin-top: 12px;
+    text-align: left;
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  #error-panel.open { display: block; }
+  #error-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--error-fg);
+    margin: 0 0 6px;
+  }
+  #error-message {
+    font-size: 12px;
+    color: var(--fg);
+    margin: 0 0 10px;
+    white-space: pre-wrap;
+  }
+  #error-log {
+    max-height: 130px;
+    overflow-y: auto;
+    background: var(--log-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  button.action {
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button.action.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+</style>
+</head>
+<body>
+  <div class="mark" aria-hidden="true">
+    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M15 31 C15 15.5 49 15.5 49 31" stroke="white" stroke-width="3.4" stroke-linecap="round"/>
+      <rect x="11" y="28" width="8.4" height="14.5" rx="4.2" fill="white"/>
+      <rect x="44.6" y="28" width="8.4" height="14.5" rx="4.2" fill="white"/>
+      <rect x="20" y="19.5" width="24" height="26.5" rx="9" fill="white"/>
+      <circle cx="28" cy="31.5" r="3.6" fill="var(--accent)"/>
+      <circle cx="36" cy="31.5" r="3.6" fill="var(--accent)"/>
+    </svg>
+  </div>
+  <h1>Edecán</h1>
+  <p id="status">Arrancando tu asistente…</p>
+  <div class="spinner" id="spinner" aria-hidden="true"></div>
+
+  <button id="log-toggle" type="button">Ver detalle técnico</button>
+  <pre id="log" aria-live="polite"></pre>
+
+  <div id="error-panel" role="alert">
+    <p id="error-title">El backend local no pudo arrancar</p>
+    <p id="error-message"></p>
+    <div id="error-log"></div>
+    <div class="actions">
+      <button class="action primary" id="retry-btn" type="button">Reintentar</button>
+      <button class="action" id="quit-btn" type="button">Salir</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Tauri v2, con `app.withGlobalTauri: true`, inyecta `window.__TAURI__`
+  // namespaceado igual que los módulos de `@tauri-apps/api` (`.core.invoke`,
+  // `.event.listen`). Se resuelve con fallback defensivo por si esta app
+  // corre en una versión de Tauri donde el global cambió de forma —
+  // preferible degradar (splash se queda "arrancando" y el usuario ve los
+  // eventos de log igual si `listen` sí resuelve) a que un solo nombre mal
+  // adivinado tire un TypeError y deje la pantalla rota sin ningún mensaje.
+  var tauri = window.__TAURI__ || {};
+  var invoke = (tauri.core && tauri.core.invoke) || tauri.invoke;
+  var listen = (tauri.event && tauri.event.listen) || (tauri.event && tauri.event.listen);
+
+  var statusEl = document.getElementById("status");
+  var spinnerEl = document.getElementById("spinner");
+  var logEl = document.getElementById("log");
+  var logToggleEl = document.getElementById("log-toggle");
+  var errorPanelEl = document.getElementById("error-panel");
+  var errorMessageEl = document.getElementById("error-message");
+  var errorLogEl = document.getElementById("error-log");
+  var retryBtn = document.getElementById("retry-btn");
+  var quitBtn = document.getElementById("quit-btn");
+
+  var logLines = [];
+  var MAX_LINES = 200;
+
+  function appendLog(line) {
+    if (typeof line !== "string") return;
+    logLines.push(line);
+    if (logLines.length > MAX_LINES) logLines.shift();
+    logEl.textContent = logLines.join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function showError(payload) {
+    payload = payload || {};
+    spinnerEl.style.display = "none";
+    setStatus("No se pudo iniciar Edecán");
+    errorMessageEl.textContent =
+      payload.message || "El backend local terminó antes de avisar que estaba listo.";
+    errorLogEl.textContent = (payload.log || []).join("\n");
+    errorPanelEl.classList.add("open");
+  }
+
+  function hideError() {
+    errorPanelEl.classList.remove("open");
+    spinnerEl.style.display = "";
+    setStatus("Arrancando tu asistente…");
+  }
+
+  logToggleEl.addEventListener("click", function () {
+    logEl.classList.toggle("open");
+    logToggleEl.textContent = logEl.classList.contains("open")
+      ? "Ocultar detalle técnico"
+      : "Ver detalle técnico";
+  });
+
+  retryBtn.addEventListener("click", function () {
+    hideError();
+    logLines = [];
+    logEl.textContent = "";
+    if (invoke) invoke("retry_backend");
+  });
+
+  quitBtn.addEventListener("click", function () {
+    if (invoke) invoke("quit_app");
+  });
+
+  if (listen) {
+    listen("edecan://backend-log", function (event) {
+      appendLog(event.payload);
+    });
+    listen("edecan://backend-status", function (event) {
+      setStatus(event.payload);
+    });
+    listen("edecan://backend-error", function (event) {
+      showError(event.payload);
+    });
+  } else {
+    // Sin puente de eventos no hay forma de saber qué está pasando — se
+    // avisa en vez de dejar el spinner girando para siempre en silencio.
+    setStatus("Arrancando (sin conexión con el proceso nativo)…");
+  }
+})();
+</script>
+</body>
+</html>

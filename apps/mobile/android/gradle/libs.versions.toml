@@ -1,0 +1,63 @@
+# Catálogo de versiones — única fuente de verdad para todos los módulos
+# (`settings.gradle.kts`, `build.gradle.kts` de :shared y :androidApp).
+#
+# Matriz verificada el 2026-07-08 contra los repositorios reales (Google
+# Maven / Maven Central en el momento de escribir este esqueleto — ver
+# "Matriz de versiones" en ../README.md para cómo volver a verificarla si
+# `./gradlew :androidApp:assembleDebug` falla por incompatibilidad más
+# adelante). `kotlin` va pinned a 2.4.0 por decisión de producto
+# (DIRECCION_ACTUAL.md, ROADMAP_V2.md §6.1) — el resto se eligió como la
+# última versión ESTABLE (sin sufijo alpha/beta/rc) de cada artefacto que
+# resuelve contra ese Kotlin.
+[versions]
+kotlin = "2.4.0"
+agp = "9.2.1"
+composeMultiplatform = "1.11.1"
+ktor = "3.5.1"
+kotlinxSerialization = "1.11.0"
+kotlinxCoroutines = "1.11.0"
+androidxDatastore = "1.2.1"
+androidxSecurityCrypto = "1.1.0"
+androidxLifecycle = "2.11.0"
+androidxActivityCompose = "1.13.0"
+androidxCoreKtx = "1.19.0"
+
+[libraries]
+# Ktor — cliente HTTP/SSE de `shared` (commonMain + androidMain).
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+
+# kotlinx — serialización de los modelos y coroutines para el Flow<ChatEvent>.
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+
+# AndroidX — persistencia cifrada de tokens + ciclo de vida/Compose de androidApp.
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }
+androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "androidxSecurityCrypto" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "androidxLifecycle" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivityCompose" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCoreKtx" }
+
+[plugins]
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+# NO "com.android.library" clásico: desde AGP 9.0 ya no es compatible con
+# `org.jetbrains.kotlin.multiplatform` en el mismo módulo (falla al aplicar
+# el plugin — verificado corriendo `./gradlew :shared:compileAndroidMain`
+# contra AGP 9.2.1 real; ese es el nombre REAL de la tarea de compilación
+# Android de este plugin nuevo, no `compileDebugKotlinAndroid` del
+# `com.android.library` clásico — confirmado con `./gradlew :shared:tasks`
+# real, WP-V4-04). `shared/build.gradle.kts` usa en su lugar el plugin
+# dedicado que Google recomienda como reemplazo desde AGP 8.12+ (ver
+# https://developer.android.com/kotlin/multiplatform/plugin): mismo AGP,
+# DSL nueva (`kotlin { android { ... } }` en vez de `android { }` a nivel de
+# módulo + `androidTarget()` dentro de `kotlin { }`).
+androidKotlinMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400" role="img" aria-label="Tráfico web">
+<rect x="0" y="0" width="640" height="400" fill="#FFFFFF" />
+<text x="320.00" y="28" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold" fill="#1A1A1A" text-anchor="middle">Tráfico web</text>
+<line x1="60.00" y1="330.00" x2="610.00" y2="330.00" stroke="#E0E0E0" stroke-width="1" />
+<text x="52.00" y="334.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555555" text-anchor="end">0.00</text>
+<line x1="60.00" y1="261.25" x2="610.00" y2="261.25" stroke="#E0E0E0" stroke-width="1" />
+<text x="52.00" y="265.25" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555555" text-anchor="end">50.00</text>
+<line x1="60.00" y1="192.50" x2="610.00" y2="192.50" stroke="#E0E0E0" stroke-width="1" />
+<text x="52.00" y="196.50" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555555" text-anchor="end">100.00</text>
+<line x1="60.00" y1="123.75" x2="610.00" y2="123.75" stroke="#E0E0E0" stroke-width="1" />
+<text x="52.00" y="127.75" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555555" text-anchor="end">150.00</text>
+<line x1="60.00" y1="55.00" x2="610.00" y2="55.00" stroke="#E0E0E0" stroke-width="1" />
+<text x="52.00" y="59.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555555" text-anchor="end">200.00</text>
+<text x="60.00" y="348.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333" text-anchor="middle">Lun</text>
+<text x="243.33" y="348.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333" text-anchor="middle">Mar</text>
+<text x="426.67" y="348.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333" text-anchor="middle">Mié</text>
+<text x="610.00" y="348.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333" text-anchor="middle">Jue</text>
+<polyline points="60.00,192.50 243.33,123.75 426.67,165.00 610.00,55.00" fill="none" stroke="#0072B2" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="60.00" cy="192.50" r="3" fill="#0072B2" />
+<circle cx="243.33" cy="123.75" r="3" fill="#0072B2" />
+<circle cx="426.67" cy="165.00" r="3" fill="#0072B2" />
+<circle cx="610.00" cy="55.00" r="3" fill="#0072B2" />
+<polyline points="60.00,316.25 243.33,302.50 426.67,309.38 610.00,295.62" fill="none" stroke="#E69F00" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="60.00" cy="316.25" r="3" fill="#E69F00" />
+<circle cx="243.33" cy="302.50" r="3" fill="#E69F00" />
+<circle cx="426.67" cy="309.38" r="3" fill="#E69F00" />
+<circle cx="610.00" cy="295.62" r="3" fill="#E69F00" />
+<rect x="60.00" y="35.00" width="10" height="10" fill="#0072B2" />
+<text x="74.00" y="44.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333">Visitas</text>
+<rect x="170.00" y="35.00" width="10" height="10" fill="#E69F00" />
+<text x="184.00" y="44.00" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#333333">Registros</text>
+<line x1="60.00" y1="330.00" x2="610.00" y2="330.00" stroke="#1A1A1A" stroke-width="1.5" />
+</svg>

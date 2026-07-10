@@ -1,0 +1,144 @@
+"""`edecan_schemas` — contratos Pydantic v2 compartidos por todo el monorepo.
+
+Sin más dependencias que `pydantic` (ARCHITECTURE.md §10.5). Este módulo
+re-exporta todos los contratos públicos para que el resto de paquetes pueda
+hacer `from edecan_schemas import PersonaConfig, PLANES, ...`.
+"""
+
+from __future__ import annotations
+
+from edecan_schemas.automations import (
+    AccionDef,
+    AccionDefAdapter,
+    AgentInstructionAccion,
+    ScheduleTrigger,
+    TriggerDef,
+    TriggerDefAdapter,
+    WebhookTrigger,
+)
+from edecan_schemas.chat import (
+    AgentEvent,
+    AgentEventAdapter,
+    ChatMessageIn,
+    ConfirmationRequiredEvent,
+    DoneEvent,
+    ErrorEvent,
+    TextDeltaEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+)
+from edecan_schemas.commerce import ORDER_KINDS, ORDER_STATUSES, OrderOut
+from edecan_schemas.devices import (
+    DEVICE_KINDS,
+    DEVICE_STATUSES,
+    REMOTE_SESSION_STATUSES,
+    DeviceOut,
+    RemoteSessionOut,
+)
+from edecan_schemas.missions import (
+    MISSION_STATUSES,
+    MISSION_STEP_STATUSES,
+    MissionOut,
+    MissionStepOut,
+)
+from edecan_schemas.models import PersonaConfig, TenantOut, UserOut
+from edecan_schemas.plans import (
+    BOOL_FLAGS,
+    FLAG_AGENTS_MISSIONS,
+    FLAG_AUTOMATIONS_RULES,
+    FLAG_CAMPAIGNS,
+    FLAG_COMMERCE_ORDERS,
+    FLAG_COMPANION,
+    FLAG_COMPANION_IDE,
+    FLAG_COMPANION_REMOTE_VIEW,
+    FLAG_CONNECTORS_MESSAGING,
+    FLAG_CONNECTORS_SOCIAL,
+    FLAG_MODELS_PREMIUM,
+    FLAG_TOOLS_BROWSER,
+    FLAG_TOOLS_IMAGES,
+    FLAG_VOICE_TELEPHONY,
+    FLAG_VOICE_WEB,
+    INT_LIMITS,
+    LIMIT_AUTOMATIONS_ACTIVE,
+    LIMIT_MESSAGES_PER_DAY,
+    LIMIT_MISSIONS_PER_DAY,
+    LIMIT_PHONE_NUMBERS,
+    LIMIT_SEATS,
+    LIMIT_STORAGE_MB,
+    LIMIT_VOICE_MINUTES_MONTH,
+    PLANES,
+    UNLIMITED,
+    PlanDef,
+)
+from edecan_schemas.profile import LiveProfile, ProfileData
+from edecan_schemas.queue import JOB_TYPES, JobEnvelope
+from edecan_schemas.tokens import TokenBundle
+from edecan_schemas.tools import ToolCallData, ToolResultData, ToolSpec
+
+__all__ = [
+    "DEVICE_KINDS",
+    "DEVICE_STATUSES",
+    "MISSION_STATUSES",
+    "MISSION_STEP_STATUSES",
+    "ORDER_KINDS",
+    "ORDER_STATUSES",
+    "REMOTE_SESSION_STATUSES",
+    "BOOL_FLAGS",
+    "FLAG_AGENTS_MISSIONS",
+    "FLAG_AUTOMATIONS_RULES",
+    "FLAG_CAMPAIGNS",
+    "FLAG_COMMERCE_ORDERS",
+    "FLAG_COMPANION",
+    "FLAG_COMPANION_IDE",
+    "FLAG_COMPANION_REMOTE_VIEW",
+    "FLAG_CONNECTORS_MESSAGING",
+    "FLAG_CONNECTORS_SOCIAL",
+    "FLAG_MODELS_PREMIUM",
+    "FLAG_TOOLS_BROWSER",
+    "FLAG_TOOLS_IMAGES",
+    "FLAG_VOICE_TELEPHONY",
+    "FLAG_VOICE_WEB",
+    "INT_LIMITS",
+    "JOB_TYPES",
+    "LIMIT_AUTOMATIONS_ACTIVE",
+    "LIMIT_MESSAGES_PER_DAY",
+    "LIMIT_MISSIONS_PER_DAY",
+    "LIMIT_PHONE_NUMBERS",
+    "LIMIT_SEATS",
+    "LIMIT_STORAGE_MB",
+    "LIMIT_VOICE_MINUTES_MONTH",
+    "PLANES",
+    "UNLIMITED",
+    "AccionDef",
+    "AccionDefAdapter",
+    "AgentEvent",
+    "AgentEventAdapter",
+    "AgentInstructionAccion",
+    "ChatMessageIn",
+    "ConfirmationRequiredEvent",
+    "DeviceOut",
+    "DoneEvent",
+    "ErrorEvent",
+    "JobEnvelope",
+    "LiveProfile",
+    "MissionOut",
+    "MissionStepOut",
+    "OrderOut",
+    "PersonaConfig",
+    "PlanDef",
+    "ProfileData",
+    "RemoteSessionOut",
+    "ScheduleTrigger",
+    "TenantOut",
+    "TextDeltaEvent",
+    "ToolCallData",
+    "ToolEndEvent",
+    "ToolResultData",
+    "ToolSpec",
+    "ToolStartEvent",
+    "TokenBundle",
+    "TriggerDef",
+    "TriggerDefAdapter",
+    "UserOut",
+    "WebhookTrigger",
+]

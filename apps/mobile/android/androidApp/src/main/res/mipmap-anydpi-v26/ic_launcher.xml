@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Carpeta a propósito `mipmap-anydpi-v26/`, NO `mipmap-anydpi/` sin
+    calificador: lint (`ObsoleteSdkInt`) sugiere que sobra el `-v26` porque
+    `minSdk` ya es 26, pero renombrar la carpeta rompe de verdad el link de
+    recursos (`AAPT: error: resource mipmap/ic_launcher ... not found`,
+    reproducido corriendo `./gradlew :androidApp:assembleDebug` real
+    mientras se escribía este esqueleto — el merge de recursos de AGP 9.2.1
+    no reconoce `mipmap-anydpi` sin calificador de versión de la misma
+    forma). Advertencia de lint aceptada a propósito, no un descuido.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!-- Ícono temático (Android 13+, "themed icons"): reutiliza el mismo
+         sparkle — ya es un glifo de un solo color, el sistema solo mira su
+         canal alfa para recolorearlo según el fondo de pantalla del
+         usuario. -->
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

@@ -1,0 +1,77 @@
+# ---- Entorno / secretos ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+
+# ---- Node / Next.js (apps/web) ----
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ---- Terraform (infra/terraform) ----
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# ---- Docker / LocalStack ----
+.localstack/
+volume/
+
+# ---- Bases de datos y almacenamiento local ----
+*.sqlite3
+*.db
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Editor / SO ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Cobertura / reportes ----
+coverage/
+.nyc_output/
+
+# ---- Rust / Tauri (apps/desktop/src-tauri) ----
+target/
+gen/schemas/
+apps/desktop/src-tauri/binaries/

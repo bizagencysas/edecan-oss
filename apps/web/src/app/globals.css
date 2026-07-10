@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-50;
+}
+
+::selection {
+  @apply bg-brand-200 text-brand-950;
+}
+
+/* wordmark "edecán" — mismo tratamiento (Baloo 2, 800, redondo) que el
+   sitio de marketing (`Documents/edecan/src/app/globals.css`). */
+.wordmark {
+  font-family: var(--font-wordmark), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.005em;
+}
+
+/* Scrollbars discretos para paneles internos (lista de chat, sidebars). */
+.thin-scrollbar {
+  scrollbar-width: thin;
+}
+
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}

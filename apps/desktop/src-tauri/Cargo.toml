@@ -1,0 +1,72 @@
+[package]
+name = "edecan-desktop"
+version = "0.1.0"
+description = "Edecán — asistente personal de IA (app de escritorio)"
+authors = ["Edecán"]
+edition = "2021"
+rust-version = "1.77"
+license = "Apache-2.0"
+
+# Ver docs/desktop.md y ../README.md para el resto del contrato de este
+# crate. Resumen: este binario es un cascarón Tauri v2 que NO reimplementa
+# la UI (reusa apps/web ya construido, servido por el sidecar) ni el backend
+# (apps/local / edecan_local, WP-V3-05) — solo orquesta: elige puerto,
+# lanza el sidecar, espera a que avise que está listo, muestra la ventana
+# principal apuntando a http://127.0.0.1:<puerto>/, y lo mata al cerrar.
+
+[lib]
+name = "edecan_desktop_lib"
+# Deja la puerta abierta a targets móviles (staticlib/cdylib) sin reescribir
+# nada si algún día se agrega mobile — mismo patrón que genera
+# `create-tauri-app` v2 para cualquier proyecto nuevo, aunque hoy solo se
+# compilen targets de escritorio.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# "tray-icon" habilita tauri::tray + tauri::menu (menú de bandeja: item (g)
+# del contrato). "image-png"/"image-ico" habilitan los decoders que usa
+# `app.default_window_icon()` (src/tray.rs) para poder reusar como ícono de
+# bandeja el mismo ícono de ventana que arma `tauri-build` a partir de
+# `bundle.icon` (PNG en mac/Linux, ICO en Windows, ver tauri.conf.json) — sin
+# esto, esa llamada puede devolver `None`/panicar en tiempo de ejecución
+# según la plataforma. No se pudo confirmar con `cargo check` en esta
+# máquina (ver README.md); se agregan las dos por las dudas, costo nulo.
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Solo lo que se usa de verdad: tokio::time::timeout para el timeout de 60s
+# esperando el sidecar. El runtime async en sí lo administra Tauri
+# (tauri::async_runtime::spawn), no arrancamos un runtime propio.
+tokio = { version = "1", features = ["time"] }
+# --- "Escuchar siempre" (src/listen.rs): micrófono en segundo plano ---
+# cpal: acceso cross-platform (CoreAudio en mac, WASAPI en Windows, ALSA en
+# Linux) al micrófono de entrada, sin ningún binding nativo que compilar
+# aparte. Queda anclado en la serie 0.17.x porque el propio crate declara
+# `rust-version = "1.77"` en su Cargo.toml — no fuerces un upgrade de esta
+# dependencia más allá de lo que cargo elija solo, se rompería el mínimo de
+# Rust de todo este binario (línea `rust-version` de arriba).
+cpal = "0.17.1"
+# rustpotter: motor de wake-word 100% Rust, offline, sin API keys ni cuenta
+# de terceros — entrena un modelo chico a partir de 3 muestras de voz del
+# propio usuario (ver `always_listen_train` en src/listen.rs) en vez de usar
+# un modelo genérico preentrenado. Se descartó whisper-rs/whisper.cpp para
+# TODO este subsistema porque compila C/C++ vía cmake y esta máquina no lo
+# tiene instalado (ver docs/desktop.md) — rustpotter es 100% Rust puro, no
+# necesita ningún toolchain extra.
+rustpotter = "3.0.2"
+# hound: lectura/escritura de WAV PCM16, 100% Rust puro sin dependencias
+# nativas. Se usa tanto para las 3 muestras de entrenamiento de la wake word
+# como para codificar el audio del comando que se emite a JS después de
+# detectarla (src/listen.rs).
+hound = "3.5.1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

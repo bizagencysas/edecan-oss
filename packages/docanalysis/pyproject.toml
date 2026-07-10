@@ -1,0 +1,61 @@
+[project]
+name = "edecan-docanalysis"
+version = "0.1.0"
+description = "Edecán — analista de documentos: tablas, PDF, visión, gráficos SVG y reportes (edecan_docanalysis)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "httpx>=0.27",
+    "openpyxl>=3.1",
+    "pypdf>=4.0",
+    # Dos añadidas fuera del enunciado original del WP, mismo criterio que
+    # `packages/toolkit/pyproject.toml` documenta para su propio añadido de
+    # `edecan-llm` ("Decisiones de implementación" en su README): sin ellas
+    # las tools no podrían hacer lo que anuncian.
+    # - `edecan-llm`: `tablas.py` (pregunta sobre estadísticas) y `vision.py`
+    #   (analizar_imagen) llaman a `ctx.llm.complete`/`ctx.llm.resolve` de
+    #   verdad y necesitan `ChatMessage`/`CompletionRequest` de
+    #   `edecan_llm.base` para construirlo.
+    # - `aioboto3`: `_s3.py` necesita un cliente S3 async real (mismo patrón
+    #   que `apps/worker/edecan_worker/deps.py` y
+    #   `apps/api/edecan_api/routers/files.py`) para descargar el archivo de
+    #   entrada y subir los resultados generados (gráficos SVG, reportes
+    #   XLSX) al layout `tenants/{tenant_id}/files/{file_id}/{filename}`
+    #   (ARCHITECTURE.md §10.14).
+    "edecan-llm",
+    "aioboto3>=13.0",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.1/§7.7):
+# resuelve a un callable sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+docanalysis = "edecan_docanalysis:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_docanalysis"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

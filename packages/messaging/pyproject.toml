@@ -1,0 +1,55 @@
+[project]
+name = "edecan-messaging"
+version = "0.1.0"
+description = "Edecán — mensajería oficial del agente: Telegram, Discord y Slack (edecan_messaging). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.7 (WP-V2-05)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+messaging = "edecan_messaging:get_all_tools"
+
+# Dependencias de workspace uv (paquetes hermanos, ver pyproject.toml raíz).
+# El código de producción SÍ puede importarlas por nombre de módulo
+# (ARCHITECTURE.md §10.1); los tests de este paquete NO las importan — usan
+# fakes locales (ver `tests/conftest.py`).
+#
+# Nota: este paquete SÍ está registrado en `[tool.uv.workspace].members` del
+# `pyproject.toml` raíz — `uv sync --all-packages` lo instala editable junto
+# con sus hermanos, y `[tool.uv.sources]` de abajo resuelve sobre ese
+# workspace. `tests/conftest.py` además agrega este paquete a `sys.path` a
+# mano (no-op una vez instalado) para poder correr su propia suite de forma
+# aislada sin depender de ese `sync` previo (mismo motivo/técnica que
+# `apps/api/tests/_stub_siblings.py`).
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_messaging"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

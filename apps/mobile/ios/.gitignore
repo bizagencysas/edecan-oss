@@ -1,0 +1,20 @@
+# El .xcodeproj es 100% generado desde project.yml (xcodegen) — nunca se
+# versiona ni se edita a mano.
+Edecan.xcodeproj/
+
+# Derivados de Xcode/SwiftPM.
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdatad/
+.swiftpm/
+.build/
+
+# Salida de fastlane.
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# macOS
+.DS_Store

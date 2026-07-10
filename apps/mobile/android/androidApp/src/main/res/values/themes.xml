@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Tema XML mínimo "previo a Compose": solo evita el flash de fondo
+        equivocado entre que el sistema infla la Activity y `setContent`
+        monta la UI real. El tema de verdad (colorScheme claro/oscuro de
+        Material 3, morado/azul) vive en `ui/theme/Theme.kt` — este
+        `Theme.Edecan` NO usa `Theme.Material3.*` ni `Theme.AppCompat.*` a
+        propósito: ninguna de las dos librerías (Material Components XML,
+        AppCompat) es una dependencia de este módulo (app 100% Compose,
+        "cero dependencias innecesarias") — el parent es un tema del
+        FRAMEWORK de Android, siempre disponible sin AAR extra.
+    -->
+    <style name="Theme.Edecan" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/edecan_fondo_light</item>
+        <item name="android:statusBarColor">@color/edecan_fondo_light</item>
+        <item name="android:navigationBarColor">@color/edecan_fondo_light</item>
+    </style>
+</resources>

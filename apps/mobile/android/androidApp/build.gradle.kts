@@ -1,0 +1,109 @@
+// `androidApp` — el APK real de este esqueleto (login + chat SSE básico +
+// 6 pestañas, ROADMAP_V2.md §6.1). Módulo Android puro
+// (`com.android.application`), NO un target de `shared` — lo consume como
+// `project(":shared")`.
+//
+// SIN `org.jetbrains.kotlin.android`, a propósito: desde AGP 9.0 ese
+// plugin quedó incompatible con `com.android.application` (Kotlin
+// "built-in" — AGP compila Kotlin directamente, sin plugin aparte;
+// aplicarlo revienta con un error que apunta exactamente a este cambio,
+// verificado corriendo `./gradlew :androidApp:assembleDebug` contra AGP
+// 9.2.1 real mientras se escribía este esqueleto — ver
+// https://developer.android.com/build/releases/agp-9-0-0-release-notes#android-gradle-plugin-built-in-kotlin).
+// El compilador de Compose (`org.jetbrains.kotlin.plugin.compose`) SÍ
+// sigue haciendo falta — es un plugin de compilación de Compose, no de
+// Kotlin en general, y no lo reemplaza el soporte "built-in".
+//
+// Aplica igual el plugin Compose Multiplatform (`org.jetbrains.compose`)
+// aunque hoy solo compila para Android: es el framework de UI que fija
+// `DIRECCION_ACTUAL.md`/`ROADMAP_V2.md` §6.1 ("Kotlin 2.4.0 + Compose
+// Multiplatform"), y con este mismo módulo shell + `compose.*` como
+// dependencias (en vez de las coordenadas `androidx.compose.*` clásicas)
+// queda listo para compartir composables con otros targets el día que se
+// decida — mismo patrón que genera el wizard oficial de Kotlin
+// Multiplatform (https://kmp.jetbrains.com) para su módulo `androidApp`.
+plugins {
+    alias(libs.plugins.androidApplication)
+    alias(libs.plugins.composeMultiplatform)
+    alias(libs.plugins.composeCompiler)
+}
+
+android {
+    namespace = "cc.edecan.app"
+    // 37, no 36: `androidx.core`/`androidx.lifecycle` en las versiones
+    // pinned de gradle/libs.versions.toml ya exigen compilar contra API 37
+    // (`checkDebugAarMetadata` lo revienta si no — verificado corriendo
+    // `./gradlew :androidApp:assembleDebug` real). Mismo valor en
+    // `shared/build.gradle.kts`, deben ir siempre juntos.
+    compileSdk = 37
+
+    defaultConfig {
+        // Placeholder de desarrollo — cada cliente lo cambia por el suyo
+        // antes de firmar con su propia cuenta/keystore (un applicationId
+        // no puede repetirse entre instalaciones que convivan en el mismo
+        // dispositivo). Ver docs/movil-android.md, sección "Firma release".
+        applicationId = "cc.edecan.app"
+        minSdk = 26
+        targetSdk = 37
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false // TODO: activar + reglas R8 propias en una siguiente iteración.
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // SIN signingConfig propio, a propósito: este esqueleto NUNCA
+            // firma un release con una key compartida (regla dura del
+            // repo). Cada cliente firma con SU KEYSTORE propio — hasta que
+            // ese cliente agregue su propio `signingConfig` aquí,
+            // `assembleRelease` genera un .apk SIN FIRMAR, instalable solo
+            // tras firmarlo a mano (`apksigner`). Ver docs/movil-android.md.
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    packaging {
+        resources.excludes.add("/META-INF/{AL2.0,LGPL2.1}")
+    }
+}
+
+dependencies {
+    implementation(project(":shared"))
+
+    implementation(compose.runtime)
+    implementation(compose.foundation)
+    implementation(compose.material3)
+    implementation(compose.ui)
+    implementation(compose.components.uiToolingPreview)
+    debugImplementation(compose.uiTooling)
+
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.kotlinx.coroutines.android)
+
+    // `kotlin("test-junit")` (no `kotlin("test")` a secas): `androidApp` NO
+    // aplica el plugin `org.jetbrains.kotlin.android` (a propósito, ver el
+    // comentario al tope de este archivo sobre "Kotlin built-in" de AGP 9),
+    // así que no hay sustitución automática de `kotlin("test")` al artefacto
+    // JVM real — sin esto, `kotlin.test.Test` no resuelve en absoluto
+    // (verificado real: `Unresolved reference 'Test'` corriendo
+    // `./gradlew :androidApp:testDebugUnitTest`). `kotlin-test-junit` trae
+    // JUnit4 (el test runner que ya usa por defecto la tarea `test` de
+    // Gradle/AGP) como dependencia transitiva — sin pinnear una versión de
+    // JUnit propia en `libs.versions.toml`. Tests JVM puros de `src/test/`
+    // (p. ej. `LlmKindTest`) — nada de Compose/Robolectric todavía: la UI en
+    // sí no tiene tests unitarios en este esqueleto, solo la lógica de los
+    // `ViewModel`/enums que no toca el framework de Android.
+    testImplementation(kotlin("test-junit"))
+}

@@ -1,0 +1,83 @@
+# Fastfile — build/firma de Edecán para iOS.
+#
+# Uso real (ver docs/movil-ios.md, sección "Compilar e instalar"):
+#   LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 fastlane adhoc
+#
+# El prefijo LC_ALL/LANG es OBLIGATORIO en algunas máquinas: sin un locale
+# UTF-8 explícito, `fastlane`/`gym` pueden fallar con un error de
+# codificación de Ruby al leer el proyecto — mismo pipeline que el dueño ya
+# usa en sus otros proyectos iOS (bump de versión → xcodegen generate →
+# fastlane con LC_ALL=en_US.UTF-8).
+#
+# NINGUNA lane de este archivo sube nada a App Store Connect/TestFlight —
+# decisión de producto permanente (`DIRECCION_ACTUAL.md`,
+# `REQUISITOS_V2.md` "Aclaración sobre distribución de las apps nativas").
+# Solo build + firma ad-hoc para instalar por USB con TU PROPIA cuenta
+# Apple Developer Program — nunca la del dueño de Edecán.
+
+default_platform(:ios)
+
+XCODEPROJ = "../Edecan.xcodeproj"
+SCHEME = "EdecanApp"
+PROJECT_YAML = "../project.yml"
+
+platform :ios do
+  desc "Regenera Edecan.xcodeproj desde project.yml (xcodegen) — nunca se edita el .xcodeproj a mano"
+  lane :generate do
+    sh("which xcodegen > /dev/null || (echo 'Falta xcodegen: brew install xcodegen' && exit 1)")
+    sh("cd .. && xcodegen generate")
+  end
+
+  desc "Sube CURRENT_PROJECT_VERSION en project.yml en 1 (build number) — mismo paso `sed` del pipeline conocido"
+  lane :bump do
+    sh(%(
+      set -euo pipefail
+      actual=$(grep -m1 'CURRENT_PROJECT_VERSION' #{PROJECT_YAML} | grep -o '[0-9]\\+')
+      nuevo=$((actual + 1))
+      sed -i '' "s/CURRENT_PROJECT_VERSION: \\"$actual\\"/CURRENT_PROJECT_VERSION: \\"$nuevo\\"/" #{PROJECT_YAML}
+      echo "CURRENT_PROJECT_VERSION $actual -> $nuevo en project.yml"
+    ))
+  end
+
+  desc <<~DESC
+    Build ad-hoc firmado, listo para instalar por USB.
+
+    Requisitos ANTES de correr esta lane (docs/movil-ios.md tiene el
+    detalle completo, paso a paso):
+      1. Tu propia cuenta Apple Developer Program ($99/año) — NUNCA la del
+         dueño de Edecán (`REQUISITOS_V2.md`, "Decisión de negocio").
+      2. El UDID de cada iPhone/iPad donde vas a instalar, registrado en
+         TU cuenta (developer.apple.com → Devices) — tope de ~100
+         dispositivos/año, es tuyo, no compartido con otros clientes.
+      3. Un perfil de aprovisionamiento tipo "Ad Hoc" para
+         `cc.edecan.app` (o el bundle id que hayas elegido — ver la nota
+         en project.yml) que incluya esos dispositivos, con el
+         certificado de distribución correspondiente instalado en tu
+         Keychain.
+      4. `DEVELOPMENT_TEAM` con TU Team ID — se configura en Xcode
+         (target EdecanApp → Signing & Capabilities) tras iniciar sesión
+         con tu Apple ID en Xcode → Settings → Accounts.
+         `CODE_SIGN_STYLE: Automatic` (project.yml) deja que Xcode
+         resuelva perfil/certificado solo a partir de ahí.
+
+    Este repo NUNCA trae un Team ID, certificado ni perfil reales —
+    cero secretos (`ARCHITECTURE.md` §0).
+  DESC
+  lane :adhoc do
+    generate
+    gym(
+      project: XCODEPROJ,
+      scheme: SCHEME,
+      configuration: "Release",
+      export_method: "ad-hoc",
+      output_directory: "../build",
+      output_name: "Edecan-adhoc.ipa",
+      clean: true,
+      export_options: {
+        method: "ad-hoc",
+        signingStyle: "automatic"
+      }
+    )
+    UI.success("Listo: ../build/Edecan-adhoc.ipa — instálalo con Xcode (Window → Devices and Simulators) o Apple Configurator.")
+  end
+end

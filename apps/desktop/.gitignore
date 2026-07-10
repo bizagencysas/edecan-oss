@@ -1,0 +1,39 @@
+# apps/desktop/.gitignore
+#
+# Nada de binarios reales ni artefactos de build commiteados (regla dura del
+# repo) — todo lo de acá se regenera con scripts/build-backend.sh,
+# scripts/build-app.sh o `cargo tauri dev`/`build`. Ver docs/desktop.md.
+
+# Sidecar de PyInstaller que copia scripts/build-backend.sh|.ps1 — el
+# binario real nunca se commitea, solo este directorio con un .gitkeep.
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+# Web estática exportada (`apps/web` con NEXT_OUTPUT=export) que copia
+# scripts/build-backend.sh como parte del sidecar — se regenera, no se
+# commitea. Igual criterio: solo el .gitkeep queda en el repo.
+packaging/web/*
+!packaging/web/.gitkeep
+
+# Salida de PyInstaller (build-backend.sh/.ps1 la apuntan acá con
+# --distpath/--workpath en vez de a los defaults dist/ y build/ sueltos).
+packaging/dist/
+packaging/build/
+*.spec.bak
+
+# Salida de `cargo tauri build` (instaladores .dmg/.app/.msi/.nsis) y de
+# `cargo build`/`cargo check` en general.
+src-tauri/target/
+src-tauri/gen/
+
+# Node (si algún día este directorio suma tooling propio de JS/TS —
+# apps/web tiene el suyo, separado).
+node_modules/
+
+# Artefactos de Python al correr scripts/make-icons.sh (_pack_ico.py) o
+# cualquier otro script de este directorio.
+__pycache__/
+*.pyc
+
+# Sistema operativo.
+.DS_Store

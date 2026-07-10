@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Config de PRODUCCIÓN (usada por `release`, y por `debug` salvo que
+    `src/debug/res/xml/network_security_config.xml` la reemplace — ver el
+    comentario largo en ese archivo y en AndroidManifest.xml).
+    `cleartextTrafficPermitted="false"` es ya el default en `targetSdk` 28+,
+    se deja explícito para que quede documentado en el propio archivo.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

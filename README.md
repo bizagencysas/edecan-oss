@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#why-edecán">Why</a> ·
+  <a href="#why-edecan">Why</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="./ARCHITECTURE.md">Full technical spec</a> ·

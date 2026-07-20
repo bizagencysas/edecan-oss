@@ -1,6 +1,6 @@
 [project]
 name = "edecan-browser"
-version = "0.1.0"
+version = "0.2.0"
 description = "Safe headless research and readable-content extraction tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

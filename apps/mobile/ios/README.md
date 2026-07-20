@@ -18,7 +18,7 @@ apps/mobile/ios/
 │   │                       DeviceModels,VoiceModels,RemoteModels,ConfirmacionFormato,
 │   │                       APIClient,MultipartFormData,SSEClient,Keychain,
 │   │                       PairingStore}.swift
-│   └── Tests/EdecanKitTests/     # 85 tests (`swift test`)
+│   └── Tests/EdecanKitTests/     # 89 tests (`swift test`)
 ├── EdecanApp/             # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift        # login + registro
@@ -59,7 +59,7 @@ Mismo patrón que el dueño de Edecán ya usa en sus otros proyectos iOS:
 ## Verificar en local sin Xcode abierto
 
 ```bash
-cd EdecanKit && swift build && swift test    # capa de red/datos, 85 tests
+cd EdecanKit && swift build && swift test    # capa de red/datos, 89 tests
 cd ..
 xcodegen generate
 xcodebuild -project Edecan.xcodeproj -scheme EdecanApp -configuration Debug \

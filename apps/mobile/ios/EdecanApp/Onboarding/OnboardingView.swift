@@ -250,6 +250,7 @@ struct OnboardingView: View {
     /// por dispositivo (`POST /v1/devices`, best-effort — ver
     /// `SessionStore.emparejarDispositivo`).
     private func completarEmparejamiento() async {
+        session.marcarSesionValida()
         pairingStore.marcarEmparejado()
         await session.cargarMe()
         await session.emparejarDispositivo(pairingStore: pairingStore)

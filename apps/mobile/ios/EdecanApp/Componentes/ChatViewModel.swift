@@ -91,14 +91,12 @@ final class ChatViewModel {
 
         do {
             struct Body: Encodable { let text: String }
-            let request = try await construirPeticionSSE(
+            try await consumirStreamConRefresh(
                 client: client,
                 path: "/v1/conversations/\(conversacionId)/messages",
-                body: Body(text: textoLimpio)
+                body: Body(text: textoLimpio),
+                indiceRespuesta: indiceRespuesta
             )
-            for try await evento in sseClient.stream(request) {
-                aplicar(evento, indiceRespuesta: indiceRespuesta)
-            }
         } catch {
             errorMensaje = error.localizedDescription
         }
@@ -135,14 +133,12 @@ final class ChatViewModel {
                     case approved
                 }
             }
-            let request = try await construirPeticionSSE(
+            try await consumirStreamConRefresh(
                 client: client,
                 path: "/v1/conversations/\(conversacionId)/confirm",
-                body: Body(toolCallId: pendiente.toolCallId, approved: aprobado)
+                body: Body(toolCallId: pendiente.toolCallId, approved: aprobado),
+                indiceRespuesta: indiceRespuesta
             )
-            for try await evento in sseClient.stream(request) {
-                aplicar(evento, indiceRespuesta: indiceRespuesta)
-            }
         } catch {
             errorMensaje = error.localizedDescription
         }
@@ -159,6 +155,30 @@ final class ChatViewModel {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(body)
         return request
+    }
+
+    /// SSE no atraviesa `APIClient.conAutoRefresh`. Si el servidor rechaza
+    /// la conexión inicial con 401, rota el refresh token una sola vez y
+    /// reconstruye la petición completa con el nuevo access token.
+    private func consumirStreamConRefresh<Cuerpo: Encodable>(
+        client: APIClient,
+        path: String,
+        body: Cuerpo,
+        indiceRespuesta: Int
+    ) async throws {
+        var yaRefresco = false
+        while true {
+            let request = try await construirPeticionSSE(client: client, path: path, body: body)
+            do {
+                for try await evento in sseClient.stream(request) {
+                    aplicar(evento, indiceRespuesta: indiceRespuesta)
+                }
+                return
+            } catch SSEClient.SSEError.servidor(let status) where status == 401 && !yaRefresco {
+                yaRefresco = true
+                try await client.refrescar()
+            }
+        }
     }
 
     private func aplicar(_ evento: ChatEvent, indiceRespuesta: Int) {

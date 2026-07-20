@@ -9,7 +9,7 @@
 # PowerShell). Lo llama `scripts/build-app.sh` antes de `cargo tauri build`;
 # también se puede correr suelto para iterar solo sobre el backend.
 #
-# Requisitos: Node 20+ (apps/web), Python 3.12 + uv (workspace del repo),
+# Requisitos: Node 22 + npm 10 (apps/web), Python 3.12 + uv (workspace del repo),
 # Rust (`rustc` en PATH, solo para leer el target triple de esta máquina).
 # Ver docs/desktop.md para el detalle de cada uno.
 set -euo pipefail
@@ -30,6 +30,13 @@ for bin in node npm uv rustc; do
     exit 1
   fi
 done
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+NPM_MAJOR="$(npm --version | awk -F. '{print $1}')"
+if [[ "$NODE_MAJOR" != "22" || "$NPM_MAJOR" != "10" ]]; then
+  echo "error: apps/web requiere Node 22 y npm 10 (detectados: Node $(node --version), npm $(npm --version))." >&2
+  exit 1
+fi
 
 # Integración OPCIONAL: si EDECAN_BUNDLE_OLLAMA=1, descarga Ollama antes de
 # armar el sidecar de edecan-local, dejando ollama-$TARGET_TRIPLE en
@@ -71,27 +78,18 @@ mkdir -p "$WEB_DEST_DIR"
 cp -R "$WEB_DIR/out/." "$WEB_DEST_DIR/"
 
 echo "==> [3/4] Congelando edecan_local con PyInstaller (uv run, workspace completo)…"
-# --with pyinstaller: agrega PyInstaller a la resolución de ESTA corrida sin
-# declararlo como dependencia de ningún pyproject.toml del repo (este WP no
-# toca archivos fuera de apps/desktop/). `uv run` (sin --package) desde
-# cualquier carpeta del workspace resuelve el entorno COMPARTIDO de todos los
+# PyInstaller vive fijado en el grupo `release` de la raíz y en `uv.lock`.
+# `uv run --frozen --group release --all-packages` desde cualquier carpeta
+# del workspace resuelve el entorno COMPARTIDO de todos los
 # miembros (ver comentario largo al principio de packaging/edecan_local.spec)
 # — necesario para que collect_all() encuentre los paquetes de
 # `edecan.tools` (EDECAN_TOOL_PACKAGES en ese .spec, 16 a la fecha de v7)
 # además de edecan_api/edecan_worker/edecan_db/edecan_core.
-# --with pgserver: `apps/local/pyproject.toml` declara `pgserver` como el
-# extra OPCIONAL `embedded` (Postgres embebido, DIRECCION_ACTUAL.md), no
-# como dependencia directa — así que un `uv sync --all-packages` normal
-# nunca lo instala, y el `collect_all("pgserver")` del .spec no encontraba
-# nada que empaquetar. Sin esto, el sidecar resultante arranca pero revienta
-# con "RuntimeError: ... el paquete opcional 'pgserver' no está instalado"
-# en cuanto intenta provisionar su propio Postgres — exactamente el caso de
-# uso principal de la app de escritorio (cero setup manual). Verificado
-# empíricamente construyendo el sidecar sin este flag y corriéndolo de
-# verdad; ver HOTFIXES_PENDIENTES.md.
+# `pgserver` es dependencia directa de `edecan-local`: el mismo lock que
+# usa desarrollo alimenta también a PyInstaller, sin flags ocultos.
 (
   cd "$DESKTOP_DIR"
-  uv run --with "pyinstaller>=6.10" --with "pgserver>=0.1.4" pyinstaller packaging/edecan_local.spec \
+  uv run --frozen --all-packages --group release pyinstaller packaging/edecan_local.spec \
     --noconfirm \
     --distpath "$DIST_DIR" \
     --workpath "$WORK_DIR"

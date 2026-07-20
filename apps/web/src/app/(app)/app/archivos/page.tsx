@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FileIcon, UploadIcon } from "@/components/icons";
 import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, PageHeader, Spinner } from "@/components/ui";
 import { listFiles, uploadFile } from "@/lib/api";
+import {
+  createLatestRequestGuard,
+  FILE_STATUS_POLL_MS,
+  filesNeedRefresh,
+  mergeFileSnapshots,
+  upsertFile,
+} from "@/lib/file-status";
 import { formatDateTime } from "@/lib/format";
 import type { FileOut } from "@/lib/types";
 
@@ -27,32 +34,60 @@ export default function ArchivosPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [pollCycle, setPollCycle] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requestGuardRef = useRef(createLatestRequestGuard());
 
-  useEffect(() => {
-    void load();
-  }, []);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (background = false) => {
+    const ticket = requestGuardRef.current.begin();
+    if (!background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
-      setFiles(await listFiles());
+      const remoteFiles = await listFiles();
+      if (!ticket.isCurrent()) return;
+      setFiles((current) => mergeFileSnapshots(current, remoteFiles));
+      setError(null);
     } catch (err) {
+      if (!ticket.isCurrent()) return;
       setError(err instanceof Error ? err.message : "No se pudieron cargar los archivos.");
     } finally {
-      setLoading(false);
+      if (!ticket.isCurrent()) return;
+      if (background) {
+        // A failed poll must schedule another attempt while an active file
+        // remains; success also advances the cycle if statuses did not change.
+        setPollCycle((cycle) => cycle + 1);
+      } else {
+        setLoading(false);
+      }
     }
-  }
+  }, []);
 
-  async function handleFiles(fileList: FileList | null) {
-    if (!fileList || fileList.length === 0) return;
+  useEffect(() => {
+    const requestGuard = requestGuardRef.current;
+    void load();
+    return () => requestGuard.invalidate();
+  }, [load]);
+
+  useEffect(() => {
+    if (loading || uploading || !filesNeedRefresh(files)) return;
+    const timer = window.setTimeout(() => void load(true), FILE_STATUS_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [files, load, loading, pollCycle, uploading]);
+
+  async function handleFiles(selectedFiles: readonly File[]) {
+    if (uploading || selectedFiles.length === 0) return;
+    // Any list request started before this upload is now stale and must not
+    // replace the newly created record when it eventually resolves.
+    requestGuardRef.current.invalidate();
+    setLoading(false);
     setUploading(true);
     setError(null);
     try {
-      for (const file of Array.from(fileList)) {
+      for (const file of selectedFiles) {
         const uploaded = await uploadFile(file);
-        setFiles((prev) => [uploaded, ...prev]);
+        setFiles((prev) => upsertFile(prev, uploaded));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo subir el archivo.");
@@ -82,9 +117,11 @@ export default function ArchivosPage() {
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
-          void handleFiles(e.dataTransfer.files);
+          void handleFiles(Array.from(e.dataTransfer.files));
         }}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => {
+          if (!uploading) inputRef.current?.click();
+        }}
         className={`mb-6 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
           dragOver
             ? "border-brand-500 bg-brand-50 dark:bg-brand-950/30"
@@ -95,8 +132,15 @@ export default function ArchivosPage() {
           ref={inputRef}
           type="file"
           multiple
+          disabled={uploading}
           className="hidden"
-          onChange={(e) => void handleFiles(e.target.files)}
+          onChange={(event) => {
+            const selectedFiles = Array.from(event.currentTarget.files ?? []);
+            // Permite volver a elegir exactamente el mismo archivo después
+            // de un error; los browsers no disparan change si el value queda.
+            event.currentTarget.value = "";
+            void handleFiles(selectedFiles);
+          }}
         />
         {uploading ? <Spinner className="h-6 w-6 text-brand-600" /> : <UploadIcon className="h-6 w-6 text-slate-400" />}
         <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200">

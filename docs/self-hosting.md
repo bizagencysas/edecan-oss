@@ -24,8 +24,8 @@ distribución Linux. Los scripts Bash no soportan Git Bash/MSYS2/Cygwin.
 ## 1. Modo desarrollador
 
 ```bash
-git clone https://github.com/isaccmanuel/edecan.git
-cd edecan
+git clone https://github.com/bizagencysas/edecan-oss.git
+cd edecan-oss
 cp .env.example .env
 ```
 

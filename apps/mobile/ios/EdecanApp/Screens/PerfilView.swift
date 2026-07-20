@@ -148,8 +148,11 @@ struct PerfilView: View {
     }
 
     private func cerrarSesion() {
-        session.cerrarSesion(deviceId: pairingStore.deviceId)
+        let deviceId = pairingStore.deviceId
         pairingStore.olvidarEmparejamiento()
+        Task {
+            await session.cerrarSesion(deviceId: deviceId)
+        }
     }
 }
 

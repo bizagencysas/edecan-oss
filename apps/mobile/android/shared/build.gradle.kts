@@ -107,6 +107,8 @@ kotlin {
         // terceros: solo la librería de test del propio Kotlin.
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(libs.ktor.client.mock)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/isaccmanuel/edecan/security/policy
+    url: https://github.com/bizagencysas/edecan-oss/security/policy
     about: Follow the private reporting instructions in the security policy instead of opening a public issue.
   - name: Support policy
-    url: https://github.com/isaccmanuel/edecan/blob/main/SUPPORT.md
+    url: https://github.com/bizagencysas/edecan-oss/blob/main/SUPPORT.md
     about: Read the support scope and the information needed for an actionable request.

@@ -47,8 +47,8 @@ apps/desktop/
 ## Quick start
 
 ```bash
-# Desarrollo (recarga en caliente del shell nativo; el backend corre desde
-# el código fuente vía `uv run python -m edecan_local`, sin PyInstaller):
+# Desarrollo en un comando: prepara/reusa apps/web/out, compila el shell y
+# corre el backend desde fuente, sin PyInstaller:
 ./scripts/dev.sh
 
 # Build de producción completo para ESTA plataforma (web estática + backend
@@ -56,25 +56,36 @@ apps/desktop/
 ./scripts/build-app.sh
 ```
 
-En Windows: `scripts\build-backend.ps1` seguido de `cargo tauri build` a mano (no hay `build-app.ps1` — ver `docs/desktop.md`).
+En Windows x64, el equivalente es `scripts\build-app.ps1`. Este repositorio
+no publica hoy un bundle Tauri para Linux; allí usa el flujo de self-hosting.
+
+`dev.sh` funciona desde un clon sin sidecar precompilado. La primera corrida
+instala las dependencias declaradas y genera la UI estática; las siguientes
+reusan `apps/web/out`. Usa `EDECAN_REBUILD_WEB=1 ./scripts/dev.sh` tras cambiar
+el frontend, o `EDECAN_SKIP_DEV_WEB=1 ./scripts/dev.sh` para iterar únicamente
+en Rust/backend.
 
 ## Requisitos para compilar
 
-- **Rust** estable + `cargo-tauri` (`cargo install tauri-cli --version '^2.0'`).
-- **Node.js 20+** y npm (build de `apps/web`).
+- **Rust** estable + `cargo-tauri` 2.11.4 (`cargo install tauri-cli --version '2.11.4' --locked`).
+- **Node.js 22** y **npm 10** (build de `apps/web`).
 - **Python 3.12** + [`uv`](https://docs.astral.sh/uv/) (workspace del repo — `edecan_local` y sus paquetes `edecan_*`).
 - macOS: Xcode Command Line Tools (`sips`/`iconutil`, usados por `scripts/make-icons.sh`).
 
 Detalle completo, por plataforma, en `docs/desktop.md`.
 
-## Sobre la verificación de este código
-
-Este work package se escribió sin un toolchain de Rust disponible en la máquina (`cargo`/`rustc` no estaban instalados) — no se pudo correr `cargo check` ni `cargo tauri build`. En su lugar, cada API de `tauri`/`tauri-plugin-shell` usada en `src-tauri/src/*.rs` se verificó a mano contra la documentación real de Tauri v2 (docs.rs + v2.tauri.app), incluyendo una corrección real que esa verificación encontró: `WebviewWindow::close()` dispara `WindowEvent::CloseRequested` desde Tauri 2.0 (antes forzaba el cierre) — usar eso en la transición splash→main habría disparado el handler global de "cerrar ventana = salir de la app" apenas se abriera la ventana principal. Se usa `destroy()` en su lugar (ver el comentario en `backend.rs::show_main_window`).
-
-Si al compilar por primera vez `cargo`/`cargo tauri` se quejan de algo en `src/tray.rs` (la superficie de `tauri::menu`/`tauri::tray` es la que más cambió entre betas de Tauri v2), la lógica de ese archivo es simple y no debería tener que cambiar — lo que puede variar es el nombre exacto de algún builder method; el propio archivo tiene un comentario apuntando a la doc oficial correspondiente.
-
-**fase v4 (Ollama embebido)** sumó dos funciones a `backend.rs` (`with_ollama_env`/`resolve_ollama_sidecar`) con el mismo límite y el mismo método de verificación: sin `cargo`/`rustc` disponibles, se escribieron usando SOLO `std` (nada de API nueva de `tauri`/`tauri-plugin-shell` más allá de la que ya usa el resto del archivo), salvo un único método nuevo (`Command::env`) verificado a mano contra el código fuente real de `tauri-plugin-shell` 2.3.5 (docs.rs) — confirmado que `tauri_plugin_shell::process::Command` NO expone ningún getter público para la ruta resuelta de un sidecar, que es justamente por qué esas dos funciones existen (resuelven la ruta con `std::env::current_exe()`/`std::fs::read_dir` en vez de pedírsela a esa API). Detalle completo y checklist de verificación empírica pendiente en [`docs/desktop-local.md`](../../docs/desktop-local.md) §8/§9.
-
 ## Tests
 
-Este directorio no tiene una suite de tests propia (es un cascarón de empaquetado, no lógica de negocio — esa vive en `apps/api`/`apps/worker`/`packages/*`, cada uno con la suya). La validación de este WP fue: `cargo check` (no disponible, ver arriba), `bash -n` sobre los `.sh` (incluyendo `download-ollama.sh`, fase v4), y `python -m py_compile` sobre `packaging/edecan_local_entry.py` y `packaging/edecan_local.spec`.
+El crate tiene tests unitarios para helpers nativos (audio y procesamiento de
+muestras). Desde `apps/desktop/src-tauri`:
+
+```bash
+cargo fmt --check
+cargo check --locked
+cargo test --locked
+```
+
+Los scripts de release se validan además con `bash -n`. Un `cargo check` o
+los tests unitarios no sustituyen el build de los instaladores: publica desde
+macOS con `build-app.sh` y desde Windows x64 con `build-app.ps1`, y prueba el
+artefacto generado en la plataforma correspondiente.

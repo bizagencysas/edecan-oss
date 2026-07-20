@@ -13,14 +13,14 @@ El texto siguiente tiene 170 palabras: está holgadamente por debajo del
 máximo de 500 palabras vigente en la fecha de revisión. Recontarlo y
 reconfirmar ese límite antes de enviarlo.
 
-Mantengo [Edecan](https://github.com/isaccmanuel/edecan), un asistente
+Mantengo [Edecan](https://github.com/bizagencysas/edecan-oss), un asistente
 personal de IA distribuido bajo Apache-2.0. El proyecto reúne un backend
 Python/FastAPI, una aplicación web Next.js, un shell de escritorio
 Tauri/Rust y clientes nativos Swift y Kotlin. Su diseño prioriza
 self-hosting, credenciales bring-your-own, aislamiento por tenant,
 confirmación humana para acciones sensibles y pruebas offline
-deterministas. La verificación completa del 2026-07-20 terminó con 4,188
-tests aprobados y 35 omitidos por depender de infraestructura opcional.
+deterministas. La verificación completa del 2026-07-20 terminó con 4,190
+tests aprobados y 34 omitidos por depender de infraestructura opcional.
 
 Usaría Claude Max para mejorar el proyecto público: revisar contratos entre
 plataformas, ampliar pruebas de regresión y end-to-end, endurecer límites de

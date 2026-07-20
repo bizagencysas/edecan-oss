@@ -10,7 +10,7 @@
     también se puede correr suelto para iterar solo sobre el backend.
 
 .DESCRIPTION
-    Requisitos: Node 20+ (apps/web), Python 3.12 + uv (workspace del repo),
+    Requisitos: Node 22 + npm 10 (apps/web), Python 3.12 + uv (workspace del repo),
     Rust (`rustc` en PATH, solo para leer el target triple de esta máquina).
     Ver docs/desktop.md para el detalle de cada uno.
 #>
@@ -32,6 +32,28 @@ foreach ($bin in @("node", "npm", "uv", "rustc")) {
         Write-Error "falta '$bin' en el PATH. Ver requisitos en docs/desktop.md."
         exit 1
     }
+}
+
+if ($env:OS -ne "Windows_NT") {
+    throw "build-backend.ps1 debe ejecutarse en Windows x64. En macOS usa build-backend.sh."
+}
+
+$NodeVersion = (& node --version).Trim()
+$NpmVersion = (& npm --version).Trim()
+$NodeMajor = [int]($NodeVersion.TrimStart("v").Split(".")[0])
+$NpmMajor = [int]($NpmVersion.Split(".")[0])
+if ($NodeMajor -ne 22 -or $NpmMajor -ne 10) {
+    throw "apps/web requiere Node 22 y npm 10 (detectados: Node $NodeVersion, npm $NpmVersion)."
+}
+
+$RustcOutput = & rustc -Vv
+$HostLine = $RustcOutput | Select-String -Pattern "^host:\s*(.+)$"
+if (-not $HostLine) {
+    throw "no se pudo determinar el target triple ('rustc -Vv' no imprimio 'host:')."
+}
+$TargetTriple = $HostLine.Matches[0].Groups[1].Value.Trim()
+if ($TargetTriple -ne "x86_64-pc-windows-msvc") {
+    throw "el bundle de Windows solo soporta x86_64-pc-windows-msvc; target detectado: $TargetTriple."
 }
 
 # Integracion OPCIONAL: si EDECAN_BUNDLE_OLLAMA=1, descarga Ollama antes de
@@ -90,22 +112,18 @@ New-Item -ItemType Directory -Path $WebDestDir -Force | Out-Null
 Copy-Item (Join-Path $WebOutDir "*") $WebDestDir -Recurse -Force
 
 Write-Host "==> [3/4] Congelando edecan_local con PyInstaller (uv run, workspace completo)..."
-# --with pyinstaller: agrega PyInstaller a la resolucion de ESTA corrida sin
-# declararlo como dependencia de ningun pyproject.toml del repo (este WP no
-# toca archivos fuera de apps/desktop/). `uv run` (sin --package) desde
-# cualquier carpeta del workspace resuelve el entorno COMPARTIDO de todos los
+# PyInstaller vive fijado en el grupo `release` de la raiz y en `uv.lock`.
+# `uv run --frozen --group release --all-packages` desde cualquier carpeta
+# del workspace resuelve el entorno COMPARTIDO de todos los
 # miembros (ver comentario largo al principio de packaging/edecan_local.spec)
 # -- necesario para que collect_all() encuentre los paquetes de
 # `edecan.tools` (EDECAN_TOOL_PACKAGES en ese .spec, 16 a la fecha de v7)
 # ademas de edecan_api/edecan_worker/edecan_db/edecan_core.
-# --with pgserver: `apps/local/pyproject.toml` declara pgserver como el
-# extra OPCIONAL `embedded` (Postgres embebido), no como dependencia
-# directa -- sin esto, collect_all("pgserver") del .spec no encuentra nada
-# que empaquetar y el sidecar revienta al intentar provisionar su propio
-# Postgres (el caso de uso principal de la app). Ver HOTFIXES_PENDIENTES.md.
+# pgserver es dependencia directa de edecan-local: el mismo lock que usa
+# desarrollo alimenta tambien a PyInstaller, sin flags ocultos.
 Push-Location $DesktopDir
 try {
-    uv run --with "pyinstaller>=6.10" --with "pgserver>=0.1.4" pyinstaller packaging/edecan_local.spec `
+    uv run --frozen --all-packages --group release pyinstaller packaging/edecan_local.spec `
         --noconfirm `
         --distpath $DistDir `
         --workpath $WorkDir
@@ -128,13 +146,6 @@ if (-not (Test-Path $FrozenExe)) {
 }
 
 Write-Host "==> [4/4] Instalando el sidecar en src-tauri/binaries/..."
-$RustcOutput = & rustc -Vv
-$HostLine = $RustcOutput | Select-String -Pattern "^host:\s*(.+)$"
-if (-not $HostLine) {
-    Write-Error "no se pudo determinar el target triple ('rustc -Vv' no imprimio 'host:')."
-    exit 1
-}
-$TargetTriple = $HostLine.Matches[0].Groups[1].Value.Trim()
 $SidecarName = "edecan-local-$TargetTriple.exe"
 
 if (-not (Test-Path $BinariesDir)) { New-Item -ItemType Directory -Path $BinariesDir -Force | Out-Null }

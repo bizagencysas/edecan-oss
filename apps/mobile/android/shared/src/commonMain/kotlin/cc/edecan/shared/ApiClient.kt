@@ -64,6 +64,9 @@ private data class RefreshBody(
 )
 
 @Serializable
+private data class LogoutBody(@SerialName("refresh_token") val refreshToken: String)
+
+@Serializable
 private data class CrearConversacionBody(val title: String? = null)
 
 @Serializable
@@ -92,6 +95,10 @@ private data class DeviceRegisterBody(
 
 @Serializable
 private data class DeviceOut(val id: String = "")
+
+private data class SessionSnapshot(val epoch: Long, val accessToken: String?)
+
+private data class LogoutCredentials(val accessToken: String?, val refreshToken: String?)
 
 // --- Misiones (`/v1/missions/*`, WP-V5-07) ---------------------------------
 
@@ -207,21 +214,41 @@ private suspend fun <T> mejorEsfuerzo(bloque: suspend () -> T): T? =
  * `401` y [conAutoRefresh] dispara el refresh normal con el refresh token
  * del [TokenStore] — mismo resultado neto, sin bloquear el constructor.
  */
-class EdecanApi(
+class EdecanApi private constructor(
     baseUrl: String,
     private val tokenStore: TokenStore,
+    private val http: HttpClient,
+    private val onSessionExpired: (() -> Unit)?,
 ) {
+    constructor(baseUrl: String, tokenStore: TokenStore, onSessionExpired: (() -> Unit)? = null) : this(
+        baseUrl,
+        tokenStore,
+        HttpClient {
+            install(ContentNegotiation) { json(edecanJson) }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 30_000
+                connectTimeoutMillis = 15_000
+            }
+            expectSuccess = false
+        },
+        onSessionExpired,
+    )
+
     private var baseUrl: String = baseUrl.trimEnd('/')
     private var accessTokenEnMemoria: String? = null
     private val refreshMutex = Mutex()
+    private val sessionStateMutex = Mutex()
+    private var sessionEpoch = 0L
 
-    private val http: HttpClient = HttpClient {
-        install(ContentNegotiation) { json(edecanJson) }
-        install(HttpTimeout) {
-            requestTimeoutMillis = 30_000
-            connectTimeoutMillis = 15_000
-        }
-        expectSuccess = false // los status code se revisan a mano, ver ejecutar().
+    internal companion object {
+        /** Fábrica visible al módulo de pruebas para verificar el contrato
+         * HTTP sin red real. La app usa el constructor público. */
+        fun paraPruebas(
+            baseUrl: String,
+            tokenStore: TokenStore,
+            httpClient: HttpClient,
+            onSessionExpired: (() -> Unit)? = null,
+        ): EdecanApi = EdecanApi(baseUrl, tokenStore, httpClient, onSessionExpired)
     }
 
     /** El mismo `HttpClient` Ktor, para que `ChatViewModel` se lo pase a
@@ -246,9 +273,10 @@ class EdecanApi(
     /** `POST /v1/auth/login`. `totpCode` solo hace falta si la cuenta tiene
      * 2FA activado — se manda solo si no viene vacío. */
     suspend fun login(email: String, password: String, totpCode: String? = null): TokenPair {
+        val epoch = comenzarNuevaSesion()
         val tokens: TokenPair =
             peticionSinSesion("/v1/auth/login", LoginBody(email, password, totpCode.aNuloSiVacio()))
-        guardarTokens(tokens)
+        guardarTokensSiVigente(tokens, epoch)
         return tokens
     }
 
@@ -256,30 +284,83 @@ class EdecanApi(
      * defecto, y deja la sesión iniciada de una — mismo `TokenPair` que
      * [login], mismo `409` (`ApiException.Servidor`) si el correo ya existe. */
     suspend fun registrar(email: String, password: String, tenantName: String): TokenPair {
+        val epoch = comenzarNuevaSesion()
         val tokens: TokenPair =
             peticionSinSesion("/v1/auth/register", RegisterBody(email, password, tenantName))
-        guardarTokens(tokens)
+        guardarTokensSiVigente(tokens, epoch)
         return tokens
     }
 
-    /** `POST /v1/auth/refresh`. Igual que [login], exige `totp_code` si la
-     * cuenta tiene 2FA — quien llame con una cuenta 2FA y no lo pase recibe
-     * [ApiException.CredencialesInvalidas] del servidor. */
-    suspend fun refrescar(totpCode: String? = null): TokenPair {
-        val refreshToken = tokenStore.getRefreshToken() ?: throw ApiException.SesionExpirada()
-        val tokens: TokenPair =
-            peticionSinSesion("/v1/auth/refresh", RefreshBody(refreshToken, totpCode.aNuloSiVacio()))
-        guardarTokens(tokens)
-        return tokens
+    /** `POST /v1/auth/refresh`. El backend rota el refresh token en cada
+     * uso, así que todas las renovaciones pasan por un único [Mutex]. Un
+     * `401` aquí invalida la sesión persistida; no son credenciales de login
+     * mal escritas. */
+    suspend fun refrescar(totpCode: String? = null): TokenPair =
+        refreshMutex.withLock { refrescarSinLock(totpCode) }
+
+    private suspend fun refrescarSinLock(totpCode: String? = null): TokenPair {
+        val snapshot = snapshotDeSesion()
+        val refreshToken = sessionStateMutex.withLock {
+            if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+            tokenStore.getRefreshToken()
+        }
+        if (refreshToken == null) {
+            if (invalidarSesionSiVigente(snapshot.epoch)) {
+                onSessionExpired?.invoke()
+            }
+            throw ApiException.SesionExpirada()
+        }
+        return try {
+            val tokens: TokenPair = peticionSinSesion(
+                "/v1/auth/refresh",
+                RefreshBody(refreshToken, totpCode.aNuloSiVacio()),
+            )
+            guardarTokensSiVigente(tokens, snapshot.epoch)
+            tokens
+        } catch (e: ApiException.CredencialesInvalidas) {
+            if (invalidarSesionSiVigente(snapshot.epoch)) {
+                onSessionExpired?.invoke()
+            }
+            throw ApiException.SesionExpirada()
+        }
     }
 
-    /** Cierra sesión EN ESTE DISPOSITIVO: borra los tokens de memoria y del
-     * [TokenStore]. No es una llamada de red — la API v1 no tiene un
-     * endpoint de logout, los refresh tokens simplemente expiran solos
-     * (`ARCHITECTURE.md` §10.12). */
-    suspend fun cerrarSesion() {
-        accessTokenEnMemoria = null
-        tokenStore.clearTokens()
+    /** Invalida la sesión local de inmediato y revoca, con copias capturadas
+     * de las credenciales, el dispositivo y el refresh token. Las llamadas
+     * remotas son best-effort: estar offline nunca conserva una sesión local. */
+    suspend fun cerrarSesion(deviceId: String? = null) {
+        val credenciales = sessionStateMutex.withLock {
+            val captured = LogoutCredentials(
+                accessToken = accessTokenSinLock(),
+                refreshToken = tokenStore.getRefreshToken(),
+            )
+            sessionEpoch += 1
+            accessTokenEnMemoria = null
+            tokenStore.clearTokens()
+            captured
+        }
+
+        if (deviceId != null && credenciales.accessToken != null) {
+            mejorEsfuerzo {
+                val response = ejecutar {
+                    http.post(urlCompleta("/v1/devices/$deviceId/revoke")) {
+                        header(HttpHeaders.Authorization, "Bearer ${credenciales.accessToken}")
+                    }
+                }
+                validarStatus(response)
+            }
+        }
+        if (credenciales.refreshToken != null) {
+            mejorEsfuerzo {
+                val response = ejecutar {
+                    http.post(urlCompleta("/v1/auth/logout")) {
+                        contentType(ContentType.Application.Json)
+                        setBody(LogoutBody(credenciales.refreshToken))
+                    }
+                }
+                validarStatus(response)
+            }
+        }
     }
 
     /** Un access token utilizable ahora mismo, refrescando una vez si hace
@@ -289,7 +370,7 @@ class EdecanApi(
         accessTokenVigente()?.let { return it }
         return refreshMutex.withLock {
             accessTokenVigente() ?: run {
-                refrescar()
+                refrescarSinLock()
                 accessTokenEnMemoria ?: throw ApiException.SesionExpirada()
             }
         }
@@ -450,11 +531,15 @@ class EdecanApi(
             out.id.ifBlank { null }
         }
 
-    /** `DELETE /v1/devices/{deviceId}` al cerrar sesión — mismo criterio
+    /** `POST /v1/devices/{deviceId}/revoke` al cerrar sesión — mismo criterio
      * "mejor esfuerzo" que [emparejarDispositivo]: nunca lanza, para que
      * cerrar sesión en este dispositivo nunca falle por esto. */
     suspend fun revocarDispositivo(deviceId: String) {
-        mejorEsfuerzo { conAutoRefresh { eliminarSinCuerpo("/v1/devices/$deviceId") } }
+        mejorEsfuerzo {
+            conAutoRefresh {
+                enviarSinCuerpo<DeviceOut>("/v1/devices/$deviceId/revoke")
+            }
+        }
     }
 
     // -------------------------------------------------------------------
@@ -655,24 +740,76 @@ class EdecanApi(
 
     private fun String?.aNuloSiVacio(): String? = this?.trim()?.ifEmpty { null }
 
-    private suspend fun accessTokenVigente(): String? =
+    private suspend fun accessTokenVigente(): String? = sessionStateMutex.withLock { accessTokenSinLock() }
+
+    private suspend fun accessTokenSinLock(): String? =
         accessTokenEnMemoria ?: tokenStore.getAccessToken()?.also { accessTokenEnMemoria = it }
 
-    private suspend fun guardarTokens(tokens: TokenPair) {
-        accessTokenEnMemoria = tokens.accessToken
-        tokenStore.saveTokens(tokens.accessToken, tokens.refreshToken)
+    private suspend fun snapshotDeSesion(): SessionSnapshot = sessionStateMutex.withLock {
+        SessionSnapshot(sessionEpoch, accessTokenSinLock())
+    }
+
+    /** Inicia un login/registro nuevo e invalida cualquier refresh anterior.
+     * La respuesta solo podrá persistirse si este epoch sigue activo. */
+    private suspend fun comenzarNuevaSesion(): Long = sessionStateMutex.withLock {
+        sessionEpoch += 1
+        accessTokenEnMemoria = null
+        tokenStore.clearTokens()
+        sessionEpoch
+    }
+
+    private suspend fun guardarTokensSiVigente(tokens: TokenPair, expectedEpoch: Long) {
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) throw ApiException.SesionExpirada()
+            tokenStore.saveTokens(tokens.accessToken, tokens.refreshToken)
+            accessTokenEnMemoria = tokens.accessToken
+        }
+    }
+
+    private suspend fun invalidarSesionSiVigente(expectedEpoch: Long): Boolean =
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) return@withLock false
+            sessionEpoch += 1
+            accessTokenEnMemoria = null
+            tokenStore.clearTokens()
+            true
+        }
+
+    private suspend fun validarEpoch(expectedEpoch: Long) {
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) throw ApiException.SesionExpirada()
+        }
     }
 
     /** Ejecuta `operacion`; si falla porque el access token expiró,
      * refresca UNA vez y reintenta. Si el refresh también falla, propaga
      * el error del refresh (normalmente [ApiException.SesionExpirada]). */
-    private suspend fun <T> conAutoRefresh(operacion: suspend () -> T): T =
-        try {
-            operacion()
+    private suspend fun <T> conAutoRefresh(operacion: suspend () -> T): T {
+        val snapshot = snapshotDeSesion()
+        return try {
+            val resultado = operacion()
+            validarEpoch(snapshot.epoch)
+            resultado
         } catch (e: ApiException.SesionExpirada) {
-            refrescar()
-            operacion()
+            validarEpoch(snapshot.epoch)
+            refreshMutex.withLock {
+                // Otra petición pudo haber renovado mientras esta esperaba.
+                // Solo quien todavía vea el token que recibió el 401 consume
+                // el refresh token one-time.
+                val necesitaRefresh = sessionStateMutex.withLock {
+                    if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+                    accessTokenSinLock() == snapshot.accessToken
+                }
+                if (necesitaRefresh) {
+                    refrescarSinLock()
+                }
+            }
+            validarEpoch(snapshot.epoch)
+            val resultado = operacion()
+            validarEpoch(snapshot.epoch)
+            resultado
         }
+    }
 
     private suspend inline fun <reified R> obtener(path: String): R {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
@@ -787,6 +924,8 @@ class EdecanApi(
     private suspend fun ejecutar(bloque: suspend () -> HttpResponse): HttpResponse =
         try {
             bloque()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: ApiException) {
             throw e
         } catch (e: Exception) {
@@ -802,6 +941,8 @@ class EdecanApi(
     private suspend inline fun <reified R> decodificar(response: HttpResponse): R =
         try {
             response.body()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw ApiException.RespuestaInvalida()
         }
@@ -811,6 +952,8 @@ class EdecanApi(
     private suspend fun extraerMensajeDeError(response: HttpResponse): String =
         try {
             edecanJson.decodeFromString(ErrorBody.serializer(), response.bodyAsText()).detail ?: "sin detalle"
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             "sin detalle"
         }

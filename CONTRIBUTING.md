@@ -22,9 +22,9 @@ Required for the Python core: Python 3.12 and
 the full local stack needs Docker Compose v2.
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/edecan.git
-cd edecan
-git remote add upstream https://github.com/isaccmanuel/edecan.git
+git clone https://github.com/YOUR_GITHUB_USERNAME/edecan-oss.git
+cd edecan-oss
+git remote add upstream https://github.com/bizagencysas/edecan-oss.git
 uv sync --all-packages --frozen
 make check
 ```

@@ -7,8 +7,8 @@ Offline por defecto: `pgserver` se fakea vía `sys.modules` (mismo truco que
 el repo) y `_create_vector_extension` se monkeypatchea directo (necesita
 asyncpg contra un Postgres real, fuera de alcance de estos tests). El único
 test que SÍ arranca un Postgres embebido real está marcado
-`@pytest.mark.integration` y se salta solo si el paquete opcional `pgserver`
-no está instalado (`pytest.importorskip`) — si corre, el `finally` garantiza
+`@pytest.mark.integration` y se salta si `pgserver` no está disponible (por
+ejemplo en una arquitectura sin wheel publicado) — si corre, el `finally` garantiza
 `handle.cleanup()` siempre, incluso si una aserción falla (regla dura del
 repo: nunca dejar nada corriendo huérfano).
 """
@@ -105,7 +105,8 @@ async def test_ensure_postgres_sin_pgserver_instalado_lanza_runtime_error_claro(
         await ensure_postgres(tmp_path)
 
     mensaje = str(exc_info.value)
-    assert "embedded" in mensaje
+    assert "pgserver" in mensaje
+    assert "wheel publicado" in mensaje
     assert "EDECAN_DATABASE_URL" in mensaje
 
 
@@ -297,7 +298,7 @@ def test_noop_handle_cleanup_no_hace_nada() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Integration: pgserver real (se salta solo si el paquete no está instalado).
+# Integration: pgserver real (se salta si no hay wheel para la plataforma).
 # ---------------------------------------------------------------------------
 
 

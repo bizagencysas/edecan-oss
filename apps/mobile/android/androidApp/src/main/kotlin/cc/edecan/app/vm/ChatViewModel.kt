@@ -140,10 +140,23 @@ class ChatViewModel : ViewModel() {
      * cierra — código compartido entre [enviar] y [confirmar]. */
     private suspend fun correrTurno(api: EdecanApi, path: String, bodyJson: String, idRespuesta: String) {
         try {
-            val url = api.urlCompleta(path)
-            val token = api.tokenDeAccesoValido()
-            sseClient.stream(api.httpClientParaStream, url, token, bodyJson).collect { evento ->
-                aplicar(evento, idRespuesta)
+            var yaRefresco = false
+            while (true) {
+                try {
+                    val url = api.urlCompleta(path)
+                    val token = api.tokenDeAccesoValido()
+                    sseClient.stream(api.httpClientParaStream, url, token, bodyJson).collect { evento ->
+                        aplicar(evento, idRespuesta)
+                    }
+                    break
+                } catch (e: SseClient.SseException.Servidor) {
+                    if (e.status != 401 || yaRefresco) throw e
+                    // El stream SSE no pasa por conAutoRefresh. Ante el 401
+                    // inicial renovamos una sola vez y reconstruimos toda la
+                    // petición con el access token nuevo.
+                    yaRefresco = true
+                    api.refrescar()
+                }
             }
         } catch (e: Exception) {
             _uiState.update { it.copy(errorMensaje = e.message ?: "Error desconocido") }

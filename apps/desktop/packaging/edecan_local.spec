@@ -212,7 +212,7 @@ hiddenimports += collect_submodules("edecan_worker.handlers")
 # alcanza con que `edecan_local`/`edecan_api` las importen estático:
 #
 #   - `pgserver`: Postgres+pgvector embebido (`DIRECCION_ACTUAL.md`,
-#     "Postgres embebido"; `[project.optional-dependencies] embedded` en
+#     "Postgres embebido"; dependencia directa con marker de plataforma en
 #     `apps/local/pyproject.toml`) — trae binarios reales de Postgres
 #     (`collect_dynamic_libs`) además de datos y submódulos, por eso
 #     `collect_all` y no solo `collect_submodules`.

@@ -15,7 +15,8 @@
  */
 
 import { API_BASE_URL, ApiError } from "./api";
-import { getAccessToken, getRefreshToken, setTokens } from "./tokens";
+import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
+import { getAccessToken } from "./tokens";
 
 // ---------------------------------------------------------------------------
 // Tipos (`edecan_meetings` / `routers/reuniones.py`)
@@ -65,13 +66,6 @@ export const DISCLAIMER_CONSENTIMIENTO =
 // Auth (mismo patrón que `lib/api.ts` / `lib/api-viajes.ts`)
 // ---------------------------------------------------------------------------
 
-const TOTP_REQUIRED_DETAIL = "Se requiere un código TOTP válido para esta cuenta.";
-
-type RefreshResult = { ok: true } | { ok: false; totpRequired: boolean };
-
-let refreshInFlight: Promise<RefreshResult> | null = null;
-let totpPromptInFlight: Promise<boolean> | null = null;
-
 async function rawFetch(path: string, init: RequestInit): Promise<Response> {
   const headers = new Headers(init.headers);
   const token = getAccessToken();
@@ -79,64 +73,11 @@ async function rawFetch(path: string, init: RequestInit): Promise<Response> {
   return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
 }
 
-async function tryRefresh(totpCode?: string): Promise<RefreshResult> {
-  const refresh_token = getRefreshToken();
-  if (!refresh_token) return { ok: false, totpRequired: false };
-  if (!refreshInFlight) {
-    refreshInFlight = (async (): Promise<RefreshResult> => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/v1/auth/refresh`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token, totp_code: totpCode || undefined }),
-        });
-        if (!res.ok) {
-          if (res.status === 401) {
-            const { message } = await extractErrorMessage(res);
-            return { ok: false, totpRequired: message === TOTP_REQUIRED_DETAIL };
-          }
-          return { ok: false, totpRequired: false };
-        }
-        const pair = (await res.json()) as { access_token: string; refresh_token: string };
-        setTokens(pair.access_token, pair.refresh_token);
-        return { ok: true };
-      } catch {
-        return { ok: false, totpRequired: false };
-      }
-    })();
-  }
-  const result = await refreshInFlight;
-  refreshInFlight = null;
-  return result;
-}
-
-/** Pide el código 2FA una sola vez (deduplicado) cuando el refresh falla puntualmente
- * por el gate de TOTP; ver `lib/api.ts::tryRefreshWithTotpPrompt`. */
-async function tryRefreshWithTotpPrompt(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if (!totpPromptInFlight) {
-    totpPromptInFlight = (async () => {
-      const code = window.prompt(
-        "Tu sesión expiró. Ingresá tu código de verificación en dos pasos (2FA) para continuar:",
-      );
-      if (!code || !code.trim()) return false;
-      const result = await tryRefresh(code.trim());
-      return result.ok;
-    })();
-  }
-  const result = await totpPromptInFlight;
-  totpPromptInFlight = null;
-  return result;
-}
-
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   let res = await rawFetch(path, init);
   if (res.status === 401) {
-    let result = await tryRefresh();
-    if (!result.ok && result.totpRequired) {
-      result = (await tryRefreshWithTotpPrompt()) ? { ok: true } : { ok: false, totpRequired: false };
-    }
-    if (result.ok) res = await rawFetch(path, init);
+    const result = await recoverSessionAfterUnauthorized(API_BASE_URL);
+    if (isRefreshResultCurrent(result)) res = await rawFetch(path, init);
   }
   return res;
 }

@@ -28,7 +28,7 @@ private struct RaizDeLaApp: View {
 
     var body: some View {
         Group {
-            if pairingStore.isPaired {
+            if pairingStore.isPaired && session.sesionValida {
                 RootTabView()
             } else {
                 OnboardingView()

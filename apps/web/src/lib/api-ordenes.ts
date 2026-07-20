@@ -1,8 +1,7 @@
 /**
  * Fetchers de `/v1/commerce/*` (ARCHITECTURE.md §10.14 "vertical slice", ROADMAP_V2.md
- * §7.10 y §7 WP-V2-10). `lib/api.ts` es compartido y no se toca — este archivo reimplementa
- * el mismo patrón mínimo de auth (Bearer + redirect a /login en 401) sobre `API_BASE_URL` y
- * `ApiError`, que sí están exportados desde ahí.
+ * §7.10 y §7 WP-V2-10). Usa el mismo coordinador de rotación que el resto de
+ * clientes para que una expiración normal no expulse al usuario de Órdenes.
  *
  * Ver `apps/api/edecan_api/routers/commerce.py` para el contrato exacto — en particular:
  * NO existe un `POST /v1/commerce/orders` (crear una orden es exclusivo de las tools del
@@ -12,7 +11,8 @@
  */
 
 import { API_BASE_URL, ApiError } from "./api";
-import { clearTokens, getAccessToken } from "./tokens";
+import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
+import { getAccessToken, hasSession } from "./tokens";
 
 // --- Tipos -------------------------------------------------------------------------
 
@@ -84,23 +84,30 @@ export interface PresupuestoEstado {
   mes: string;
 }
 
-// --- Bajo nivel: fetch autenticado (mismo patrón que `lib/api.ts`, sin el refresh-on-401 —
-// ver docstring del archivo) ---------------------------------------------------------------
+// --- Bajo nivel: fetch autenticado (mismo coordinador que `lib/api.ts`) ------------------
 
 function redirectToLogin(): void {
-  if (typeof window === "undefined") return;
-  clearTokens();
+  if (typeof window === "undefined" || hasSession()) return;
   if (window.location.pathname !== "/login") {
     window.location.assign("/login");
   }
 }
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  const token = getAccessToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
-  if (res.status === 401) {
+  const request = async (): Promise<Response> => {
+    const headers = new Headers(init.headers);
+    const token = getAccessToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  };
+
+  let res = await request();
+  if (res.status !== 401) return res;
+
+  const result = await recoverSessionAfterUnauthorized(API_BASE_URL);
+  if (isRefreshResultCurrent(result)) {
+    res = await request();
+  } else if (!result.ok && result.reason === "invalid") {
     redirectToLogin();
   }
   return res;

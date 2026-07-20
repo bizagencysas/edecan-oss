@@ -8,7 +8,7 @@ límites de confianza y los riesgos conocidos se documentan en el
 ## Reportar una vulnerabilidad
 
 No abras un issue público. Usa el formulario privado de
-[GitHub Security Advisories](https://github.com/isaccmanuel/edecan/security/advisories/new).
+[GitHub Security Advisories](https://github.com/bizagencysas/edecan-oss/security/advisories/new).
 Si GitHub no te permite enviar el reporte, abre un issue que solo diga que
 necesitas un canal privado, sin incluir detalles técnicos ni datos sensibles.
 
@@ -73,3 +73,18 @@ al commit o release que el advisory indique.
   capturas, logs o issues.
 - Revisa los runbooks en [`docs/runbooks/`](./docs/runbooks/) antes de operar
   una instancia con datos reales.
+
+### Sesiones web y pestañas duplicadas
+
+El cliente web guarda los JWT en `sessionStorage`: no persisten al cerrar la
+pestaña y no se copian deliberadamente a `localStorage`. Las solicitudes
+concurrentes de una misma pestaña comparten una única rotación y una respuesta
+tardía no puede restaurar una sesión cerrada ni sobrescribir un login nuevo.
+
+No se transmiten refresh tokens por `BroadcastChannel` para coordinar pestañas,
+porque eso ampliaría el secreto a cualquier contexto del mismo origen. Algunos
+navegadores copian `sessionStorage` al **duplicar** una pestaña; como el backend
+rota el refresh token de un solo uso, la primera copia que renueve la sesión
+puede hacer que la otra solicite autenticarse de nuevo. Es una limitación
+intencional: abre Edecan en una sola pestaña por sesión o inicia sesión de forma
+independiente en cada pestaña, en vez de duplicarla.

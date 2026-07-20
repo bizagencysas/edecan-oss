@@ -1,6 +1,6 @@
 [project]
 name = "edecan-worker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Edecán — worker asíncrono: consumidor SQS, ingesta de documentos, recordatorios, sync de conectores, generación de contenido y consolidación de memoria"
 requires-python = ">=3.12"
 readme = "README.md"

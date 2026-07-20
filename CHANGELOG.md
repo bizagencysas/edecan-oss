@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-20
+
 ### Added
 
 - Cross-platform continuous integration for Python, web, desktop, iOS shared code, and Android
@@ -18,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Server-side refresh-token rotation and revocation, authentication rate limits, membership revalidation, and login/logout audit events
 - Strict web, static-export, and Tauri content security policies and defensive HTTP headers
 - A dependency-aware `/readyz` endpoint for PostgreSQL and Redis
+- A deterministic new-user journey covering readiness, registration, profile,
+  setup, chat streaming, file upload, refresh rotation, logout, and revocation
 
 ### Changed
 
@@ -26,6 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - File uploads are streamed from Starlette's spooled file, bounded by `MAX_UPLOAD_BYTES`, and stored under sanitized names
 - Git operations in the local-code tool use argument-vector subprocesses so commit messages cannot execute shell syntax
 - The supported Node 22 LTS container build consumes a compatible npm 10 lockfile, reuses the official non-root user, and ships every runtime config module
+- Web API clients share one refresh operation, protected TOTP routes carry the
+  access token, and file processing status updates without blocking the page
+- Android and iOS coalesce refresh rotation, recover chat SSE once after a
+  `401`, revoke sessions remotely, and invalidate local logout immediately
+- The local runtime installs embedded PostgreSQL by default, while Tauri
+  development builds a same-origin web UI and runs the backend from source
 
 ### Security
 
@@ -34,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added pinned Python advisory scanning; the current exported lock resolves with no known vulnerabilities
 - CI now proves that every Python workspace member produces both an sdist and a wheel
 - Docker build contexts exclude local secrets, caches, dependency trees, and generated artifacts
+- Linux and macOS now exercise the same portable fake-ffmpeg byte fixture
 
 ## [0.1.0] - 2026-07-10
 
@@ -41,5 +52,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial public release of the Apache-2.0-licensed Edecan core
 
-[Unreleased]: https://github.com/isaccmanuel/edecan/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/isaccmanuel/edecan/releases/tag/v0.1.0
+[Unreleased]: https://github.com/bizagencysas/edecan-oss/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/bizagencysas/edecan-oss/releases/tag/v0.1.0

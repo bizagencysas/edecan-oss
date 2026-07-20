@@ -1,6 +1,6 @@
 [project]
 name = "edecan-workspace"
-version = "0.1.0"
+version = "0.2.0"
 description = "Edecan local-first AI operator monorepo"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -51,6 +51,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "httpx2>=2.7,<3",
+]
+release = [
+    # Herramienta de empaquetado del sidecar desktop. Fijada y resuelta en
+    # uv.lock para que un tag produzca el mismo cierre de dependencias.
+    "pyinstaller==6.21.0",
 ]
 
 [tool.ruff]

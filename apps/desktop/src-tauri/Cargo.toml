@@ -1,6 +1,6 @@
 [package]
 name = "edecan-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Edecán — asistente personal de IA (app de escritorio)"
 authors = ["Edecán"]
 edition = "2021"
@@ -24,6 +24,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = "1"
 
 [dependencies]
 # "tray-icon" habilita tauri::tray + tauri::menu (menú de bandeja: item (g)

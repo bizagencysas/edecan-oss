@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/isaccmanuel/edecan/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/isaccmanuel/edecan/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/bizagencysas/edecan-oss/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/bizagencysas/edecan-oss/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" /></a>
   <a href="./pyproject.toml"><img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-3776AB.svg" /></a>
   <a href="./apps/web/package.json"><img alt="Next.js 15" src="https://img.shields.io/badge/Next.js-15-000000.svg" /></a>
@@ -26,7 +26,7 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.1).** The source, tests, web app, API, workers,
+> **Developer preview (v0.2).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
@@ -53,7 +53,7 @@ credentials to a hosted intermediary. Edecan explores a different model:
 
 | Surface | Current state | Evidence |
 |---|---|---|
-| Python core, API, workers, tools | Implemented | 4,188 offline tests pass locally |
+| Python core, API, workers, tools | Implemented | 4,190 offline tests pass locally |
 | Web application | Implemented | Next.js production build renders 36 routes |
 | Local desktop runtime | Preview | Tauri shell + packaged Python backend; source build required |
 | macOS and Windows desktop packaging | Preview | Build scripts exist; signed public installers do not yet |
@@ -85,8 +85,8 @@ instead of assuming every integration is enabled by default.
 Requirements: Python 3.12 and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/isaccmanuel/edecan.git
-cd edecan
+git clone https://github.com/bizagencysas/edecan-oss.git
+cd edecan-oss
 uv sync --all-packages --frozen
 make check
 ```

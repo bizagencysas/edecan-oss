@@ -52,7 +52,7 @@ Todo bindea **solo en `127.0.0.1`** — nunca `0.0.0.0` (`ARCHITECTURE.md` §12.
 
 | Pieza de referencia | Resuelta acá con | Por qué |
 |---|---|---|
-| PostgreSQL (RDS/`postgres` en compose) | `pgserver` (paquete opcional `edecan-local[embedded]`) | Trae binarios reales de Postgres 16 + pgvector — cero Docker, cero instalación aparte. `edecan_local.pg.ensure_postgres` lo arranca en `data_dir/pg` (crea el cluster la primera vez, lo reusa después). |
+| PostgreSQL (RDS/`postgres` en compose) | `pgserver` (dependencia directa donde existe wheel) | Trae binarios reales de Postgres 16 + pgvector en macOS x64/arm64, Linux x64 y Windows x64. `edecan_local.pg.ensure_postgres` lo arranca en `data_dir/pg`; Linux/Windows ARM64 deben definir `EDECAN_DATABASE_URL`. |
 | Redis (ElastiCache/`redis` en compose) | `fakeredis` (`REDIS_URL=memory://`) | Solo se usa para rate-limit, códigos de emparejamiento y confirmaciones pendientes (`ARCHITECTURE.md` §10.12) — todo de corta vida, de UN SOLO proceso. Levantar un Redis real para eso en la laptop de alguien es puro overhead. `edecan_api.deps` (fase v3) interpreta el esquema `memory://` — este WP solo lo fija como env var. |
 | SQS + DLQ (`edecan-jobs`) | Tabla `jobs` de Postgres como cola (`QUEUE_PROVIDER=db`) | Evita depender de LocalStack/SQS real en la máquina del cliente. `edecan_core.queue.enqueue` gana una rama `INSERT INTO jobs` (vía `asyncpg`, conexión efímera) cuando `QUEUE_PROVIDER="db"` — el comportamiento SQS de siempre queda intacto para dev/prod (`QUEUE_PROVIDER` default `"sqs"`). `edecan_local.worker_loop` consume esa misma tabla con `SELECT ... FOR UPDATE SKIP LOCKED`, en vez de que un `edecan_worker.main` aparte haga long-polling a SQS. |
 | S3 (`edecan-files` / LocalStack en dev) | `edecan_local.objectstore`, un mini servidor S3-compatible sobre filesystem | Ningún call site de `aioboto3` en el repo llama `create_bucket` — todos van directo a `put_object`/`get_object` (ver su docstring) con `Body=bytes`. Reimplementar SOLO ese subconjunto (PUT/GET/HEAD/DELETE de objeto, `ListObjectsV2` mínimo) alcanza para que `aiobotocore` hable con un `AWS_ENDPOINT_URL` local sin tocar ninguno de esos call sites. Firmas AWS (`Authorization`/`X-Amz-*`) se ignoran por completo — solo escucha loopback. |
@@ -90,14 +90,14 @@ Por eso `edecan_local.runtime._ensure_local_secrets`:
 
 ```bash
 # Desde la raíz del repo — arranca todo (Postgres embebido incluido) en :8765
-uv run python -m edecan_local
+uv run --all-packages python -m edecan_local
 
 # Con la web de apps/web corriendo aparte (npm run dev en :3000), en vez de
 # la exportación estática que empaqueta apps/desktop:
-uv run python -m edecan_local --no-web
+uv run --all-packages python -m edecan_local --no-web
 
 # Puerto y carpeta de datos propios (útil para correr dos instancias a la vez):
-uv run python -m edecan_local --port 9001 --data-dir /tmp/edecan-dev-data
+uv run --all-packages python -m edecan_local --port 9001 --data-dir /tmp/edecan-dev-data
 ```
 
 Al quedar sano (migraciones aplicadas, `GET /healthz` respondiendo de verdad — este proceso hace su propio poll antes de avisar, nunca asume) imprime en stdout la línea exacta:
@@ -114,10 +114,15 @@ Si ya tenés un Postgres corriendo (el tuyo propio, uno remoto, uno en Docker qu
 
 ```bash
 EDECAN_DATABASE_URL="postgresql+asyncpg://usuario:pass@localhost:5432/edecan" \
-  uv run python -m edecan_local
+  uv run --all-packages python -m edecan_local
 ```
 
 `edecan_local.pg.ensure_postgres` detecta esa variable y usa esa URL tal cual, sin tocar `pgserver` para nada (ni siquiera lo importa) — este proceso tampoco se hace cargo de apagarlo al salir, porque no es dueño de ese Postgres.
+
+Este modo es obligatorio en Linux ARM64 y Windows ARM64: `pgserver==0.1.4`
+no publica wheel para esas arquitecturas. El marker de dependencia permite
+instalar el workspace y usar el runtime con una base administrada, sin fingir
+que existe un Postgres embebido donde el proveedor no distribuye binarios.
 
 ## 7. Qué NO es este runner
 
@@ -139,7 +144,7 @@ EDECAN_DATABASE_URL="postgresql+asyncpg://usuario:pass@localhost:5432/edecan" \
 
 **Ampliación (fase v4, 2026-07-08) — Ollama embebido**: `backend.rs::build_command` ganó dos funciones nuevas (`with_ollama_env`/`resolve_ollama_sidecar`, ver §9 más abajo) para pasarle a este proceso `EDECAN_OLLAMA_BIN`/`EDECAN_OLLAMA_AUTOSTART` como env vars. Originalmente escrito sin poder compilar (mismo límite sin `cargo`/`rustc` de esta nota) — **actualizado 2026-07-09**: `cargo build`/`cargo run` reales confirman que compila sin warnings y que el camino "sin binario de Ollama empaquetado" (el default, `EDECAN_BUNDLE_OLLAMA` sin fijar — ver `docs/seguridad-modelo-amenazas.md` sobre por qué eso es lo correcto por defecto) funciona con gracia: `resolve_ollama_sidecar` devuelve `None`, `with_ollama_env` no agrega ninguna env var, y el resto de la app arranca normal. Queda pendiente (checklist sin correr todavía, no bloqueante) el camino CON Ollama bundleado de verdad:
 
-1. `./scripts/download-ollama.sh` (deja `ollama-<target-triple>` en `src-tauri/binaries/`) y `EDECAN_BUNDLE_OLLAMA=1 ./scripts/build-app.sh` (o `cargo run` con el mismo `TAURI_CONFIG` override que usa ese script) — confirma que `resolve_ollama_sidecar` encuentra el binario y que `maybe_start_ollama` (Python, §9) lo arranca de verdad.
+1. `EDECAN_BUNDLE_OLLAMA=1 ./scripts/build-app.sh` en macOS, o la misma variable con `build-app.ps1` en Windows x64 — confirma que `resolve_ollama_sidecar` encuentra el binario y que `maybe_start_ollama` (Python, §9) lo arranca de verdad. El flujo Windows también empaqueta el árbol `lib/ollama` requerido por el CLI standalone; el build falla si ese runtime nativo está incompleto.
 2. `ps aux | grep "ollama serve"` mientras la app está abierta — confirma el pid vivo.
 3. Cerrar la app (ventana, bandeja, o Cmd+Q) y repetir el `ps` — el proceso `ollama serve` debe haber desaparecido, igual que `pgserver` en el punto 1 de esta nota.
 

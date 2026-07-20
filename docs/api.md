@@ -663,7 +663,7 @@ Los tres campos son obligatorios (`400` si falta alguno). `base_url` acepta cual
 Para que la UI decida si mostrar el wizard corto de bienvenida (2–3 pasos máximo) o ir directo al chat:
 
 ```json
-{"local_mode": true, "llm_configured": true, "version": "0.1.0"}
+{"local_mode": true, "llm_configured": true, "version": "0.2.0"}
 ```
 
 `local_mode` = `EDECAN_LOCAL_MODE` del servidor; `llm_configured` = el tenant ya tiene una `connector_account` con `connector_key="llm"` y un `TokenBundle` guardado (mismo criterio que `routers/credentials.py::get_credentials`); `version` = `edecan_api.__version__`.

@@ -178,19 +178,17 @@ pub async fn start_backend(app: AppHandle) {
     }
 }
 
-/// Arma el `Command` del sidecar. Camino normal: el binario empaquetado por
-/// `scripts/build-backend.sh` (`externalBin`, ver tauri.conf.json). Si ese
-/// binario no existe todavía (típico en `cargo tauri dev` antes de correr
-/// el script de build) cae al comando de desarrollo configurable vía la
+/// Arma el `Command` del backend. En release usa el sidecar empaquetado por
+/// `scripts/build-backend.sh` (`externalBin`, ver tauri.conf.json). En un
+/// perfil debug usa siempre el comando de desarrollo configurable vía la
 /// variable de entorno `EDECAN_LOCAL_DEV_CMD` (default: `"uv run
 /// --all-packages python -m edecan_local"`, corrido con cwd = raíz del
-/// repo). El default lleva `--all-packages` a propósito (mismo motivo que
-/// `scripts/dev.sh`, que exporta esta misma variable explícita ANTES de
-/// invocar `cargo tauri dev`: un `uv run` suelto sin ese flag poda en
-/// silencio el resto del workspace uv, ver HOTFIXES_PENDIENTES.md "uv sync/
-/// uv run sueltos podaban en silencio...") — este default solo se ejercita
-/// de verdad si alguien corre `cargo tauri dev` DIRECTO sin pasar por
-/// `scripts/dev.sh` (que ya fija la variable antes de llegar acá). En
+/// repo). Elegir por perfil es deliberado: con `externalBin=[]` Tauri puede
+/// devolver un `Command` válido aunque el archivo no exista, y el error
+/// aparece recién en `spawn()` — demasiado tarde para hacer fallback. El
+/// default lleva `--all-packages` para conservar todos los paquetes del
+/// workspace. `EDECAN_LOCAL_DEV_CMD` también fuerza este camino si una build
+/// no-debug se ejecuta explícitamente desde un entorno de desarrollo. En
 /// cualquiera de los dos caminos, `with_ollama_env` (abajo) suma al final
 /// las dos env vars opcionales de Ollama embebido (WP-V4-09, ver
 /// docs/desktop.md "Ollama embebido (opcional)").
@@ -208,26 +206,27 @@ fn build_command(
         data_dir_arg.as_str(),
     ];
 
-    let cmd = match app.shell().sidecar("edecan-local") {
-        Ok(cmd) => cmd.args(backend_args),
-        Err(sidecar_err) => {
-            let dev_cmd = std::env::var("EDECAN_LOCAL_DEV_CMD")
-                .unwrap_or_else(|_| "uv run --all-packages python -m edecan_local".to_string());
-            let mut parts = dev_cmd.split_whitespace();
-            let program = parts.next().ok_or_else(|| {
-                format!(
-                    "No hay sidecar empaquetado ({sidecar_err}) y EDECAN_LOCAL_DEV_CMD \
-                     está vacío. Corré scripts/build-backend.sh o exportá esa variable \
-                     (ver docs/desktop.md)."
-                )
-            })?;
-            let extra_args: Vec<&str> = parts.collect();
-            app.shell()
-                .command(program)
-                .args(extra_args)
-                .args(backend_args)
-                .current_dir(repo_root_dir())
-        }
+    let source_command =
+        cfg!(debug_assertions) || std::env::var_os("EDECAN_LOCAL_DEV_CMD").is_some();
+    let cmd = if source_command {
+        let dev_cmd = std::env::var("EDECAN_LOCAL_DEV_CMD")
+            .unwrap_or_else(|_| "uv run --all-packages python -m edecan_local".to_string());
+        let mut parts = dev_cmd.split_whitespace();
+        let program = parts.next().ok_or_else(|| {
+            "EDECAN_LOCAL_DEV_CMD está vacío; define un comando válido o elimina la variable."
+                .to_string()
+        })?;
+        let extra_args: Vec<&str> = parts.collect();
+        app.shell()
+            .command(program)
+            .args(extra_args)
+            .args(backend_args)
+            .current_dir(repo_root_dir())
+    } else {
+        app.shell()
+            .sidecar("edecan-local")
+            .map_err(|err| format!("No se pudo resolver el sidecar edecan-local: {err}"))?
+            .args(backend_args)
     };
 
     Ok(with_expanded_path(with_ollama_env(cmd)))

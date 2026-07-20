@@ -5,9 +5,8 @@ runner local (`ARCHITECTURE.md` §12f, dueño WP-V3-05), en dos modos:
   Postgres (uno que ya corría, o uno remoto) — se usa esa URL tal cual, sin
   tocar `pgserver` para nada. Pensado para quien ya tiene infraestructura
   propia y no quiere el Postgres embebido (`docs/desktop-local.md`).
-- **Por defecto** (nada fijado): Postgres EMBEBIDO vía el paquete opcional
-  `pgserver` (extra `edecan-local[embedded]`, declarado en
-  `apps/local/pyproject.toml` por WP-V3-01) — trae binarios de Postgres 16 +
+- **Por defecto** (nada fijado): Postgres EMBEBIDO vía `pgserver`, dependencia
+  del runtime `edecan-local` — trae binarios de Postgres 16 +
   pgvector, sin Docker ni que el cliente instale nada aparte. La primera vez
   que se llama sobre un `data_dir/pg` vacío, `pgserver.get_server(...)`
   inicializa el cluster; las veces siguientes simplemente lo arranca.
@@ -163,9 +162,10 @@ async def ensure_postgres(data_dir: Path) -> tuple[str, PostgresHandle]:
         import pgserver
     except ImportError as exc:
         raise RuntimeError(
-            "No hay EDECAN_DATABASE_URL configurada y el paquete opcional 'pgserver' no "
-            "está instalado -- instala 'edecan-local[embedded]' (Postgres embebido) o "
-            "define EDECAN_DATABASE_URL apuntando a tu propio Postgres."
+            "No hay EDECAN_DATABASE_URL configurada y falta la dependencia 'pgserver'. "
+            "Esta arquitectura puede no tener un wheel publicado de pgserver; define "
+            "EDECAN_DATABASE_URL apuntando a tu propio Postgres o reinstala "
+            "edecan-local desde el lock en una plataforma compatible."
         ) from exc
 
     pg_data_dir = _safe_pg_data_dir(Path(data_dir))

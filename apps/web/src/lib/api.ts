@@ -4,7 +4,7 @@
  * Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). Todas
  * las rutas protegidas usan `Authorization: Bearer <access_token>`; si una
  * respuesta llega en 401 se intenta refrescar una sola vez con
- * `POST /v1/auth/refresh` (dedupe de refresh concurrente vía `refreshInFlight`)
+ * `POST /v1/auth/refresh` (dedupe global entre todos los clientes API)
  * y se reintenta la petición original antes de rendirse y mandar al usuario
  * a `/login`. Si la cuenta tiene 2FA activo, `/v1/auth/refresh` exige
  * `totp_code` igual que `/login` (auth.py) — ese caso puntual se distingue
@@ -17,7 +17,9 @@
  * a `docs/api.md`.
  */
 
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "./tokens";
+import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
+import { clearTokens, getAccessToken, getRefreshToken, hasSession, setTokens } from "./tokens";
+import { isPublicAuthRoute } from "./auth-route-policy";
 import type {
   AgentEvent,
   Contact,
@@ -89,17 +91,6 @@ async function extractErrorMessage(res: Response): Promise<{ message: string; de
 // distingue esa causa puntual de un refresh token genuinamente inválido o
 // expirado (los otros 401 posibles acá), así que se compara literal contra
 // el mismo mensaje que usa el backend.
-const TOTP_REQUIRED_DETAIL = "Se requiere un código TOTP válido para esta cuenta.";
-
-type RefreshResult = { ok: true } | { ok: false; totpRequired: boolean };
-
-let refreshInFlight: Promise<RefreshResult> | null = null;
-let totpPromptInFlight: Promise<boolean> | null = null;
-
-function isAuthRoute(path: string): boolean {
-  return path.startsWith("/v1/auth/");
-}
-
 async function rawFetch(path: string, init: RequestInit, skipAuth: boolean): Promise<Response> {
   const headers = new Headers(init.headers);
   if (!skipAuth) {
@@ -109,71 +100,8 @@ async function rawFetch(path: string, init: RequestInit, skipAuth: boolean): Pro
   return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
 }
 
-async function tryRefresh(totpCode?: string): Promise<RefreshResult> {
-  const refresh_token = getRefreshToken();
-  if (!refresh_token) return { ok: false, totpRequired: false };
-  if (!refreshInFlight) {
-    refreshInFlight = (async (): Promise<RefreshResult> => {
-      try {
-        const res = await rawFetch(
-          "/v1/auth/refresh",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ refresh_token, totp_code: totpCode || undefined }),
-          },
-          true,
-        );
-        if (!res.ok) {
-          if (res.status === 401) {
-            const { message } = await extractErrorMessage(res);
-            return { ok: false, totpRequired: message === TOTP_REQUIRED_DETAIL };
-          }
-          return { ok: false, totpRequired: false };
-        }
-        const pair = (await res.json()) as TokenPair;
-        setTokens(pair.access_token, pair.refresh_token);
-        return { ok: true };
-      } catch {
-        return { ok: false, totpRequired: false };
-      }
-    })();
-  }
-  const result = await refreshInFlight;
-  refreshInFlight = null;
-  return result;
-}
-
-/**
- * Cuando el refresh silencioso falla ESPECÍFICAMENTE por el gate de TOTP (2FA
- * activo; el refresh token en sí sigue siendo válido — ver `tryRefresh`), se
- * le pide el código al usuario una sola vez en vez de cerrarle la sesión de
- * una. Deduplicado igual que `refreshInFlight` para no disparar varios
- * `window.prompt()` si hay varias requests en 401 al mismo tiempo. Si
- * cancela o el código es incorrecto, se trata igual que un refresh token
- * inválido: logout duro (ver `authedFetch`). Nunca toca el backend ni afloja
- * el gate — decisión ya tomada en HOTFIXES_PENDIENTES.md #2 (opción (a)).
- */
-async function tryRefreshWithTotpPrompt(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if (!totpPromptInFlight) {
-    totpPromptInFlight = (async () => {
-      const code = window.prompt(
-        "Tu sesión expiró. Ingresá tu código de verificación en dos pasos (2FA) para continuar:",
-      );
-      if (!code || !code.trim()) return false;
-      const result = await tryRefresh(code.trim());
-      return result.ok;
-    })();
-  }
-  const result = await totpPromptInFlight;
-  totpPromptInFlight = null;
-  return result;
-}
-
 function redirectToLogin(): void {
-  if (typeof window === "undefined") return;
-  clearTokens();
+  if (typeof window === "undefined" || hasSession()) return;
   if (window.location.pathname !== "/login") {
     window.location.assign("/login");
   }
@@ -185,18 +113,13 @@ function redirectToLogin(): void {
  * resolverlo con `tryRefreshWithTotpPrompt` antes de rendirse.
  */
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const skipAuth = isAuthRoute(path);
+  const skipAuth = isPublicAuthRoute(path);
   let res = await rawFetch(path, init, skipAuth);
   if (res.status === 401 && !skipAuth) {
-    let result = await tryRefresh();
-    if (!result.ok && result.totpRequired) {
-      result = (await tryRefreshWithTotpPrompt())
-        ? { ok: true }
-        : { ok: false, totpRequired: false };
-    }
-    if (result.ok) {
+    const result = await recoverSessionAfterUnauthorized(API_BASE_URL);
+    if (isRefreshResultCurrent(result)) {
       res = await rawFetch(path, init, skipAuth);
-    } else {
+    } else if (!result.ok && result.reason === "invalid") {
       redirectToLogin();
     }
   }

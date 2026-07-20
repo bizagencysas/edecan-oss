@@ -20,6 +20,9 @@ public final class SessionStore {
     public private(set) var me: Me?
     public var errorMensaje: String?
     public private(set) var cargandoMe = false
+    public private(set) var sesionValida = true
+    private var clientGeneration = 0
+    private var contentEpoch = 0
 
     public init() {}
 
@@ -28,11 +31,20 @@ public final class SessionStore {
     /// `client` en `nil` — las pantallas que lo necesiten deben tratarlo
     /// como "sin sesión utilizable".
     public func actualizarBaseURL(_ url: URL?) {
+        clientGeneration += 1
+        contentEpoch += 1
+        me = nil
         guard let url else {
             client = nil
             return
         }
-        client = APIClient(baseURL: url)
+        let generation = clientGeneration
+        client = APIClient(
+            baseURL: url,
+            onSessionExpired: { [weak self] in
+                await self?.manejarExpiracionGlobal(clientGeneration: generation)
+            }
+        )
     }
 
     /// `GET /v1/me` — se llama justo tras el login y cada vez que Inicio o
@@ -42,17 +54,46 @@ public final class SessionStore {
     @discardableResult
     public func cargarMe() async -> Me? {
         guard let client else { return nil }
+        let generation = clientGeneration
+        let requestEpoch = contentEpoch
         cargandoMe = true
         defer { cargandoMe = false }
         do {
             let me = try await client.me()
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
             self.me = me
+            sesionValida = true
             errorMensaje = nil
             return me
+        } catch APIClient.APIError.sesionExpirada {
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
+            manejarExpiracionGlobal(clientGeneration: generation)
+            return nil
         } catch {
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
             errorMensaje = error.localizedDescription
             return nil
         }
+    }
+
+    public func marcarSesionValida() {
+        contentEpoch += 1
+        me = nil
+        sesionValida = true
+    }
+
+    private func manejarExpiracionGlobal(clientGeneration generation: Int) {
+        guard generation == clientGeneration else { return }
+        contentEpoch += 1
+        me = nil
+        sesionValida = false
+        errorMensaje = APIClient.APIError.sesionExpirada.localizedDescription
     }
 
     /// Cierra la sesión en memoria y en el Keychain (vía `APIClient`). NO
@@ -65,14 +106,13 @@ public final class SessionStore {
     /// `deviceId`, si no es `nil`, dispara además `POST /v1/devices/{id}/revoke`
     /// en segundo plano — best-effort (nunca bloquea ni falla el cierre de
     /// sesión: WP-V4-01 puede no haber aterrizado, o puede fallar por red).
-    public func cerrarSesion(deviceId: String? = nil) {
+    public func cerrarSesion(deviceId: String? = nil) async {
+        contentEpoch += 1
         me = nil
         errorMensaje = nil
+        sesionValida = false
         guard let client else { return }
-        if let deviceId {
-            Task { try? await client.revocarDispositivo(id: deviceId) }
-        }
-        Task { await client.cerrarSesion() }
+        await client.cerrarSesion(deviceId: deviceId)
     }
 
     // MARK: - Emparejamiento por dispositivo (WP-V4-01, contrato en paralelo)

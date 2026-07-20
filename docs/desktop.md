@@ -42,10 +42,10 @@ Solo hacen falta si vos mismo vas a **generar** el instalador (no para usarlo ya
 
 | Herramienta | Para qué | Notas |
 |---|---|---|
-| **Rust** estable (`rustup`) + `cargo-tauri` | El shell nativo | `cargo install tauri-cli --version '^2.0'` |
-| **Node.js 20+** y npm | Build estático de `apps/web` | Ya usado por el resto del repo |
+| **Rust** estable (`rustup`) + `cargo-tauri` | El shell nativo | CLI fijado: `cargo install tauri-cli --version '2.11.4' --locked` |
+| **Node.js 22** y **npm 10** | Build estático de `apps/web` | Coincide con `apps/web/package.json` |
 | **Python 3.12** + [`uv`](https://docs.astral.sh/uv/) | `edecan_local` (backend) y su empaquetado | El workspace uv completo del repo, no un venv aislado |
-| **PyInstaller** | Congela `edecan_local` en un binario | **No hace falta instalarlo a mano** — `scripts/build-backend.sh`/`.ps1` lo agregan al vuelo con `uv run --with pyinstaller`, sin tocar ningún `pyproject.toml` del repo |
+| **PyInstaller 6.21.0** | Congela `edecan_local` en un binario | **No hace falta instalarlo a mano**: está fijado en el grupo `release` de `pyproject.toml` y resuelto por `uv.lock` |
 | macOS: Xcode Command Line Tools | `sips`/`iconutil` (`scripts/make-icons.sh`) | Ya presentes en cualquier Mac con Xcode CLT instalado |
 | Windows: Visual Studio Build Tools (C++) | Requisito estándar de compilar con MSVC | El instalador de Rust para Windows ya te lo pide si falta |
 
@@ -58,7 +58,7 @@ cd apps/desktop
 ./scripts/build-app.sh
 ```
 
-Internamente: construye `apps/web` en modo export estático → congela `edecan_local` con PyInstaller (onedir) → copia ambos donde Tauri los espera → `cargo tauri build`. Salida en `src-tauri/target/release/bundle/`:
+Internamente: construye `apps/web` en modo export estático → congela `edecan_local` con PyInstaller (onefile) → copia ambos donde Tauri los espera → `cargo tauri build`. Salida en `src-tauri/target/release/bundle/`:
 
 - `dmg/Edecán_<version>_<arch>.dmg` — el instalador para repartir.
 - `macos/Edecán.app` — la app suelta (útil para probar sin montar el dmg).
@@ -69,24 +69,38 @@ Sin firmar por defecto (§7). Requiere macOS 11+ para correr (`tauri.conf.json` 
 
 ```powershell
 cd apps\desktop
-.\scripts\build-backend.ps1
-cargo tauri build
+.\scripts\build-app.ps1
 ```
 
-(No hay `build-app.ps1` — son las dos líneas de arriba, a mano; `build-backend.ps1` hace la parte de web+PyInstaller, igual que `build-backend.sh` en macOS/Linux.) Salida en `src-tauri\target\release\bundle\`:
+`build-app.ps1` valida Windows x64, Node/npm y la versión fijada del CLI,
+ejecuta web+PyInstaller mediante `build-backend.ps1` y luego arma los bundles.
+Salida en `src-tauri\target\release\bundle\`:
 
 - `nsis\Edecán_<version>_<arch>-setup.exe` — instalador NSIS (el recomendado; instala por-usuario, sin pedir admin — `tauri.conf.json` → `bundle.windows.nsis.installMode: "currentUser"`).
 - `msi\Edecán_<version>_<arch>.msi` — alternativa MSI, útil si tu organización despliega por GPO/Intune.
 
-### 4.3 Modo desarrollo
+### 4.3 Linux
+
+Este repo no publica hoy un bundle Tauri para Linux: `tauri.conf.json` solo
+declara DMG, NSIS y MSI, y no hay un flujo de instalador Linux verificado.
+En Linux usa el despliegue documentado en [`self-hosting.md`](./self-hosting.md).
+El runtime Python sí funciona en Linux x64 con Postgres embebido; en Linux
+ARM64 requiere `EDECAN_DATABASE_URL` (ver [`desktop-local.md`](./desktop-local.md) §6).
+
+### 4.4 Modo desarrollo
 
 ```bash
 cd apps/desktop
-./scripts/dev.sh          # shell nativo con recarga en caliente; backend desde código fuente
-make web                  # (aparte, opcional) UI real de apps/web en :3000 con hot reload
+./scripts/dev.sh
 ```
 
-`dev.sh` **no** corre PyInstaller ni exporta `apps/web` — arranca `cargo tauri dev`, y el sidecar corre directo `uv run python -m edecan_local` desde el código fuente (variable `EDECAN_LOCAL_DEV_CMD`, con default a eso mismo). Sirve para iterar rápido en Rust o en el backend; para probar el flujo exacto que ve un cliente (shell + web empaquetada + backend congelado) usá `build-app.sh`.
+`dev.sh` no corre PyInstaller: genera o reutiliza `apps/web/out`, arranca
+`cargo tauri dev` y ejecuta el backend desde fuente con
+`uv run --all-packages python -m edecan_local`. Usa
+`EDECAN_REBUILD_WEB=1 ./scripts/dev.sh` después de modificar el frontend, o
+`EDECAN_SKIP_DEV_WEB=1 ./scripts/dev.sh` para iterar solo en Rust/backend.
+Para hot reload del frontend en el navegador sigue disponible `make web`;
+para reproducir el artefacto final usa el script de build de tu plataforma.
 
 ## 5. Dónde viven tus datos
 
@@ -115,7 +129,7 @@ En ambos casos, **tus datos NO se borran** — desinstalar la app deja intacta l
 Este repo genera instaladores **sin firmar** por defecto — es el camino que funciona out-of-the-box para cualquiera que clone el repo, sin depender de un certificado de pago. Bring-your-own, igual criterio que el resto del producto (`ARCHITECTURE.md` §0):
 
 - **macOS**: si tenés tu propio Apple Developer ID, `packaging/edecan_local.spec` ya lee `EDECAN_MACOS_CODESIGN_IDENTITY` (env var, tu `"Developer ID Application: Tu Nombre (TEAMID)"`) para firmar el binario del sidecar; para firmar el `.app`/`.dmg` final, `cargo tauri build` respeta las variables estándar de Tauri (`APPLE_SIGNING_IDENTITY`, y para notarizar además `APPLE_ID`/`APPLE_PASSWORD` o `APPLE_API_KEY` — ver la [guía oficial de firma de Tauri](https://v2.tauri.app/distribute/sign/macos/)). Sin notarizar, Gatekeeper sigue pidiendo el clic derecho→Abrir de §2 aunque esté firmado; con notarización completa, desaparece.
-- **Windows**: análogo con un certificado de firma de código propio (Authenticode) — variables `TAURI_SIGNING_PRIVATE_KEY`/o el flujo de `signtool` que documenta Tauri para Windows. Sin firmar, SmartScreen avisa la primera vez (§2) pero el instalador funciona igual.
+- **Windows**: Authenticode requiere un certificado de firma de código y la configuración de Tauri `certificateThumbprint`, `digestAlgorithm` y `timestampUrl`, o un `signCommand` que invoque tu firmador. `TAURI_SIGNING_PRIVATE_KEY` firma artefactos del updater de Tauri; **no** aplica Authenticode al `.exe`/`.msi`. Consulta la [guía oficial de firma para Windows](https://v2.tauri.app/distribute/sign/windows/). Sin firma, SmartScreen avisa la primera vez (§2).
 
 Ninguna identidad ni certificado real vive en este repo — solo el enganche para que vos pongas el tuyo.
 
@@ -134,10 +148,10 @@ No debería pasar nunca en la práctica: la app prueba primero `8765` y, si est�
 Esperable en un binario sin firmar (§7) — es el motivo por el que `packaging/edecan_local.spec` deja la compresión UPX apagada a propósito (`upx=False`; UPX es una causa frecuente de falsos positivos en binarios de PyInstaller, incluso más que el resto). Si tu antivirus corporativo bloquea la instalación por completo: agregá una excepción para la carpeta de instalación, o firmá vos mismo el build (§7) — la firma de código es, con diferencia, lo que más baja estos falsos positivos.
 
 **`cargo tauri` no es un comando reconocido.**
-Falta el subcomando (no viene con `cargo` ni con `rustup`): `cargo install tauri-cli --version '^2.0'`.
+Falta el subcomando (no viene con `cargo` ni con `rustup`): `cargo install tauri-cli --version '2.11.4' --locked`.
 
 **PyInstaller no encuentra `edecan_local`/tira `ModuleNotFoundError` para algún paquete `edecan_*`.**
-`scripts/build-backend.sh`/`.ps1` corren `uv run --with pyinstaller pyinstaller packaging/edecan_local.spec` desde `apps/desktop/` — necesitan resolver el entorno **compartido del workspace uv completo** (todos los `packages/*`/`apps/*`, no solo `apps/local`), porque las 12 herramientas del agente se descubren en runtime vía entry points (`edecan.tools`, `ARCHITECTURE.md` §10.7) y no son dependencias directas de `apps/local/pyproject.toml`. Si corriste `uv sync --package <algo>` en vez de un `uv sync` normal en algún momento, puede que tu entorno esté acotado — un `uv sync` sin `--package` desde la raíz del repo lo resuelve.
+`scripts/build-backend.sh`/`.ps1` corren `uv run --frozen --all-packages --group release pyinstaller packaging/edecan_local.spec` — necesitan el entorno **compartido del workspace uv completo** (todos los `packages/*`/`apps/*`, no solo `apps/local`), porque las herramientas del agente se descubren en runtime vía entry points (`edecan.tools`, `ARCHITECTURE.md` §10.7). Regenera el entorno desde la raíz con `uv sync --all-packages --frozen`; no uses `uv sync`/`uv run` sin `--all-packages`.
 
 ## 9. Filosofía: cero `.env` a mano
 
@@ -153,13 +167,31 @@ Patrón de auto-provisioning adaptado de [`open-jarvis/OpenJarvis`](https://gith
 
 **Para quien empaqueta un release:**
 
+macOS:
+
 ```bash
 cd apps/desktop
-./scripts/download-ollama.sh          # antes de build-app.sh / build-backend.sh
-./scripts/build-app.sh
+EDECAN_BUNDLE_OLLAMA=1 ./scripts/build-app.sh
 ```
 
-`scripts/download-ollama.sh` (`.ps1` en Windows) descarga el binario oficial de [ollama.com](https://ollama.com) para el target triple de esta máquina (o el que le pases como argumento) y lo deja en `src-tauri/binaries/ollama-<target-triple>` — mismo lugar y misma convención de sidecar (`tauri.conf.json` → `bundle.externalBin`) que ya usa `edecan-local`. Alternativa de un solo paso: `EDECAN_BUNDLE_OLLAMA=1 ./scripts/build-backend.sh` corre ese script automáticamente antes de armar el resto del backend. Sin correr ninguno de los dos, el `.dmg`/instalador sale exactamente igual que hoy, solo que sin el binario de Ollama adentro.
+Windows x64 (PowerShell):
+
+```powershell
+cd apps\desktop
+$env:EDECAN_BUNDLE_OLLAMA = "1"
+.\scripts\build-app.ps1
+```
+
+Esas son las rutas canónicas que **descargan y realmente agregan** Ollama a
+`bundle.externalBin`. Los scripts fijan Ollama `v0.32.1`, descargan el asset
+oficial del release de GitHub y verifican su SHA-256 publicado antes de
+extraerlo; un mismatch aborta el build. En Windows también preservan y
+empaquetan el árbol `lib/ollama` del ZIP como recurso junto al ejecutable:
+el CLI standalone necesita esas DLLs y helpers para funcionar. Si faltan,
+el build falla cerrado. En macOS el artefacto publicado es autocontenido.
+Los scripts `download-ollama.*` pueden preparar los archivos por separado,
+pero no crean un instalador. Sin `EDECAN_BUNDLE_OLLAMA=1`, el instalador no
+incluye Ollama.
 
 **Cómo lo activa el usuario final:** hoy, fijando `EDECAN_OLLAMA_AUTOSTART=true` en el entorno antes de abrir la app (uso avanzado/dev). La pieza de "un solo clic" ya existe del lado de detección: `GET /v1/setup/detect` (`apps/api/edecan_api/routers/setup.py`, fase v3/`edecan_llm.detect.detect_local_providers`) ya reporta si Ollama está corriendo en `OLLAMA_BASE_URL`, y la pantalla de Configuración ya ofrece "usar Ollama" con un clic apenas lo detecta corriendo — no importa si ese Ollama lo arrancó el usuario a mano, ya estaba corriendo de antes, o lo arrancó `edecan_local.ollama_supervisor` (ver abajo) por él: para la pantalla de Configuración es indistinguible, simplemente "ya está corriendo, un clic y listo".
 

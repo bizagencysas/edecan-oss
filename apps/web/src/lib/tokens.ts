@@ -9,6 +9,22 @@
 const ACCESS_KEY = "edecan_access_token";
 const REFRESH_KEY = "edecan_refresh_token";
 
+/**
+ * Monotonic generation for the session owned by this JavaScript runtime.
+ * Every explicit login, registration, logout or successful token rotation
+ * advances it. A refresh response may only be committed if the generation
+ * and refresh token it started with are still current.
+ *
+ * This closes two security-sensitive races: a late response cannot resurrect
+ * a logged-out session and cannot overwrite credentials from a newer login.
+ */
+let sessionGeneration = 0;
+
+export interface SessionSnapshot {
+  generation: number;
+  refreshToken: string | null;
+}
+
 function hasStorage(): boolean {
   return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
 }
@@ -32,6 +48,7 @@ export function getRefreshToken(): string | null {
 }
 
 export function setTokens(accessToken: string, refreshToken: string): void {
+  sessionGeneration += 1;
   if (!hasStorage()) return;
   window.sessionStorage.setItem(ACCESS_KEY, accessToken);
   window.sessionStorage.setItem(REFRESH_KEY, refreshToken);
@@ -41,6 +58,7 @@ export function setTokens(accessToken: string, refreshToken: string): void {
 }
 
 export function clearTokens(): void {
+  sessionGeneration += 1;
   if (!hasStorage()) return;
   window.sessionStorage.removeItem(ACCESS_KEY);
   window.sessionStorage.removeItem(REFRESH_KEY);
@@ -49,4 +67,38 @@ export function clearTokens(): void {
 
 export function hasSession(): boolean {
   return getAccessToken() !== null;
+}
+
+export function getSessionSnapshot(): SessionSnapshot {
+  return {
+    generation: sessionGeneration,
+    refreshToken: getRefreshToken(),
+  };
+}
+
+export function isSessionSnapshotCurrent(snapshot: SessionSnapshot): boolean {
+  return (
+    sessionGeneration === snapshot.generation &&
+    getRefreshToken() === snapshot.refreshToken
+  );
+}
+
+/** Atomically (within this runtime) commits a rotation only to its origin session. */
+export function setTokensIfSessionCurrent(
+  snapshot: SessionSnapshot,
+  accessToken: string,
+  refreshToken: string,
+): boolean {
+  if (!isSessionSnapshotCurrent(snapshot)) {
+    return false;
+  }
+  setTokens(accessToken, refreshToken);
+  return true;
+}
+
+/** Clears only the session represented by `snapshot`, never a newer login. */
+export function clearTokensIfSessionCurrent(snapshot: SessionSnapshot): boolean {
+  if (!isSessionSnapshotCurrent(snapshot)) return false;
+  clearTokens();
+  return true;
 }

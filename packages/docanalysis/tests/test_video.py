@@ -51,7 +51,9 @@ i=1
 while [ "$i" -le {n_frames} ]; do
   n=$(printf '%03d' "$i")
   destino=$(printf '%s' "$ultimo" | sed "s/%03d/$n/")
-  printf '\xff\xd8\xff\xe0\xff\xd9' > "$destino"
+  # POSIX `printf` solo garantiza escapes octales. `\xHH` funciona en el
+  # `/bin/sh` de macOS, pero dash (Ubuntu CI) lo imprime literalmente.
+  printf '\377\330\377\340\377\331' > "$destino"
   i=$((i + 1))
 done
 exit 0

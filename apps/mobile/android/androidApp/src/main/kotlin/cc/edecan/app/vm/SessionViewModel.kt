@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 /** Paso del onboarding — mismo split de 2 pasos que `OnboardingView.swift`
  * (EdecanApp/iOS): servidor primero, sesión después. */
@@ -56,6 +57,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     private val _uiState = MutableStateFlow(SessionUiState())
     val uiState: StateFlow<SessionUiState> = _uiState.asStateFlow()
+    private val sessionRequestEpoch = AtomicLong(0)
 
     /** `null` hasta que se conoce una URL de servidor (paso 1 del
      * onboarding, o una sesión anterior ya la había guardado).
@@ -70,7 +72,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             val url = tokenStore.getServerUrl()
             val emparejado = tokenStore.isPaired()
             if (url != null) {
-                api = EdecanApi(url, tokenStore)
+                api = crearApi(url)
             }
             _uiState.update {
                 it.copy(
@@ -99,7 +101,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         val limpio = url.trim()
         if (limpio.isEmpty()) return
         viewModelScope.launch { tokenStore.saveServerUrl(limpio) }
-        api?.actualizarBaseUrl(limpio) ?: run { api = EdecanApi(limpio, tokenStore) }
+        api?.actualizarBaseUrl(limpio) ?: run { api = crearApi(limpio) }
         _uiState.update { it.copy(serverUrl = limpio, paso = PasoOnboarding.SESION, errorMensaje = null) }
     }
 
@@ -114,15 +116,20 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (email.isBlank() || password.isBlank() || _uiState.value.iniciandoSesion) return
+        val requestEpoch = sessionRequestEpoch.incrementAndGet()
         viewModelScope.launch {
             _uiState.update { it.copy(iniciandoSesion = true, errorMensaje = null) }
             try {
                 apiActual.login(email, password, totp.trim().ifEmpty { null })
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 emparejarDispositivo(apiActual)
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 _uiState.update { it.copy(iniciandoSesion = false, isPaired = true) }
                 cargarMe()
             } catch (e: ApiException) {
-                _uiState.update { it.copy(iniciandoSesion = false, errorMensaje = e.message) }
+                if (sessionRequestEpoch.get() == requestEpoch) {
+                    _uiState.update { it.copy(iniciandoSesion = false, errorMensaje = e.message) }
+                }
             }
         }
     }
@@ -139,15 +146,20 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (email.isBlank() || password.isBlank() || tenantName.isBlank() || _uiState.value.iniciandoSesion) return
+        val requestEpoch = sessionRequestEpoch.incrementAndGet()
         viewModelScope.launch {
             _uiState.update { it.copy(iniciandoSesion = true, errorMensaje = null) }
             try {
                 apiActual.registrar(email, password, tenantName)
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 emparejarDispositivo(apiActual)
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 _uiState.update { it.copy(iniciandoSesion = false, isPaired = true) }
                 cargarMe()
             } catch (e: ApiException) {
-                _uiState.update { it.copy(iniciandoSesion = false, errorMensaje = e.message) }
+                if (sessionRequestEpoch.get() == requestEpoch) {
+                    _uiState.update { it.copy(iniciandoSesion = false, errorMensaje = e.message) }
+                }
             }
         }
     }
@@ -158,14 +170,44 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
      * lanza (mismo criterio que `SessionStore.cargarMe()` en iOS). */
     fun cargarMe() {
         val apiActual = api ?: return
+        val requestEpoch = sessionRequestEpoch.get()
         viewModelScope.launch {
             _uiState.update { it.copy(cargandoMe = true) }
             try {
                 val me = apiActual.me()
-                _uiState.update { it.copy(cargandoMe = false, me = me, errorMensaje = null) }
+                if (sessionRequestEpoch.get() == requestEpoch) {
+                    _uiState.update { it.copy(cargandoMe = false, me = me, errorMensaje = null) }
+                }
             } catch (e: ApiException) {
-                _uiState.update { it.copy(cargandoMe = false, errorMensaje = e.message) }
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
+                if (e is ApiException.SesionExpirada) {
+                    manejarSesionExpirada(e.message)
+                } else {
+                    _uiState.update { it.copy(cargandoMe = false, errorMensaje = e.message) }
+                }
             }
+        }
+    }
+
+    private fun crearApi(url: String): EdecanApi =
+        EdecanApi(url, tokenStore) { manejarSesionExpirada(ApiException.SesionExpirada().message) }
+
+    /** Solo una renovación rechazada invalida el emparejamiento. Los errores
+     * offline conservan tokens y pantalla para poder reintentar al volver la
+     * conexión. */
+    private fun manejarSesionExpirada(mensaje: String?) {
+        sessionRequestEpoch.incrementAndGet()
+        viewModelScope.launch { tokenStore.clearDeviceId() }
+        _uiState.update {
+            it.copy(
+                cargandoMe = false,
+                iniciandoSesion = false,
+                isPaired = false,
+                me = null,
+                paso = PasoOnboarding.SESION,
+                modoSesion = ModoSesion.INICIAR,
+                errorMensaje = mensaje,
+            )
         }
     }
 
@@ -176,19 +218,22 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
      * [TokenStore]. */
     fun cerrarSesion() {
         val apiActual = api ?: return
+        sessionRequestEpoch.incrementAndGet()
+        _uiState.update {
+            it.copy(
+                isPaired = false,
+                me = null,
+                cargandoMe = false,
+                iniciandoSesion = false,
+                paso = PasoOnboarding.SESION,
+                modoSesion = ModoSesion.INICIAR,
+                errorMensaje = null,
+            )
+        }
         viewModelScope.launch {
-            tokenStore.getDeviceId()?.let { apiActual.revocarDispositivo(it) }
-            apiActual.cerrarSesion()
+            val deviceId = tokenStore.getDeviceId()
             tokenStore.clearDeviceId()
-            _uiState.update {
-                it.copy(
-                    isPaired = false,
-                    me = null,
-                    paso = PasoOnboarding.SESION,
-                    modoSesion = ModoSesion.INICIAR,
-                    errorMensaje = null,
-                )
-            }
+            apiActual.cerrarSesion(deviceId)
         }
     }
 

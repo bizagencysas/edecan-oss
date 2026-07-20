@@ -96,7 +96,7 @@ apps/mobile/ios/
 │   │   ├── SSEClient.swift         # URLSession.bytes(for:) → AsyncThrowingStream<ChatEvent>
 │   │   ├── Keychain.swift          # kSecClassGenericPassword, sin App Group
 │   │   └── PairingStore.swift      # URL del servidor + "emparejado" + deviceId (fase v4)
-│   └── Tests/EdecanKitTests/       # 85 tests, offline, corren con `swift test`
+│   └── Tests/EdecanKitTests/       # 89 tests, offline, corren con `swift test`
 ├── EdecanApp/              # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift    # login + registro (POST /v1/auth/register)
@@ -427,7 +427,7 @@ cuenta Developer del propio cliente.
 | **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
-| `EdecanKit` completo con 85 tests offline | **Real** |
+| `EdecanKit` completo con 89 tests offline | **Real** |
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
 | Inicio (saludo + `GET /v1/me`), Perfil (datos + cerrar sesión) | **Real** |
 | Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |

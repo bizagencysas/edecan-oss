@@ -1,5 +1,25 @@
 import Foundation
 
+protocol AuthTokenStoring: Sendable {
+    func accessToken() -> String?
+    func refreshToken() -> String?
+    func save(accessToken: String, refreshToken: String)
+    func clear()
+}
+
+struct KeychainAuthTokenStore: AuthTokenStoring {
+    func accessToken() -> String? { Keychain.get(KeychainKeys.accessToken) }
+    func refreshToken() -> String? { Keychain.get(KeychainKeys.refreshToken) }
+    func save(accessToken: String, refreshToken: String) {
+        Keychain.set(accessToken, for: KeychainKeys.accessToken)
+        Keychain.set(refreshToken, for: KeychainKeys.refreshToken)
+    }
+    func clear() {
+        Keychain.delete(KeychainKeys.accessToken)
+        Keychain.delete(KeychainKeys.refreshToken)
+    }
+}
+
 /// Cliente tipado a mano contra `/v1/*` (`docs/api.md`, `ARCHITECTURE.md`
 /// §10.12) usando `URLSession` + `async/await` — sin generar código, sin
 /// dependencias externas, para que quede claro exactamente qué pide y qué
@@ -45,17 +65,44 @@ public actor APIClient {
     private var baseURL: URL
     private var accessToken: String?
     private var refreshToken: String?
+    private var refreshTask: (epoch: UInt64, task: Task<TokenPair, Error>)?
+    private var sessionEpoch: UInt64 = 0
     private let urlSession: URLSession
+    private let tokenStore: any AuthTokenStoring
+    private let onSessionExpired: (@Sendable () async -> Void)?
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    public init(baseURL: URL, urlSession: URLSession = .shared) {
+    public init(
+        baseURL: URL,
+        urlSession: URLSession = .shared,
+        onSessionExpired: (@Sendable () async -> Void)? = nil
+    ) {
+        let store = KeychainAuthTokenStore()
         self.baseURL = baseURL
         self.urlSession = urlSession
+        self.tokenStore = store
+        self.onSessionExpired = onSessionExpired
         self.decoder = APIClient.crearDecoder()
         self.encoder = APIClient.crearEncoder()
-        self.accessToken = Keychain.get(KeychainKeys.accessToken)
-        self.refreshToken = Keychain.get(KeychainKeys.refreshToken)
+        self.accessToken = store.accessToken()
+        self.refreshToken = store.refreshToken()
+    }
+
+    init(
+        baseURL: URL,
+        urlSession: URLSession,
+        tokenStore: any AuthTokenStoring,
+        onSessionExpired: (@Sendable () async -> Void)? = nil
+    ) {
+        self.baseURL = baseURL
+        self.urlSession = urlSession
+        self.tokenStore = tokenStore
+        self.onSessionExpired = onSessionExpired
+        self.decoder = APIClient.crearDecoder()
+        self.encoder = APIClient.crearEncoder()
+        self.accessToken = tokenStore.accessToken()
+        self.refreshToken = tokenStore.refreshToken()
     }
 
     /// Cambia el servidor contra el que habla este cliente (p. ej. si el
@@ -77,6 +124,7 @@ public actor APIClient {
     /// backend tal cual).
     @discardableResult
     public func registrar(email: String, password: String, tenantName: String) async throws -> TokenPair {
+        let epoch = comenzarNuevaSesion()
         struct Body: Encodable {
             let email: String
             let password: String
@@ -88,7 +136,7 @@ public actor APIClient {
         }
         let body = Body(email: email, password: password, tenantName: tenantName)
         let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/register", body: body)
-        guardarTokens(tokens)
+        try guardarTokens(tokens, expectedEpoch: epoch)
         return tokens
     }
 
@@ -96,6 +144,7 @@ public actor APIClient {
     /// 2FA activado — se manda solo si no viene vacío.
     @discardableResult
     public func login(email: String, password: String, totpCode: String? = nil) async throws -> TokenPair {
+        let epoch = comenzarNuevaSesion()
         struct Body: Encodable {
             let email: String
             let password: String
@@ -107,16 +156,50 @@ public actor APIClient {
         }
         let body = Body(email: email, password: password, totpCode: totpCodeOVacio(totpCode))
         let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/login", body: body)
-        guardarTokens(tokens)
+        try guardarTokens(tokens, expectedEpoch: epoch)
         return tokens
     }
 
-    /// `POST /v1/auth/refresh`. Igual que `/login`, exige `totp_code` si la
-    /// cuenta tiene 2FA — quien llame con una cuenta 2FA y no lo pase
-    /// recibirá `.credencialesInvalidas` del servidor.
+    /// `POST /v1/auth/refresh`. El backend rota el refresh token en cada uso,
+    /// por lo que las renovaciones concurrentes comparten una sola tarea. Un
+    /// `401` invalida la sesión persistida; no representa credenciales de
+    /// login mal escritas.
     @discardableResult
     public func refrescar(totpCode: String? = nil) async throws -> TokenPair {
-        guard let refreshToken else { throw APIError.sesionExpirada }
+        let epoch = sessionEpoch
+        if let refreshTask, refreshTask.epoch == epoch {
+            do {
+                let tokens = try await refreshTask.task.value
+                try guardarTokens(tokens, expectedEpoch: epoch)
+                return tokens
+            } catch APIError.credencialesInvalidas {
+                await expirarSesionSiVigente(epoch)
+                throw APIError.sesionExpirada
+            }
+        }
+        guard let refreshToken else {
+            await expirarSesionSiVigente(epoch)
+            throw APIError.sesionExpirada
+        }
+        let codigo = totpCodeOVacio(totpCode)
+        let task = Task { try await self.ejecutarRefresh(refreshToken: refreshToken, totpCode: codigo) }
+        refreshTask = (epoch, task)
+        defer {
+            if sessionEpoch == epoch {
+                refreshTask = nil
+            }
+        }
+        do {
+            let tokens = try await task.value
+            try guardarTokens(tokens, expectedEpoch: epoch)
+            return tokens
+        } catch APIError.credencialesInvalidas {
+            await expirarSesionSiVigente(epoch)
+            throw APIError.sesionExpirada
+        }
+    }
+
+    private func ejecutarRefresh(refreshToken: String, totpCode: String?) async throws -> TokenPair {
         struct Body: Encodable {
             let refreshToken: String
             let totpCode: String?
@@ -125,21 +208,54 @@ public actor APIClient {
                 case totpCode = "totp_code"
             }
         }
-        let body = Body(refreshToken: refreshToken, totpCode: totpCodeOVacio(totpCode))
-        let tokens: TokenPair = try await peticionSinSesion(path: "/v1/auth/refresh", body: body)
-        guardarTokens(tokens)
-        return tokens
+        return try await peticionSinSesion(
+            path: "/v1/auth/refresh",
+            body: Body(refreshToken: refreshToken, totpCode: totpCode)
+        )
     }
 
-    /// Cierra la sesión EN ESTE DISPOSITIVO: borra los tokens de memoria y
-    /// del Keychain. No es una llamada de red (la API v1 no tiene un
-    /// endpoint de logout — los refresh tokens simplemente expiran solos,
-    /// `ARCHITECTURE.md` §10.12).
-    public func cerrarSesion() {
+    /// Invalida Keychain y memoria de inmediato. Después intenta revocar el
+    /// dispositivo y el refresh token con copias capturadas de las
+    /// credenciales; estar offline nunca conserva una sesión local.
+    public func cerrarSesion(deviceId: String? = nil) async {
+        struct Body: Encodable {
+            let refreshToken: String
+            enum CodingKeys: String, CodingKey { case refreshToken = "refresh_token" }
+        }
+        let capturedAccessToken = accessToken
+        let capturedRefreshToken = refreshToken
+        sessionEpoch &+= 1
+        refreshTask?.task.cancel()
+        refreshTask = nil
+        invalidarSesionLocal()
+
+        if let deviceId, let capturedAccessToken {
+            do {
+                var request = URLRequest(url: try urlCompleta("/v1/devices/\(deviceId)/revoke"))
+                request.httpMethod = "POST"
+                request.setValue("Bearer \(capturedAccessToken)", forHTTPHeaderField: "Authorization")
+                _ = try await realizar(request)
+            } catch {
+                // Best-effort: la sesión local ya está invalidada.
+            }
+        }
+        if let capturedRefreshToken {
+            do {
+                var request = URLRequest(url: try urlCompleta("/v1/auth/logout"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try encoder.encode(Body(refreshToken: capturedRefreshToken))
+                _ = try await realizar(request)
+            } catch {
+                // Best-effort: la sesión local ya está invalidada.
+            }
+        }
+    }
+
+    private func invalidarSesionLocal() {
         accessToken = nil
         refreshToken = nil
-        Keychain.delete(KeychainKeys.accessToken)
-        Keychain.delete(KeychainKeys.refreshToken)
+        tokenStore.clear()
     }
 
     /// Un access token utilizable ahora mismo, refrescando una vez si hace
@@ -565,22 +681,52 @@ public actor APIClient {
         return code
     }
 
-    private func guardarTokens(_ tokens: TokenPair) {
+    private func comenzarNuevaSesion() -> UInt64 {
+        sessionEpoch &+= 1
+        refreshTask?.task.cancel()
+        refreshTask = nil
+        invalidarSesionLocal()
+        return sessionEpoch
+    }
+
+    private func guardarTokens(_ tokens: TokenPair, expectedEpoch: UInt64) throws {
+        guard sessionEpoch == expectedEpoch else { throw APIError.sesionExpirada }
+        tokenStore.save(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
         accessToken = tokens.accessToken
         refreshToken = tokens.refreshToken
-        Keychain.set(tokens.accessToken, for: KeychainKeys.accessToken)
-        Keychain.set(tokens.refreshToken, for: KeychainKeys.refreshToken)
+    }
+
+    private func expirarSesionSiVigente(_ expectedEpoch: UInt64) async {
+        guard sessionEpoch == expectedEpoch else { return }
+        sessionEpoch &+= 1
+        refreshTask?.task.cancel()
+        refreshTask = nil
+        invalidarSesionLocal()
+        await onSessionExpired?()
     }
 
     /// Ejecuta `operacion`; si falla porque el access token expiró,
     /// refresca UNA vez y reintenta. Si el refresh también falla, propaga
     /// el error del refresh (normalmente `.sesionExpirada`).
     private func conAutoRefresh<T: Sendable>(_ operacion: @Sendable () async throws -> T) async throws -> T {
+        let epoch = sessionEpoch
+        let tokenQueFallo = accessToken
         do {
-            return try await operacion()
+            let resultado = try await operacion()
+            guard sessionEpoch == epoch else { throw APIError.sesionExpirada }
+            return resultado
         } catch APIError.sesionExpirada {
-            try await refrescar()
-            return try await operacion()
+            guard sessionEpoch == epoch else { throw APIError.sesionExpirada }
+            // Otra petición puede haber renovado mientras esta esperaba el
+            // 401. Solo quien aún vea el token fallido consume el refresh
+            // token one-time; las demás reutilizan el par recién guardado.
+            if accessToken == tokenQueFallo {
+                try await refrescar()
+            }
+            guard sessionEpoch == epoch else { throw APIError.sesionExpirada }
+            let resultado = try await operacion()
+            guard sessionEpoch == epoch else { throw APIError.sesionExpirada }
+            return resultado
         }
     }
 

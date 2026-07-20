@@ -1,3 +1,42 @@
 # apps/local — `edecan_local`
 
-Esqueleto de la app v3 (`ARCHITECTURE.md` §12, fase v3) que empaqueta `api` + `worker` + `db` para correr LOCAL en la máquina del cliente — el backend de la app de escritorio Tauri (`docs/roadmap.md`). Lo completa fase v3: runner `python -m edecan_local`, bind solo `127.0.0.1`, puerto `LOCAL_API_PORT` (default `8765`), línea `EDECAN_LOCAL_READY port=<p>` al estar sano, flags `--port`/`--data-dir`/`--no-web`, apagado limpio en `SIGTERM`/`SIGINT` — contrato completo en `ARCHITECTURE.md` §12f.
+Runtime local que reúne API, worker, PostgreSQL embebido y almacenamiento de
+archivos en un solo proceso. Solo escucha en `127.0.0.1`, persiste bajo
+`~/.edecan/data` y se apaga limpiamente con `SIGTERM`/`SIGINT`.
+
+## Arranque desde un clon limpio
+
+Desde la raíz del repositorio:
+
+```bash
+uv sync --all-packages --frozen
+uv run --all-packages python -m edecan_local --no-web
+```
+
+No hace falta instalar PostgreSQL ni conocer extras internos en las
+plataformas donde `pgserver==0.1.4` publica wheel: macOS x64/arm64, Linux x64
+y Windows x64. Cuando aparezca `EDECAN_LOCAL_READY port=8765`, la API está
+disponible en `http://127.0.0.1:8765`; `Ctrl+C` detiene también la base
+embebida.
+
+En Linux ARM64 y Windows ARM64 el workspace se instala normalmente, pero no
+hay wheel de `pgserver` para provisionar Postgres embebido. En esas
+arquitecturas configura una base existente antes de arrancar:
+
+```bash
+export EDECAN_DATABASE_URL='postgresql+asyncpg://usuario:clave@host:5432/edecan'
+uv run --all-packages python -m edecan_local --no-web
+```
+
+`EDECAN_DATABASE_URL` también sirve en cualquier plataforma para optar por un
+PostgreSQL propio; el runner no intentará importar ni administrar `pgserver`.
+
+La aplicación Tauri usa este mismo entry point. Su quick start completo está
+en [`../desktop/README.md`](../desktop/README.md).
+
+## Opciones
+
+- `--port`: puerto de API, `8765` por defecto.
+- `--data-dir`: directorio persistente, `~/.edecan/data` por defecto.
+- `--no-web`: no intenta servir un export estático de `apps/web`.
+- `EDECAN_WEB_DIR`: directorio de un export estático que se sirve en `/`.

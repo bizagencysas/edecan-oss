@@ -17,9 +17,9 @@
     frontend/src-tauri/scripts/download-ollama.sh) -- ver NOTICE para la
     atribucion completa.
 
-    Este script NO se corre para descargar de verdad como parte de
-    WP-V4-09 -- queda escrito y documentado; lo corre quien empaqueta un
-    release real de Windows.
+    El flujo canonico es fijar EDECAN_BUNDLE_OLLAMA=1 y ejecutar
+    build-app.ps1, que llama este script y agrega tanto ollama.exe como su
+    arbol lib\ollama al instalador. Invocarlo aislado solo prepara archivos.
 
 .EXAMPLE
     .\download-ollama.ps1
@@ -31,21 +31,17 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BinariesDir = Join-Path (Split-Path -Parent $ScriptDir) "src-tauri\binaries"
 New-Item -ItemType Directory -Path $BinariesDir -Force | Out-Null
 
-# Unico target de Windows que soporta hoy la app de escritorio (ver
-# DIRECCION_ACTUAL.md y tauri.conf.json -> bundle.targets: msi/nsis solo se
-# generan para x86_64).
+# Unico target de Windows que soporta hoy este bundle opcional.
 $Target = "x86_64-pc-windows-msvc"
 $OutFile = Join-Path $BinariesDir "ollama-$Target.exe"
+$OllamaLibDest = Join-Path $BinariesDir "ollama-lib"
+$OllamaVersion = "v0.32.1"
+$ExpectedSha256 = "d5abdc21b64ee928d3c92880ac22da5e5b0a46b8b07179791dd8c711b35f8397"
 
-if (Test-Path $OutFile) {
-    Write-Host "Ya existe: $OutFile"
-    Write-Host "Borralo primero si queres forzar una descarga nueva."
-    exit 0
-}
-
-# Asset verificado contra la ultima release de github.com/ollama/ollama:
-# "ollama-windows-amd64.zip".
-$AssetUrl = "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
+# Version y digest fijados desde la metadata oficial del release de GitHub.
+# Nunca usamos `latest`: el build aborta si los bytes no son exactamente los
+# revisados para esta version.
+$AssetUrl = "https://github.com/ollama/ollama/releases/download/$OllamaVersion/ollama-windows-amd64.zip"
 
 $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("edecan-ollama-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
@@ -54,6 +50,12 @@ try {
 
     Write-Host "==> Descargando: $AssetUrl"
     Invoke-WebRequest -Uri $AssetUrl -OutFile $ArchiveFile -UseBasicParsing
+
+    Write-Host "==> Verificando SHA-256 oficial de Ollama $OllamaVersion..."
+    $ActualSha256 = (Get-FileHash -Path $ArchiveFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ActualSha256 -ne $ExpectedSha256) {
+        throw "digest SHA-256 invalido para $AssetUrl. Esperado: $ExpectedSha256; recibido: $ActualSha256"
+    }
 
     Write-Host "==> Extrayendo..."
     Expand-Archive -Path $ArchiveFile -DestinationPath $TmpDir -Force
@@ -74,7 +76,23 @@ try {
         exit 1
     }
 
+    # El ZIP standalone no es un unico exe: Ollama busca los helpers y DLLs
+    # en .\lib\ollama relativo a ollama.exe. Validamos el layout antes de
+    # reemplazar la salida de una build anterior.
+    $OllamaLibSource = Join-Path $TmpDir "lib\ollama"
+    foreach ($required in @("ggml.dll", "libllama.dll")) {
+        if (-not (Test-Path (Join-Path $OllamaLibSource $required))) {
+            throw "el asset verificado no contiene lib\ollama\$required."
+        }
+    }
+
     Copy-Item $OllamaBin $OutFile -Force
+    if (Test-Path $OllamaLibDest) {
+        Remove-Item $OllamaLibDest -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $OllamaLibDest -Force | Out-Null
+    Copy-Item (Join-Path $OllamaLibSource "*") $OllamaLibDest -Recurse -Force
+    Write-Host "==> Runtime nativo de Windows: $OllamaLibDest"
 } finally {
     Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }

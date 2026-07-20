@@ -2,7 +2,7 @@
 
 App real y compilable: Kotlin 2.4.0 + Compose Multiplatform (Android hoy;
 iOS declarado para el futuro), sin React Native/Flutter (mandato
-permanente — ver `DIRECCION_ACTUAL.md` y `ROADMAP_V2.md` §6.1). Nunca se
+permanente — ver `docs/roadmap.md` y `ARCHITECTURE.md` §11). Nunca se
 distribuye por Play Store: instalación local vía USB/orígenes desconocidos,
 cada cliente compila y firma con su propio keystore. Guía completa para el
 cliente final en [`../../../docs/movil-android.md`](../../../docs/movil-android.md)
@@ -22,16 +22,16 @@ apps/mobile/android/
 │       ├── commonMain/kotlin/cc/edecan/shared/
 │       │   ├── Models.kt        # modelos serializables de /v1/* (docs/api.md)
 │       │   ├── ApiClient.kt     # EdecanApi: auth/negocios/credentials/setup/voz/ide/devices/remote
-│       │   ├── RemoteModels.kt  # modelos + vocabulario de /v1/remote/* (WP-V6-09)
-│       │   ├── RemoteCoords.kt  # mapeo de coordenadas toque->frame, puro (WP-V6-09)
+│       │   ├── RemoteModels.kt  # modelos + vocabulario de /v1/remote/* (fase v6)
+│       │   ├── RemoteCoords.kt  # mapeo de coordenadas toque->frame, puro (fase v6)
 │       │   ├── SseClient.kt     # SseClient (I/O) + SseFrameParser (framing puro, testeado)
 │       │   └── TokenStore.kt    # contrato de persistencia de tokens + device id
 │       ├── androidMain/kotlin/cc/edecan/shared/
 │       │   └── TokenStore.android.kt  # DataStore + EncryptedSharedPreferences
 │       └── commonTest/kotlin/cc/edecan/shared/
 │           ├── ModelsTest.kt          # serialización de Models.kt
-│           ├── RemoteModelsTest.kt    # serialización + intervalo de polling puro (WP-V6-09)
-│           ├── RemoteCoordsTest.kt    # mapeo de coordenadas con letterbox (WP-V6-09)
+│           ├── RemoteModelsTest.kt    # serialización + intervalo de polling puro (fase v6)
+│           ├── RemoteCoordsTest.kt    # mapeo de coordenadas con letterbox (fase v6)
 │           └── SseFrameParserTest.kt  # framing SSE línea por línea
 └── androidApp/                # el APK real
     ├── build.gradle.kts
@@ -48,7 +48,7 @@ apps/mobile/android/
         │       └── vm/             # Session/Chat/Negocios/Voz/Perfil/Ide/Remoto ViewModel (StateFlow)
         └── test/kotlin/cc/edecan/app/vm/
             ├── LlmKindTest.kt      # vocabulario del formulario "Conectar LLM"
-            └── RemotoTeclasTest.kt # vocabulario de la barra de teclado remota (WP-V6-09)
+            └── RemotoTeclasTest.kt # vocabulario de la barra de teclado remota (fase v6)
 ```
 
 `shared` también declara `iosArm64()`/`iosSimulatorArm64()` — targets
@@ -100,18 +100,18 @@ Corre, todo en verde (verificado real, `BUILD SUCCESSFUL`):
   `ModelsTest` (serialización contra ejemplos reales de `docs/api.md`/
   `ARCHITECTURE.md` §10.5, incluyendo `ChatEvent`/`Invoice`/`NegociosKpis`/
   `CredentialsOut`), `SseFrameParserTest` (framing SSE línea por línea,
-  sin abrir ningún canal/conexión real), desde WP-V5-07
+  sin abrir ningún canal/conexión real), desde fase v5
   `MissionsModelsTest`/`AutomationsModelsTest`/`RemindersModelsTest`
   (serialización contra ejemplos reales de
   `apps/api/edecan_api/routers/{missions,automations,reminders}.py`, mismo
-  criterio que `ModelsTest`) y, desde WP-V6-09, `RemoteModelsTest`
+  criterio que `ModelsTest`) y, desde fase v6, `RemoteModelsTest`
   (serialización de `RemoteModels.kt` contra ejemplos reales de
   `apps/api/edecan_api/routers/remote.py`/`SqlRepo._REMOTE_SESSION_COLUMNS`,
   más `remoteFramePollDelayMillis` — función pura del intervalo de *polling*)
   y `RemoteCoordsTest` (mapeo de coordenadas toque→frame con letterbox,
   puerto de `apps/web/src/components/remoto/coords.ts`, sin Compose/Android).
 - **`:androidApp:testDebugUnitTest`**: `LlmKindTest` (vocabulario/campos del
-  formulario "Conectar LLM" de `PerfilScreen`) y, desde WP-V6-09,
+  formulario "Conectar LLM" de `PerfilScreen`) y, desde fase v6,
   `RemotoTeclasTest` (vocabulario de la barra de teclado remota de
   `RemotoScreen`, fijado exacto contra `REMOTE_SPECIAL_KEYS`).
 - **`:shared:check`** también intenta compilar (no ejecutar) el mismo
@@ -129,7 +129,7 @@ qué son artefactos distintos) son la única librería de test usada: cero
 dependencias de terceros nuevas (nada de JUnit5/MockK/Robolectric/
 Turbine).
 
-## Verificado en esta iteración (WP-V5-07)
+## Verificado en esta iteración (fase v5)
 
 Mismo entorno de la "Matriz de versiones" de abajo (JDK 25 Temurin, AGP
 9.2.1, Kotlin 2.4.0, Compose Multiplatform 1.11.1, Gradle 9.5.1):
@@ -161,7 +161,7 @@ código hecho durante esta verificación.
   coroutines, Material3 `DatePicker`/`TimePicker` para
   `ui/components/FechaHoraPickers.kt`).
 
-## Verificado en esta iteración (WP-V6-09)
+## Verificado en esta iteración (fase v6)
 
 Mismo entorno de la "Matriz de versiones" de abajo (JDK 25 Temurin, AGP
 9.2.1, Kotlin 2.4.0, Compose Multiplatform 1.11.1, Gradle 9.5.1):
@@ -174,7 +174,7 @@ cd apps/mobile/android
 → **`BUILD SUCCESSFUL` en 8s** (68 tareas: 67 ejecutadas desde cero + 1
 up-to-date — build limpio, `clean` real y `--no-build-cache`, no una
 compilación incremental), cubriendo la pantalla nueva `ui/RemotoScreen.kt` +
-`vm/RemotoViewModel.kt` (espejo Android de WP-V6-08 en iOS: visor de
+`vm/RemotoViewModel.kt` (espejo Android de fase v6 en iOS: visor de
 `/v1/remote/*` con *polling* real, zoom/pan, tap→`input_pointer`, barra de
 teclado→`input_key`), los 2 módulos nuevos de `shared/`
 (`RemoteModels.kt`, `RemoteCoords.kt`) más las 7 rutas nuevas agregadas a
@@ -220,7 +220,7 @@ esqueleto por primera vez:
 
 | Artefacto | Versión | Notas |
 |---|---|---|
-| Kotlin | 2.4.0 | pinned por decisión de producto (`DIRECCION_ACTUAL.md`) |
+| Kotlin | 2.4.0 | pinned por decisión de producto (`docs/roadmap.md`) |
 | AGP (Android Gradle Plugin) | 9.2.1 | ver "Cambios de AGP 9" abajo |
 | Gradle | 9.5.1 | `gradle/wrapper/gradle-wrapper.properties` |
 | Compose Multiplatform (plugin `org.jetbrains.compose`) | 1.11.1 | los artefactos `compose.material3`/`compose.ui`/etc. NO se pinnean sueltos — los resuelve este plugin |
@@ -278,10 +278,10 @@ iteración: auth (login/registro, refresh, tokens cifrados con
 `EncryptedSharedPreferences`, emparejamiento de dispositivo vía `POST`/
 `DELETE /v1/devices`), chat con streaming SSE real + confirmación in-app de
 herramientas peligrosas (incluida la advertencia específica de
-`usar_computadora`, WP-V6-09), Negocios (KPIs + dona + facturas, solo
+`usar_computadora`, fase v6), Negocios (KPIs + dona + facturas, solo
 lectura), Voz push-to-talk (transcribir → turno del agente → hablar la
 respuesta), Perfil (conectar LLM "pegar y validar"), IDE de solo lectura
-(árbol + ver archivo) y, desde WP-V6-09, **Remoto** (visor de `/v1/remote/*`
+(árbol + ver archivo) y, desde fase v6, **Remoto** (visor de `/v1/remote/*`
 sobre el mismo prototipo *polling* HTTP del panel web — consentimiento +
 aprobación local en el companion, indicador permanente + Terminar siempre
 visible, `kind="control"` con tap→clic/doble clic/clic derecho + barra de

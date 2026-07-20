@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# Edecán — apps/worker (consumidor de SQS edecan-jobs). Imagen de producción
+# para self-hosting.
+#
+# IMPORTANTE: construir con el contexto en la RAÍZ del monorepo:
+#
+#   docker build -f infra/docker/Dockerfile.worker -t edecan-worker:dev .
+#
+# ============================================================================
+
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PIP_NO_CACHE_DIR=1
+
+RUN pip install --no-cache-dir uv==0.11.19
+
+WORKDIR /build
+
+COPY pyproject.toml uv.lock README.md ./
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY apps/companion ./apps/companion
+COPY apps/local ./apps/local
+COPY packages ./packages
+
+# Sincroniza SOLO el paquete edecan-worker y sus dependencias del workspace.
+# --no-editable: por defecto `uv sync` instala los miembros del workspace
+# (edecan-worker Y sus dependencias locales — edecan-schemas/db/llm/core/
+# connectors/voice/toolkit, vía [tool.uv.sources]) como EDITABLE, con un
+# `.pth` que apunta a la ruta ABSOLUTA de esta etapa builder
+# (`/build/apps/worker/edecan_worker`, `/build/packages/db/edecan_db`, …) —
+# inservible en la etapa runtime de abajo, que no tiene `/build`.
+# `--no-editable` instala TODO (edecan-worker + sus dependencias del workspace)
+# como paquetes reales
+# dentro de `/opt/venv/lib/python3.12/site-packages/` — autocontenido, ya no
+# hace falta copiar ningún directorio de código fuente aparte.
+RUN uv sync --frozen --no-dev --no-editable --package edecan-worker
+
+# ============================================================================
+FROM python:3.12-slim AS runtime
+
+RUN groupadd --system --gid 1000 edecan \
+    && useradd --system --uid 1000 --gid edecan --home-dir /app --shell /usr/sbin/nologin edecan
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# --no-editable (ver arriba) ya deja edecan_worker Y todas sus dependencias
+# del workspace instaladas de verdad dentro de /opt/venv — nada más que
+# copiar.
+COPY --from=builder --chown=edecan:edecan /opt/venv /opt/venv
+
+WORKDIR /app
+USER edecan
+
+# Sin puerto: el worker solo consume SQS, no expone HTTP.
+CMD ["python", "-m", "edecan_worker.main"]

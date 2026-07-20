@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Cross-platform continuous integration for Python, web, desktop, iOS shared code, and Android
+- Automated dependency update configuration for the repository's package ecosystems
+- Structured issue forms and a pull request template
+- Public governance, maintainership, support, and community conduct policies
+- A reproducible self-hosting Docker Compose profile with non-root images
+- An isolated self-host smoke test covering image builds, migrations, readiness, CSP, and runtime users
+- Continuous-listening desktop support with explicit microphone consent and local wake-word detection
+- Server-side refresh-token rotation and revocation, authentication rate limits, membership revalidation, and login/logout audit events
+- Strict web, static-export, and Tauri content security policies and defensive HTTP headers
+- A dependency-aware `/readyz` endpoint for PostgreSQL and Redis
+
+### Changed
+
+- The public workspace now installs without the absent private extension and all public packages declare Apache-2.0 metadata
+- Browser tokens use tab-scoped session storage instead of persistent local storage
+- File uploads are streamed from Starlette's spooled file, bounded by `MAX_UPLOAD_BYTES`, and stored under sanitized names
+- Git operations in the local-code tool use argument-vector subprocesses so commit messages cannot execute shell syntax
+- The supported Node 22 LTS container build consumes a compatible npm 10 lockfile, reuses the official non-root user, and ships every runtime config module
+
+### Security
+
+- Removed the custom commercial exception from the repository-wide Apache-2.0 license
+- Upgraded the web runtime and pinned dependency overrides to a zero-advisory npm audit
+- Added pinned Python advisory scanning; the current exported lock resolves with no known vulnerabilities
+- CI now proves that every Python workspace member produces both an sdist and a wheel
+- Docker build contexts exclude local secrets, caches, dependency trees, and generated artifacts
+
+## [0.1.0] - 2026-07-10
+
+### Added
+
+- Initial public release of the Apache-2.0-licensed Edecan core
+
+[Unreleased]: https://github.com/isaccmanuel/edecan/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/isaccmanuel/edecan/releases/tag/v0.1.0

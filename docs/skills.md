@@ -3,7 +3,7 @@
 Edecán se conecta al estándar abierto **"Agent Skills"** — el mismo formato que indexa
 [skills.sh](https://skills.sh) — para instalar y usar capacidades de terceros dentro del
 agente, en vez de mantener un catálogo propietario cerrado (`ARCHITECTURE.md` §12,
-`DIRECCION_ACTUAL.md`, "Confirmado: agregar Ollama + integrar el marketplace de skills.sh").
+especialmente §12.e).
 
 ## Qué es un "Agent Skill"
 
@@ -115,7 +115,7 @@ Si ninguna de las tres responde `200`, la instalación falla con un mensaje clar
 
 Lo de arriba es sobre CÓMO se descarga una skill; la siguiente sección es sobre qué hace
 Edecán con lo que descargó — trust tiers, capacidades declaradas y el escáner
-anti-inyección (WP-V5-04).
+anti-inyección (fase v5).
 
 ## Seguridad de skills de terceros
 

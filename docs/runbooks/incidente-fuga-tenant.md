@@ -79,5 +79,5 @@ Antes de cerrar el incidente, demuéstralo con datos, no solo con lectura de có
 ### 6. Postmortem
 
 - Postmortem sin culpar personas (*blameless*): qué falló, por qué las capas de defensa existentes (RLS + revisión de PR) no lo atraparon antes, qué prueba de regresión se agregó.
-- Actualiza `../../RIESGOS.md` si el incidente reveló un riesgo no listado o cambió la probabilidad/impacto de uno existente.
+- Actualiza `../../docs/seguridad-modelo-amenazas.md` si el incidente reveló un riesgo no listado o cambió la probabilidad/impacto de uno existente.
 - Si el incidente reveló que falta cobertura de pruebas automatizadas de aislamiento (p. ej. una suite que cree tenants de prueba y verifique sistemáticamente que ninguna tabla tenant-scoped es legible entre ellos), priorízala — es la forma de que este runbook se necesite cada vez menos.

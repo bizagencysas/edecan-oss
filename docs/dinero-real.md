@@ -1,8 +1,8 @@
 # Dinero real: la política permanente
 
 > Este documento describe una **regla de producto permanente e innegociable**, no una
-> limitación temporal del nivel P1 de este work package. Ver `ARCHITECTURE.md` §0,
-> `ROADMAP_V2.md` §8.1 y `REQUISITOS_V2.md` ("Guardrails que Claude aplica de todos modos"):
+> limitación temporal de una entrega. Ver `ARCHITECTURE.md` §0 y
+> [`seguridad-modelo-amenazas.md`](./seguridad-modelo-amenazas.md):
 >
 > **Dinero real nunca se mueve solo.**
 
@@ -17,7 +17,7 @@ la última sección.
 
 1. **El agente actúa sobre lenguaje natural**, potencialmente influenciado por contenido
    que el propio agente leyó de fuentes no confiables (un correo, una página web, un
-   documento subido por otra persona — ver `RIESGOS.md`, sección "Técnicos y de
+   documento subido por otra persona — ver `docs/seguridad-modelo-amenazas.md`, sección "Técnicos y de
    arquitectura", sobre inyección de prompt). Dejar que una instrucción en lenguaje
    natural mueva dinero directamente sería, literalmente, dejar que cualquier texto que el
    modelo procese pueda gastar el dinero del usuario.
@@ -106,21 +106,17 @@ que sí en la UI.
 | Confirmar un trade (`kind=trade`, `COMMERCE_MODE=paper`) | **Real como simulación contable.** `edecan_commerce.paper.PaperBroker` ejecuta la compra/venta contra `holdings` con costo promedio ponderado y dejar constancia en `transactions`/`audit_log` — pero es contabilidad *de mentira*: no hay ningún exchange ni broker real conectado, en ningún punto. |
 | Cualquier otro `COMMERCE_MODE`, o `kind="purchase"` | `501 Not Implemented`, documentado explícitamente — nunca se simula una ejecución que no existe ni se falla en silencio. |
 
-### Lo que falta para que esto persista contra Postgres real
+### Persistencia en Postgres
 
-Las tablas `orders`/`holdings`/`budgets` (`ROADMAP_V2.md` §7.4) llegan con la migración
-`0003_v2_expansion`, propiedad de WP-V2-01. Este work package (WP-V2-10) asume ese esquema
-al pie de la letra (nombres de tabla/columna EXACTOS) — el día que la migración aterriza,
-todo el código de `packages/commerce/` y `apps/api/edecan_api/routers/commerce.py` funciona
-contra Postgres real sin cambios. Mientras tanto, la lógica (aritmética del broker paper,
-% de presupuesto, validaciones, contrato HTTP) está probada con dobles de sesión que
-verifican el SQL exacto que se ejecutaría (`packages/commerce/tests/`,
-`apps/api/tests/test_commerce_router.py`) — ver el README de `packages/commerce` para el
-detalle de qué corre hoy sin red ni Postgres.
+Las tablas `orders`/`holdings`/`budgets` están definidas por la migración
+`0003_v2_expansion`. La implementación usa ese esquema al pie de la letra
+(nombres de tabla/columna exactos), y la lógica —aritmética del broker paper,
+porcentaje de presupuesto, validaciones y contrato HTTP— está cubierta por
+`packages/commerce/tests/` y `apps/api/tests/test_commerce_router.py`; ver el README de
+`packages/commerce` para el detalle de los modos offline.
 
-`transactions`/`audit_log`, en cambio, son tablas v1 que **ya existen** desde
-`0001_initial` — la parte de `PaperBroker` que las escribe funciona hoy mismo, en cuanto
-exista la tabla `orders` de la que lee la orden a ejecutar.
+`transactions`/`audit_log` existen desde `0001_initial`; el `PaperBroker` escribe en
+ellas al ejecutar una orden de simulación.
 
 ## Qué haría falta para un broker/PSP "live" — y por qué la confirmación humana seguiría siendo obligatoria
 
@@ -165,6 +161,5 @@ es negociable ni siquiera con la integración más completa imaginable.
   confirmación, holdings (paper) y presupuestos con barras de `%` gastado.
 - Flag de plan: `commerce.orders` (`edecan_schemas.plans.FLAG_COMMERCE_ORDERS`) — activo en
   `free_selfhost`/`hosted_pro`/`hosted_business`, no en `hosted_basic`
-  (`ROADMAP_V2.md` §7.2).
-- Guardrail general de dinero, control remoto y salud/legal/finanzas: `ARCHITECTURE.md` §0,
-  `ROADMAP_V2.md` §8.
+  (`edecan_schemas.plans.PLANES`).
+- Guardrail general de dinero, control remoto y salud/legal/finanzas: `ARCHITECTURE.md` §0.

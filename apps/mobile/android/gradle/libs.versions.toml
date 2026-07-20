@@ -2,17 +2,16 @@
 # (`settings.gradle.kts`, `build.gradle.kts` de :shared y :androidApp).
 #
 # Matriz verificada el 2026-07-08 contra los repositorios reales (Google
-# Maven / Maven Central en el momento de escribir este esqueleto — ver
+# Maven / Maven Central — ver
 # "Matriz de versiones" en ../README.md para cómo volver a verificarla si
 # `./gradlew :androidApp:assembleDebug` falla por incompatibilidad más
-# adelante). `kotlin` va pinned a 2.4.0 por decisión de producto
-# (DIRECCION_ACTUAL.md, ROADMAP_V2.md §6.1) — el resto se eligió como la
-# última versión ESTABLE (sin sufijo alpha/beta/rc) de cada artefacto que
-# resuelve contra ese Kotlin.
+# adelante). Kotlin 2.4.0 y el resto del catálogo siguen una matriz estable,
+# sin versiones alpha, beta o release candidate.
 [versions]
 kotlin = "2.4.0"
 agp = "9.2.1"
 composeMultiplatform = "1.11.1"
+composeMaterial3 = "1.9.0"
 ktor = "3.5.1"
 kotlinxSerialization = "1.11.0"
 kotlinxCoroutines = "1.11.0"
@@ -34,13 +33,23 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 
-# AndroidX — persistencia cifrada de tokens + ciclo de vida/Compose de androidApp.
+# AndroidX — DataStore y compatibilidad de lectura única del almacén cifrado
+# anterior; los tokens nuevos usan Android Keystore directamente.
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }
 androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "androidxSecurityCrypto" }
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "androidxLifecycle" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivityCompose" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCoreKtx" }
+
+# Compose Multiplatform — coordenadas directas. Los accessors `compose.*` del
+# plugin quedaron deprecados en 1.11 y serán removidos en una versión futura.
+compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
+compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }
+compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "composeMaterial3" }
+compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
+compose-ui-tooling-preview = { module = "org.jetbrains.compose.components:components-ui-tooling-preview", version.ref = "composeMultiplatform" }
+compose-ui-tooling = { module = "org.jetbrains.compose.ui:ui-tooling", version.ref = "composeMultiplatform" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
@@ -50,7 +59,7 @@ androidApplication = { id = "com.android.application", version.ref = "agp" }
 # contra AGP 9.2.1 real; ese es el nombre REAL de la tarea de compilación
 # Android de este plugin nuevo, no `compileDebugKotlinAndroid` del
 # `com.android.library` clásico — confirmado con `./gradlew :shared:tasks`
-# real, WP-V4-04). `shared/build.gradle.kts` usa en su lugar el plugin
+# real. `shared/build.gradle.kts` usa en su lugar el plugin
 # dedicado que Google recomienda como reemplazo desde AGP 8.12+ (ver
 # https://developer.android.com/kotlin/multiplatform/plugin): mismo AGP,
 # DSL nueva (`kotlin { android { ... } }` en vez de `android { }` a nivel de

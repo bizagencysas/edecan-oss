@@ -1,8 +1,8 @@
 # packages/docanalysis — `edecan_docanalysis`
 
-Analista total de documentos (ROADMAP_V2.md §4 WP-V2-02; `analizar_video`
-sumado en v3 por WP-V3-14; `predecir_serie`/`detectar_anomalias` sumadas en v5
-por WP-V5-12): estadística sobre tablas, extracción heurística de tablas de
+Analista total de documentos (`ARCHITECTURE.md` §11 fase v2; `analizar_video`
+sumado en v3 por fase v3; `predecir_serie`/`detectar_anomalias` sumadas en v5
+por fase v5): estadística sobre tablas, extracción heurística de tablas de
 PDF, visión sobre imágenes, análisis de video por frames, gráficos SVG
 deterministas, exportación de reportes XLSX, predicción de series (forecast)
 y detección de anomalías. Cada tool implementa el contrato `Tool` de
@@ -14,7 +14,7 @@ y detección de anomalías. Cada tool implementa el contrato `Tool` de
 entry point que consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`,
 declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## Las 8 herramientas (5 nombres exactos pinned en ROADMAP_V2.md §7.7 + `analizar_video` de v3 + `predecir_serie`/`detectar_anomalias` de v5)
+## Las 8 herramientas (5 nombres exactos pinned en `ARCHITECTURE.md` §11 + `analizar_video` de v3 + `predecir_serie`/`detectar_anomalias` de v5)
 
 | Módulo | Tool | Qué hace |
 |---|---|---|
@@ -72,7 +72,7 @@ contrato público del paquete).
   devueltas) para que un archivo grande o adversarial no tumbe el proceso ni
   genere una respuesta inmanejable — el detalle exacto de cada límite está en
   `docs/analista.md`.
-- **`forecast.py` (predicción/anomalías, WP-V5-12) no toca S3 ni el LLM**: a
+- **`forecast.py` (predicción/anomalías, fase v5) no toca S3 ni el LLM**: a
   diferencia del resto del paquete, `predecir_serie`/`detectar_anomalias`
   reciben los datos completos en los argumentos (`valores`) y devuelven el
   resultado directo — sin `ctx.session`/`ctx.llm`, así que no necesitan
@@ -85,9 +85,9 @@ contrato público del paquete).
   `edecan_advisory`, ver `docs/analista.md` sección "Predicción y
   anomalías"). `detectar_anomalias` (IQR/z-score/rachas) es una heurística
   estadística general, explícitamente NO un modelo de detección de fraude
-  (ROADMAP_V2.md §3 fila 5: "outliers básicos sí en P0", fraude ML = P2).
+  (ARCHITECTURE.md §3 fila 5: "outliers básicos sí en P0", fraude ML = P2).
 - **`ffmpeg` es la única dependencia no-Python del paquete**: `video.py`
-  (WP-V3-14) invoca el binario `ffmpeg` del sistema vía
+  (fase v3) invoca el binario `ffmpeg` del sistema vía
   `asyncio.create_subprocess_exec` (JAMÁS `shell=True`) para extraer frames —
   a propósito, sin agregar `moviepy`/`opencv`/etc. a `pyproject.toml`, para no
   cargar la app de escritorio Tauri con librerías pesadas de video cuando el

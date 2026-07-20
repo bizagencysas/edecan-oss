@@ -67,7 +67,14 @@ export async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>
       `tauriInvoke("${cmd}") se llamó fuera de la app de escritorio (Tauri) -- comprobá isTauriApp() antes de invocar.`,
     );
   }
-  return (await invoke(cmd, args)) as T;
+  try {
+    return (await invoke(cmd, args)) as T;
+  } catch (err) {
+    // Un `Err(String)` de Rust rechaza la promesa con el string crudo. Se
+    // normaliza a Error para que las pantallas muestren el motivo real.
+    if (err instanceof Error) throw err;
+    throw new Error(typeof err === "string" ? err : JSON.stringify(err));
+  }
 }
 
 /** Se suscribe a un evento nativo (`window.__TAURI__.event.listen`) y

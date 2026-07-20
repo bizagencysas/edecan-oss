@@ -3,16 +3,14 @@
 Edecán puede enviar recordatorios como **notificación push nativa** a tu teléfono
 (iOS vía APNs, Android vía FCM) además de dejarlos siempre como mensaje de chat en
 la conversación "Recordatorios". Es **bring-your-own** al pie de la letra
-(`ARCHITECTURE.md` §14; `DIRECCION_ACTUAL.md`, "Modelo de credenciales: TODO lo
-trae el cliente, siempre"): conectas TU PROPIA `.p8` de Apple Push Notification
+(`ARCHITECTURE.md` §14 y [`credenciales.md`](./credenciales.md)): conectas TU PROPIA `.p8` de Apple Push Notification
 service (de TU cuenta de Apple Developer) y/o TU PROPIO service account de Firebase
 Cloud Messaging (de TU proyecto de Firebase) — Edecán nunca guarda ni opera una
 credencial de plataforma de push compartida entre tenants.
 
-Cubre el gap que quedaba documentado en `docs/roadmap.md`: *"Manejo de push
-notifications nativas para recordatorios y respuestas asíncronas (hoy `reminders`
-se resuelve por canal `web`/`voice`/`phone`/`api`; un canal `mobile` con push
-nativo sería una extensión natural)"*.
+Cubre notificaciones push nativas para recordatorios y respuestas asíncronas. El
+registro persistente de `reminders` se complementa con un canal `mobile` nativo,
+además de los canales `web`/`voice`/`phone`/`api`.
 
 ## El push es SIEMPRE además del mensaje de chat, nunca en su lugar
 
@@ -28,9 +26,8 @@ recordatorio (`apps/worker/edecan_worker/handlers/send_reminder.py`,
 ## 1. Setup de APNs (iOS) — en TU cuenta de Apple Developer
 
 Coherente con que cada cliente ya compila su propia app iOS con SU PROPIO bundle
-id y SU PROPIA cuenta de Apple Developer Program de pago (`docs/movil-ios.md`,
-"Antes de compilar para tu iPhone: bundle id y equipo"; `DIRECCION_ACTUAL.md`,
-"Apps móviles"):
+id y SU PROPIA cuenta de Apple Developer Program de pago (ver
+[`movil-ios.md`](./movil-ios.md), "Antes de compilar para tu iPhone: bundle id y equipo"):
 
 1. Entra a **[developer.apple.com/account](https://developer.apple.com/account)**
    → *Certificates, Identifiers & Profiles* → **Keys** → **+** (crear una key

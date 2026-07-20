@@ -1,6 +1,6 @@
 # Mensajería (Telegram, Discord, Slack, WhatsApp)
 
-Edecán envía y lee mensajes en **Telegram, Discord y Slack**, y además ENVÍA (solo envío — ver «Limitación de lectura en v3» más abajo) por **WhatsApp Business Platform**, exclusivamente por sus APIs oficiales (`ARCHITECTURE.md` §10.8, §12.b; `ROADMAP_V2.md` §7.7, WP-V2-05; WP-V3-13 agrega WhatsApp). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), **cada tenant conecta sus propias credenciales** — nunca hay un bot, una app ni un número de teléfono compartido de la plataforma que hable en nombre de todos los tenants.
+Edecán envía y lee mensajes en **Telegram, Discord y Slack**, y además ENVÍA (solo envío — ver «Limitación de lectura en v3» más abajo) por **WhatsApp Business Platform**, exclusivamente por sus APIs oficiales (`ARCHITECTURE.md` §10.8, §12.b; `docs/roadmap.md`, fase v2; fase v3 agrega WhatsApp). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), **cada tenant conecta sus propias credenciales** — nunca hay un bot, una app ni un número de teléfono compartido de la plataforma que hable en nombre de todos los tenants.
 
 Las cuatro plataformas no comparten un único mecanismo de conexión:
 
@@ -95,7 +95,7 @@ Slack limita la Web API por **tier** de método: `chat.postMessage` y `conversat
 
 ## WhatsApp (Cloud API oficial)
 
-**Clave del conector**: `whatsapp`. **Cómo se guarda**: `PUT /v1/connectors/whatsapp/credentials {"access_token": "...", "phone_number_id": "..."}` (autenticado con tu `Authorization: Bearer` normal del panel; ver `ARCHITECTURE.md` §12.b y `apps/api/edecan_api/routers/connectors.py`, WP-V3-13). A diferencia de Telegram/Discord/Twilio (que permiten varias cuentas por tenant, hasta la cuota del plan), la cuenta de WhatsApp es **singleton por tenant**: conectar una nueva reemplaza la anterior, nunca las acumula.
+**Clave del conector**: `whatsapp`. **Cómo se guarda**: `PUT /v1/connectors/whatsapp/credentials {"access_token": "...", "phone_number_id": "..."}` (autenticado con tu `Authorization: Bearer` normal del panel; ver `ARCHITECTURE.md` §12.b y `apps/api/edecan_api/routers/connectors.py`, fase v3). A diferencia de Telegram/Discord/Twilio (que permiten varias cuentas por tenant, hasta la cuota del plan), la cuenta de WhatsApp es **singleton por tenant**: conectar una nueva reemplaza la anterior, nunca las acumula.
 
 WhatsApp Business Platform (Cloud API, propiedad de Meta) tiene API oficial, pero con requisitos de cumplimiento sustancialmente más pesados que Telegram/Discord/Slack — esta sección los cubre en el mismo orden en que hay que resolverlos.
 
@@ -142,7 +142,7 @@ Un número en formato E.164 (`+525512345678`), con o sin el `+` inicial — `ede
 
 ### Limitación de lectura en v3 (sin webhooks)
 
-`leer_mensajes` con `plataforma: "whatsapp"` responde con un mensaje explicando la limitación en vez de intentar leer. A diferencia de Telegram/Slack (que Edecán lee por *polling* con `getUpdates`/`conversations.history`), WhatsApp Cloud API empuja los mensajes entrantes por **webhook**: hace falta una URL pública verificada (`GET` de verificación con `hub.challenge` + validación de firma `X-Hub-Signature-256`, igual en espíritu a los webhooks de Twilio que ya valida `edecan_premium.twilio_router`). Montar ese webhook queda fuera del alcance de WP-V3-13 — **roadmap para una fase posterior**: un router nuevo tipo `POST /v1/messaging/whatsapp/webhook`, con su propia verificación de firma por tenant/número.
+`leer_mensajes` con `plataforma: "whatsapp"` responde con un mensaje explicando la limitación en vez de intentar leer. A diferencia de Telegram/Slack (que Edecán lee por *polling* con `getUpdates`/`conversations.history`), WhatsApp Cloud API empuja los mensajes entrantes por **webhook**: hace falta una URL pública verificada (`GET` de verificación con `hub.challenge` + validación de firma `X-Hub-Signature-256`, igual en espíritu a los webhooks de Twilio que ya valida `edecan_premium.twilio_router`). Montar ese webhook queda fuera del alcance de fase v3 — **roadmap para una fase posterior**: un router nuevo tipo `POST /v1/messaging/whatsapp/webhook`, con su propia verificación de firma por tenant/número.
 
 ### Cumplimiento y bring-your-own — sin excepciones
 
@@ -155,7 +155,7 @@ Un número en formato E.164 (`+525512345678`), con o sin el `+` inicial — `ede
 
 ## Herramientas del agente
 
-`edecan_messaging` (`packages/messaging/`) expone dos herramientas, gateadas por el flag de plan `connectors.messaging` (`ROADMAP_V2.md` §7.2):
+`edecan_messaging` (`packages/messaging/`) expone dos herramientas, gateadas por el flag de plan `connectors.messaging` (`docs/roadmap.md`):
 
 | Tool | `dangerous` | Argumentos | Qué hace |
 |---|---|---|---|
@@ -168,7 +168,7 @@ Ambas resuelven la credencial del tenant desde su `TokenVault` (`edecan_messagin
 
 ## Bandeja unificada (web)
 
-Además de las tools del agente de arriba, WP-V4-11 agrega una superficie HTTP + web para que una persona lea/envíe mensajes directo desde el panel, sin pasar por el chat: `apps/api/edecan_api/routers/mensajes.py` (`/v1/mensajes`) y `/app/mensajes` en `apps/web`. Consume `packages/messaging/` TAL CUAL (`edecan_messaging._creds.resolver_credenciales` para la credencial, `edecan_messaging.clients`/`.whatsapp` para hablar con cada API oficial) — no agrega un mecanismo de conexión nuevo: sigue siendo la MISMA cuenta/bot/número que el tenant ya conectó como se explica arriba en este documento (`PUT /v1/connectors/{key}/credentials`, `GET /v1/connectors/slack/authorize`, etc.). Gateada por el mismo flag de plan que las tools, `connectors.messaging`.
+Además de las tools del agente de arriba, fase v4 agrega una superficie HTTP + web para que una persona lea/envíe mensajes directo desde el panel, sin pasar por el chat: `apps/api/edecan_api/routers/mensajes.py` (`/v1/mensajes`) y `/app/mensajes` en `apps/web`. Consume `packages/messaging/` TAL CUAL (`edecan_messaging._creds.resolver_credenciales` para la credencial, `edecan_messaging.clients`/`.whatsapp` para hablar con cada API oficial) — no agrega un mecanismo de conexión nuevo: sigue siendo la MISMA cuenta/bot/número que el tenant ya conectó como se explica arriba en este documento (`PUT /v1/connectors/{key}/credentials`, `GET /v1/connectors/slack/authorize`, etc.). Gateada por el mismo flag de plan que las tools, `connectors.messaging`.
 
 ### Endpoints
 
@@ -213,9 +213,9 @@ Esta bandeja no crea una cuenta/bot/número nuevo ni un mecanismo de conexión p
 
 Signal **no tiene una API pública oficial** para bots o integraciones de terceros — su protocolo está diseñado deliberadamente en torno a clientes verificados y cifrado de extremo a extremo entre personas, sin una superficie de "cuenta de aplicación" equivalente a un bot de Telegram/Discord o una app de Slack. Cualquier forma de automatizar Signal hoy implica reimplementar/envolver un cliente no oficial (`signal-cli` u otros proyectos de la comunidad), lo que viola la regla dura de este proyecto de **solo integrar APIs oficiales** (`ARCHITECTURE.md` §0.3). Por eso Signal queda excluida — no es una omisión temporal ni una cuestión de prioridad, es la misma postura de "sin API oficial, sin integración" que aplica al resto del producto.
 
-### WhatsApp — ya NO es una exclusión (implementada desde WP-V3-13)
+### WhatsApp — ya NO es una exclusión (implementada desde fase v3)
 
-Hasta v2 (WP-V2-05), WhatsApp Cloud API estaba documentada aquí como plan P1, sin implementar. Desde v3 (WP-V3-13, `ARCHITECTURE.md` §12.b) el ENVÍO ya es real — ver la sección [«WhatsApp (Cloud API oficial)»](#whatsapp-cloud-api-oficial) arriba. Lo único que sigue pendiente (deliberadamente fuera de alcance, no una omisión) es la LECTURA de mensajes entrantes, que exige montar un webhook público — ver «Limitación de lectura en v3» en esa misma sección para el detalle y el roadmap.
+Hasta v2 (fase v2), WhatsApp Cloud API estaba documentada aquí como plan P1, sin implementar. Desde v3 (fase v3, `ARCHITECTURE.md` §12.b) el ENVÍO ya es real — ver la sección [«WhatsApp (Cloud API oficial)»](#whatsapp-cloud-api-oficial) arriba. Lo único que sigue pendiente (deliberadamente fuera de alcance, no una omisión) es la LECTURA de mensajes entrantes, que exige montar un webhook público — ver «Limitación de lectura en v3» en esa misma sección para el detalle y el roadmap.
 
 ---
 

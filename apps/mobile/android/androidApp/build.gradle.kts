@@ -79,12 +79,12 @@ android {
 dependencies {
     implementation(project(":shared"))
 
-    implementation(compose.runtime)
-    implementation(compose.foundation)
-    implementation(compose.material3)
-    implementation(compose.ui)
-    implementation(compose.components.uiToolingPreview)
-    debugImplementation(compose.uiTooling)
+    implementation(libs.compose.runtime)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.tooling.preview)
+    debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)

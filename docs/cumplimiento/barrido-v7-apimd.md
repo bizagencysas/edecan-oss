@@ -1,4 +1,4 @@
-# Barrido v7 de `docs/api.md` — sincronización bidireccional contra los routers reales (WP-V7-10)
+# Barrido v7 de `docs/api.md` — sincronización bidireccional contra los routers reales (fase v7)
 
 Este documento registra el barrido **programático** de `docs/api.md` (987
 líneas antes de este WP) contra los routers HTTP/WebSocket REALMENTE
@@ -6,7 +6,7 @@ montados por `edecan_api.main.create_app()` hoy — motivado porque el propio
 `docs/api.md` ya se desincronizó dos veces antes (v4: fallback tenant→
 plataforma que ya no existía, corregido en v4/HOTFIXES; v6: `docs/api.md`
 §13.g documentó explícitamente que "ningún WP lo tocó en v4" y quedó como
-deuda aceptada hasta que WP-V6-11 hizo la primera pasada de esa deuda).
+deuda aceptada hasta que fase v6 hizo la primera pasada de esa deuda).
 
 ## Método usado (programático, no a ojo)
 
@@ -17,7 +17,7 @@ deuda aceptada hasta que WP-V6-11 hizo la primera pasada de esa deuda).
    `V6_ROUTER_NAMES` y el guard `importlib.util.find_spec("edecan_premium")`)
    y vuelca **todas** las rutas montadas, ejecutado siempre como
    `uv run --all-packages python <script>` (nunca `uv run` a secas, que poda
-   el workspace — `HOTFIXES_PENDIENTES.md`). Dos fuentes de verdad
+   el workspace — `docs/seguridad-modelo-amenazas.md`). Dos fuentes de verdad
    complementarias, porque esta versión de FastAPI/Starlette instalada en el
    workspace (`fastapi==0.139.0`/`starlette==1.3.1`) envuelve cada
    `include_router()` en un `fastapi.routing._IncludedRouter` perezoso que ya
@@ -66,9 +66,9 @@ deuda aceptada hasta que WP-V6-11 hizo la primera pasada de esa deuda).
 lugar de `docs/api.md`** (confirmado por conteo manual sección-por-sección Y
 por el diff mecánico, ambos coincidieron exactamente en estos 3):
 
-1. `GET /v1/missions/{id}/detalle` (WP-V6-10, observabilidad enriquecida de
+1. `GET /v1/missions/{id}/detalle` (fase v6, observabilidad enriquecida de
    misiones — `response_model=MissionDetalleOut`).
-2. `POST /v1/remote/sessions/{id}/input` (WP-V4-10, "fase 2" de control
+2. `POST /v1/remote/sessions/{id}/input` (fase v4, "fase 2" de control
    remoto real — input de teclado/mouse).
 3. `WS /v1/twilio/media` (Media Streams, interrupciones naturales en
    llamadas — `ARCHITECTURE.md` §15.h).
@@ -89,7 +89,7 @@ exige el enunciado del WP. Ninguna requirió tocar ningún router.
 1. **`GET /v1/connectors` — conteo y contenido desactualizados.** La doc
    decía "hasta 9 entradas en total" y el ejemplo JSON no incluía
    `whatsapp` — pero `connectors.py::list_connectors` (línea 351) concatena
-   CUATRO grupos, no tres, desde que WP-V3-13 agregó `whatsapp_entry`: son
+   CUATRO grupos, no tres, desde que fase v3 agregó `whatsapp_entry`: son
    10 entradas reales. Corregido el conteo, la prosa y el ejemplo JSON.
 2. **`POST /v1/reuniones` — valor de `status` inicial incorrecto.** La doc
    decía `status="queued"`; el código real (`reuniones.py`, línea 272)
@@ -116,7 +116,7 @@ exige el enunciado del WP. Ninguna requirió tocar ningún router.
 4. **`/v1/remote` — sección con contenido stale y un endpoint entero sin
    documentar.** La doc afirmaba "Prototipo P1 solo-vista: ningún endpoint
    de este router inyecta teclado/mouse — eso es P2, diseñado (no
-   implementado)". Falso desde WP-V4-10 ("fase 2",
+   implementado)". Falso desde fase v4 ("fase 2",
    `ARCHITECTURE.md` §13.c): `POST /v1/remote/sessions` ahora acepta
    `kind: "view"|"control"` y existe `POST /v1/remote/sessions/{id}/input`
    (gatea `companion.remote_input`, además de `companion.remote_view`).
@@ -144,7 +144,7 @@ exige el enunciado del WP. Ninguna requirió tocar ningún router.
    estaba en la doc. Agregado.
 8. **`WS /v1/twilio/media` — endpoint completo sin ninguna mención.** No
    aparecía en ningún lugar de `docs/api.md`. Agregada una fila en la tabla
-   de "Rutas de `premium/`" más una subsección corta con el gate real
+   de rutas de la extensión comercial externa `edecan_premium`, más una subsección corta con el gate real
    (`TWILIO_MEDIA_STREAMS_ENABLED`) y la limitación conocida (falta
    `app.state.settings` en `create_app()`, ya documentada en
    `ARCHITECTURE.md` §15.h y `docs/voz-telefonia.md` — ver "Hallazgos NO

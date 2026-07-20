@@ -2,20 +2,18 @@
 
 `edecan_creative` (`packages/creative/`) le da al agente seis herramientas de generación:
 una imagen, tres formatos de documento de oficina (Word, PowerPoint, PDF), y (desde v5,
-`ARCHITECTURE.md` §14, WP-V5-11) un podcast completo y un efecto de sonido — cada archivo
+`ARCHITECTURE.md` §14, fase v5) un podcast completo y un efecto de sonido — cada archivo
 guardado como un archivo privado del tenant (mismo mecanismo que una subida manual por
-`POST /v1/files`, ver [`api.md`](./api.md)). Las cuatro primeras corresponden al work
-package **WP-V2-04** de `ROADMAP_V2.md` §4, con el contrato de nombres/tools pinned en
-`ROADMAP_V2.md` §7.7; las dos de audio son de v5 (ver la sección
+`POST /v1/files`, ver [`api.md`](./api.md)). Las cuatro primeras corresponden a la
+fase v2 definida en `ARCHITECTURE.md` §11; las dos de audio son de v5 (ver la sección
 ["Podcasts y efectos de sonido"](#podcasts-y-efectos-de-sonido) más abajo). La lista de
 herramientas de `ARCHITECTURE.md` §10.14 es solo la de v1/`edecan_toolkit`; las herramientas
-nuevas de v2/v5 se pinnean en `ROADMAP_V2.md`/`ARCHITECTURE.md` §14 respectivamente, no ahí.
+nuevas de v2/v5 se fijan en `ARCHITECTURE.md` §11/§14 respectivamente, no ahí.
 
 > **Estado de integración:** el paquete está completo, probado y listo (`pytest`/`ruff`
 > en verde), pero **todavía no aparece en `[tool.uv.workspace].members`** del
 > `pyproject.toml` raíz ni en la lista de settings de `apps/api/edecan_api/config.py` —
-> ambos archivos son propiedad exclusiva de **WP-V2-01** (`ROADMAP_V2.md` §2, lección 3:
-> "cada archivo compartido tiene exactamente UN dueño"; lista de dueños en §7.1 y §7.5). Añadir
+> ambos archivos todavía requieren integración compartida. Añadir
 > `"packages/creative"` a esa lista y correr `uv sync` es lo único que falta para que el
 > entry point `edecan.tools` lo descubra automáticamente en `apps/api`/`apps/worker`. El
 > propio código no necesita ningún cambio para eso: ya sigue el mismo patrón de
@@ -42,8 +40,7 @@ devuelven `data` con al menos `file_id`/`filename` (recuperable después por `GE
 > Creé la presentación «Estrategia 2027» con 2 diapositiva(s) de contenido (más la
 > portada), guardada como «estrategia-2027.pptx».
 
-Solo `generar_imagen` está gateada por un flag de plan (`tools.images`, `ROADMAP_V2.md`
-§7.2 — activo en `free_selfhost`, `hosted_pro` y `hosted_business`; **no** en
+Solo `generar_imagen` está gateada por un flag de plan (`tools.images`, `docs/roadmap.md` — activo en `free_selfhost`, `hosted_pro` y `hosted_business`; **no** en
 `hosted_basic`); las tres herramientas de documentos no requieren ningún flag porque no
 tienen costo variable de proveedor externo (a diferencia de una imagen generada con un
 proveedor real de pago).
@@ -71,7 +68,7 @@ duplicar esa medición aquí).
 
 `generar_imagen` habla con un `ImageProvider` intercambiable
 (`edecan_creative.providers.get_image_provider(settings)`), seleccionado con la variable
-`IMAGES_PROVIDER` (`ROADMAP_V2.md` §7.5):
+`IMAGES_PROVIDER` (`docs/roadmap.md`):
 
 | `IMAGES_PROVIDER` | Clase | Requiere | Notas |
 |---|---|---|---|
@@ -85,13 +82,13 @@ de *fallback* que `edecan_voice.registry.get_stt/get_tts`, ver
 [`voz-telefonia.md`](./voz-telefonia.md)).
 
 Las cuatro variables (`IMAGES_PROVIDER`, `IMAGES_BASE_URL`, `IMAGES_API_KEY`,
-`IMAGES_MODEL`) están pinned en `ROADMAP_V2.md` §7.5 pero, como se explica arriba, todavía
+`IMAGES_MODEL`) están pinned en `docs/roadmap.md` pero, como se explica arriba, todavía
 no están declaradas como campos de `Settings` en `apps/api/edecan_api/config.py` (dueño:
-WP-V2-01) ni listadas en `.env.example`. Esto **no bloquea** el uso del proveedor `stub`
+fase v2) ni listadas en `.env.example`. Esto **no bloquea** el uso del proveedor `stub`
 hoy: `get_image_provider` lee `settings` de forma defensiva
-(`getattr(settings, "CAMPO", default)`, convención dura de `ROADMAP_V2.md` §7.5) y, al no
+(`getattr(settings, "CAMPO", default)`, convención dura de `docs/roadmap.md`) y, al no
 encontrar `IMAGES_PROVIDER`, usa `"stub"` por defecto sin ningún error. Para activar
-`openai_compat` hoy mismo en una instancia self-host sin esperar a WP-V2-01, basta con que
+`openai_compat` hoy mismo en una instancia self-host sin esperar a fase v2, basta con que
 `Settings` termine exponiendo esos cuatro atributos (por variable de entorno del mismo
 nombre, gracias a pydantic-settings) — el resto del paquete ya está listo.
 
@@ -154,19 +151,18 @@ que ve el modelo cuando el plan del tenant no trae `tools.images` activo.
 
 ## Podcasts y efectos de sonido
 
-Desde v5 (`ARCHITECTURE.md` §14, WP-V5-11), `edecan_creative.podcast` cubre la parte de
-"podcasts" y una porción de "música/audio" del wishlist de `REQUISITOS_V2.md` (categoría
-Creatividad) — **100% bring-your-own**: el audio se sintetiza con el proveedor de voz (TTS)
-del PROPIO tenant, nunca con una credencial de la plataforma. Desde v6 (WP-V6-04) los
+Desde v5 (`ARCHITECTURE.md` §14), `edecan_creative.podcast` cubre podcasts y
+efectos de audio — **100% bring-your-own**: el audio se sintetiza con el proveedor de voz (TTS)
+del PROPIO tenant, nunca con una credencial de la plataforma. Desde v6 (fase v6) los
 podcasts tienen, además de la tool de chat, un vertical HTTP/UI completo — ver
-["Endpoints REST y UI web"](#endpoints-rest-y-ui-web-podcasts-wp-v6-04) más abajo.
+["Endpoints REST y UI web"](#endpoints-rest-y-ui-web-podcasts) más abajo.
 
 ### Cómo funciona
 
-- **`crear_podcast`** (tool de chat) y **`POST /v1/voz/podcasts`** (endpoint REST, WP-V6-04)
+- **`crear_podcast`** (tool de chat) y **`POST /v1/voz/podcasts`** (endpoint REST, fase v6)
   son los DOS puntos de entrada para pedir un podcast — ambos terminan en el MISMO job
   `generate_podcast` (`edecan_schemas.JOB_TYPES`,
-  `apps/worker/edecan_worker/handlers/generate_podcast.py`) y, desde WP-V6-04, en la MISMA
+  `apps/worker/edecan_worker/handlers/generate_podcast.py`) y, desde fase v6, en la MISMA
   fila de la tabla `podcasts` (una sola ruta de estado sin importar el origen — ver
   "Endpoints REST y UI web" para el detalle). `crear_podcast` sigue siendo **asíncrona**:
   valida el guion (ver "Límites del guion" abajo) y encola el job — el mismo mecanismo
@@ -175,7 +171,7 @@ podcasts tienen, además de la tool de chat, un vertical HTTP/UI completo — ve
   el audio final, que aparece como archivo nuevo en unos minutos. `crear_podcast` devuelve
   `data={"titulo", "segmentos"}` de inmediato (todavía no hay `file_id`: el archivo no existe
   hasta que el job termina) — para seguir el estado del podcast pedido por chat, la pestaña
-  "Podcasts" de `/app/voz` también lo muestra (WP-V6-04 crea la fila `podcasts`
+  "Podcasts" de `/app/voz` también lo muestra (fase v6 crea la fila `podcasts`
   correspondiente al vuelo desde el worker, no desde la tool).
 - **`generar_efecto_sonido`** es **síncrona**: resuelve el TTS del tenant, pide un efecto de
   sonido (sin voz — aplausos, lluvia, timbre, etc.) y sube el resultado en el mismo turno,
@@ -196,12 +192,12 @@ credencial que usa `POST /v1/voice/speak` para la voz web, ver
 Igual que `generar_imagen`/`buscar_web`/la voz web: sin credencial propia conectada NUNCA se
 cae a una clave de ElevenLabs de la plataforma — el patrón fail-closed de dos niveles
 ("tenant → stub", sin paso intermedio) es el mismo que corrigió el hallazgo más serio de todo
-el proyecto (`DIRECCION_ACTUAL.md` "v4 completado", hallazgo #1 sobre
-`edecan_llm.router.py::_build_provider_from_config`). Un fallo real hablando con ElevenLabs
+el proyecto (ver [`credenciales.md`](./credenciales.md) y
+`docs/seguridad-modelo-amenazas.md`). Un fallo real hablando con ElevenLabs
 cuando el tenant SÍ conectó una credencial (voz inválida, cuota agotada, etc.) se deja
 propagar tal cual — nunca degrada en silencio a un stub.
 
-**Consolidación con `edecan_voice` (WP-V6-04):** hasta v5, la resolución de arriba vivía
+**Consolidación con `edecan_voice` (fase v6):** hasta v5, la resolución de arriba vivía
 DUPLICADA a propósito en `edecan_creative.podcast` (independencia de aterrizaje mientras
 `packages/voice` se construía en paralelo, `ARCHITECTURE.md` §10.1). Ahora que ambos paquetes
 están asentados, `packages/creative/pyproject.toml` declara `edecan-voice` como dependencia
@@ -246,7 +242,7 @@ Un podcast de más de un segmento necesita unir los clips de audio en uno solo
   Un solo segmento nunca requiere ffmpeg (se devuelve tal cual, sin ensamblar nada).
 
 `ffmpeg` **no es una dependencia de Python**: como con `analizar_video`, en la app de
-escritorio (`DIRECCION_ACTUAL.md`, stack Tauri) el cliente lo instala aparte.
+escritorio el cliente lo instala aparte.
 `ffmpeg_disponible()` lo detecta en caliente (`shutil.which`, o `FFMPEG_PATH` si el entorno lo
 fija) y, si falta, `crear_podcast`/el job devuelven un mensaje instructivo en vez de un
 traceback:
@@ -264,15 +260,15 @@ archivo final con el mismo layout S3 que el resto de `edecan_creative`
 — el job inserta la fila `files` directamente desde el worker (no reusa
 `edecan_creative._files.subir_archivo`, que está pensado para el contexto de una `Tool` con
 `ctx.session`/`ctx.user_id`, no para un job; usa las mismas columnas exactas). El nombre de
-archivo es `{título-en-slug}.{formato real}`. Desde WP-V6-04, el job TAMBIÉN mantiene al día
+archivo es `{título-en-slug}.{formato real}`. Desde fase v6, el job TAMBIÉN mantiene al día
 la fila `podcasts` correspondiente (`status`/`file_id`/`error`) — ver la siguiente sección.
 
-## Endpoints REST y UI web (podcasts, WP-V6-04)
+## Endpoints REST y UI web (podcasts)
 
 Antes de v6, un podcast pedido por chat no tenía ninguna forma de consultarse desde la UI —
-solo aparecía, con suerte, en `/app/archivos` cuando el job terminaba. WP-V6-04 agrega el
+solo aparecía, con suerte, en `/app/archivos` cuando el job terminaba. fase v6 agrega el
 vertical HTTP/UI completo, apoyado en una tabla nueva `podcasts` (`ARCHITECTURE.md` §15.b,
-migración `0008_v6_expansion`, linchpin WP-V6-01): `id, tenant_id, user_id, titulo, guion
+migración `0008_v6_expansion`, linchpin fase v6): `id, tenant_id, user_id, titulo, guion
 jsonb (nullable), status, file_id, error, created_at, updated_at`, con `status ∈ {pending,
 running, done, error}`.
 
@@ -329,7 +325,7 @@ extraído a `components/voz/VocesTab.tsx`) y "Podcasts"
   CUALQUIER archivo del producto — no hay ningún endpoint de descarga real (URL prefirmada de
   S3 o streaming) todavía, ni para podcasts ni para ningún archivo generado por
   `crear_documento`/`crear_presentacion`/`crear_pdf`/`generar_imagen`. `files.py` está fuera
-  de las rutas que WP-V6-04 puede tocar, así que el botón confirma que el archivo existe
+  de las rutas que fase v6 puede tocar, así que el botón confirma que el archivo existe
   (`getFile`, el mismo `GET /v1/files/{id}` que usa `/app/archivos`) y lleva al usuario a esa
   página, donde el archivo ya aparece listado — sin inventar un mecanismo de descarga nuevo.
   Un endpoint real de descarga (URL prefirmada o streaming) queda pendiente para un WP futuro
@@ -341,8 +337,7 @@ que ya usaba el archivo para voces/clones.
 
 ## Fuera de alcance de esta versión (P2)
 
-Video y animación siguen fuera de `edecan_creative` — `ROADMAP_V2.md` §3 (fila 10, "🎨
-Creatividad") los marca explícitamente como P2, sin fecha en este roadmap. Podcasts y
+Video y animación siguen fuera de `edecan_creative`, sin fecha comprometida. Podcasts y
 efectos de sonido, que antes estaban en esta misma lista, ya se cubrieron en v5 (ver arriba).
 Tampoco hay edición de imágenes existentes (inpainting/outpainting) ni variaciones de una
 imagen ya generada — solo generación desde cero a partir de un prompt de texto.
@@ -353,7 +348,7 @@ imagen ya generada — solo generación desde cero a partir de un prompt de text
 cd packages/creative && PYTHONPATH=. pytest
 ```
 
-(Hasta que WP-V2-01 sume `packages/creative` al workspace raíz, `uv run pytest
+(Hasta que fase v2 sume `packages/creative` al workspace raíz, `uv run pytest
 packages/creative` desde la raíz del repo también funciona una vez que el entorno tenga el
 paquete instalado — ver `packages/creative/README.md` para el detalle de qué cubre cada
 archivo de test.) Todo offline y determinista: `respx` para `OpenAICompatImagesProvider` y
@@ -367,7 +362,7 @@ de verdad si está instalado (se salta solo si no lo está); la suite estándar 
 `apps/worker/tests/test_generate_podcast.py` (fakes propios de S3/sesión, ver su docstring),
 no en este paquete.
 
-Los endpoints REST (WP-V6-04) tienen su propio archivo,
+Los endpoints REST (fase v6) tienen su propio archivo,
 `apps/api/tests/test_podcasts_router.py` (`test_voz_avanzada.py`, sin cambios, sigue cubriendo
 `/voces`/`/clones`) — mismo patrón `FakeSession`/`enqueue` mockeado que el resto de
 `apps/api/tests`, sin depender de que la migración de la tabla `podcasts` esté aplicada de

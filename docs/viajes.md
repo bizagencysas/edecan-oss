@@ -5,7 +5,7 @@ buscar vuelos y hoteles reales y consultar horarios de vuelos, y **tu propia cue
 AfterShip** para rastrear paquetes/envíos — pero **nunca reserva ni paga nada por su
 cuenta**: no existe, en todo este paquete, ninguna llamada a ninguna API de booking/pago
 de Amadeus. Es **bring-your-own** al pie de la letra (`ARCHITECTURE.md` §14;
-`DIRECCION_ACTUAL.md`, "Modelo de credenciales: TODO lo trae el cliente, siempre"):
+`docs/roadmap.md`, "Modelo de credenciales: TODO lo trae el cliente, siempre"):
 conectas TUS PROPIAS credenciales de Amadeus/AfterShip — Edecán nunca opera una cuenta
 de viajes compartida ni guarda una credencial de plataforma.
 
@@ -225,11 +225,11 @@ como alternativa — la única opción además de la tuya es el stub.
   actualiza ni borra ningún tracking en la cuenta de AfterShip del tenant — Edecán solo
   consulta, nunca administra esa cuenta en su nombre.
 
-## Auditoría v7 (WP-V7-02, 2026-07-09)
+## Auditoría v7 (fase v7, 2026-07-09)
 
 `packages/travel/edecan_travel/` no había sido incluido en ningún barrido de
-seguridad dedicado hasta ahora (`WP-V5-02`, el barrido bring-your-own de v5,
-cubrió 11 dominios pero no viajes — ver `HOTFIXES_PENDIENTES.md`, "Barrido v5").
+seguridad dedicado hasta ahora (`fase v5`, el barrido bring-your-own de v5,
+cubrió 11 dominios pero no viajes — ver `docs/seguridad-modelo-amenazas.md`, "Barrido v5").
 Este WP hizo la primera pasada línea por línea sobre los 4 archivos del paquete
 más `apps/api/edecan_api/routers/viajes.py`, con los mismos 4 criterios que
 otros barridos de esta sesión (fuga bring-your-own, plan-flag, evidencia vs.

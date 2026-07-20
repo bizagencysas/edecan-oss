@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edecán Companion — agente local de escritorio, opt-in: acceso controlado y auditable al equipo del usuario"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "websockets>=13.0",
     "pyyaml>=6.0",
@@ -14,11 +15,8 @@ dependencies = [
 # paquete pensado para instalarse solo, en la máquina del propio usuario,
 # separado del servidor. Ver README.md y ARCHITECTURE.md §10.1/§10.12.
 
-# Control remoto de teclado/mouse (WP-V4-10, docs/control-remoto.md §7):
-# OPCIONAL y solo macOS -- el resto del companion (incluidas las demás
-# acciones) funciona sin este extra instalado; `actions._QuartzInputBackend`
-# importa `Quartz` de forma perezosa y falla con un mensaje claro si falta.
-# Instalación: `pip install 'edecan-companion[remote-input]'`.
+# Remote keyboard/mouse input is optional and macOS-only. The companion loads
+# Quartz lazily and the remaining actions work without this extra installed.
 [project.optional-dependencies]
 remote-input = ["pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'"]
 

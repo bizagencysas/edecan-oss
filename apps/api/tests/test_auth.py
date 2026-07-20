@@ -10,6 +10,8 @@ import jwt
 import pyotp
 from conftest import TEST_JWT_SECRET
 
+from edecan_api.security import decode_token
+
 
 async def test_register_creates_tenant_and_returns_token_pair(client) -> None:
     response = await client.post(
@@ -101,6 +103,70 @@ async def test_refresh_returns_new_token_pair(client) -> None:
     # El access token nuevo debe servir de verdad contra una ruta protegida.
     me = await client.get("/v1/me", headers={"Authorization": f"Bearer {body['access_token']}"})
     assert me.status_code == 200
+
+    # Rotación real: el token anterior ya no existe en la sesión server-side.
+    reused = await client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert reused.status_code == 401
+    assert "revocado o ya fue utilizado" in reused.json()["detail"]
+
+
+async def test_refresh_rechecks_membership_and_current_plan(client, fake_repo) -> None:
+    register = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "membresia@example.com",
+            "password": "clave-membresia-1",
+            "tenant_name": "Membership Co",
+        },
+    )
+    first_refresh = register.json()["refresh_token"]
+    original = decode_token(first_refresh, secret=TEST_JWT_SECRET, expected_typ="refresh")
+
+    await fake_repo.update_tenant_plan(original.ten, "hosted_basic")
+    rotated = await client.post("/v1/auth/refresh", json={"refresh_token": first_refresh})
+    assert rotated.status_code == 200
+    new_access = decode_token(
+        rotated.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    assert new_access.plan == "hosted_basic"
+
+    fake_repo.memberships.clear()
+    denied = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": rotated.json()["refresh_token"]}
+    )
+    assert denied.status_code == 401
+    assert "ya no tiene acceso" in denied.json()["detail"]
+
+
+async def test_logout_revokes_refresh_token(client) -> None:
+    register = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "logout@example.com",
+            "password": "clave-logout-123",
+            "tenant_name": "Logout Co",
+        },
+    )
+    refresh_token = register.json()["refresh_token"]
+
+    logout = await client.post("/v1/auth/logout", json={"refresh_token": refresh_token})
+    assert logout.status_code == 200
+    assert logout.json() == {"revoked": True}
+
+    denied = await client.post("/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert denied.status_code == 401
+
+
+async def test_login_is_rate_limited_before_authentication(client, test_settings) -> None:
+    test_settings.AUTH_RATE_LIMIT_REQUESTS = 2
+    payload = {"email": "nobody@example.com", "password": "clave-invalida-123"}
+
+    assert (await client.post("/v1/auth/login", json=payload)).status_code == 401
+    assert (await client.post("/v1/auth/login", json=payload)).status_code == 401
+    limited = await client.post("/v1/auth/login", json=payload)
+
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == str(test_settings.AUTH_RATE_LIMIT_WINDOW_SECONDS)
 
 
 async def test_refresh_rejects_an_access_token(client) -> None:

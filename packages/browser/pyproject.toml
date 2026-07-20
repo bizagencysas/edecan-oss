@@ -1,7 +1,7 @@
 [project]
 name = "edecan-browser"
 version = "0.1.0"
-description = "Edecán — navegador de investigación headless: fetch httpx/Playwright, políticas de seguridad (robots.txt, SSRF, sin compras) y extracción de contenido legible (edecan_browser). Ver ARCHITECTURE.md §10.14 y ROADMAP_V2.md §4 WP-V2-03/§7.7."
+description = "Safe headless research and readable-content extraction tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -11,26 +11,16 @@ dependencies = [
     "edecan-core",
     "edecan-schemas",
     "edecan-toolkit",
-    # No estaba en la lista original de dependencias del WP, pero
-    # `extraer_datos_web`/`comparar_precios` necesitan invocar de verdad
-    # `ctx.llm.complete("principal", flags, req)` (§10.6) para extraer datos
-    # estructurados de una página — igual que `edecan_toolkit.contenido`
-    # (ver su README: "se añadió edecan-llm... porque sin él la tool no
-    # podría redactar contenido de verdad"). Mismo motivo aquí.
+    # Research tools use the shared router for structured extraction.
     "edecan-llm",
 ]
 
-# Playwright es SIEMPRE opcional (ROADMAP_V2.md §7.11): jamás dependencia
-# dura ni requerida por tests. `edecan_browser.fetch.PlaywrightFetcher` hace
-# el import de forma diferida y guardeada — instalar este extra es lo único
-# que además hace falta para que `BROWSER_FETCH_PROVIDER=playwright` funcione
-# (más `playwright install chromium`, fuera del alcance de `pip`/`uv`).
+# Playwright is optional and imported lazily. Install this extra plus the
+# Chromium runtime only when BROWSER_FETCH_PROVIDER=playwright is selected.
 [project.optional-dependencies]
 playwright = ["playwright>=1.40"]
 
-# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
-# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
-# sin argumentos que devuelve `list[Tool]`.
+# Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
 [project.entry-points."edecan.tools"]
 browser = "edecan_browser:get_all_tools"
 

@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# Edecán — apps/api (FastAPI). Imagen de producción para self-hosting.
+#
+# IMPORTANTE: construir con el contexto en la RAÍZ del monorepo (es un
+# workspace uv: apps/api depende de packages/* locales vía [tool.uv.sources]):
+#
+#   docker build -f infra/docker/Dockerfile.api -t edecan-api:dev .
+#
+# ============================================================================
+
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PIP_NO_CACHE_DIR=1
+
+RUN pip install --no-cache-dir uv==0.11.19
+
+WORKDIR /build
+
+# Copiamos únicamente el workspace Python. Esto evita incorporar por accidente
+# secretos locales (`.env`) u otros artefactos del repositorio a las capas de
+# build, y conserva todos los miembros que uv necesita para validar el lock.
+COPY pyproject.toml uv.lock README.md ./
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY apps/companion ./apps/companion
+COPY apps/local ./apps/local
+COPY packages ./packages
+
+# Sincroniza SOLO el paquete edecan-api y sus dependencias del workspace
+# (incluye packages/schemas, db, llm, core, connectors, voice, toolkit vía
+# [tool.uv.sources] workspace = true). --no-dev excluye pytest/ruff/respx.
+# --no-editable: por defecto `uv sync` instala los miembros del workspace
+# como EDITABLE, con un `.pth` que apunta a la ruta ABSOLUTA de esta etapa
+# builder (`/build/apps/api/edecan_api`, `/build/packages/db/edecan_db`, …)
+# — inservible en la etapa runtime de abajo, que no tiene `/build`.
+# `--no-editable` instala TODO (edecan-api + sus dependencias del workspace)
+# como paquetes reales
+# dentro de `/opt/venv/lib/python3.12/site-packages/` — autocontenido, ya no
+# hace falta copiar ningún directorio de código fuente aparte.
+RUN uv sync --frozen --no-dev --no-editable --package edecan-api
+
+# ============================================================================
+FROM python:3.12-slim AS runtime
+
+RUN groupadd --system --gid 1000 edecan \
+    && useradd --system --uid 1000 --gid edecan --home-dir /app --shell /usr/sbin/nologin edecan
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# --no-editable (ver arriba) ya deja edecan_api Y todas sus dependencias del
+# workspace instaladas de verdad dentro de /opt/venv — nada más que copiar.
+COPY --from=builder --chown=edecan:edecan /opt/venv /opt/venv
+
+WORKDIR /app
+USER edecan
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status == 200 else 1)"]
+
+CMD ["uvicorn", "edecan_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

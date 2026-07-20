@@ -1,8 +1,8 @@
 # Edecán — app iOS nativa
 
 Esqueleto real y compilable: Swift 6 + SwiftUI puro, diseño Liquid Glass
-(iOS 26.5), sin React Native (mandato permanente — ver `DIRECCION_ACTUAL.md`
-y `ROADMAP_V2.md` §6.1). Nunca se distribuye por App Store/TestFlight:
+(iOS 26.5), sin React Native (mandato permanente — ver `docs/roadmap.md`
+y `ARCHITECTURE.md` §11). Nunca se distribuye por App Store/TestFlight:
 instalación local por USB, cada cliente compila y firma con su propia
 cuenta Apple Developer Program. Guía completa para el cliente final en
 [`../../../docs/movil-ios.md`](../../../docs/movil-ios.md) — este README es

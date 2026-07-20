@@ -2,16 +2,27 @@ package cc.edecan.shared
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
+import android.security.keystore.KeyProperties
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
+import java.io.IOException
+import java.security.KeyStore
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.AEADBadTagException
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 private val Context.pairingDataStore by preferencesDataStore(name = "cc.edecan.app.pairing")
+private const val KEY_ACCESS_TOKEN = "access_token"
+private const val KEY_REFRESH_TOKEN = "refresh_token"
 
 /**
  * Implementación Android de [TokenStore] (ver su docstring en `commonMain`
@@ -23,28 +34,21 @@ private val Context.pairingDataStore by preferencesDataStore(name = "cc.edecan.a
  *   sensible (ni siquiera secreto dentro del propio dispositivo) —
  *   DataStore es el reemplazo moderno recomendado de `SharedPreferences`
  *   para esto, con una API 100% basada en coroutines.
- * - **`EncryptedSharedPreferences`** (`androidx.security.crypto`) SOLO
- *   para el par de tokens JWT: son credenciales de sesión reales y deben
- *   quedar SIEMPRE cifradas en reposo (claves AES-256-SIV, valores
- *   AES-256-GCM, con la clave maestra respaldada por el Android Keystore
- *   — nunca texto plano en el filesystem de la app).
+ * - **Android Keystore + AES-256-GCM** SOLO para el par de tokens JWT: son
+ *   credenciales de sesión reales y deben quedar SIEMPRE cifradas en reposo.
+ *   SharedPreferences guarda únicamente payloads cifrados versionados; la
+ *   clave no es exportable y vive en el Keystore del dispositivo.
  *
- * Las llamadas que tocan `EncryptedSharedPreferences` corren en
+ * Las llamadas que tocan el almacén cifrado corren en
  * [Dispatchers.IO] a propósito: la primera lectura por proceso (creación
  * de la clave maestra en el Keystore + apertura del archivo cifrado) hace
  * I/O de disco síncrono real, y esta clase no debe asumir en qué
  * dispatcher la llama quien la usa ([EdecanApi], `SessionViewModel`).
  *
- * Nota de versión: `MasterKey`/`EncryptedSharedPreferences` están
- * marcadas `@Deprecated` desde `androidx.security.crypto` 1.1.0 (el
- * reemplazo sugerido por Google es integrar Tink directamente,
- * `com.google.crypto.tink:tink-android`, sin una envoltura equivalente de
- * alto nivel todavía). Se usan aquí de todas formas, a propósito: siguen
- * siendo la API cifrada estándar, totalmente funcional, sin fecha de
- * remoción anunciada — migrar a Tink crudo es bastante más código/superficie
- * de errores criptográficos para un esqueleto v1, y no cambia el contrato
- * de [TokenStore] si se hace más adelante (el reemplazo quedaría 100%
- * contenido en este archivo).
+ * La implementación sigue la sustitución oficial de `MasterKey` indicada por
+ * AndroidX Security Crypto 1.1: `KeyGenerator` contra `AndroidKeyStore`.
+ * [LegacyEncryptedTokenMigration] conserva las sesiones creadas por versiones
+ * anteriores y elimina el valor antiguo después de migrarlo correctamente.
  */
 class DataStoreTokenStore(private val context: Context) : TokenStore {
 
@@ -57,17 +61,8 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
     // I/O real y no debe pagarse en el constructor de esta clase (que se
     // instancia, entre otros, cada vez que el onboarding actualiza la URL
     // del servidor — ver `SessionViewModel.actualizarBaseUrl`).
-    private val prefsCifradas: SharedPreferences by lazy {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context,
-            "cc.edecan.app.tokens",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+    private val tokenVault: AndroidKeystoreTokenVault by lazy {
+        AndroidKeystoreTokenVault(context.applicationContext)
     }
 
     override suspend fun getServerUrl(): String? =
@@ -89,33 +84,191 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
     }
 
     override suspend fun getAccessToken(): String? = withContext(Dispatchers.IO) {
-        prefsCifradas.getString(KEY_ACCESS_TOKEN, null)
+        tokenVault.get(KEY_ACCESS_TOKEN)
     }
 
     override suspend fun getRefreshToken(): String? = withContext(Dispatchers.IO) {
-        prefsCifradas.getString(KEY_REFRESH_TOKEN, null)
+        tokenVault.get(KEY_REFRESH_TOKEN)
     }
 
     override suspend fun saveTokens(accessToken: String, refreshToken: String) {
         withContext(Dispatchers.IO) {
-            prefsCifradas.edit()
-                .putString(KEY_ACCESS_TOKEN, accessToken)
-                .putString(KEY_REFRESH_TOKEN, refreshToken)
-                .apply()
+            tokenVault.save(accessToken, refreshToken)
         }
     }
 
     override suspend fun clearTokens() {
         withContext(Dispatchers.IO) {
-            prefsCifradas.edit()
-                .remove(KEY_ACCESS_TOKEN)
-                .remove(KEY_REFRESH_TOKEN)
-                .apply()
+            tokenVault.clear()
         }
     }
 
+}
+
+/** Payload autocontenido y versionado: `v1:<iv>:<ciphertext+tag>`. */
+internal object EncryptedTokenPayloadCodec {
+    private const val VERSION = "v1"
+    private const val IV_BYTES = 12
+    private const val GCM_TAG_BYTES = 16
+
+    data class Payload(val iv: ByteArray, val ciphertext: ByteArray)
+
+    fun encode(iv: ByteArray, ciphertext: ByteArray): String {
+        require(iv.size == IV_BYTES) { "IV AES-GCM inválido" }
+        require(ciphertext.size >= GCM_TAG_BYTES) { "Payload AES-GCM inválido" }
+        val encoder = Base64.getUrlEncoder().withoutPadding()
+        return "$VERSION:${encoder.encodeToString(iv)}:${encoder.encodeToString(ciphertext)}"
+    }
+
+    fun decode(value: String): Payload {
+        val parts = value.split(':')
+        require(parts.size == 3 && parts[0] == VERSION) { "Versión de token cifrado inválida" }
+        val decoder = Base64.getUrlDecoder()
+        val iv = decoder.decode(parts[1])
+        val ciphertext = decoder.decode(parts[2])
+        require(iv.size == IV_BYTES) { "IV AES-GCM inválido" }
+        require(ciphertext.size >= GCM_TAG_BYTES) { "Payload AES-GCM inválido" }
+        return Payload(iv, ciphertext)
+    }
+}
+
+/** Criptografía pura y testeable; AAD impide intercambiar access/refresh. */
+internal object AesGcmTokenCipher {
+    private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val GCM_TAG_BITS = 128
+
+    fun encrypt(plaintext: String, associatedData: String, key: SecretKey): String {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.updateAAD(associatedData.toByteArray(Charsets.UTF_8))
+        val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+        return EncryptedTokenPayloadCodec.encode(cipher.iv, ciphertext)
+    }
+
+    fun decrypt(payload: String, associatedData: String, key: SecretKey): String {
+        val decoded = EncryptedTokenPayloadCodec.decode(payload)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, decoded.iv))
+        cipher.updateAAD(associatedData.toByteArray(Charsets.UTF_8))
+        return cipher.doFinal(decoded.ciphertext).toString(Charsets.UTF_8)
+    }
+}
+
+private class AndroidKeystoreTokenVault(private val context: Context) {
+    private val preferences: SharedPreferences =
+        context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    private val key: SecretKey by lazy(::loadOrCreateKey)
+
+    init {
+        migrateLegacyTokens()
+    }
+
+    fun get(name: String): String? {
+        val encrypted = preferences.getString(name, null) ?: return null
+        return try {
+            AesGcmTokenCipher.decrypt(encrypted, name, key)
+        } catch (_: IllegalArgumentException) {
+            clearCorruptedTokens()
+            null
+        } catch (_: AEADBadTagException) {
+            clearCorruptedTokens()
+            null
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            clearCorruptedTokens()
+            null
+        }
+    }
+
+    fun save(accessToken: String, refreshToken: String) {
+        val committed = preferences.edit()
+            .putString(KEY_ACCESS_TOKEN, AesGcmTokenCipher.encrypt(accessToken, KEY_ACCESS_TOKEN, key))
+            .putString(
+                KEY_REFRESH_TOKEN,
+                AesGcmTokenCipher.encrypt(refreshToken, KEY_REFRESH_TOKEN, key),
+            )
+            .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
+            .commit()
+        requireCommitted(committed)
+        LegacyEncryptedTokenMigration.clear(context)
+    }
+
+    fun clear() {
+        val committed = preferences.edit()
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_REFRESH_TOKEN)
+            .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
+            .commit()
+        requireCommitted(committed)
+        LegacyEncryptedTokenMigration.clear(context)
+    }
+
+    private fun migrateLegacyTokens() {
+        synchronized(MIGRATION_LOCK) {
+            if (preferences.getBoolean(KEY_LEGACY_MIGRATION_COMPLETE, false)) return@synchronized
+            val legacyTokens = try {
+                LegacyEncryptedTokenMigration.read(context)
+            } catch (_: Exception) {
+                // Conserva el almacén antiguo intacto para reintentar en la
+                // próxima instancia; nunca sobreescribe datos que no pudo leer.
+                return@synchronized
+            }
+
+            val editor = preferences.edit().putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
+            legacyTokens?.accessToken?.let {
+                editor.putString(
+                    KEY_ACCESS_TOKEN,
+                    AesGcmTokenCipher.encrypt(it, KEY_ACCESS_TOKEN, key),
+                )
+            }
+            legacyTokens?.refreshToken?.let {
+                editor.putString(
+                    KEY_REFRESH_TOKEN,
+                    AesGcmTokenCipher.encrypt(it, KEY_REFRESH_TOKEN, key),
+                )
+            }
+            requireCommitted(editor.commit())
+            LegacyEncryptedTokenMigration.clear(context)
+        }
+    }
+
+    private fun clearCorruptedTokens() {
+        preferences.edit()
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_REFRESH_TOKEN)
+            .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
+            .commit()
+        LegacyEncryptedTokenMigration.clear(context)
+    }
+
+    private fun loadOrCreateKey(): SecretKey = synchronized(KEYSTORE_LOCK) {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey) ?: run {
+            val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+            generator.init(
+                KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .setRandomizedEncryptionRequired(true)
+                    .build(),
+            )
+            generator.generateKey()
+        }
+    }
+
+    private fun requireCommitted(committed: Boolean) {
+        if (!committed) throw IOException("No se pudo persistir el almacén cifrado de tokens")
+    }
+
     private companion object {
-        const val KEY_ACCESS_TOKEN = "access_token"
-        const val KEY_REFRESH_TOKEN = "refresh_token"
+        const val PREFERENCES_FILE = "cc.edecan.app.tokens.v2"
+        const val KEY_ALIAS = "cc.edecan.app.tokens.aes_gcm.v1"
+        const val KEY_LEGACY_MIGRATION_COMPLETE = "legacy_migration_complete"
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        val KEYSTORE_LOCK = Any()
+        val MIGRATION_LOCK = Any()
     }
 }

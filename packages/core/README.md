@@ -2,7 +2,7 @@
 
 Motor del agente (`ARCHITECTURE.md` §9, §10.7):
 
-- `Tool` (ABC) + `ToolContext` + `ToolResult` (`edecan_core.tools`) — contrato que implementa cada herramienta del toolkit (`edecan_toolkit`, `premium/`).
+- `Tool` (ABC) + `ToolContext` + `ToolResult` (`edecan_core.tools`) — contrato que implementa cada herramienta del toolkit (`edecan_toolkit`) y que pueden reutilizar extensiones externas.
 - `ToolRegistry` — registro de herramientas: `register()` rechaza cualquier tool cuyo `name`/`description` mencione la red social vetada (ARCHITECTURE.md §0.2); `specs(flags)` filtra por `requires_flags` y devuelve `edecan_schemas.ToolSpec`; `load_entry_points(group="edecan.tools")` descubre herramientas de otros paquetes.
 - `edecan_core.persona.build_system_prompt(persona, memories, extra_context=None)` — arma el system prompt (español por defecto, inglés si `persona.idioma == "en"`) a partir de `PersonaConfig`: identidad, tono, trato tú↔usted según `formalidad` (0-3), emojis, rasgos y memorias; las `instrucciones` del usuario van en una sección delimitada con advertencia explícita de que nunca anulan las reglas de seguridad ni autorizan exfiltrar datos de otros tenants.
 - `Agent.run_turn(*, ctx, persona, history, user_text, flags)` — loop de tool-use (máx. `MAX_TOOL_ITERATIONS` = 8) que emite `AgentEvent` (`text_delta`, `tool_start`, `tool_end`, `confirmation_required`, `done`, `error`); las herramientas `dangerous` sin `tool_call_id` en `ctx.extras["approved_tool_calls"]` detienen el turno pidiendo confirmación. No depende de `edecan_llm`: `llm_router` se trata como duck type (ver `edecan_core.llm_types`).

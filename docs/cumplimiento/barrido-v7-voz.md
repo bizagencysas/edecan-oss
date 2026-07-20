@@ -1,9 +1,9 @@
-# Barrido v7 — Voz avanzada + podcasts: plan-flag, esquema, BYO y evidencia (WP-V7-03)
+# Barrido v7 — Voz avanzada + podcasts: plan-flag, esquema, BYO y evidencia (fase v7)
 
 Este documento registra el barrido dedicado de voz avanzada (clonación, v5) y podcasts
 (v6) — `apps/api/edecan_api/routers/voz_avanzada.py`, `apps/worker/edecan_worker/handlers/
 generate_podcast.py`, `packages/voice/edecan_voice/` — contra los cuatro patrones de bug que
-las auditorías v4-v6 encontraron repetidamente en el resto del repo (`HOTFIXES_PENDIENTES.md`,
+las auditorías v4-v6 encontraron repetidamente en el resto del repo (`docs/seguridad-modelo-amenazas.md`,
 `docs/cumplimiento/barrido-evidencia-v6.md`, leídos completos antes de escribir una línea):
 
 - **BARRIDO B** — flag de plan de grano fino aplicado a la superficie correcta: el router
@@ -16,7 +16,7 @@ las auditorías v4-v6 encontraron repetidamente en el resto del repo (`HOTFIXES_
 - **BARRIDO A** — bring-your-own fail-closed: el TTS de `generate_podcast` nunca debe caer a
   `ELEVENLABS_API_KEY`/cadena AWS de plataforma.
 - **BARRIDO C** — escritura de evidencia legal/cumplimiento perdida en un rollback de sesión
-  (patrón de los puntos 8/9 de `HOTFIXES_PENDIENTES.md`, ya resuelto una vez en
+  (patrón de los puntos 8/9 de `docs/seguridad-modelo-amenazas.md`, ya resuelto una vez en
   `crear_clon_voz` — verificar que sigue intacto y que no quedó ningún otro sitio sin cubrir).
 
 **Resumen ejecutivo**: BARRIDO B, BARRIDO D y BARRIDO A confirmaron que el código ya estaba
@@ -69,7 +69,7 @@ hipótesis ("cada endpoint exige el suyo" vs. "los dos endpoints comparten un fl
 copiado/pegado del otro grupo") predicen exactamente el mismo resultado observable contra los
 4 planes reales tal como están hoy. Ya lo señalaban, cada uno en su archivo,
 `test_voz_avanzada.py` ("`voice.cloning` no está pinned todavía..." — comentario desactualizado
-desde que WP-V5-01 aterrizó la fila real en `PLANES`, no corregido en este WP para no tocar el
+desde que fase v5 aterrizó la fila real en `PLANES`, no corregido en este WP para no tocar el
 mecanismo de tests que sigue funcionando) y `test_podcasts_router.py` (usa `plan_key` real
 directo, sin necesitar el truco de `dependency_overrides`, precisamente porque hoy alcanza —
 pero eso mismo es lo que no distingue las dos hipótesis de arriba).
@@ -126,7 +126,7 @@ documenta el esquema, pero como referencia derivada, no como fuente).
 verificadas columna por columna contra la migración real — ninguna incluye `meta` (coincide
 con que ningún `INSERT`/`SELECT *` la nombra a mano, Postgres aplica el default) ni ninguna
 columna inventada. El "hallazgo invisible por mocks calcando el mismo error" que sí ocurrió en
-`reuniones.py` (v6, `HOTFIXES_PENDIENTES.md`) no se repite aquí — las filas fake ya estaban
+`reuniones.py` (v6, `docs/seguridad-modelo-amenazas.md`) no se repite aquí — las filas fake ya estaban
 alineadas con el esquema real antes de este WP.
 
 ### Verificación empírica (hecha)
@@ -163,7 +163,7 @@ que corregir.
 FUERA de las rutas editables de este WP — solo lectura), `edecan_voice/tenant.py`,
 `edecan_voice/polly.py`, `edecan_voice/registry.py` y `apps/api/edecan_api/routers/
 credentials.py` (sección `voice_tts`, también fuera de las rutas editables) preguntando, para
-cada proveedor, la pregunta pinned de `HOTFIXES_PENDIENTES.md` ("Barrido v5"): **¿tiene al
+cada proveedor, la pregunta pinned de `docs/seguridad-modelo-amenazas.md` ("Barrido v5"): **¿tiene al
 menos un campo de credencial que el tenant deba traer?**
 
 | Proveedor | ¿Campo de credencial del tenant? | Verificación |
@@ -204,7 +204,7 @@ razonable a fallar); sin TTS propio, el podcast igual se sintetiza como audio de
 filosofía que ya aplican `sintetizar_voz` (tool de chat) y `POST /v1/voice/speak`. Cambiar
 esto a un "fail-hard" habría sido una regresión de producto no pedida explícitamente en
 ningún otro documento del repo, revertiendo una decisión ya tomada y probada en 3 paquetes de
-trabajo distintos (WP-V5-10, WP-V5-11, WP-V6-04) — no se tocó. `docs/voz-telefonia.md`
+trabajo distintos (fase v5, fase v5, fase v6) — no se tocó. `docs/voz-telefonia.md`
 (sección nueva "Podcasts", ver más abajo) deja esta distinción explícita para que una
 auditoría futura no vuelva a confundir los dos criterios.
 
@@ -217,7 +217,7 @@ por-tenant, Polly `EDECAN_LOCAL_MODE`, stub sin credencial) ya estaban correctos
 
 ### Verificación del fix ya existente (`crear_clon_voz`)
 
-`HOTFIXES_PENDIENTES.md` documenta el fix de `crear_clon_voz` (dos `await session.commit()`
+`docs/seguridad-modelo-amenazas.md` documenta el fix de `crear_clon_voz` (dos `await session.commit()`
 explícitos, uno antes de cada `raise HTTPException` posterior al `INSERT INTO voice_consents`)
 como el ÚNICO caso de este patrón que ya tenía solución en este router. Confirmado INTACTO,
 solo lectura (líneas 582 y 608 de `voz_avanzada.py`, mismos dos sitios, mismo comentario
@@ -266,7 +266,7 @@ después. Sin hallazgos, sin cambios.
 
 **Conclusión de esta parte**: el router no necesitaba ningún fix nuevo — los dos sitios ya
 corregidos siguen intactos, y el resto o bien no tiene nada que perder, o bien su diseño
-"todo o nada" ya es la decisión correcta (documentada explícitamente desde que WP-V6-04
+"todo o nada" ya es la decisión correcta (documentada explícitamente desde que fase v6
 construyó el vertical de podcasts).
 
 ### Barrido del handler (`generate_podcast.py`) — hallazgo real
@@ -348,7 +348,7 @@ limitación conocida del audio huérfano/reintento que gasta síntesis de nuevo.
 "Voz web (núcleo)" y "Voces y clonación autorizada" (clonación) se releyeron completas contra
 el código real verificado en este WP — sin cambios, ya estaban correctas. La sección
 "Interrupciones naturales (beta)" (Media Streams) **NO se tocó**, como exige el encargo — esa
-la audita WP-V7-06/WP-V7-12.
+la audita la fase v7.
 
 ---
 

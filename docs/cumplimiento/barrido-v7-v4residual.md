@@ -1,10 +1,10 @@
-# Barrido v7 — residual v4/v5: devices/push (APNs/FCM), ERP inventario, ads, mensajes (WP-V7-07)
+# Barrido v7 — residual v4/v5: devices/push (APNs/FCM), ERP inventario, ads, mensajes (fase v7)
 
 Este documento registra el barrido dedicado de las piezas v4/v5 que quedaron con
 verificaciones **parciales** en olas anteriores: `apps/api/edecan_api/routers/{devices,erp,
 ads,mensajes}.py`, `apps/worker/edecan_worker/push.py`, `packages/business/edecan_business/
 inventory.py` y `packages/ads/`. Referencias leídas completas antes de escribir una línea:
-`DIRECCION_ACTUAL.md`, `HOTFIXES_PENDIENTES.md` completo, `docs/cumplimiento/
+`docs/roadmap.md`, `docs/seguridad-modelo-amenazas.md` completo, `docs/cumplimiento/
 barrido-evidencia-v6.md`.
 
 **Resultado ejecutivo: cero defectos de producción encontrados.** Los seis archivos objeto de
@@ -154,7 +154,7 @@ escritura uno por uno.
 **Veredicto: `devices.py` es seguro, sin necesidad de ningún fix** — ningún endpoint tiene el
 patrón "escribe evidencia real y luego un `raise` alcanzable en el mismo camino" que sí tenían
 `remote.py`/`commerce.py`/`ads.py::confirmar_borrador`/`voz_avanzada.py` antes de sus fixes
-(`HOTFIXES_PENDIENTES.md` puntos 8/9 y sus recurrencias).
+(`docs/seguridad-modelo-amenazas.md` puntos 8/9 y sus recurrencias).
 
 **`ads.py`, sitios de escritura DISTINTOS de `confirmar_borrador`** (que ya tiene el fix,
 verificado intacto — ver abajo): `put_credentials` (valida con `_ping_meta` ANTES de
@@ -229,7 +229,7 @@ para un `INSERT` de SQL directo que se saltara toda la lógica de Python.
   de su suite, sin necesitar ningún fix.
 - `docs/ads.md`, `docs/notificaciones-push.md`, `docs/mensajeria.md` releídos completos y
   comparados contra el código real: ya estaban sincronizados (describen la API HTTP real, sin
-  afirmar nada de UI web que WP-V7-09 esté cambiando en paralelo) — sin cambios necesarios.
+  afirmar nada de UI web que fase v7 esté cambiando en paralelo) — sin cambios necesarios.
 
 ## Verificación
 
@@ -259,6 +259,6 @@ paquete de trabajo puede tocar (6 de producción + 6 de test preexistentes + el 
 limpio.
 
 No se tocó `packages/vehicles/`, `apps/api/edecan_api/routers/vehiculos.py`, `conftest.py`/
-`api_fakes.py` compartidos, `test_v6_sweep_flags.py`, `HOTFIXES_PENDIENTES.md`/
-`DIRECCION_ACTUAL.md`, `apps/web`, `docs/api.md`, ni código de `packages/messaging/` (solo se
+`api_fakes.py` compartidos, `test_v6_sweep_flags.py`, `docs/seguridad-modelo-amenazas.md`/
+`docs/roadmap.md`, `apps/web`, `docs/api.md`, ni código de `packages/messaging/` (solo se
 corrió su suite de tests, tal como pedía el encargo).

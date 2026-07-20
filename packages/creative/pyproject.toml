@@ -1,7 +1,7 @@
 [project]
 name = "edecan-creative"
 version = "0.1.0"
-description = "Edecán — creatividad: generación de imágenes y documentos de oficina (Word/PowerPoint/PDF) (edecan_creative). Ver ARCHITECTURE.md §10.14 y ROADMAP_V2.md §7.7."
+description = "Image and office-document generation tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

@@ -1,9 +1,9 @@
-# Barrido v7 — Reuniones + Analista (WP-V7-04)
+# Barrido v7 — Reuniones + Analista (fase v7)
 
-Re-verificación completa de `reuniones`/`analista` (v6, WP-V6-05/06): el bug
+Re-verificación completa de `reuniones`/`analista` (v6, fase v6): el bug
 crítico de esquema de `meetings` (§ "el caso índice" — `file_id`/`decisiones`/
 `acciones`/`temas`/`'queued'` asumidos vs. el real `source_file_id`/`minutos`
-JSONB/`'pending'`) ya se había corregido en v6 (`DIRECCION_ACTUAL.md`, "v6
+JSONB/`'pending'`) ya se había corregido en v6 (`docs/roadmap.md`, "v6
 completado", punto 2), pero **nunca tuvo una ronda de re-verificación
 completa contra Postgres real** — solo contra `FakeSession`, que mockea filas
 con el MISMO esquema que asume el código (ciego a un `UndefinedColumnError`/
@@ -247,7 +247,7 @@ resolución de dependencias por request, así que `repo.session is session`,
 confirmado leyendo `apps/api/edecan_api/deps.py`). El propio módulo ya
 documentaba, ANTES de este WP, por qué esto es seguro sin necesitar un
 commit explícito (a diferencia de `crear_clon_voz`,
-`HOTFIXES_PENDIENTES.md` puntos 8/9): la fila `meetings` recién creada NO es
+`docs/seguridad-modelo-amenazas.md` puntos 8/9): la fila `meetings` recién creada NO es
 evidencia legal/cumplimiento (consentimiento, audit log de una acción de
 terceros, opt-in/opt-out, envío real de SMS/llamada) — es un ítem de
 trabajo. Si `enqueue`/`add_audit_log` fallan DESPUÉS del `INSERT`, el
@@ -273,7 +273,7 @@ resumen=..., minutos=..., ...` — el resultado real que el tenant está
 esperando) y `repo.add_usage_event(...)` (telemetría de facturación,
 `kind="llm_tokens"`) corrían dentro de la MISMA `async with
 deps.session_factory(None) as session:` — mismo patrón que
-`HOTFIXES_PENDIENTES.md` puntos 8/9, aplicado esta vez a la escritura
+`docs/seguridad-modelo-amenazas.md` puntos 8/9, aplicado esta vez a la escritura
 PRINCIPAL del handler en vez de a evidencia legal en sentido estricto. Un
 fallo en `add_usage_event` (fila con constraint que choca, blip de conexión
 entre las dos sentencias de la misma transacción) se llevaba puesto el
@@ -363,7 +363,7 @@ de al final de una única transacción.
 
 ## Fuera de alcance — anotado, no tocado
 
-- `apps/web/src/lib/api-reuniones.ts` — dueño real WP-V7-09. Verificado
+- `apps/web/src/lib/api-reuniones.ts` — responsable de la fase v7. Verificado
   (solo lectura) que YA está corregido (`ReunionStatus = "pending"`, no
   `"queued"`) y re-confirmado sin regresión por `docs/cumplimiento/
   barrido-v7-ux.md` (otro WP en vuelo). Nada que anotar de nuevo aquí.
@@ -427,13 +427,13 @@ fallo, `apps/worker/tests/test_v7_evidencia.py::
 test_run_automation_save_run_terminal_es_independiente_de_la_sesion_del_turno`,
 es **ajeno a este WP**: el archivo no está entre las rutas que este paquete
 puede tocar, el traceback es un `KeyError: 'external_account_id'` dentro de
-`edecan_worker.deps._build_mcp_tools` (dominio MCP, WP-V7 en vuelo aparte,
+`edecan_worker.deps._build_mcp_tools` (dominio MCP, fase v7 en vuelo aparte,
 nada que ver con `reuniones`/`analista`/`process_meeting`), y **pasa limpio
 en aislamiento** (`uv run --all-packages pytest
 apps/worker/tests/test_v7_evidencia.py::test_run_automation_save_run_terminal_es_independiente_de_la_sesion_del_turno`
 → `1 passed`) — es una fuga de estado entre archivos de test de OTRO
 dominio en vuelo concurrente (mismo patrón ya documentado en
-`HOTFIXES_PENDIENTES.md`, "fuga de tareas asyncio entre archivos de test"),
+`docs/seguridad-modelo-amenazas.md`, "fuga de tareas asyncio entre archivos de test"),
 no una regresión de este paquete. Re-corriendo la suite completa
 excluyendo ESE único test ajeno: **1388 passed, 24 deselected, 0 failed**
 (170.47s) — cero fallos atribuibles a `reuniones`/`analista`/`process_meeting`

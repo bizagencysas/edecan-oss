@@ -1,14 +1,14 @@
-# Barrido v7 — MCP bring-your-own: aislamiento, SSRF, flag `tools.mcp` (WP-V7-05)
+# Barrido v7 — MCP bring-your-own: aislamiento, SSRF, flag `tools.mcp` (fase v7)
 
 Este documento registra el barrido dedicado del conector MCP (Model Context Protocol,
 `ARCHITECTURE.md` §15.g/§15.h, `docs/mcp.md`) — `apps/api/edecan_api/routers/mcp.py` y
 `packages/mcp/edecan_mcp/` (`client.py`, `transport.py`, `protocol.py`, `provider_config.py`,
-`seguridad.py`, `tool_adapter.py`), construido en v6 (WP-V6-07) y **nunca cubierto por ningún
+`seguridad.py`, `tool_adapter.py`), construido en v6 (fase v6) y **nunca cubierto por ningún
 barrido v6** (a diferencia de campaigns.py/twilio_router.py/hooks.py/reuniones.py, que sí
-tuvieron su propia ronda dedicada — ver `HOTFIXES_PENDIENTES.md`).
+tuvieron su propia ronda dedicada — ver `docs/seguridad-modelo-amenazas.md`).
 
 Referencias canónicas leídas completas antes de escribir una línea de este WP:
-`DIRECCION_ACTUAL.md`, `HOTFIXES_PENDIENTES.md` completo (en especial el gate
+`docs/roadmap.md`, `docs/seguridad-modelo-amenazas.md` completo (en especial el gate
 `EDECAN_LOCAL_MODE` de `claude_cli`/`codex_cli`/`ollama`/`polly`, el fix de `confirm_tool_call`
 que revalida `requires_flags` incluso para "extra_tools MCP recalculadas", y el punto 7 SSRF
 del fetcher Playwright), `ARCHITECTURE.md` §15.g/§15.h, y `docs/mcp.md`.
@@ -108,7 +108,7 @@ Cobertura ya exhaustiva en `packages/mcp/tests/test_seguridad.py` (11 casos) y
 
 **Hueco de cobertura cerrado — redirects**: nunca se había probado explícitamente que un
 servidor MCP no pudiera redirigir la conexión real a otro host por su cuenta (mismo vector que
-`HOTFIXES_PENDIENTES.md` punto 7, "el fetcher Playwright no revalida redirects", pero para el
+`docs/seguridad-modelo-amenazas.md` punto 7, "el fetcher Playwright no revalida redirects", pero para el
 transporte MCP). Verificado por lectura + prueba empírica: `HTTPTransport` construye su
 `httpx.AsyncClient` sin `follow_redirects=True` (default de httpx 0.28: `False`), y
 `httpx.Response.raise_for_status()` trata CUALQUIER `3xx` como error (no solo 4xx/5xx) — un
@@ -151,7 +151,7 @@ Verificado de punta a punta:
 - **Confirmación (`POST .../confirm`)**: `confirm_tool_call` resuelve la tool pendiente contra
   el `ToolRegistry` compartido primero (las tools MCP NUNCA están ahí) y, si no la encuentra,
   recalcula `extra_tools` vía `_extra_mcp_tools_or_empty` y busca por nombre — el fix CRITICAL
-  ya documentado en `HOTFIXES_PENDIENTES.md` ("`POST /v1/conversations/{id}/confirm` ejecutaba
+  ya documentado en `docs/seguridad-modelo-amenazas.md` ("`POST /v1/conversations/{id}/confirm` ejecutaba
   una tool `dangerous` sin revisar su flag de plan") cubre EXPLÍCITAMENTE este camino
   (`_tool_requires_flags_satisfechos(tool, tenant.flags)`, con `getattr` defensivo "por si...
   es una tool MCP bring-your-own", cita literal del propio fix).
@@ -210,7 +210,7 @@ futura).
 
 `mcp.py` escribe evidencia en 2 sitios: `repo.create_connector_account` + `vault.put` (`PUT`) y
 `repo.add_audit_log` (`PUT` y `DELETE`, acción `"mcp.server.connected"`/`"mcp.server.
-disconnected"`). Verificado contra la regla de `HOTFIXES_PENDIENTES.md` puntos 8/9 (commit de
+disconnected"`). Verificado contra la regla de `docs/seguridad-modelo-amenazas.md` puntos 8/9 (commit de
 evidencia ANTES de cualquier `raise` alcanzable en el mismo camino) y el criterio de
 "handshake antes de persistir" que ya aplica `credentials.py`:
 
@@ -346,7 +346,7 @@ tocando ese mismo archivo en paralelo durante esta sesión — el propio entorno
 este WP confirmó otros procesos `pytest`/agentes activos concurrentemente sobre el mismo
 checkout). Se reporta acá para quien tenga `apps/api/edecan_api/routers/skills.py`/
 `packages/skills/` en su alcance (candidato natural: el mismo WP que ya tiene `packages/
-skills` en sus rutas, o WP-V7-12 en su verificación cruzada) — no se investigó más a fondo ni
+skills` en sus rutas, o fase v7 en su verificación cruzada) — no se investigó más a fondo ni
 se tocó ningún archivo de esa área, por estar fuera de las rutas permitidas de este paquete de
 trabajo.
 

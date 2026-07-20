@@ -5,9 +5,8 @@
 # Harness bash puro (sin dependencias) que corre scripts/instalar-selfhost.sh
 # dentro de SANDBOXES temporales (bajo $TMPDIR, nunca dentro de este repo) con
 # un `docker` FALSO adelante en el PATH: nunca toca Docker real, nunca crea
-# contenedores ni redes de verdad, nunca llama a internet. También corre
-# `bash -n` sobre scripts/desplegar-mi-aws.sh. Ver docs/self-hosting.md
-# "Troubleshooting" para qué hace cada paso que aquí se prueba.
+# contenedores ni redes de verdad y nunca llama a internet. Ver
+# docs/self-hosting.md para el contrato público del instalador.
 #
 # Uso:
 #   scripts/pruebas_instalador.sh
@@ -16,8 +15,8 @@
 # con el detalle de qué falló). Limpia siempre sus sandboxes temporales,
 # incluso si el propio harness falla a mitad de camino (trap EXIT).
 #
-# Si tienes `shellcheck` instalado, este harness también lo corre sobre los
-# dos scripts como chequeo extra (no cuenta para las "6 pruebas" — es un
+# Si tienes `shellcheck` instalado, este harness también lo corre como
+# chequeo extra (no cuenta para las "6 pruebas" — es un
 # bonus). Si no lo tienes, no se instala ni se exige: se omite en silencio.
 # ============================================================================
 
@@ -30,7 +29,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 INSTALADOR="${SCRIPT_DIR}/instalar-selfhost.sh"
-DESPLEGAR="${SCRIPT_DIR}/desplegar-mi-aws.sh"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_GREEN=$'\033[32m'; C_RED=$'\033[31m'
@@ -245,15 +243,14 @@ if [ -f "${dir5}/.env" ] || [ -f "${dir5}/.edecan-install-state" ]; then
 fi
 
 # ============================================================================
-# [6/6] bash -n sobre ambos scripts
+# [6/6] bash -n sobre el instalador
 # ============================================================================
-echo "[6/6] bash -n limpio sobre instalar-selfhost.sh y desplegar-mi-aws.sh"
+echo "[6/6] bash -n limpio sobre instalar-selfhost.sh"
 err_inst="$(bash -n "${INSTALADOR}" 2>&1)"; cod_inst=$?
-err_desp="$(bash -n "${DESPLEGAR}" 2>&1)"; cod_desp=$?
-if [ "${cod_inst}" -eq 0 ] && [ "${cod_desp}" -eq 0 ]; then
-  ok "bash -n limpio en ambos scripts"
+if [ "${cod_inst}" -eq 0 ]; then
+  ok "bash -n limpio en el instalador"
 else
-  fail "bash -n encontró errores de sintaxis" "instalar-selfhost.sh: ${err_inst} | desplegar-mi-aws.sh: ${err_desp}"
+  fail "bash -n encontró errores de sintaxis" "instalar-selfhost.sh: ${err_inst}"
 fi
 
 # ============================================================================
@@ -262,7 +259,7 @@ fi
 echo
 if command -v shellcheck >/dev/null 2>&1; then
   echo "${C_BOLD}[bonus] shellcheck${C_RESET}"
-  shellcheck "${INSTALADOR}" "${DESPLEGAR}" "${SCRIPT_DIR}/pruebas_instalador.sh" || true
+  shellcheck "${INSTALADOR}" "${SCRIPT_DIR}/pruebas_instalador.sh" || true
 else
   echo "${C_BOLD}[bonus] shellcheck${C_RESET}: no está instalado, se omite (no se instala automáticamente)."
 fi

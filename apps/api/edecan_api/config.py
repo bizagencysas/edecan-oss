@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     WEB_BASE_URL: str = "http://localhost:3000"
     LOG_LEVEL: str = "INFO"
     JWT_SECRET: str = JWT_SECRET_PLACEHOLDER
+    AUTH_RATE_LIMIT_REQUESTS: int = 10
+    AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
 
     # --- Cifrado envolvente de credenciales de tenant (TokenVault) -----------
     LOCAL_MASTER_KEY: str = LOCAL_MASTER_KEY_PLACEHOLDER
@@ -60,6 +62,9 @@ class Settings(BaseSettings):
     AWS_ENDPOINT_URL: str | None = None
     S3_BUCKET: str = "edecan-files"
     SQS_QUEUE_URL: str | None = None
+    # Límite duro por request, independiente de la cuota acumulada del plan.
+    # Evita que un multipart único agote memoria/disco antes de llegar a S3.
+    MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
 
     # --- LLM -----------------------------------------------------------------
     ANTHROPIC_API_KEY: str | None = None

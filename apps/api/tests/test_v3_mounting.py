@@ -167,6 +167,14 @@ async def test_serve_web_dir_definido_y_existente_se_monta_y_sirve_index(
 
     assert raiz.status_code == 200
     assert "hola edecan local" in raiz.text
+    assert raiz.headers["x-content-type-options"] == "nosniff"
+    assert raiz.headers["x-frame-options"] == "DENY"
+    assert raiz.headers["referrer-policy"] == "no-referrer"
+    assert "microphone=(self)" in raiz.headers["permissions-policy"]
+    csp = raiz.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp
+    assert "connect-src 'self' ipc: http://ipc.localhost" in csp
+    assert "unsafe-eval" not in csp
     # El mount en "/" va AL FINAL: /healthz sigue alcanzable, no queda tapado.
     assert salud.status_code == 200
     assert salud.json() == {"status": "ok"}

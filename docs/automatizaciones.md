@@ -1,21 +1,21 @@
 # Automatizaciones
 
-Reglas **disparador → acción**: un disparador (agenda o webhook entrante) dispara una instrucción que el agente corre solo, sin que nadie esté mirando ("modo headless"). `ROADMAP_V2.md` §4 WP-V2-07; `ARCHITECTURE.md` §10.7/§10.11/§10.12.
+Reglas **disparador → acción**: un disparador (agenda o webhook entrante) dispara una instrucción que el agente corre solo, sin que nadie esté mirando ("modo headless"). `docs/roadmap.md` fase v2; `ARCHITECTURE.md` §10.7/§10.11/§10.12.
 
 ## Modelo de datos
 
-Una automatización (`automations`, `ROADMAP_V2.md` §7.4) tiene:
+Una automatización (`automations`, `docs/roadmap.md`) tiene:
 
 - `trigger` (jsonb) — unión discriminada por `kind` (`edecan_schemas.automations.TriggerDef`):
   - `{"kind": "schedule", "rrule": "FREQ=DAILY;BYHOUR=9"}` — RFC 5545, interpretada con `python-dateutil` (`edecan_automations.engine.compute_next_run`). El backend recalcula `next_run_at` cada vez que se crea o se edita el `trigger`.
   - `{"kind": "webhook", "hook_secret": "..."}` — disparo entrante en `POST /v1/hooks/{id}`. El secreto lo genera el servidor (`secrets.token_urlsafe(24)`) al crear la automatización o al cambiar su `trigger` a `webhook`; **nunca** lo propone el cliente. `next_run_at` queda siempre `NULL` para este tipo — el barrido de agenda (`automation_scan`, ver abajo) lo excluye automáticamente.
 - `accion` (jsonb) — hoy solo existe la variante `{"kind": "agent_instruction", "instruccion": "...", "agente": null}` (`edecan_schemas.automations.AccionDef`): corre `instruccion` con el agente en modo headless.
 - `enabled` — si está en `false`, ni el barrido de agenda ni `run_automation` la ejecutan (con una excepción: `POST /{id}/probar` sí corre incluso si está desactivada, a propósito — sirve para probar un borrador antes de activarlo, y no toca `enabled`/`next_run_at`).
-- `next_run_at`/`last_run_at` — bookkeeping de agenda; `automation_runs` (`ROADMAP_V2.md` §7.4) guarda cada corrida (`status`, `detalle` jsonb, `started_at`/`finished_at`).
+- `next_run_at`/`last_run_at` — bookkeeping de agenda; `automation_runs` (`docs/roadmap.md`) guarda cada corrida (`status`, `detalle` jsonb, `started_at`/`finished_at`).
 
 ## Disparo por agenda
 
-`edecan_worker.handlers.automation_scan` (job de sistema, sin tenant propio — como `send_reminder_scan`) barre **todos los tenants**: cada 60s en dev (`edecan_worker.scheduler`, cadencia separada de los jobs de 30s: ver el docstring de ese módulo, sección "Dos cadencias, un solo loop"), y cada minuto en producción vía **EventBridge Scheduler** (`aws_scheduler_schedule.automation_scan`, `infra/terraform/modules/scheduler/`, `ARCHITECTURE.md` §7). Busca `automations` con `enabled=true` y `next_run_at` vencido, **adelanta `next_run_at` a la próxima ocurrencia ANTES de encolar** `run_automation` (evita doble disparo si el barrido se solapa con la corrida anterior o el worker se cae a mitad de camino), y encola un job por cada una con el `tenant_id` correspondiente.
+`edecan_worker.handlers.automation_scan` (job de sistema, sin tenant propio — como `send_reminder_scan`) barre **todos los tenants**: cada 60s en dev (`edecan_worker.scheduler`, cadencia separada de los jobs de 30s: ver el docstring de ese módulo, sección "Dos cadencias, un solo loop"). En producción requiere que el operador programe una invocación equivalente cada minuto en su plataforma de despliegue (`ARCHITECTURE.md` §7). Busca `automations` con `enabled=true` y `next_run_at` vencido, **adelanta `next_run_at` a la próxima ocurrencia ANTES de encolar** `run_automation` (evita doble disparo si el barrido se solapa con la corrida anterior o el worker se cae a mitad de camino), y encola un job por cada una con el `tenant_id` correspondiente.
 
 ## Disparo por webhook
 
@@ -61,4 +61,4 @@ Una automatización (`automations`, `ROADMAP_V2.md` §7.4) tiene:
 
 ## NOTA — disparo por agenda en producción
 
-`infra/terraform/modules/scheduler/` define una regla EventBridge Scheduler por tipo de barrido (`aws_scheduler_schedule.reminder_scan` y `aws_scheduler_schedule.automation_scan`, mismo rol IAM, `ARCHITECTURE.md` §7): las automatizaciones con trigger `schedule` ya no dependen únicamente de `edecan_worker.scheduler` (dev/self-host) ni de disparar `POST /{id}/probar` a mano para correr en un despliegue real — igual que el resto de la infraestructura de este repo, la regla está **escrita** en Terraform pero su aplicación a una cuenta AWS real es un paso operativo aparte (`infra/terraform/README.md`). Los webhooks (`POST /v1/hooks/{id}`) no dependen de ningún scheduler externo — funcionan en cualquier entorno donde la API esté corriendo.
+El repositorio público no incluye automatización de infraestructura. En producción, el operador debe programar `reminder_scan` y `automation_scan` cada minuto con EventBridge Scheduler o el servicio equivalente de su plataforma (`ARCHITECTURE.md` §7); en dev/self-host, `edecan_worker.scheduler` cubre esa cadencia. Los webhooks (`POST /v1/hooks/{id}`) no dependen de ningún scheduler externo — funcionan en cualquier entorno donde la API esté corriendo.

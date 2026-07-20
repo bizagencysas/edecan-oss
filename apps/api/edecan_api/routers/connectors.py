@@ -365,7 +365,9 @@ async def list_connectors(
             # aparte (WP-V8: antes no existía ningún lugar en la UI donde
             # verlo -- el botón "Configurar app OAuth" del mensaje de error
             # tampoco existía).
-            "oauth_redirect_uri": f"{settings.PUBLIC_BASE_URL.rstrip('/')}/v1/connectors/{key}/callback",
+            "oauth_redirect_uri": (
+                f"{settings.PUBLIC_BASE_URL.rstrip('/')}/v1/connectors/{key}/callback"
+            ),
         }
         for key, connector in CONNECTORS.items()
     ]

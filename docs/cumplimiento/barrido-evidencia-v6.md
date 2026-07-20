@@ -1,11 +1,11 @@
-# Barrido de evidencia legal/cumplimiento vs rollback de sesión (v6, WP-V6-03)
+# Barrido de evidencia legal/cumplimiento vs rollback de sesión (v6, fase v6)
 
 Este documento registra el barrido dedicado del **patrón de bug (b) de v5**:
 escrituras de evidencia legal/cumplimiento (consentimiento, `audit_log`,
 registros de opt-in/opt-out, marcas de intento de envío) que un rollback de
 excepción se lleva puestas por no comitear antes de un `raise` alcanzable en
 el mismo camino de código. Referencias canónicas del fix correcto (todas
-leídas antes de escribir una línea de este WP): `HOTFIXES_PENDIENTES.md`
+leídas antes de escribir una línea de este WP): `docs/seguridad-modelo-amenazas.md`
 puntos 8 y 9, la sección "crear_clon_voz", y el código real de
 `apps/api/edecan_api/routers/remote.py::get_frame`,
 `commerce.py::confirm_order`, `ads.py::confirmar_borrador`,
@@ -20,7 +20,7 @@ manager`.
 
 ---
 
-## Hallazgo real #1 (confirmado y corregido): `premium/edecan_premium/campaigns.py::handle`
+## Hallazgo real #1 (confirmado y corregido): `edecan_premium.campaigns.handle`
 
 **Síntoma**: todo el lote de una campaña (hasta `MAX_TARGETS_PER_STEP=10`
 `campaign_targets`) corría dentro de UNA sola
@@ -37,7 +37,7 @@ mismos destinatarios (duplicados = exposición TCPA directa)**. El mismo
 mecanismo aplicaba a un crash de proceso a mitad de lote y a los marks
 `'error'`.
 
-**Fix (dos capas), en `premium/edecan_premium/campaigns.py`**:
+**Fix (dos capas), en `edecan_premium.campaigns`**:
 
 1. **Durabilidad por target**: `handle` se reestructuró para que la carga
    inicial (campaña + ids de targets pendientes) ocurra en una sesión corta
@@ -62,7 +62,7 @@ mecanismo aplicaba a un crash de proceso a mitad de lote y a los marks
    el retry del job es seguro: solo quedan `pending` los targets que de
    verdad nunca se tocaron.
 
-**Tests** (`premium/tests/test_campaigns.py`, reescrito con una fixture
+**Tests** (suite privada de la extensión, `test_campaigns.py`, reescrita con una fixture
 `_FakeDb`/`_FakeSession`/`_FakeSessionFactory` que simula de verdad la
 semántica transaccional — commit al salir limpio, rollback y descarte al
 propagar una excepción — a diferencia de la `_FakeSession` única y
@@ -86,26 +86,26 @@ absoluto):
   agotado, fuera de horario, fallo de Twilio, campaña/targets ausentes)
   migrados a la nueva fixture, mismo comportamiento observable.
 
-Además, `premium/tests/test_v6_evidencia.py` (archivo nuevo, dedicado) repite
+Además, `test_v6_evidencia.py`, en la suite privada de la extensión, repite
 en forma condensada y autocontenida los DOS escenarios que pedía
 explícitamente el enunciado del paquete de trabajo ("envía 2, el 3º lanza" /
 "el enqueue final lanza"), más un test de extremo a extremo que encadena
 `compliance.grant_consent` (evidencia real de consentimiento) con
 `campaigns.handle` (su consumidor real) para probar la cadena completa.
 
-**Verificado**: `uv run --all-packages pytest -q premium/tests/test_campaigns.py premium/tests/test_v6_evidencia.py`
-→ 16 passed. Suite completa de `premium/` → 106 passed (ver sección de
+**Verificado en la extensión privada**: 16 pruebas aprobadas en los dos archivos anteriores.
+La suite completa de `edecan_premium` registró 106 pruebas aprobadas (ver sección de
 verificación final).
 
 ---
 
-## Resto del barrido — `premium/`
+## Resto del barrido — extensión comercial externa `edecan_premium`
 
 | archivo | veredicto | evidencia / test |
 |---|---|---|
-| `compliance.py` (`grant_consent`/`register_optout`) | **Sin bug en `compliance.py` en sí — pero el veredicto original de "ningún hueco en `twilio_router.py`" era INCORRECTO, ver corrección 2026-07-09 abajo** | Ninguna de las dos comitea su propia sesión (por diseño: no abrieron esa sesión, no les corresponde decidir cuándo cierra su transacción). Único invocador real de `grant_consent` fuera de `edecan_premium`: `apps/api/edecan_api/routers/consents.py::create_consent` — el único `raise` posible (`ValueError` → 400) ocurre ANTES de cualquier escritura (`grant_consent` valida `kind`/`source` antes del primer `INSERT`); si no lanza, el handler retorna limpio y el commit implícito de `get_tenant_session` persiste todo. Único invocador real de `register_optout`: `premium/edecan_premium/twilio_router.py::_apply_optout` (`/gather` y `/sms`, WP-V6-12, solo VERIFICADO, no tocado) — ambas rutas abren una sesión DEDICADA y CORTA (`async with request.app.state.get_session(tenant_id) as session:`) solo para el opt-out, sin volver a tocarla después. ~~**No se encontró ningún hueco en `twilio_router.py`**~~ **Corrección (2026-07-09):** esa conclusión trató `_apply_optout()` como caja negra atómica y solo verificó que nada toca la sesión DESPUÉS de que retorna — nunca miró DENTRO de la función, donde `register_optout` corría PRIMERO y un `UPDATE campaign_targets` sin relación con la evidencia corría DESPUÉS, en la misma sesión, sin `commit()` entre medio. Un fallo de ese UPDATE (deadlock/lock contention con `campaigns.handle`, que escribe la misma tabla) sí perdía la evidencia recién escrita en el rollback automático — bug real, corregido reordenando (evidencia al final). Ver `HOTFIXES_PENDIENTES.md`, entrada "tercera recurrencia del patrón de rollback (puntos 8/9) — `_apply_optout`", para el detalle completo, la verificación y los tests de regresión. Tests nuevos: `test_grant_consent_nunca_comitea_su_propia_sesion`/`test_register_optout_nunca_comitea_su_propia_sesion` en `premium/tests/test_compliance.py`. |
-| `telephony.py` (`_audit_and_meter`, registro de uso/minutos) | **Sin bug — orden correcto, y la durabilidad depende del caller (ya arreglado)** | La auditoría (`audit_log` + `usage_events` vía `limits.register_usage`) se escribe DESPUÉS de que Twilio ya respondió con éxito (nunca se reclama evidencia de un envío que no ocurrió) y `TwilioTenantClient` nunca comitea su propia sesión (recibida del llamador). La durabilidad real depende de ESE llamador: `campaigns.handle` (arreglado arriba, sesión por target) y `edecan_premium.tools` (ver abajo, seguro por la arquitectura del agente). Tests nuevos en `premium/tests/test_telephony.py`: `test_start_call_registra_auditoria_despues_de_la_llamada_real`/`test_send_sms_registra_auditoria_despues_de_la_llamada_real` (orden verificado con un log compartido entre el transporte HTTP falso y la sesión falsa) + `test_start_call_nunca_comitea_su_propia_sesion`. |
-| `tools.py` (`LanzarCampanaTool`/`LlamarContactoTool`/`EnviarSmsTool`) | **Sin bug — el patrón "escribe evidencia y luego raise" SÍ existe en `LanzarCampanaTool.run()`, pero está protegido por una capa distinta que ya lo hace seguro** | `LanzarCampanaTool.run()` inserta `campaigns`/`campaign_targets` y LUEGO puede lanzar si `enqueue()` falla — pero una `Tool` nunca es dueña de `ctx.session` (esa sesión vive y comitea a nivel de la REQUEST completa del turno de chat, compartida con más tool calls y la persistencia de mensajes) así que una `Tool` NUNCA debe comitear por su cuenta. La garantía real vive un nivel más arriba: `edecan_core.agent.Agent._run_turn` (líneas ~193-202) y `edecan_api.routers.conversations._stream_approved_confirmation` (líneas ~541-547, la que de hecho ejecuta `lanzar_campana` por ser `dangerous=True`) envuelven CADA `tool.run(ctx, args)` en su propio `try/except Exception` que convierte la excepción en un `ToolResult` de error SIN dejarla escapar hacia el límite de la transacción HTTP — así que el commit implícito de fin de request persiste los INSERTs igual, sin importar si `enqueue()` falló. `LlamarContactoTool`/`EnviarSmsTool` ni siquiera llegan a este caso: atrapan TODAS las excepciones esperables de `telephony`/`compliance` internamente. Tests nuevos en `premium/tests/test_tools.py` (archivo nuevo): 12 tests, incluido `test_lanzar_campana_enqueue_falla_propaga_pero_ya_escribio_la_evidencia` (documenta el comportamiento real: la Tool deja propagar, nunca comitea, y la evidencia sobrevive de todos modos por la capa de arriba). |
+| `compliance.py` (`grant_consent`/`register_optout`) | **Sin bug en `compliance.py` en sí — pero el veredicto original de "ningún hueco en `twilio_router.py`" era INCORRECTO, ver corrección 2026-07-09 abajo** | Ninguna de las dos comitea su propia sesión (por diseño: no abrieron esa sesión, no les corresponde decidir cuándo cierra su transacción). Único invocador real de `grant_consent` fuera de `edecan_premium`: `apps/api/edecan_api/routers/consents.py::create_consent` — el único `raise` posible (`ValueError` → 400) ocurre ANTES de cualquier escritura (`grant_consent` valida `kind`/`source` antes del primer `INSERT`); si no lanza, el handler retorna limpio y el commit implícito de `get_tenant_session` persiste todo. Único invocador real de `register_optout`: `edecan_premium.twilio_router._apply_optout` (`/gather` y `/sms`, fase v6, solo VERIFICADO, no tocado) — ambas rutas abren una sesión DEDICADA y CORTA (`async with request.app.state.get_session(tenant_id) as session:`) solo para el opt-out, sin volver a tocarla después. ~~**No se encontró ningún hueco en `twilio_router.py`**~~ **Corrección (2026-07-09):** esa conclusión trató `_apply_optout()` como caja negra atómica y solo verificó que nada toca la sesión DESPUÉS de que retorna — nunca miró DENTRO de la función, donde `register_optout` corría PRIMERO y un `UPDATE campaign_targets` sin relación con la evidencia corría DESPUÉS, en la misma sesión, sin `commit()` entre medio. Un fallo de ese UPDATE (deadlock/lock contention con `campaigns.handle`, que escribe la misma tabla) sí perdía la evidencia recién escrita en el rollback automático — bug real, corregido reordenando (evidencia al final). Ver `docs/seguridad-modelo-amenazas.md`, entrada "tercera recurrencia del patrón de rollback (puntos 8/9) — `_apply_optout`", para el detalle completo, la verificación y los tests de regresión. Tests nuevos: `test_grant_consent_nunca_comitea_su_propia_sesion`/`test_register_optout_nunca_comitea_su_propia_sesion` en la suite privada de la extensión (`test_compliance.py`). |
+| `telephony.py` (`_audit_and_meter`, registro de uso/minutos) | **Sin bug — orden correcto, y la durabilidad depende del caller (ya arreglado)** | La auditoría (`audit_log` + `usage_events` vía `limits.register_usage`) se escribe DESPUÉS de que Twilio ya respondió con éxito (nunca se reclama evidencia de un envío que no ocurrió) y `TwilioTenantClient` nunca comitea su propia sesión (recibida del llamador). La durabilidad real depende de ESE llamador: `campaigns.handle` (arreglado arriba, sesión por target) y `edecan_premium.tools` (ver abajo, seguro por la arquitectura del agente). Tests nuevos en la suite privada de la extensión (`test_telephony.py`): `test_start_call_registra_auditoria_despues_de_la_llamada_real`/`test_send_sms_registra_auditoria_despues_de_la_llamada_real` (orden verificado con un log compartido entre el transporte HTTP falso y la sesión falsa) + `test_start_call_nunca_comitea_su_propia_sesion`. |
+| `tools.py` (`LanzarCampanaTool`/`LlamarContactoTool`/`EnviarSmsTool`) | **Sin bug — el patrón "escribe evidencia y luego raise" SÍ existe en `LanzarCampanaTool.run()`, pero está protegido por una capa distinta que ya lo hace seguro** | `LanzarCampanaTool.run()` inserta `campaigns`/`campaign_targets` y LUEGO puede lanzar si `enqueue()` falla — pero una `Tool` nunca es dueña de `ctx.session` (esa sesión vive y comitea a nivel de la REQUEST completa del turno de chat, compartida con más tool calls y la persistencia de mensajes) así que una `Tool` NUNCA debe comitear por su cuenta. La garantía real vive un nivel más arriba: `edecan_core.agent.Agent._run_turn` (líneas ~193-202) y `edecan_api.routers.conversations._stream_approved_confirmation` (líneas ~541-547, la que de hecho ejecuta `lanzar_campana` por ser `dangerous=True`) envuelven CADA `tool.run(ctx, args)` en su propio `try/except Exception` que convierte la excepción en un `ToolResult` de error SIN dejarla escapar hacia el límite de la transacción HTTP — así que el commit implícito de fin de request persiste los INSERTs igual, sin importar si `enqueue()` falló. `LlamarContactoTool`/`EnviarSmsTool` ni siquiera llegan a este caso: atrapan TODAS las excepciones esperables de `telephony`/`compliance` internamente. Tests nuevos en la suite privada de la extensión (`test_tools.py`) (archivo nuevo): 12 tests, incluido `test_lanzar_campana_enqueue_falla_propaga_pero_ya_escribio_la_evidencia` (documenta el comportamiento real: la Tool deja propagar, nunca comitea, y la evidencia sobrevive de todos modos por la capa de arriba). |
 
 ## Resto del barrido — `apps/api/edecan_api/routers/`
 
@@ -149,7 +149,7 @@ La lista de "11 archivos pinned" de arriba (`auth.py`, `billing.py`,
 este WP, simplemente no se recorrió. Un hallazgo posterior confirmó que SÍ
 tenía el mismo bug (`trigger_hook`: `audit_log` seguido de `enqueue(...)` sin
 commit de por medio, sin `try/except`). Corregido y documentado en
-`HOTFIXES_PENDIENTES.md`, sección "RESUELTO (2026-07-09): mismo patrón de
+`docs/seguridad-modelo-amenazas.md`, sección "RESUELTO (2026-07-09): mismo patrón de
 rollback (puntos 8/9) en `POST /v1/hooks/{automation_id}`" — no se repite el
 detalle acá para no duplicar la fuente de verdad. Con este fix, la cobertura
 de "escritura de audit_log seguida de una operación que puede lanzar" en

@@ -1,15 +1,13 @@
 [project]
 name = "edecan-workspace"
 version = "0.1.0"
-description = "Edecán — mayordomo de IA personal (raíz del workspace uv)"
+description = "Edecan local-first AI operator monorepo"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 
-# Este pyproject.toml raíz declara el workspace uv y la configuración
-# compartida de herramientas (ruff, pytest). No es en sí un paquete
-# distribuible: cada miembro real (packages/<dir>, apps/<dir>, premium/)
-# trae su propio pyproject.toml (hatchling) según ARCHITECTURE.md §10.1
-# a medida que se implementa.
+# The repository root coordinates the uv workspace and shared tooling. It is
+# not a distributable package; every member owns its package metadata.
 
 [tool.uv.workspace]
 members = [
@@ -33,92 +31,18 @@ members = [
     "apps/api",
     "apps/worker",
     "apps/companion",
-    "premium",
-    # --- v3 (ARCHITECTURE.md §12, dueño WP-V3-01) ---------------------------
     "packages/skills",
     "packages/smarthome",
     "apps/local",
-    # --- v4 (ARCHITECTURE.md §13, dueño WP-V4-01) ---------------------------
     "packages/ads",
     "packages/vehicles",
-    # --- v5 (ARCHITECTURE.md §14, dueño WP-V5-01) ---------------------------
     "packages/travel",
-    # --- v6 (WP-V6-05): edecan_meetings (transcripción + minutas de
-    # reuniones, flag tools.meetings, ARCHITECTURE.md §15 aún no aterrizó —
-    # ver docs/reuniones.md). Excepción puntual y mínima a "no tocar el
-    # pyproject raíz": verificado empíricamente (uv 0.11.19) que
-    # [tool.uv.workspace].members de este repo es una lista EXPLÍCITA, no un
-    # glob "packages/*" — sin esta línea `uv sync --all-packages` ignora en
-    # silencio el paquete (sin error) y `edecan_meetings` queda no-importable
-    # en TODO el venv compartido, incluidos sus propios tests. Mismo criterio
-    # exacto que las entradas v3/v4/v5 de arriba (WP-V3-01/V4-01/V5-01).
     "packages/meetings",
-    # --- v6 (WP-V6-07): edecan_mcp (conector MCP bring-your-own por tenant,
-    # flag tools.mcp, ARCHITECTURE.md §15.g). A diferencia de `packages/
-    # meetings` justo arriba (§15.f, que SÍ asignaba esta línea explícitamente
-    # a WP-V6-05), §15.g nunca asignó este registro a ningún WP — WP-V6-07
-    # tenía prohibido tocar este archivo (mismo criterio "no tocar el
-    # pyproject raíz" que meetings/ads/travel) y nadie más lo tomó, así que
-    # quedó pendiente por un tiempo — RESUELTO: la línea de abajo ya lo
-    # registra. `packages/mcp/pyproject.toml` documenta este historial (ya
-    # resuelto) en su nota final. Mismo motivo/mismo criterio EXACTO que
-    # `packages/meetings` arriba: sin esta línea, `uv sync --all-packages`
-    # (usado por TODOS los targets de `make`, ver comentario de cabecera de
-    # `Makefile`) omite `edecan_mcp` en silencio (sin error) de TODO el venv
-    # compartido — `edecan_mcp` queda no-importable, incluidos sus propios
-    # tests (que por eso agregan `packages/mcp` a `sys.path` a mano:
-    # `packages/mcp/tests/conftest.py`, `apps/api/tests/test_mcp_router.py`,
-    # `apps/worker/tests/test_mcp_en_worker.py`). Efecto real verificado:
-    # `apps/api/edecan_api/routers/mcp.py` hace `from edecan_mcp import
-    # (...)` SIN try/except a nivel de módulo, así que el montaje defensivo de
-    # `main.py` (`V6_ROUTER_NAMES`) atrapa el `ModuleNotFoundError` resultante
-    # y salta TODO `/v1/mcp/*` en silencio. Ver también `apps/api/pyproject.
-    # toml`/`apps/worker/pyproject.toml` (`edecan-mcp` como dependencia
-    # directa, necesaria ADEMÁS de esta línea para que `uv sync --no-dev
-    # --package edecan-api`/`--package edecan-worker` — lo que usan los
-    # Dockerfiles de producción y por lo tanto también `apps/local`, el runner
-    # de la app de escritorio — no excluyan `edecan_mcp` en silencio).
     "packages/mcp",
 ]
-# apps/web queda fuera del workspace Python: es un proyecto Next.js/TypeScript
-# independiente con su propio package.json.
-#
-# Los 9 miembros `packages/{docanalysis,browser,creative,messaging,agents,
-# automations,commerce,advisory,business}` son los paquetes v2 de
-# ROADMAP_V2.md §7.1. WP-V2-01 (este WP) es el único dueño de esta lista —
-# los declara aquí ANTES de que existan porque `uv` exige que cada miembro
-# declarado tenga un `pyproject.toml` real en disco (si no, `uv sync` falla
-# con "does not contain a `pyproject.toml`" y rompe `make test` para
-# CUALQUIER paquete del monorepo, no solo los nuevos). Por eso este WP les
-# crea un esqueleto mínimo (hatchling + `edecan_<nombre>/__init__.py` vacío +
-# README de una línea) — cada WP dueño (ROADMAP_V2.md §9: WP-V2-02..07,
-# WP-V2-10..12) lo completa con su código real sin tener que tocar esta lista.
-#
-# Los 3 miembros `packages/{skills,smarthome}` + `apps/local` son de v3
-# (ARCHITECTURE.md §12, DIRECCION_ACTUAL.md): marketplace de "Agent Skills"
-# (skills.sh), integración con Home Assistant, y el runner local que empaqueta
-# la app de escritorio Tauri. Mismo motivo/mismo criterio que arriba: WP-V3-01
-# (este WP) es el único dueño de esta lista y les deja un esqueleto mínimo
-# para que `uv sync` no rompa mientras WP-V3-04/WP-V3-12/WP-V3-05 (dueños
-# reales) aterrizan su código en paralelo.
-#
-# Los 2 miembros `packages/{ads,vehicles}` son de v4 (ARCHITECTURE.md §13):
-# preparación de campañas publicitarias y estado/control de vehículos
-# conectados, ambos bring-your-own cuenta del cliente. Mismo motivo/mismo
-# criterio que arriba: WP-V4-01 (este WP, linchpin de v4) es el único dueño
-# de esta lista y les deja un esqueleto mínimo (hatchling + `edecan_<nombre>/
-# __init__.py` defensivo + README de una línea) para que `uv sync` no rompa
-# mientras WP-V4-07/WP-V4-08 (dueños reales) aterrizan `tools.py` en
-# paralelo.
-#
-# El miembro `packages/travel` es de v5 (ARCHITECTURE.md §14): búsqueda de
-# vuelos/hoteles, estado de vuelo, preparar reserva y rastreo de paquetes,
-# bring-your-own cuenta/API del cliente (flag `tools.travel`). Mismo motivo/
-# mismo criterio que `ads`/`vehicles` arriba: WP-V5-01 (este WP, linchpin de
-# v5) es el único dueño de esta entrada y le deja el mismo esqueleto mínimo
-# (hatchling + `edecan_travel/__init__.py` defensivo + README de una línea)
-# para que `uv sync` no rompa mientras WP-V5-09 (dueño real) aterriza
-# `tools.py` en paralelo.
+# apps/web is an independent Next.js project and intentionally remains outside
+# the Python workspace. Keep this member list explicit: uv only installs the
+# packages declared here, including when tests are run from the repository root.
 
 [dependency-groups]
 dev = [
@@ -126,6 +50,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
+    "httpx2>=2.7,<3",
 ]
 
 [tool.ruff]
@@ -137,18 +62,11 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["packages", "apps", "premium"]
-# importlib evita colisiones de basename cuando dos paquetes del workspace
-# tienen un archivo de test con el mismo nombre (ej. test_queue.py en
-# packages/core y packages/schemas) sin necesidad de __init__.py en tests/.
+testpaths = ["packages", "apps"]
+markers = [
+    "integration: integration tests that still run offline against local fakes or databases",
+]
+# importlib prevents basename collisions between package-local test modules.
 addopts = "--import-mode=importlib"
-# A diferencia del modo "prepend" por defecto, importlib no agrega el
-# directorio de cada test file a sys.path. apps/api/tests y apps/worker/tests
-# son los únicos paquetes cuyos tests hacen imports planos a un módulo
-# hermano de su propia carpeta (`_stub_siblings`/`api_fakes` y `fakes`
-# respectivamente), así que necesitan quedar en sys.path explícitamente.
-# (Antes ambas carpetas tenían un `fakes.py` con el mismo nombre: agregar las
-# dos a la vez acá hacía que Python cacheara en sys.modules la que se
-# importara primero y la otra rompiera con el módulo equivocado — por eso el
-# de apps/api/tests se renombró a `api_fakes.py`.)
+# These two suites intentionally import local shared fakes as top-level modules.
 pythonpath = ["apps/api/tests", "apps/worker/tests"]

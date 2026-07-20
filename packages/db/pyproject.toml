@@ -3,6 +3,7 @@ name = "edecan-db"
 version = "0.1.0"
 description = "Edecán — capa de datos: SQLAlchemy 2.0 async + Alembic + TokenVault (edecan_db)"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
 dependencies = [
     "edecan-schemas",

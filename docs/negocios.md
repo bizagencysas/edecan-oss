@@ -2,12 +2,12 @@
 
 `edecan_business` (`packages/business/`) + `apps/api/edecan_api/routers/negocios.py`
 (`/v1/negocios/*`) + `/app/negocios` en el frontend. Corresponde al work package **P1
-WP-V2-12** de `ROADMAP_V2.md` §5, pantalla 4 del mockup de `REQUISITOS_V2.md`: KPIs de
+fase v2** de `docs/roadmap.md`, pantalla 4 del mockup de `docs/roadmap.md`: KPIs de
 ingresos/gastos/beneficio/nuevos clientes + dona de ventas por canal + actividad reciente,
 más facturación con PDF real.
 
 Este mismo documento también cubre **inventario / ERP básico** (`apps/api/edecan_api/
-routers/erp.py`, `/v1/erp/*`, `/app/inventario`), agregado en v4 por **WP-V4-06**
+routers/erp.py`, `/v1/erp/*`, `/app/inventario`), agregado en v4 por **fase v4**
 (`ARCHITECTURE.md` §13) sobre el MISMO paquete `edecan_business` — ver la sección
 "Inventario (ERP básico)" más abajo. Antes era parte del backlog P2 de este documento (ver
 "Qué queda para P2").
@@ -40,7 +40,7 @@ haciendo falta un proveedor de timbrado (fuera de alcance, ver "Qué queda para 
 
 Reutiliza tres tablas: dos nuevas de este WP y dos que ya existían en v1.
 
-- `invoices`/`invoice_items` (nuevas, migración `0003_v2_expansion`, `ROADMAP_V2.md` §7.4)
+- `invoices`/`invoice_items` (nuevas, migración `0003_v2_expansion`, `docs/roadmap.md`)
   — el documento de factura y sus líneas. `invoices.user_id` existe en el esquema pero la
   **numeración es por tenant**, no por usuario (ver más abajo): dos usuarios del mismo
   tenant facturando el mismo día comparten la secuencia `F-{año}-{n}`, como dos cajeros de
@@ -198,7 +198,7 @@ reimplementa nada de `edecan_business`; solo hace el mapeo HTTP.
 ## Frontend (`/app/negocios`)
 
 Fila de 4 tarjetas KPI, dona SVG a mano (`stroke-dasharray`/`stroke-dashoffset` sobre
-círculos apilados, sin librería de gráficos — `ROADMAP_V2.md` §7.10), actividad reciente,
+círculos apilados, sin librería de gráficos — `docs/roadmap.md`), actividad reciente,
 formulario de factura con items dinámicos y totales en vivo (mismo cálculo de redondeo que
 el backend), tabla de facturas con acciones de estado, selector de mes. Componentes en
 `apps/web/src/components/negocios/`; fetchers en `apps/web/src/lib/api-negocios.ts`
@@ -216,10 +216,10 @@ hoy. Agregar un endpoint de descarga/URL firmada es una mejora futura que toca
 ## Inventario (ERP básico)
 
 `edecan_business.inventory` (mismo paquete `packages/business/`, extendido en v4 por
-**WP-V4-06**) + `apps/api/edecan_api/routers/erp.py` (`/v1/erp/*`) + `/app/inventario` en el
-frontend. Corresponde a la categoría "🏢 Negocios / ERP" de `REQUISITOS_V2.md` — inventario
-estaba marcado P2 en `ROADMAP_V2.md` §5 y ahora es código real (`ARCHITECTURE.md` §13,
-contrato pinned de tablas/flags que aportó WP-V4-01 en paralelo).
+**fase v4**) + `apps/api/edecan_api/routers/erp.py` (`/v1/erp/*`) + `/app/inventario` en el
+frontend. Corresponde a la categoría "🏢 Negocios / ERP" de `docs/roadmap.md` — inventario
+estaba marcado P2 en `docs/roadmap.md` y ahora es código real (`ARCHITECTURE.md` §13,
+contrato pinned de tablas/flags que aportó fase v4 en paralelo).
 
 > **Estado**: real y funcional, mismo criterio de "sin datos simulados" que el resto de este
 > documento — SQL parametrizado contra el esquema pinned, nunca un stub. Verificado con la
@@ -364,9 +364,9 @@ dependencias npm nuevas) y filtro activos/inactivos/todos. Componentes en `apps/
 components/inventario/`; fetchers en `apps/web/src/lib/api-inventario.ts` (duplica el
 bloque de fetch autenticado de `lib/api.ts`, incluido el manejo de
 `TOTP_REQUIRED_DETAIL` en el refresh de `/v1/auth/refresh` — mismo criterio que
-`lib/api-negocios.ts`, ver su docstring/`HOTFIXES_PENDIENTES.md` punto 2). Español,
+`lib/api-negocios.ts`, ver su docstring/`docs/seguridad-modelo-amenazas.md` punto 2). Español,
 dark/light con los tokens existentes, cero dependencias npm nuevas. La entrada de
-navegación ("Inventario", `/app/inventario`) la agregó WP-V4-01 en
+navegación ("Inventario", `/app/inventario`) la agregó fase v4 en
 `components/layout/nav-items.ts`.
 
 ### Qué queda para P2 (dentro de inventario)
@@ -387,7 +387,7 @@ navegación ("Inventario", `/app/inventario`) la agregó WP-V4-01 en
 ## Qué queda para P2
 
 - ~~**Inventario**: control de stock, SKUs, costo de venta.~~ Implementado en v4
-  (WP-V4-06) — ver "Inventario (ERP básico)" arriba; lo que queda pendiente DENTRO de
+  (fase v4) — ver "Inventario (ERP básico)" arriba; lo que queda pendiente DENTRO de
   inventario está listado en esa sección, no acá.
 - **RRHH/nómina**: empleados, recibos de pago, retenciones.
 - **Impuestos reales**: timbrado fiscal (CFDI o equivalente por país), retenciones por
@@ -425,7 +425,7 @@ mínimo). `test_erp_router.py` (29 tests) cubre el contrato HTTP: gate de flag (
 `hosted_basic`, camino feliz con `hosted_pro`), `409` de sku duplicado, `400` de stock
 negativo, `404` de producto inexistente, y que cada escritura deje su fila en `audit_log`.
 
-Además de la suite automatizada, la parte de facturación de este documento (WP-V2-12) se
+Además de la suite automatizada, la parte de facturación de este documento (fase v2) se
 verificó con una corrida real end-to-end (Postgres + LocalStack S3 reales, sin fakes):
 registro de tenant → `POST /facturas` con dos items e impuestos → PDF real subido y
 confirmado válido con `pypdf` → `GET /facturas/{id}` → transición `draft→sent→paid` →
@@ -435,9 +435,9 @@ intento de transición ilegal (`409` confirmado) → `GET /kpis` reflejando
 + "otros") contra agregaciones SQL reales, no simuladas. Esa corrida encontró y permitió
 corregir un bug real de layout del PDF (el pie empujaba una página 2 en blanco) que ningún
 test con `FakeSession` podía haber atrapado — ver el docstring de `render_pdf` y el test de
-regresión correspondiente. La parte de inventario (WP-V4-06) se verificó con la suite
+regresión correspondiente. La parte de inventario (fase v4) se verificó con la suite
 automatizada offline más `tsc`/`next lint`/`next build` reales sobre el frontend completo
-(sin una corrida contra Postgres real: la migración `0006_v4_expansion` la aportó WP-V4-01
+(sin una corrida contra Postgres real: la migración `0006_v4_expansion` la aportó fase v4
 en paralelo dentro de la misma ventana de trabajo, pero este paquete no tenía un Postgres
 real disponible para una corrida end-to-end propia — el SQL parametrizado sigue el mismo
 esquema pinned al pie de la letra, mismo criterio que `edecan_api.routers.commerce` documenta

@@ -1,15 +1,15 @@
 # Ecosistema de agentes: Orchestrator y misiones
 
-Paquete `edecan_agents` (`packages/agents/`), work package **WP-V2-06** de `ROADMAP_V2.md` §7.9
-(ecosistema base + 3 perfiles P0), **WP-V4-05** (activación de 12 perfiles + gate real de confirmación
-para herramientas peligrosas), **WP-V5-05** (activación del perfil `voice`, dependencias entre pasos con
-ejecución por olas en paralelo, replan acotado y timeout por paso) y **WP-V6-10** (observabilidad
+Paquete `edecan_agents` (`packages/agents/`), work package **fase v2** de `docs/roadmap.md`
+(ecosistema base + 3 perfiles P0), **fase v4** (activación de 12 perfiles + gate real de confirmación
+para herramientas peligrosas), **fase v5** (activación del perfil `voice`, dependencias entre pasos con
+ejecución por olas en paralelo, replan acotado y timeout por paso) y **fase v6** (observabilidad
 enriquecida — uso/costo y timing por paso, agregados — vía `GET /v1/missions/{id}/detalle`, más plantillas
 de misión en la UI web, ver §10/§11). Implementa el patrón multi-agente completo: un **Orchestrator**
 planifica un objetivo en pasos (opcionalmente con dependencias entre ellos) y los delega en **sub-agentes
 especializados** (perfiles), cada uno con su propio conjunto recortado de herramientas. Este documento
 describe qué es real hoy, cómo fluye una misión de punta a punta y cómo funciona el ecosistema completo
-(**16 perfiles, los 16 activos** tras `WP-V5-05`).
+(**16 perfiles, los 16 activos** tras `fase v5`).
 
 ## 1. Visión general
 
@@ -29,7 +29,7 @@ Usuario → Agente principal → tool `delegar_mision`
                                           │
                           ┌───────────────┴────────────────┐
                           │ Orchestrator.plan(objetivo)     │  1 llamada LLM → JSON de pasos
-                          │  → resuelve/valida depende_de   │  (opcional, WP-V5-05)
+                          │  → resuelve/valida depende_de   │  (opcional, fase v5)
                           │  → INSERT agent_steps (pending) │
                           │  → agent_missions.status=running│
                           └───────────────┬────────────────┘
@@ -54,15 +54,15 @@ El resultado de cada paso se antepone como **historial sintético** SOLO a los p
 (`depende_de`, ver §4bis) — el sub-agente que ejecuta un paso "ve" (como turnos `user`/`assistant`) lo que
 produjeron sus dependencias declaradas, aunque las haya corrido un `Agent`/perfil distinto. Sin
 dependencias declaradas (plan viejo, o un paso que simplemente no las usa), el comportamiento es
-retrocompatible: cada paso depende de TODOS los anteriores, igual que antes de `WP-V5-05`.
+retrocompatible: cada paso depende de TODOS los anteriores, igual que antes de `fase v5`.
 
 ## 2. Piezas del paquete `edecan_agents`
 
 | Módulo | Qué hace |
 |---|---|
 | `profiles.py` | `AgentProfile` (dataclass) + `PROFILES: dict[str, AgentProfile]` con las 16 claves pinned (§7.9). |
-| `registry_view.py` | `RestrictedRegistry`: envuelve el `ToolRegistry` completo del proceso y lo recorta, por paso, a `allowed_tools` del perfil que ejecuta ese paso — dentro de eso, oculta las tools `dangerous=True` salvo que el perfil declare `permite_dangerous_con_confirmacion=True` (WP-V4-05). |
-| `orchestrator.py` | `Orchestrator.plan()` (planificación vía LLM, incl. `depende_de`) y `.run()` (ejecución por olas en paralelo + replan + timeout + síntesis, WP-V5-05). `Mission`/`RunDeps` son los tipos de datos que cruzan la frontera hacia el worker. |
+| `registry_view.py` | `RestrictedRegistry`: envuelve el `ToolRegistry` completo del proceso y lo recorta, por paso, a `allowed_tools` del perfil que ejecuta ese paso — dentro de eso, oculta las tools `dangerous=True` salvo que el perfil declare `permite_dangerous_con_confirmacion=True` (fase v4). |
+| `orchestrator.py` | `Orchestrator.plan()` (planificación vía LLM, incl. `depende_de`) y `.run()` (ejecución por olas en paralelo + replan + timeout + síntesis, fase v5). `Mission`/`RunDeps` son los tipos de datos que cruzan la frontera hacia el worker. |
 | `tools.py` | `delegar_mision` — la única herramienta de este paquete: crea la fila `agent_missions` y encola el job. |
 
 Entry point `edecan.tools` (`pyproject.toml`): `agents = "edecan_agents:get_all_tools"`.
@@ -70,8 +70,8 @@ Entry point `edecan.tools` (`pyproject.toml`): `agents = "edecan_agents:get_all_
 ## 3. Los 16 perfiles (`profiles.py`)
 
 **Las 16 claves pinned están activas** (`disponible=True` — `Orchestrator.plan()` puede asignarles un
-paso) tras `WP-V5-05` (`voice` era la única que seguía `disponible=False`). `AgentProfile` trae un campo
-`permite_dangerous_con_confirmacion: bool = False` (WP-V4-05, ver §4): controla si las tools
+paso) tras `fase v5` (`voice` era la única que seguía `disponible=False`). `AgentProfile` trae un campo
+`permite_dangerous_con_confirmacion: bool = False` (fase v4, ver §4): controla si las tools
 `dangerous=True` de `allowed_tools` quedan **visibles pero pausadas hasta aprobación humana** (`True`) o
 **invisibles** (`False`, el default — comportamiento idéntico al de antes de que existiera este campo).
 
@@ -79,14 +79,14 @@ paso) tras `WP-V5-05` (`voice` era la única que seguía `disponible=False`). `A
 
 | Perfil | Nombre | Herramientas | Origen |
 |---|---|---|---|
-| `research` | Investigación | `buscar_web`, `navegar_web`, `extraer_datos_web`, `consultar_documentos`, `hora_actual` | P0 (WP-V2-06) |
-| `data_analyst` | Análisis de datos | `analizar_tabla`, `extraer_tablas_pdf`, `generar_grafico`, `exportar_analisis`, `calculadora`, `consultar_documentos`, `predecir_serie`, `detectar_anomalias` | P0 (WP-V2-06) |
-| `content` | Contenido | `generar_contenido`, `crear_documento`, `crear_presentacion`, `crear_pdf` | P0 (WP-V2-06) |
-| `ceo` | Dirección general | `resumen_finanzas`, `estado_negocio`, `consultar_documentos` | WP-V4-05 |
-| `design` | Diseño | `generar_imagen`, `crear_presentacion`, `crear_documento` | WP-V4-05 |
-| `legal` | Legal | `analizar_contrato`, `comparar_contratos`, `generar_borrador_legal`, `consultar_documentos` | WP-V4-05 |
-| `video` | Video | `analizar_imagen`, `analizar_video` | WP-V4-05 |
-| `voice` | Voz | `sintetizar_voz`, `listar_voces` | WP-V5-05 |
+| `research` | Investigación | `buscar_web`, `navegar_web`, `extraer_datos_web`, `consultar_documentos`, `hora_actual` | P0 (fase v2) |
+| `data_analyst` | Análisis de datos | `analizar_tabla`, `extraer_tablas_pdf`, `generar_grafico`, `exportar_analisis`, `calculadora`, `consultar_documentos`, `predecir_serie`, `detectar_anomalias` | P0 (fase v2) |
+| `content` | Contenido | `generar_contenido`, `crear_documento`, `crear_presentacion`, `crear_pdf` | P0 (fase v2) |
+| `ceo` | Dirección general | `resumen_finanzas`, `estado_negocio`, `consultar_documentos` | fase v4 |
+| `design` | Diseño | `generar_imagen`, `crear_presentacion`, `crear_documento` | fase v4 |
+| `legal` | Legal | `analizar_contrato`, `comparar_contratos`, `generar_borrador_legal`, `consultar_documentos` | fase v4 |
+| `video` | Video | `analizar_imagen`, `analizar_video` | fase v4 |
+| `voice` | Voz | `sintetizar_voz`, `listar_voces` | fase v5 |
 
 `finance` (`resumen_finanzas`, `registrar_transaccion`, `cotizar_activo`, `gestionar_presupuesto`)
 **también activa en este grupo** pese a manejar dinero: verificado con grep, ninguna de sus 4
@@ -94,15 +94,15 @@ herramientas es `dangerous=True` hoy (las que sí lo son en `edecan_commerce`, `
 `preparar_orden`, no están en su `allowed_tools`). Si en el futuro se le suman, el flag debe pasar a
 `True` en ese mismo cambio — ver el comentario en `profiles.py`.
 
-`voice` (WP-V5-05) deja de ser el único perfil "declarado, no disponible": sus 2 tools pinned
-(`sintetizar_voz`/`listar_voces`, nombres fijados por `WP-V5-10`, `ARCHITECTURE.md` §14) son de solo
+`voice` (fase v5) deja de ser el único perfil "declarado, no disponible": sus 2 tools pinned
+(`sintetizar_voz`/`listar_voces`, nombres fijados por `fase v5`, `ARCHITECTURE.md` §14) son de solo
 lectura (listar voces del tenant) o generan un archivo nuevo (sintetizar audio a Archivos) — ninguna
 publica, notifica ni gasta nada real, así que se queda en `False` igual que `ceo`/`design`/`legal`/
 `video`. Sigue sin cubrir voz **en vivo** (llamadas/conversación por voz): eso sigue siendo un CANAL de
 entrada/salida (§4 de `ARCHITECTURE.md`), no una herramienta de misión — si las tools de voz reales
 todavía no están instaladas en el runtime (paquete que las aporta aún no aterrizó), `RestrictedRegistry`
 simplemente no las ofrece y el paso degrada igual que cualquier perfil sin sus tools reales — seguro por
-diseño, mismo criterio que "se activan a medida que existan sus herramientas" (`ROADMAP_V2.md` §6.3).
+diseño, mismo criterio que "se activan a medida que existan sus herramientas" (`docs/roadmap.md`).
 
 ### 3.2 Con al menos una tool `dangerous` (7 perfiles, `permite_dangerous_con_confirmacion=True`)
 
@@ -133,12 +133,12 @@ ningún camino hacia una acción irreversible, ni siquiera detrás de una confir
 sumara una tool `dangerous` a `allowed_tools` sin marcar el flag correspondiente, esa tool queda invisible
 (falla cerrado) en vez de ejecutarse sin aprobación.
 
-## 4. El gate de confirmación real (WP-V4-05): de "ocultar" a "pausar + aprobar"
+## 4. El gate de confirmación real (fase v4): de "ocultar" a "pausar + aprobar"
 
-Antes de WP-V4-05, la única defensa posible era ocultar cualquier tool `dangerous` para siempre — lo que
+Antes de fase v4, la única defensa posible era ocultar cualquier tool `dangerous` para siempre — lo que
 también significaba que ningún perfil con una tool peligrosa en su diseño (`marketing`, `sales`,
 `developer`, ...) podía activarse de verdad. `AgentProfile.permite_dangerous_con_confirmacion` resuelve
-esto sin debilitar el guardrail: el principio "nada peligroso se auto-aprueba" (`ROADMAP_V2.md` §7.9/§8)
+esto sin debilitar el guardrail: el principio "nada peligroso se auto-aprueba" (`docs/roadmap.md`)
 se mantiene igual, pero la defensa pasa de un booleano estático a un punto de control real — un humano.
 
 Si un sub-agente de uno de los 7 perfiles de §3.2 pide su tool `dangerous`, `Orchestrator.run()`:
@@ -173,7 +173,7 @@ sigue siendo inalcanzable en la práctica: ninguna de sus tools es `dangerous` h
 `RestrictedRegistry` la seguiría ocultando (`permite_dangerous_con_confirmacion=False`) — es una red de
 seguridad para un error humano futuro, no un camino esperado.
 
-## 4bis. Planes con dependencias, paralelismo y replan (`WP-V5-05`)
+## 4bis. Planes con dependencias, paralelismo y replan (`fase v5`)
 
 ### Dependencias entre pasos (`depende_de`)
 
@@ -197,7 +197,7 @@ Reglas exactas:
   lista COMPLETA con un `logger.warning` y el paso queda secuencial SOLO tras el paso inmediatamente
   anterior (`[idx - 1]`).
 
-Como `agent_steps` no tiene columna propia para `depende_de` (`ROADMAP_V2.md` §7.4, y este WP NO agrega
+Como `agent_steps` no tiene columna propia para `depende_de` (`docs/roadmap.md`, y este WP NO agrega
 ninguna migración — el formato vive en el jsonb `agent_missions.plan`), `depende_de` viaja escondido
 dentro de la columna `usage` que YA existía (`{"depende_de": [...]}`) mientras el paso sigue `pending`;
 `run_mission.py::_paso_con_depende_de` lo extrae de vuelta al cargar los pasos. En cuanto un paso corre de
@@ -209,7 +209,7 @@ estar disponible — momento en el que ya no hace falta.
 `Orchestrator.run()` agrupa los pasos pendientes en **olas** por orden topológico sobre `depende_de`: una
 ola contiene todos los pasos cuyas dependencias ya terminaron. Dentro de una ola, los `Agent` de cada paso
 corren con `asyncio.gather`, limitados por `asyncio.Semaphore(getattr(settings, "MISSIONS_PARALLEL_MAX",
-3))` (setting agregado por `WP-V5-01`, leído de forma defensiva).
+3))` (setting agregado por `fase v5`, leído de forma defensiva).
 
 Reglas de seguridad del paralelismo:
 
@@ -238,7 +238,7 @@ completados y el error, pidiendo un plan NUEVO **solo para lo que falta** (mismo
 - Los pasos ya `done` se conservan tal cual.
 - Los pasos que quedaron `pending` sin lanzarse (de olas posteriores a la que falló) se marcan `skipped`.
   El paso que falló ya quedó `error` (no se toca de nuevo).
-- Los pasos nuevos se insertan como filas `agent_steps` NUEVAS vía `RunDeps.insert_steps` (WP-V5-05: método
+- Los pasos nuevos se insertan como filas `agent_steps` NUEVAS vía `RunDeps.insert_steps` (fase v5: método
   nuevo del "seam" — `save_step` solo ACTUALIZA una fila existente, no crea filas) con `seq` continuando
   después del último usado.
 - Si el replan falla (LLM sin JSON usable, o sin presupuesto restante) o la misión ya había usado su
@@ -256,14 +256,14 @@ efectos de `run()`, un tipo más de error de paso.
 
 ## 5. API HTTP (`/v1/missions`, `edecan_api.routers.missions`)
 
-Bearer + flag de plan `agents.missions`. Montaje defensivo en `edecan_api.main` (§7.6, dueño WP-V2-01).
+Bearer + flag de plan `agents.missions`. Montaje defensivo en `edecan_api.main` (§7.6, responsable de la fase v2).
 
 | Ruta | Qué hace |
 |---|---|
 | `POST /v1/missions {objetivo}` | Valida `limits.missions_per_day` (`-1` ilimitado, `0` → `403`, cupo agotado → `429`); inserta la misión (`status=planning`) y encola `run_mission`. |
 | `GET /v1/missions` | Lista las misiones del usuario actual en el tenant, más recientes primero. |
 | `GET /v1/missions/{id}` | Misión + sus `agent_steps`, ordenados por `seq` (tal cual vive en la fila, sin recortar). |
-| `GET /v1/missions/{id}/detalle` | **WP-V6-10.** Superset observabilidad del anterior — ver §10. |
+| `GET /v1/missions/{id}/detalle` | **fase v6.** Superset observabilidad del anterior — ver §10. |
 | `POST /v1/missions/{id}/confirm {approved}` | Solo si la misión está `waiting_confirmation` (si no, `409`). Ver §4. |
 | `POST /v1/missions/{id}/cancel` | Solo si la misión no está en un estado terminal (si no, `409`). |
 
@@ -271,7 +271,7 @@ El router habla SQL parametrizado directo contra `agent_missions`/`agent_steps` 
 `edecan_toolkit.recordatorios`/`edecan_api.routers.consents`: los nombres de tabla/columna están pinned
 en el contrato, la forma interna de acceso a datos no) — nunca importa `edecan_agents`: crear la fila y
 encolar el job es todo lo que hace en el turno HTTP: planificar y ejecutar corre asíncrono en el worker.
-`GET /{id}/detalle` (WP-V6-10) respeta esta regla igual: solo LEE lo que `edecan_agents.orchestrator` ya
+`GET /{id}/detalle` (fase v6) respeta esta regla igual: solo LEE lo que `edecan_agents.orchestrator` ya
 dejó escrito en `agent_steps.usage`, nunca importa ese paquete tampoco.
 
 ## 6. Worker (`apps/worker/edecan_worker/handlers/run_mission.py`)
@@ -287,35 +287,35 @@ Payload `{"mission_id"}` → planifica + persiste pasos + ejecuta. Payload
 ignora sin error (pudo cancelarse mientras el job esperaba en la cola).
 
 `_RunDeps` (la implementación concreta de `edecan_agents.orchestrator.RunDeps` sobre SQL real) gana dos
-capacidades en `WP-V5-05` (§4bis): `insert_steps` (crea filas `agent_steps` nuevas para un replan,
+capacidades en `fase v5` (§4bis): `insert_steps` (crea filas `agent_steps` nuevas para un replan,
 reutilizando el mismo helper `_insert_steps` que ya usaba la planificación inicial) y `save_mission(...,
 presupuesto=...)` (persiste el contador `replans_usados`) — ninguna cambia el SQL pinned de
-`ROADMAP_V2.md` §7.4 ni el resto del flujo del handler. `_update_step` (el `SET usage = ...` literal, sin
-merge) tampoco cambió en `WP-V6-10`: sigue siendo `edecan_agents.orchestrator._timing_usage` quien arma
+`docs/roadmap.md` ni el resto del flujo del handler. `_update_step` (el `SET usage = ...` literal, sin
+merge) tampoco cambió en `fase v6`: sigue siendo `edecan_agents.orchestrator._timing_usage` quien arma
 el dict completo (tokens + `started_at`/`finished_at`) ANTES de pasarlo a `save_step`, ver §10.
 
 ## 7. Web (`/app/misiones`)
 
 `apps/web/src/lib/api-misiones.ts` (fetchers tipados, mismo manejo de auth que `lib/api.ts`; `getMission`/
 `MissionDetail` originales intactos — `getMissionDetalle`/`MissionDetalle`/`MissionStepDetalle`/
-`MissionAgregados` nuevos desde `WP-V6-10`, ver §10) + `apps/web/src/components/misiones/`
-(`MissionStatusBadge`/`StepStatusBadge`, `StepTimeline`, y desde `WP-V6-10`: `MissionResumen`, `olas.ts`,
+`MissionAgregados` nuevos desde `fase v6`, ver §10) + `apps/web/src/components/misiones/`
+(`MissionStatusBadge`/`StepStatusBadge`, `StepTimeline`, y desde `fase v6`: `MissionResumen`, `olas.ts`,
 `plantillas.ts`/`PlantillasMisiones`) + `apps/web/src/app/(app)/app/misiones/page.tsx`: plantillas arriba,
 lista + formulario de creación + detalle enriquecido con timeline de pasos. *Polling* cada 2 s mientras la
-misión (o alguna de la lista) siga `planning`/`running`, más un botón "Refrescar" manual (`WP-V6-10`).
+misión (o alguna de la lista) siga `planning`/`running`, más un botón "Refrescar" manual (`fase v6`).
 Botones Aprobar/Rechazar aparecen inline en el paso cuando queda `waiting_confirmation`; botón Cancelar
 mientras la misión no esté en un estado terminal.
 
-## 8. Flags y límites de plan (`edecan_schemas.plans`, dueño WP-V2-01)
+## 8. Flags y límites de plan (`edecan_schemas.plans`, responsable de la fase v2)
 
 `FLAG_AGENTS_MISSIONS` (`"agents.missions"`) y `LIMIT_MISSIONS_PER_DAY` (`"limits.missions_per_day"`,
-`-1` = ilimitado). Tabla completa en `ROADMAP_V2.md` §7.2. `GET /v1/missions/{id}/detalle` (§10) exige el
+`-1` = ilimitado). Tabla completa en `docs/roadmap.md`. `GET /v1/missions/{id}/detalle` (§10) exige el
 mismo `FLAG_AGENTS_MISSIONS` que el resto del router — sin flag nuevo propio.
 
 ## 9. Tests
 
 - `packages/agents/tests/test_profiles.py`: las 16 claves pinned, **las 16 `disponible=True`** (tras
-  `WP-V5-05`, `voice` incluido), el guardrail P0 (`permite_dangerous_con_confirmacion=False` byte-a-byte) y
+  `fase v5`, `voice` incluido), el guardrail P0 (`permite_dangerous_con_confirmacion=False` byte-a-byte) y
   el invariante general — todo perfil `disponible=True` cuyo `allowed_tools` toque una tool `dangerous`
   conocida DEBE declarar `permite_dangerous_con_confirmacion=True` — más el valor pinned exacto por
   perfil (incluye los casos `finance`/`voice`, que se quedan en `False` pese a manejar dinero/generar
@@ -327,7 +327,7 @@ mismo `FLAG_AGENTS_MISSIONS` que el resto del router — sin flag nuevo propio.
   (contexto sintético por-dependencia, presupuesto, manejo de errores), el ciclo completo de un perfil con
   `permite_dangerous_con_confirmacion=True` (`developer`/`usar_computadora`): el paso queda
   `waiting_confirmation` con `pending_tool_call` persistido y la tool JAMÁS se ejecuta en el primer
-  intento; la reanudación la ejecuta exactamente una vez, sin reconstruir ningún `Agent` nuevo. **WP-V5-05**
+  intento; la reanudación la ejecuta exactamente una vez, sin reconstruir ningún `Agent` nuevo. **fase v5**
   suma: un plan viejo sin `depende_de` se sigue ejecutando 100% secuencial con historial completo
   (retrocompatibilidad explícita); paralelismo REAL verificado con rendezvous/contadores compartidos (no
   solo estructural) — dos pasos independientes corren de verdad al mismo tiempo, `MISSIONS_PARALLEL_MAX`
@@ -336,11 +336,11 @@ mismo `FLAG_AGENTS_MISSIONS` que el resto del router — sin flag nuevo propio.
   acotado (genera plan nuevo tras un error, respeta el presupuesto original, nunca se dispara dos veces, ni
   para un `waiting_confirmation`, y los pasos pendientes no lanzados quedan `skipped`); timeout por paso
   (marca error con mensaje claro, dispara replan, y NUNCA envuelve la reanudación de una tool aprobada, que
-  no construye ningún `Agent`). **WP-V6-10** suma: `started_at`/`finished_at` en el `usage` de cada
+  no construye ningún `Agent`). **fase v6** suma: `started_at`/`finished_at` en el `usage` de cada
   guardado terminal (`done` conserva los tokens de `Usage` junto al timing; `waiting_confirmation` conserva
   `pending_tool_call` junto al timing; error/timeout también) y que la transición a `running` sigue sin
   tocar `usage` (`_timing_usage` solo interviene en el guardado terminal).
-- `packages/agents/tests/test_dependencias_y_paralelismo.py` (**nuevo, WP-V5-05**): unitarios y directos
+- `packages/agents/tests/test_dependencias_y_paralelismo.py` (**nuevo, fase v5**): unitarios y directos
   sobre los helpers puros `_resolver_depende_de`/`_validar_depende_de` (default retrocompatible, `[]`
   explícito, índices fuera de rango, auto-referencia, referencia futura, **ciclo de 2 pasos degradado a
   secuencial**, idempotencia) y `_construir_olas` (pasos independientes en la misma ola, cadena secuencial,
@@ -349,20 +349,20 @@ mismo `FLAG_AGENTS_MISSIONS` que el resto del router — sin flag nuevo propio.
   orden de índice, nunca "todo lo anterior").
 - `packages/agents/tests/test_orchestrator_plan.py`: parseo tolerante del plan JSON (incl. LLM sin JSON
   válido → fallback a 1 paso `research`), y que `plan()` ya puede elegir cualquiera de los 13 perfiles
-  activados por `WP-V4-05`/`WP-V5-05` (`voice` incluido; antes se reasignaban a `research`) mientras
+  activados por `fase v4`/`fase v5` (`voice` incluido; antes se reasignaban a `research`) mientras
   cualquier clave inventada (o un perfil forzado a `disponible=False` vía monkeypatch, ya que las 16 reales
   están activas) se lo siga reasignando; el system prompt del planificador describe los 13 y menciona
-  `depende_de`; **WP-V5-05** suma: `depende_de` se resuelve/valida al planificar (default retrocompatible
+  `depende_de`; **fase v5** suma: `depende_de` se resuelve/valida al planificar (default retrocompatible
   cuando el LLM lo omite, truncado a presupuesto antes de resolver índices, filtrado de pasos vacíos antes
   de resolver índices).
 - `apps/worker/tests/test_run_mission_handler.py`: `edecan_agents` fakeado vía monkeypatch de import
   (el `Orchestrator` real ya tiene su propia suite); filtrado por tenant, persistencia SQL de
-  `agent_missions`/`agent_steps`, resume. **WP-V5-05** suma: `RunDeps.insert_steps`/`save_mission(
+  `agent_missions`/`agent_steps`, resume. **fase v5** suma: `RunDeps.insert_steps`/`save_mission(
   presupuesto=...)` persisten vía SQL real; round-trip completo de `depende_de` a través de `usage`
   (inserción de una misión nueva Y reanudación — un paso `pending` que nunca llegó a lanzarse conserva su
   `depende_de` original al reanudar).
 - `apps/api/tests/test_missions_router.py`: flags/cuota, CRUD, confirm/cancel, aislamiento por
-  tenant/usuario. **WP-V6-10** suma la sección `GET /v1/missions/{id}/detalle`: flag/404/aislamiento
+  tenant/usuario. **fase v6** suma la sección `GET /v1/missions/{id}/detalle`: flag/404/aislamiento
   (mismo criterio que `GET /{id}`), `presupuesto` con `replans_usados` pasando tal cual, `usage`/
   `started`/`finished` por paso (con y sin timing guardado), recorte de `resultado_truncado` (largo vs
   corto), agregados (`tokens_totales_por_tipo` sumando solo claves `*_tokens` numéricas — ignora bools y
@@ -372,10 +372,10 @@ mismo `FLAG_AGENTS_MISSIONS` que el resto del router — sin flag nuevo propio.
 Ningún árbol de tests importa paquetes hermanos (`edecan_core`/`edecan_db`/`edecan_schemas` en el caso de
 `packages/agents/tests/`) — todos usan fakes locales duck-typed (ARCHITECTURE.md §10.1).
 
-## 10. Observabilidad de misiones (`GET /v1/missions/{id}/detalle`, WP-V6-10)
+## 10. Observabilidad de misiones (`GET /v1/missions/{id}/detalle`, fase v6)
 
 Hasta este WP, `agent_steps.usage` (el uso del LLM por paso, jsonb desde v2) y
-`agent_missions.presupuesto["replans_usados"]` (el contador de replanificaciones, desde `WP-V5-05`) ya se
+`agent_missions.presupuesto["replans_usados"]` (el contador de replanificaciones, desde `fase v5`) ya se
 persistían — pero nada los exponía de forma útil: ni la API los enriquecía, ni la UI los mostraba. Este WP
 cierra ese hueco con un endpoint puramente ADITIVO (no cambia `GET /v1/missions/{id}`, que sigue
 devolviendo exactamente lo mismo que antes — ver `_get_mission_and_steps`, la función que ahora comparten
@@ -425,7 +425,7 @@ Mismo Bearer + flag `agents.missions` + aislamiento tenant/usuario que el resto 
   `MISSION_STEP_STATUSES` (`edecan_schemas.missions`), siempre con las 6 claves presentes (en 0 si ningún
   paso está en ese estado).
 
-### 10.2 `started_at`/`finished_at` por paso (`edecan_agents.orchestrator`, `WP-V6-10`)
+### 10.2 `started_at`/`finished_at` por paso (`edecan_agents.orchestrator`, `fase v6`)
 
 `agent_steps` no tiene columnas propias para el instante en que un paso empezó/terminó — este WP NO agrega
 ninguna migración (prohibido tocar el esquema del linchpin), así que `Orchestrator._ejecutar_paso_de_ola`
@@ -444,7 +444,7 @@ Pasos que corrieron ANTES de este WP (o que todavía no terminaron) simplemente 
 
 ### 10.3 Cómo leer `usage` (para quien consuma la API directo, sin la UI)
 
-`usage` es un jsonb de forma abierta (`ROADMAP_V2.md` §7.4: `agent_steps.usage nullable`) — su contenido
+`usage` es un jsonb de forma abierta (`docs/roadmap.md`: `agent_steps.usage nullable`) — su contenido
 depende de en qué quedó el paso:
 
 | Estado del paso | Qué trae `usage` |
@@ -470,9 +470,9 @@ que guarde el número de ola, así que esto es una aproximación honesta, no una
 `_construir_olas`). Un botón "Refrescar" fuerza una recarga del detalle además del *polling* automático
 mientras la misión sigue activa.
 
-## 11. Plantillas de misión (`components/misiones/plantillas.ts`, WP-V6-10)
+## 11. Plantillas de misión (`components/misiones/plantillas.ts`, fase v6)
 
-Catálogo estático de 8 plantillas (principio de configuración de pocos clicks, `DIRECCION_ACTUAL.md`) para
+Catálogo estático de 8 plantillas (principio de configuración de pocos clicks, `docs/roadmap.md`) para
 que un usuario nuevo lance una misión útil sin tener que redactar el objetivo desde cero: investigación de
 mercado, informe de competencia, plan de contenido semanal (siempre queda como borrador — nunca publica
 nada por su cuenta), análisis de un archivo de datos ya subido, comparativa de precios de un producto,

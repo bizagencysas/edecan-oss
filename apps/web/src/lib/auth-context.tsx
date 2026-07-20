@@ -3,7 +3,7 @@
 /**
  * Contexto de sesión: expone el `MeOut` (usuario + tenant + flags del plan,
  * `GET /v1/me`) a toda la app y centraliza login/registro/logout. Los tokens
- * en sí viven en `localStorage` (`lib/tokens.ts`); este contexto solo
+ * en sí viven en `sessionStorage` (`lib/tokens.ts`); este contexto solo
  * refleja si hay sesión activa y quién es el usuario actual.
  */
 
@@ -18,7 +18,7 @@ import {
 } from "react";
 
 import * as api from "./api";
-import { clearTokens, hasSession } from "./tokens";
+import { hasSession } from "./tokens";
 import type { MeOut } from "./types";
 
 interface AuthContextValue {
@@ -80,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(() => {
-    clearTokens();
+    api.logout();
     setMe(null);
   }, []);
 

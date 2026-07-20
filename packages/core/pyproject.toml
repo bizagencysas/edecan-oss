@@ -3,6 +3,7 @@ name = "edecan-core"
 version = "0.1.0"
 description = "Edecán — motor del agente: herramientas, persona, memoria y cola (edecan_core)"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.6,<3",

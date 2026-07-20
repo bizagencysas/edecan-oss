@@ -1,10 +1,10 @@
-# Auditoría UX/navegación end-to-end de `apps/web` (v7, WP-V7-09)
+# Auditoría UX/navegación end-to-end de `apps/web` (v7, fase v7)
 
 Alcance de este paquete: **solo `apps/web/**` + este informe**. Nunca se tocó
 backend — donde un valor de backend parecía discutible, la UI se alinea al
 backend y el punto queda anotado abajo como nota, no como fix. Contexto
-leído antes de escribir código (`DIRECCION_ACTUAL.md` "Principio de UX no
-negociable: configuración de pocos clicks"; `HOTFIXES_PENDIENTES.md`,
+leído antes de escribir código (`docs/roadmap.md` "Principio de UX no
+negociable: configuración de pocos clicks"; `docs/seguridad-modelo-amenazas.md`,
 en particular el precedente `ReunionStatus` — v6 encontró que
 `apps/web/src/lib/api-reuniones.ts` tenía `"queued"` donde el backend real
 usaba `"pending"`, invisible hasta que alguien comparó el enum literal
@@ -18,14 +18,14 @@ contra la migración real — y el patrón `tryRefresh`/`TOTP_REQUIRED_DETAIL`/
 ### 1.1 Ads no tenía UI — construida
 
 `/v1/ads` (borradores + confirmación, `apps/api/edecan_api/routers/ads.py`,
-`ARCHITECTURE.md` §13, WP-V4-07) estaba montado desde v4 sin ninguna página
+`ARCHITECTURE.md` §13, fase v4) estaba montado desde v4 sin ninguna página
 que lo consumiera: no existía `/app/ads`, ni entrada en `nav-items.ts`, ni
 `components/ads/`. Construido:
 
 - **`apps/web/src/lib/api-ads.ts`** — cliente HTTP nuevo, replica **exacto**
   el patrón `tryRefresh(totpCode?)` / `TOTP_REQUIRED_DETAIL` /
   `tryRefreshWithTotpPrompt()` / `refreshInFlight` / `totpPromptInFlight`
-  documentado en `HOTFIXES_PENDIENTES.md` punto 2 y ya duplicado en
+  documentado en `docs/seguridad-modelo-amenazas.md` punto 2 y ya duplicado en
   `lib/api-misiones.ts` (plantilla explícita pedida por el enunciado) y
   `lib/api-reuniones.ts`/`lib/api-mcp.ts`. Tipos:
   - `AdDraftStatus = "draft" | "confirmed" | "pushed" | "error" | "cancelled"`
@@ -61,7 +61,7 @@ que lo consumiera: no existía `/app/ads`, ni entrada en `nav-items.ts`, ni
   (**segundo gate humano**, calca el patrón de `/app/ordenes`) antes de
   `POST /borradores/{id}/confirmar` — el modal aclara que la campaña se crea
   **siempre en pausa** y que activarla es decisión del usuario en el Ads
-  Manager de Meta (`DIRECCION_ACTUAL.md`: "dinero real nunca se mueve
+  Manager de Meta (`docs/roadmap.md`: "dinero real nunca se mueve
   solo"). Cancelar respeta `ESTADOS_CANCELABLES` (nunca ofrece cancelar un
   borrador `pushed`).
 - **`apps/web/src/app/(app)/app/ads/page.tsx`** — orquesta las tres piezas.
@@ -101,7 +101,7 @@ Leído `docs/casa-inteligente.md` completo antes de decidir. Razones:
    red falla, nunca error), y desconectar (`DELETE
    /v1/smarthome/credentials`, botón "Quitar" ya wireado vía
    `handleQuitarCasa`) — ciclo completo, sin fricción extra.
-3. Precedente explícito en `DIRECCION_ACTUAL.md` ("Vehículos... eliminado
+3. Precedente explícito en `docs/roadmap.md` ("Vehículos... eliminado
    del alcance") de que no toda vertical necesita una superficie de UI
    propia — acá el criterio es más fuerte todavía porque la vertical SÍ
    está completamente servida (a diferencia de vehículos, que se cerró por
@@ -175,7 +175,7 @@ ambos lados) · `(d)` polling/refresh funciona con esos valores.
   pasos (`paso: 1 | 2 | 3` en `page.tsx:45`) — Paso 1 LLM
   (`SelectorLLM`, con "seguir sin conectar"), Paso 2 Voz (opcional,
   "Saltar"), Paso 3 confirmación + botón "Empezar a chatear" — coincide al
-  pie de la letra con `DIRECCION_ACTUAL.md` ("Wizard de primer arranque:
+  pie de la letra con `docs/roadmap.md` ("Wizard de primer arranque:
   pantalla corta de bienvenida con 2-3 pasos como máximo"). Sin hallazgos.
 - **Mensajes** (v4): `CanalEstado`(`api-mensajes.ts:28-33`)=`{canal,
   conectado, puede_leer}` vs. `CanalEstadoOut`(`mensajes.py:126-129`) —
@@ -225,7 +225,7 @@ donde no).
   Recordatorios, Contactos, Finanzas) — fuera de la lista de verticals que
   el enunciado pidió explícitamente revisar contra su backend, y ya
   pasaron por 3+ rondas de auditoría convergente en v2-v4
-  (`DIRECCION_ACTUAL.md`). Si se quiere ese barrido, es un WP aparte.
+  (`docs/roadmap.md`). Si se quiere ese barrido, es un WP aparte.
 - **No se tocó el patrón `tryRefresh` de `lib/api-ordenes.ts`** — a
   diferencia de `api-misiones.ts`/`api-reuniones.ts`/`api-mcp.ts`/etc.
   (que sí implementan el reintento con gate de TOTP), `api-ordenes.ts`
@@ -264,7 +264,7 @@ estático, incluida `/app/ads` (`7.79 kB`, `First Load JS 97.8 kB`) — sin
 errores de tipo ni de build. `next build` es un comando de un solo disparo
 (no un servidor) — no quedó ningún proceso huérfano; verificado con `ps
 aux` tras cada corrida (el único `next dev`/`next-server` visible pertenece
-a `/Users/hennsolutionsllc/Documents/edecan/`, un proyecto **distinto**,
+a `<otro-checkout>`, un proyecto **distinto**,
 ya corriendo antes de esta sesión — no se tocó, fuera del alcance de este
 repo).
 

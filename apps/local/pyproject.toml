@@ -1,9 +1,10 @@
 [project]
 name = "edecan-local"
 version = "0.1.0"
-description = "Edecán — runner local: empaqueta api+worker+db para correr en la máquina del cliente (backend de la app de escritorio Tauri). Ver ARCHITECTURE.md §12 y DIRECCION_ACTUAL.md (WP-V3-05)."
+description = "Local Edecan runtime bundling the API, worker, and data services for desktop use"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "edecan-api",
     "edecan-worker",
@@ -17,10 +18,7 @@ dependencies = [
     "httpx>=0.27",
 ]
 
-# Postgres embebido (opcional): evita exigirle a todo el mundo instalar/traer
-# un binario de Postgres solo por declarar esta dependencia en el árbol
-# principal -- WP-V3-05 decide si lo usa (ARCHITECTURE.md §12, "backend debe
-# poder empaquetarse y correr local").
+# Embedded Postgres is optional so normal installs do not need its binary.
 [project.optional-dependencies]
 embedded = ["pgserver>=0.1.4"]
 

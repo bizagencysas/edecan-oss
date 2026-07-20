@@ -1,6 +1,6 @@
-# Barrido v7 (WP-V7-06): Media Streams (beta) + 4 handlers de worker restantes
+# Barrido v7 (fase v7): Media Streams (beta) + 4 handlers de worker restantes
 
-Este documento cubre `premium/edecan_premium/media_streams.py` (967 líneas,
+Este documento cubre `edecan_premium.media_streams` (967 líneas,
 interrupciones naturales beta de v6) y los 4 handlers de `apps/worker/edecan_worker/handlers/`
 que el barrido dedicado de v6 (`docs/cumplimiento/barrido-evidencia-v6.md`)
 NO cubrió: `run_automation.py`, `run_mission.py`, `automation_scan.py`,
@@ -8,8 +8,8 @@ NO cubrió: `run_automation.py`, `run_mission.py`, `automation_scan.py`,
 `sync_connector.py`/`generate_content.py`/`memory_consolidate.py`).
 
 Referencias canónicas leídas antes de escribir una línea de este WP:
-`HOTFIXES_PENDIENTES.md` puntos 8/9, el fix TCPA de `campaigns.py::handle`
-(WP-V6-03), la tercera recurrencia `_apply_optout` en `twilio_router.py`
+`docs/seguridad-modelo-amenazas.md` puntos 8/9, el fix TCPA de `campaigns.py::handle`
+(fase v6), la tercera recurrencia `_apply_optout` en `twilio_router.py`
 ("REORDENAR en vez de comitear" cuando la sesión sigue usándose después), la
 sección "fuga de tareas asyncio entre archivos de test", y
 `docs/cumplimiento/barrido-evidencia-v6.md` completo (tabla §handlers y su
@@ -24,7 +24,7 @@ medio camino.
 
 ---
 
-## Parte 1 — `premium/edecan_premium/media_streams.py`
+## Parte 1 — `edecan_premium.media_streams`
 
 ### Barrido A (BYO): ¿con la credencial de QUIÉN corre el STT/TTS de streaming?
 
@@ -88,9 +88,9 @@ cambios.** Líneas 921-926 (numeración post-fix, ver más abajo): abre su
 PROPIA sesión corta (`async with get_session(tenant_id) as session:`) y
 llama a `twilio_router._apply_optout(session, tenant_id, numero)` — el
 mismo `_apply_optout` YA arreglado (tercera recurrencia del patrón,
-`HOTFIXES_PENDIENTES.md`): `UPDATE campaign_targets` primero,
+`docs/seguridad-modelo-amenazas.md`): `UPDATE campaign_targets` primero,
 `compliance.register_optout` AL FINAL, como última operación de esa sesión.
-Sigue intacto (`grep -n "await session.execute" premium/edecan_premium/twilio_router.py`
+Sigue intacto (`grep -n "await session.execute" edecan_premium.twilio_router`
 confirma el orden sin tocar).
 
 **Resto de escrituras de sesión — barrido exhaustivo (línea por línea, no
@@ -158,7 +158,7 @@ hallazgos.
 310-325, sin tocar en este WP) ya normaliza `BaseException` (`SystemExit`/
 `KeyboardInterrupt`) a `RuntimeError` ANTES de que `asyncio.Task` lo vea,
 mismo patrón y mismo motivo que `apps/local/edecan_local/runtime.py::
-_run_background` (`HOTFIXES_PENDIENTES.md`, "fuga de tareas asyncio entre
+_run_background` (`docs/seguridad-modelo-amenazas.md`, "fuga de tareas asyncio entre
 archivos de test") — cita expresa en el docstring del propio módulo. Los 3
 `asyncio.create_task(...)` del archivo (`_emitir_frames` en
 `SesionMediaStream._responder`, y `_bombear_salida` en
@@ -174,13 +174,13 @@ huérfanas. Confirmado con los 5 tests preexistentes de `_run_background`
 `_normaliza_keyboardinterrupt_a_runtime_error`) — sin necesidad de test de
 regresión nuevo, el hueco ya no existe.
 
-### Deliverable propuesto para `docs/voz-telefonia.md` (NO editado — dueño WP-V3-03)
+### Deliverable propuesto para `docs/voz-telefonia.md` (NO editado — responsable de la fase v3)
 
 Texto exacto propuesto para agregar al final de la sección "Interrupciones
 naturales (beta)" de `docs/voz-telefonia.md` (después del diagrama de flujo
 de eventos, antes de que termine la sección):
 
-> **Auditoría de la sesión (WP-V7-06).** Cada conexión WS deja una fila
+> **Auditoría de la sesión (fase v7).** Cada conexión WS deja una fila
 > `audit_log` (`action="telephony.media_stream.session"`) al cerrarse, con
 > `call_sid`, número de turnos, si terminó en opt-out, y la duración de la
 > sesión — en su propia sesión corta e independiente, para que un fallo de
@@ -355,7 +355,7 @@ cambios de código.**
 
 **Test nuevo, regresión directa** (mismo criterio que
 `test_handle_falla_reencolado_no_deshace_los_ya_enviados` de
-`campaigns.py`, WP-V6-03):
+`campaigns.py`, fase v6):
 `test_automation_scan_falla_el_enqueue_no_revierte_el_next_run_at_ya_avanzado`
 en `test_v7_evidencia.py` — fuerza que `enqueue()` lance y confirma que
 `next_run_at` sigue mostrando el valor recién avanzado (sobrevive al fallo
@@ -387,8 +387,8 @@ real dado que no hay ninguna escritura que proteger).
 
 ## Archivos escritos por este WP
 
-- `premium/edecan_premium/media_streams.py` — auditoría de sesión (fix).
-- `premium/tests/test_media_streams.py` — 3 tests nuevos + `_FakeSessionWs`
+- `edecan_premium.media_streams` — auditoría de sesión (fix).
+- Suite privada de la extensión (`test_media_streams.py`) — 3 tests nuevos + `_FakeSessionWs`
   ganó `.executed`/`session_cls` inyectable.
 - `apps/worker/edecan_worker/handlers/run_automation.py` — sesiones cortas
   independientes para `automation_runs` (fix).
@@ -401,31 +401,23 @@ real dado que no hay ninguna escritura que proteger).
 - Este informe.
 
 **NO tocados** (verificados solo por lectura, tal como exigía el enunciado):
-`premium/edecan_premium/twilio_router.py`, `campaigns.py`, `telephony.py`,
+`edecan_premium.twilio_router`, `campaigns.py`, `telephony.py`,
 `compliance.py`; `apps/worker/edecan_worker/handlers/automation_scan.py`,
 `send_reminder_scan.py` (sin cambios de CÓDIGO — sí ganaron un test nuevo el
 primero, en `test_v7_evidencia.py`, no en su propio archivo);
 `apps/worker/tests/test_automation_handlers.py`,
 `test_run_mission_handler.py` (verificados que siguen pasando, sin
 modificar); `docs/voz-telefonia.md` (texto propuesto arriba, para
-WP-V7-12).
+fase v7).
 
 ## Verificación
 
-```
-uv run --all-packages pytest -q premium/tests apps/worker/tests -m "not integration"
-```
-→ **385 passed, 1 deselected** (el deselected es `@pytest.mark.integration`
+La ejecución combinada de la suite privada de la extensión y `apps/worker/tests`
+registró **385 passed, 1 deselected** (el deselected es `@pytest.mark.integration`
 gateado por `DATABASE_URL`, ajeno a este WP), **0 failed**.
 
-```
-uv run --all-packages ruff check premium/edecan_premium/media_streams.py \
-  premium/tests/test_media_streams.py \
-  apps/worker/edecan_worker/handlers/run_automation.py \
-  apps/worker/edecan_worker/handlers/run_mission.py \
-  apps/worker/tests/test_v7_evidencia.py
-```
-→ **All checks passed!**
+El lint combinado de `edecan_premium.media_streams`, su regresión privada y los
+handlers/tests públicos del worker terminó con **All checks passed!**
 
 ```
 uv run --all-packages ruff format --check <mismos 5 archivos>

@@ -1,6 +1,6 @@
 # apps/desktop — `edecan-desktop` (Tauri)
 
-Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán como una app de escritorio instalable para macOS y Windows — **el vehículo principal de venta del producto** (`DIRECCION_ACTUAL.md`, "Qué se vende"). No reimplementa nada: reusa la interfaz web ya construida en [`apps/web`](../web) (Next.js, export estático) y el backend local ya definido en [`apps/local`](../local) (`edecan_local`, WP-V3-05) — este directorio solo los orquesta:
+Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán como una app de escritorio instalable para macOS y Windows — **el vehículo principal de venta del producto** (`docs/roadmap.md`, "Qué se vende"). No reimplementa nada: reusa la interfaz web ya construida en [`apps/web`](../web) (Next.js, export estático) y el backend local ya definido en [`apps/local`](../local) (`edecan_local`, fase v3) — este directorio solo los orquesta:
 
 1. Al arrancar, elige un puerto libre (preferencia `8765`) y lanza `edecan_local` como *sidecar* (empaquetado con PyInstaller, o desde el código fuente en modo desarrollo).
 2. Muestra una ventana de splash mientras espera a que el backend avise `EDECAN_LOCAL_READY` por stdout (máx. 60s), con un panel de error + reintentar si algo falla.
@@ -34,7 +34,7 @@ apps/desktop/
 │   └── dist/ · build/           # salida de PyInstaller (gitignored)
 ├── scripts/
 │   ├── build-backend.sh|.ps1    # web estática + PyInstaller -> sidecar
-│   ├── download-ollama.sh|.ps1  # OPCIONAL: descarga Ollama -> sidecar (WP-V4-09)
+│   ├── download-ollama.sh|.ps1  # OPCIONAL: descarga Ollama -> sidecar (fase v4)
 │   ├── dev.sh                   # cargo tauri dev, backend desde fuente
 │   ├── build-app.sh             # build-backend + cargo tauri build
 │   └── make-icons.sh            # assets/icon-source.png -> src-tauri/icons/
@@ -73,8 +73,8 @@ Este work package se escribió sin un toolchain de Rust disponible en la máquin
 
 Si al compilar por primera vez `cargo`/`cargo tauri` se quejan de algo en `src/tray.rs` (la superficie de `tauri::menu`/`tauri::tray` es la que más cambió entre betas de Tauri v2), la lógica de ese archivo es simple y no debería tener que cambiar — lo que puede variar es el nombre exacto de algún builder method; el propio archivo tiene un comentario apuntando a la doc oficial correspondiente.
 
-**WP-V4-09 (Ollama embebido)** sumó dos funciones a `backend.rs` (`with_ollama_env`/`resolve_ollama_sidecar`) con el mismo límite y el mismo método de verificación: sin `cargo`/`rustc` disponibles, se escribieron usando SOLO `std` (nada de API nueva de `tauri`/`tauri-plugin-shell` más allá de la que ya usa el resto del archivo), salvo un único método nuevo (`Command::env`) verificado a mano contra el código fuente real de `tauri-plugin-shell` 2.3.5 (docs.rs) — confirmado que `tauri_plugin_shell::process::Command` NO expone ningún getter público para la ruta resuelta de un sidecar, que es justamente por qué esas dos funciones existen (resuelven la ruta con `std::env::current_exe()`/`std::fs::read_dir` en vez de pedírsela a esa API). Detalle completo y checklist de verificación empírica pendiente en [`docs/desktop-local.md`](../../docs/desktop-local.md) §8/§9.
+**fase v4 (Ollama embebido)** sumó dos funciones a `backend.rs` (`with_ollama_env`/`resolve_ollama_sidecar`) con el mismo límite y el mismo método de verificación: sin `cargo`/`rustc` disponibles, se escribieron usando SOLO `std` (nada de API nueva de `tauri`/`tauri-plugin-shell` más allá de la que ya usa el resto del archivo), salvo un único método nuevo (`Command::env`) verificado a mano contra el código fuente real de `tauri-plugin-shell` 2.3.5 (docs.rs) — confirmado que `tauri_plugin_shell::process::Command` NO expone ningún getter público para la ruta resuelta de un sidecar, que es justamente por qué esas dos funciones existen (resuelven la ruta con `std::env::current_exe()`/`std::fs::read_dir` en vez de pedírsela a esa API). Detalle completo y checklist de verificación empírica pendiente en [`docs/desktop-local.md`](../../docs/desktop-local.md) §8/§9.
 
 ## Tests
 
-Este directorio no tiene una suite de tests propia (es un cascarón de empaquetado, no lógica de negocio — esa vive en `apps/api`/`apps/worker`/`packages/*`, cada uno con la suya). La validación de este WP fue: `cargo check` (no disponible, ver arriba), `bash -n` sobre los `.sh` (incluyendo `download-ollama.sh`, WP-V4-09), y `python -m py_compile` sobre `packaging/edecan_local_entry.py` y `packaging/edecan_local.spec`.
+Este directorio no tiene una suite de tests propia (es un cascarón de empaquetado, no lógica de negocio — esa vive en `apps/api`/`apps/worker`/`packages/*`, cada uno con la suya). La validación de este WP fue: `cargo check` (no disponible, ver arriba), `bash -n` sobre los `.sh` (incluyendo `download-ollama.sh`, fase v4), y `python -m py_compile` sobre `packaging/edecan_local_entry.py` y `packaging/edecan_local.spec`.

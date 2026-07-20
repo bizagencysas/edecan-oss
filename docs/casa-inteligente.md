@@ -1,6 +1,6 @@
 # Casa inteligente (Home Assistant)
 
-Edecán controla tu casa inteligente a través de **Home Assistant** — la plataforma open-source de casa inteligente self-hosted más usada, con una **API REST oficial y documentada** (`ARCHITECTURE.md` §12, §12.b; `ROADMAP_V2.md` §6.3; WP-V3-12). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), es **bring-your-own** al pie de la letra: conectas TU PROPIA instancia de Home Assistant (self-hosted en tu casa, en un Raspberry Pi, un NAS, una VM...) con un token que generas tú mismo — Edecán nunca opera una instancia compartida ni guarda una credencial de plataforma.
+Edecán controla tu casa inteligente a través de **Home Assistant** — la plataforma open-source de casa inteligente self-hosted más usada, con una **API REST oficial y documentada** (`ARCHITECTURE.md` §12, §12.b; `docs/roadmap.md`; fase v3). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), es **bring-your-own** al pie de la letra: conectas TU PROPIA instancia de Home Assistant (self-hosted en tu casa, en un Raspberry Pi, un NAS, una VM...) con un token que generas tú mismo — Edecán nunca opera una instancia compartida ni guarda una credencial de plataforma.
 
 ## Por qué un solo conector alcanza para "toda" la casa
 
@@ -23,7 +23,7 @@ En el panel de Edecán, ve a **Configuración → Casa inteligente** y pega:
 - **URL de tu Home Assistant** (`base_url`): p. ej. `http://homeassistant.local:8123` o la IP local `http://192.168.1.50:8123`. También puede ser `https://` si tienes un certificado configurado (Home Assistant Cloud/Nabu Casa, un proxy inverso propio, etc.).
 - **Long-Lived Access Token** (el que generaste arriba).
 
-Internamente esto llama a `PUT /v1/smarthome/credentials {base_url, token}` (`apps/api/edecan_api/routers/smarthome.py`). Por defecto (`validate: true`) Edecán hace una comprobación real —`GET {base_url}/api/` con tu token— **antes de guardar nada**: si Home Assistant no responde o rechaza el token, la pantalla te muestra el error exacto (mismo principio de "pegar y validar" que el resto de credenciales, ver `DIRECCION_ACTUAL.md`). Solo si la comprobación pasa se guarda, cifrado en tu `TokenVault` (`ARCHITECTURE.md` §10.4) — nunca en texto plano, nunca en logs.
+Internamente esto llama a `PUT /v1/smarthome/credentials {base_url, token}` (`apps/api/edecan_api/routers/smarthome.py`). Por defecto (`validate: true`) Edecán hace una comprobación real —`GET {base_url}/api/` con tu token— **antes de guardar nada**: si Home Assistant no responde o rechaza el token, la pantalla te muestra el error exacto (mismo principio de "pegar y validar" que el resto de credenciales, ver `docs/roadmap.md`). Solo si la comprobación pasa se guarda, cifrado en tu `TokenVault` (`ARCHITECTURE.md` §10.4) — nunca en texto plano, nunca en logs.
 
 `GET /v1/smarthome/status` te deja consultar en cualquier momento si está configurado y si Home Assistant responde ahora mismo (`{"configured", "base_url", "reachable"}` — `reachable` queda en `null`, nunca en error, si la red falla al comprobar). `DELETE /v1/smarthome/credentials` desconecta.
 
@@ -31,7 +31,7 @@ Internamente esto llama a `PUT /v1/smarthome/credentials {base_url, token}` (`ap
 
 Home Assistant normalmente vive en tu red local (LAN) — no está pensado para exponerse directo a internet salvo que tú mismo configures un proxy inverso o Home Assistant Cloud. Esto significa:
 
-- **App de escritorio de Edecán** (el vehículo principal del producto, `DIRECCION_ACTUAL.md` — corre en tu propia Mac/PC): encaja natural, porque corre en la MISMA LAN que tu Home Assistant. `http://homeassistant.local:8123` o la IP local funcionan tal cual.
+- **App de escritorio de Edecán** (el vehículo principal del producto, `docs/roadmap.md` — corre en tu propia Mac/PC): encaja natural, porque corre en la MISMA LAN que tu Home Assistant. `http://homeassistant.local:8123` o la IP local funcionan tal cual.
 - **Edecán hospedado en la nube** (opción secundaria): solo puede alcanzar tu Home Assistant si tú lo expones de alguna forma alcanzable desde internet (Home Assistant Cloud/Nabu Casa, un túnel propio, un proxy inverso con HTTPS) — la URL que pegues en `base_url` debe ser una que ese Edecán en la nube pueda resolver y alcanzar. Sin eso, `GET /v1/smarthome/status` reportará `"reachable": false` o `null`.
 
 ### Por qué la validación de la URL es "al revés" que la del navegador web

@@ -1,7 +1,7 @@
 [project]
 name = "edecan-commerce"
 version = "0.1.0"
-description = "Edecán — dinero: cotizaciones, presupuestos y órdenes draft con gate permanente (edecan_commerce). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.4/§7.5/§7.7/§8.1 (WP-V2-10)."
+description = "Quotes, budgets, and permanently human-gated draft orders for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

@@ -10,7 +10,7 @@ license = "Apache-2.0"
 # Ver docs/desktop.md y ../README.md para el resto del contrato de este
 # crate. Resumen: este binario es un cascarón Tauri v2 que NO reimplementa
 # la UI (reusa apps/web ya construido, servido por el sidecar) ni el backend
-# (apps/local / edecan_local, WP-V3-05) — solo orquesta: elige puerto,
+# (apps/local / edecan_local) — solo orquesta: elige puerto,
 # lanza el sidecar, espera a que avise que está listo, muestra la ventana
 # principal apuntando a http://127.0.0.1:<puerto>/, y lo mata al cerrar.
 
@@ -58,6 +58,11 @@ cpal = "0.17.1"
 # tiene instalado (ver docs/desktop.md) — rustpotter es 100% Rust puro, no
 # necesita ningún toolchain extra.
 rustpotter = "3.0.2"
+# rustpotter 3.0.2 still depends on candle 0.2.x, whose `half` integration
+# expects rand 0.8. half >=2.7 switched that optional integration to rand
+# 0.9 and makes candle fail to compile. Keep the last compatible release
+# explicit until rustpotter upgrades candle.
+half = "=2.4.1"
 # hound: lectura/escritura de WAV PCM16, 100% Rust puro sin dependencias
 # nativas. Se usa tanto para las 3 muestras de entrenamiento de la wake word
 # como para codificar el audio del comando que se emite a JS después de

@@ -1,7 +1,7 @@
 [project]
 name = "edecan-advisory"
 version = "0.1.0"
-description = "Edecán — asesores informativos: legal, salud y educación con disclaimers obligatorios (edecan_advisory). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.4/§7.7/§8.3 (WP-V2-11)."
+description = "Informational legal, health, and education tools with mandatory disclaimers"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 # Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
-# (group="edecan.tools", ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.1/§7.7):
+# (group="edecan.tools", see ARCHITECTURE.md):
 # resuelve a un callable sin argumentos que devuelve `list[Tool]`.
 [project.entry-points."edecan.tools"]
 advisory = "edecan_advisory:get_all_tools"

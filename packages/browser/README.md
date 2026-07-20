@@ -1,6 +1,6 @@
 # packages/browser — `edecan_browser`
 
-Navegador de investigación headless del agente (`ROADMAP_V2.md` §4 WP-V2-03).
+Navegador de investigación headless del agente (`ARCHITECTURE.md` §11 fase v2).
 Cada tool implementa el contrato `Tool` de `edecan_core` (§10.7): `name`,
 `description`, `input_schema`, `requires_flags`, `dangerous` y `async run(ctx, args)`.
 
@@ -12,7 +12,7 @@ del guardrail y `edecan_browser/policy.py` para la implementación.
 point que consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`,
 declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## Las 3 herramientas (nombres exactos, pinned en `ROADMAP_V2.md` §7.7)
+## Las 3 herramientas (nombres exactos, pinned en `ARCHITECTURE.md` §11)
 
 Las tres requieren el flag de plan `tools.browser` y ninguna es `dangerous`
 (son de solo lectura, `GET`).
@@ -66,9 +66,9 @@ Las tres requieren el flag de plan `tools.browser` y ninguna es `dangerous`
   `BROWSER_FETCH_PROVIDER=playwright`): import diferido y guardeado dentro de
   `__init__`, nunca se importa al cargar `edecan_browser` y ningún test de
   este paquete lo requiere ni lo instancia con Playwright real instalado
-  (`ROADMAP_V2.md` §7.11).
+  (`ARCHITECTURE.md` §11).
 - **Todos los settings se leen con `getattr(settings, "CAMPO", default)`**
-  (convención dura de `ROADMAP_V2.md` §7.5): el paquete nunca revienta si
+  (convención dura de `ARCHITECTURE.md` §11): el paquete nunca revienta si
   `apps/api` todavía no declaró los campos `BROWSER_*` en su `Settings`.
 
 ## Tests

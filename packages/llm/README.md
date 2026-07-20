@@ -5,7 +5,7 @@ Abstracción de proveedor de modelos de lenguaje (`ARCHITECTURE.md` §3, §10.6 
 - Interfaz única `LLMProvider` (`complete`, `stream`) sobre tipos comunes (`ChatMessage`, `ToolSpec`, `ToolCall`, `Usage`, `CompletionRequest`, `CompletionResponse`, `StreamChunk`).
 - `LLMRouter.resolve(alias, tenant_flags)` mapea los alias lógicos `"principal"` y `"rapido"` a un `(LLMProvider, modelo)`. Dos modos:
   - **Legacy** (sin `provider_config`): variables de entorno de plataforma (`ANTHROPIC_API_KEY`/`OPENAI_COMPAT_*`) — comportamiento sin cambios desde v1.
-  - **Con `provider_config: LLMProviderConfig`** (`edecan_llm.config`, WP-V3-03): el tenant elige explícitamente su proveedor desde la pantalla de Configuración — bring-your-own-credentials para todo, incluido "usa el Claude CLI/Ollama que ya tengo instalado".
+  - **Con `provider_config: LLMProviderConfig`** (`edecan_llm.config`, fase v3): el tenant elige explícitamente su proveedor desde la pantalla de Configuración — bring-your-own-credentials para todo, incluido "usa el Claude CLI/Ollama que ya tengo instalado".
 
 ## Proveedores
 

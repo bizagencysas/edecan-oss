@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 # Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
-# (group="edecan.tools", ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.1/§7.7):
+# (group="edecan.tools", see ARCHITECTURE.md):
 # resuelve a un callable sin argumentos que devuelve `list[Tool]`.
 [project.entry-points."edecan.tools"]
 agents = "edecan_agents:get_all_tools"

@@ -3,36 +3,9 @@ Copyright 2026 Proyecto Edecán
 
 Este producto incluye software desarrollado por el Proyecto Edecán.
 
---------------------------------------------------------------------------
-Licenciamiento por directorio
---------------------------------------------------------------------------
-
-Todo este repositorio se distribuye bajo la Apache License, Version 2.0
-(ver el archivo LICENSE), EXCEPTO el directorio:
-
-    premium/    (paquete Python `edecan_premium`)
-
-que es software propietario bajo licencia comercial separada y NO está
-cubierto por la Apache License. `premium/` implementa capacidades de la
-capa hospedada de pago: telefonía por tenant vía Twilio, campañas de voz
-y SMS con motor de cumplimiento, control de cuotas por plan y herramientas
-premium del agente (ver ARCHITECTURE.md §10.10).
-
-El acceso, uso, copia, modificación o distribución del contenido de
-`premium/` requiere un acuerdo de licencia comercial separado con el
-Proyecto Edecán. Si no cuentas con dicho acuerdo, no estás autorizado a
-usar ese directorio; el resto del repositorio (núcleo Apache-2.0) sigue
-siendo libre de usar, modificar y auto-hospedar sin restricciones más
-allá de las de la propia Apache License 2.0.
-
-El texto completo y autoritativo de esa licencia comercial vive en
-`premium/LICENSE-COMMERCIAL.md`. Ante cualquier conflicto entre este
-NOTICE y ese archivo, prevalece `premium/LICENSE-COMMERCIAL.md`.
-
-En tiempo de ejecución, la API (`apps/api`) detecta si `edecan_premium`
-está instalado (`importlib.util.find_spec("edecan_premium")`) y solo en
-ese caso monta sus rutas y herramientas; el núcleo funciona de forma
-completa y autónoma sin ese paquete.
+Todo el contenido versionado en este repositorio se distribuye bajo la
+Apache License, Version 2.0 (ver LICENSE). Extensiones distribuidas fuera de
+este repositorio no forman parte de esta obra ni modifican sus términos.
 
 --------------------------------------------------------------------------
 Atribuciones de terceros (código Apache-2.0 adaptado, no copiado tal cual)

@@ -1,7 +1,7 @@
 [project]
 name = "edecan-business"
 version = "0.1.0"
-description = "Edecán — negocios: facturación con PDF real y KPIs de negocio (edecan_business). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §5/§7.4/§7.7 (WP-V2-12)."
+description = "Business invoicing, PDF generation, and KPI tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

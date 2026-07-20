@@ -87,20 +87,26 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+import redis.asyncio as redis_asyncio
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import Scope
 
 from edecan_api import __version__
 from edecan_api.companion_manager import ConnectionManager
 from edecan_api.config import Settings, get_settings
+from edecan_api.deps import get_platform_session, get_redis
 from edecan_api.routers import (
     admin,
     auth,
@@ -178,6 +184,58 @@ V6_ROUTER_NAMES: tuple[str, ...] = (
 )
 
 
+# El export de Next no puede emitir headers HTTP por sí mismo. En desktop lo
+# sirve este proceso desde el mismo origen que la API, por lo que `connect-src
+# 'self'` alcanza para las llamadas normales; Tauri IPC conserva únicamente
+# sus dos transportes internos. `unsafe-inline` se limita a script/style por
+# el bootstrap estático de Next y THEME_INIT_SCRIPT; producción nunca habilita
+# `unsafe-eval` ni comodines de red.
+DESKTOP_WEB_SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": "; ".join(
+        (
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-src 'none'",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "media-src 'self' data: blob:",
+            "worker-src 'self' blob:",
+            "connect-src 'self' ipc: http://ipc.localhost",
+            "manifest-src 'self'",
+        )
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": (
+        "camera=(), geolocation=(), microphone=(self), payment=(), usb=()"
+    ),
+}
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+class SecureStaticFiles(StaticFiles):
+    """Sirve el export de escritorio con la frontera HTTP que Next pierde al
+    compilar con ``output: export``.
+
+    Los headers se aplican también a JS/CSS/imágenes: ``nosniff`` es útil en
+    esos recursos y mantener una política uniforme evita respuestas estáticas
+    desprotegidas por extensiones o fallbacks de ``StaticFiles``.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        for name, value in DESKTOP_WEB_SECURITY_HEADERS.items():
+            response.headers[name] = value
+        return response
+
+
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Agrega `X-Request-ID` (reusa el del cliente si ya trae uno) y registra
     una línea de log estructurada por request — sin cuerpo, headers ni query
@@ -187,7 +245,12 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        supplied_request_id = request.headers.get("X-Request-ID", "")
+        request_id = (
+            supplied_request_id
+            if _REQUEST_ID_RE.fullmatch(supplied_request_id)
+            else str(uuid.uuid4())
+        )
         request.state.request_id = request_id
         start = time.perf_counter()
         try:
@@ -252,6 +315,24 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz(
+        session: AsyncSession = Depends(get_platform_session),
+        redis_client: redis_asyncio.Redis = Depends(get_redis),
+    ) -> Response:
+        """Readiness real: la API solo recibe tráfico si DB y Redis responden."""
+        try:
+            await session.execute(text("SELECT 1"))
+            await redis_client.ping()
+        except Exception:
+            logger.exception("readiness_check_failed")
+            return Response(
+                content='{"status":"unavailable"}',
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                media_type="application/json",
+            )
+        return Response(content='{"status":"ok"}', media_type="application/json")
 
     app.include_router(auth.router)
     app.include_router(me.router)
@@ -381,7 +462,7 @@ def create_app() -> FastAPI:
     if settings.SERVE_WEB_DIR:
         web_dir = Path(settings.SERVE_WEB_DIR).expanduser()
         if web_dir.is_dir():
-            app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+            app.mount("/", SecureStaticFiles(directory=str(web_dir), html=True), name="web")
             logger.info("SERVE_WEB_DIR detectado: sirviendo %s en '/'.", web_dir)
         else:
             logger.warning(

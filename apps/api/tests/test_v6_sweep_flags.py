@@ -36,12 +36,9 @@ Todos los paquetes de tools referenciados aquí (`edecan_ads`, `edecan_business`
 `edecan_browser`, `edecan_creative`, `edecan_toolkit`, `edecan_automations`,
 `edecan_agents`, `edecan_smarthome`, `edecan_skills`) ya son dependencias
 declaradas de `apps/api` (`apps/api/pyproject.toml`) — se importan directo,
-sin `sys.path` manual. `edecan_vehicles` y `edecan_premium` NO son
-dependencias declaradas (a propósito, ver `DIRECCION_ACTUAL.md` "Vehículos
-eliminado del alcance" y `ARCHITECTURE.md` §10.10) pero SÍ son miembros del
-workspace uv, así que bajo `uv run --all-packages` (el comando de
-verificación pinned de este WP) se importan igual de directo, mismo criterio
-que ya usa `test_vehiculos_router.py`.
+sin `sys.path` manual. `edecan_vehicles` forma parte del núcleo OSS. La capa
+`edecan_premium` es opcional y no se distribuye en este repositorio: los
+casos que cruzan sus tools se agregan solo cuando el paquete está instalado.
 
 ## Rutas fuera del alcance de escritura de este WP (solo lectura)
 
@@ -133,14 +130,14 @@ from edecan_commerce.tools import (
 from edecan_creative.tools import CrearPodcastTool, GenerarEfectoSonidoTool, GenerarImagenTool
 from edecan_messaging.tools import EnviarMensajeTool, LeerMensajesTool
 
-# `edecan_premium`/`edecan_vehicles`: NO son dependencias declaradas de
-# `apps/api` (a propósito, ver `DIRECCION_ACTUAL.md` "Vehículos eliminado
-# del alcance" y `ARCHITECTURE.md` §10.10), pero SÍ son miembros del
-# workspace uv -- importables directo bajo `uv run --all-packages` (el
-# comando de verificación pinned de este WP), mismo criterio que ya usa
-# `test_vehiculos_router.py`. Ambos paquetes son de SOLO LECTURA para este
-# WP (ver "Rutas fuera del alcance de escritura" en el docstring del módulo).
-from edecan_premium.tools import EnviarSmsTool, LanzarCampanaTool, LlamarContactoTool
+# La capa comercial es un plugin opcional. El export Apache-2.0 debe poder
+# ejecutar toda su suite sin tener ese paquete privado en disco.
+try:
+    from edecan_premium.tools import EnviarSmsTool, LanzarCampanaTool, LlamarContactoTool
+except ImportError:  # esperado en el checkout público
+    _PREMIUM_TOOL_CLASSES: tuple[type, ...] = ()
+else:
+    _PREMIUM_TOOL_CLASSES = (LlamarContactoTool, EnviarSmsTool, LanzarCampanaTool)
 from edecan_schemas.plans import (
     FLAG_AGENTS_MISSIONS,
     FLAG_AUTOMATIONS_RULES,
@@ -191,7 +188,6 @@ from edecan_api.routers import automations as automations_router
 from edecan_api.routers import commerce as commerce_router
 from edecan_api.routers import companion as companion_router
 from edecan_api.routers import connectors as connectors_router
-from edecan_api.routers import consents as consents_router
 from edecan_api.routers import erp as erp_router
 from edecan_api.routers import ide as ide_router
 from edecan_api.routers import mensajes as mensajes_router
@@ -204,6 +200,9 @@ from edecan_api.routers import vehiculos as vehiculos_router
 from edecan_api.routers import viajes as viajes_router
 from edecan_api.routers import voice as voice_router
 from edecan_api.routers import voz_avanzada as voz_avanzada_router
+
+if _PREMIUM_TOOL_CLASSES:
+    from edecan_api.routers import consents as consents_router
 
 # Nota: NO se declara `pytestmark = pytest.mark.asyncio` -- este workspace
 # corre `asyncio_mode = "auto"` (`pyproject.toml`/`apps/api/pyproject.toml`,
@@ -304,7 +303,6 @@ _GATE_PODCAST = voz_avanzada_router._require_tools_podcast
 _GATE_AUTOMATIONS = automations_router._require_automations_flag
 _GATE_MISSIONS = missions_router._require_agents_missions
 _GATE_VEHICLES = vehiculos_router.require_vehicles_flag
-_GATE_TELEPHONY_CONSENTS = consents_router._require_voice_telephony
 _GATE_TELEPHONY_CONNECTORS = connectors_router._require_voice_telephony
 
 MATRIZ_TOOL_ROUTER: list[_Par] = [
@@ -387,35 +385,38 @@ MATRIZ_TOOL_ROUTER: list[_Par] = [
         FLAG_TOOLS_VEHICLES,
         _GATE_VEHICLES,
     ),
-    # -- premium/voice.telephony — SOLO LECTURA (dueño real WP-V6-03) --------
-    # Dos routers gatean el mismo flag por dos caminos distintos: `consents.py`
-    # (POST /v1/consents, sin el cual `TwilioTenantClient` nunca deja llamar/
-    # mandar SMS) y `connectors.py` (PUT credenciales de Twilio).
-    _Par(
-        "premium:LlamarContactoTool~consents.py",
-        LlamarContactoTool,
-        FLAG_VOICE_TELEPHONY,
-        _GATE_TELEPHONY_CONSENTS,
-    ),
-    _Par(
-        "premium:EnviarSmsTool~consents.py",
-        EnviarSmsTool,
-        FLAG_VOICE_TELEPHONY,
-        _GATE_TELEPHONY_CONSENTS,
-    ),
-    _Par(
-        "premium:LlamarContactoTool~connectors.py",
-        LlamarContactoTool,
-        FLAG_VOICE_TELEPHONY,
-        _GATE_TELEPHONY_CONNECTORS,
-    ),
-    _Par(
-        "premium:EnviarSmsTool~connectors.py",
-        EnviarSmsTool,
-        FLAG_VOICE_TELEPHONY,
-        _GATE_TELEPHONY_CONNECTORS,
-    ),
 ]
+
+if _PREMIUM_TOOL_CLASSES:
+    _GATE_TELEPHONY_CONSENTS = consents_router._require_voice_telephony
+    MATRIZ_TOOL_ROUTER.extend(
+        [
+            _Par(
+                "premium:LlamarContactoTool~consents.py",
+                LlamarContactoTool,
+                FLAG_VOICE_TELEPHONY,
+                _GATE_TELEPHONY_CONSENTS,
+            ),
+            _Par(
+                "premium:EnviarSmsTool~consents.py",
+                EnviarSmsTool,
+                FLAG_VOICE_TELEPHONY,
+                _GATE_TELEPHONY_CONSENTS,
+            ),
+            _Par(
+                "premium:LlamarContactoTool~connectors.py",
+                LlamarContactoTool,
+                FLAG_VOICE_TELEPHONY,
+                _GATE_TELEPHONY_CONNECTORS,
+            ),
+            _Par(
+                "premium:EnviarSmsTool~connectors.py",
+                EnviarSmsTool,
+                FLAG_VOICE_TELEPHONY,
+                _GATE_TELEPHONY_CONNECTORS,
+            ),
+        ]
+    )
 
 
 @pytest.mark.parametrize("par", MATRIZ_TOOL_ROUTER, ids=[p.id for p in MATRIZ_TOOL_ROUTER])
@@ -447,16 +448,20 @@ async def test_flag_de_tool_coincide_con_gate_del_router_dedicado(par: _Par) -> 
         (CompararPreciosTool, FLAG_TOOLS_BROWSER, "FLAG_TOOLS_BROWSER"),
         (GenerarImagenTool, FLAG_TOOLS_IMAGES, "FLAG_TOOLS_IMAGES"),
         (PublicarSocialTool, "connectors.social", "FLAG_CONNECTORS_SOCIAL"),
-        (LanzarCampanaTool, "campaigns", "FLAG_CAMPAIGNS"),
-    ],
+    ]
+    + (
+        [(LanzarCampanaTool, "campaigns", "FLAG_CAMPAIGNS")]
+        if _PREMIUM_TOOL_CLASSES
+        else []
+    ),
     ids=[
         "browser:NavegarWebTool",
         "browser:ExtraerDatosWebTool",
         "browser:CompararPreciosTool",
         "creative:GenerarImagenTool",
         "toolkit:PublicarSocialTool",
-        "premium:LanzarCampanaTool",
-    ],
+    ]
+    + (["premium:LanzarCampanaTool"] if _PREMIUM_TOOL_CLASSES else []),
 )
 def test_flags_de_unico_punto_de_exigencia_sin_router_dedicado(
     tool_cls: type, flag: str, nombre_constante: str
@@ -538,10 +543,8 @@ def test_ninguna_tool_declara_voice_cloning() -> None:
         SintetizarVozTool(),
         VehiculoEstadoTool(),
         VehiculoControlarTool(),
-        LlamarContactoTool(),
-        EnviarSmsTool(),
-        LanzarCampanaTool(),
     ]
+    todas_las_tools.extend(tool_cls() for tool_cls in _PREMIUM_TOOL_CLASSES)
     for tool in todas_las_tools:
         assert "voice.cloning" not in tool.requires_flags, (
             f"{type(tool).__name__} declara voice.cloning -- eso rompe la "

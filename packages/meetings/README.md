@@ -4,11 +4,11 @@ Reuniones: transcripción de audio/video ya subido con el **STT del propio
 tenant** (Deepgram bring-your-own; stub offline si no conectó nada) + minutas
 estructuradas (resumen, decisiones, acciones, temas) generadas con el **LLM
 del propio tenant**. Cubre "resume reuniones, toma notas" (📞 Comunicación) y
-"📹 Video: resume reuniones" de `REQUISITOS_V2.md`. Ver `docs/reuniones.md`
+"📹 Video: resume reuniones" de `docs/roadmap.md`. Ver `docs/reuniones.md`
 para el flujo completo end-to-end (router + worker + UI).
 
 100% bring-your-own, nunca una credencial de plataforma — mismo criterio que
-el resto del repo (`DIRECCION_ACTUAL.md` "Modelo de credenciales").
+el resto del repo (`docs/roadmap.md` "Modelo de credenciales").
 
 ## Módulos
 
@@ -30,7 +30,7 @@ el resto del repo (`DIRECCION_ACTUAL.md` "Modelo de credenciales").
 - `stt.py` — resolución **bring-your-own del STT del tenant** (Deepgram),
   fail-closed a `StubSTT`. No existe hoy un `resolver_stt_del_tenant` en
   `edecan_voice.tenant` (ese módulo, ver su propio docstring, solo expone la
-  mitad TTS — la consolidación de WP-V6-04 solo tocó
+  mitad TTS — la consolidación de fase v6 solo tocó
   `resolver_config_tts_tenant`/`_elevenlabs_sound_generation`). Este módulo
   replica el ÚNICO precedente real de resolución STT-por-tenant que existe en
   el repo (`apps/api/edecan_api/routers/voice.py::_stt_para_tenant`),
@@ -54,8 +54,8 @@ el resto del repo (`DIRECCION_ACTUAL.md` "Modelo de credenciales").
 
 Este pin era originalmente especulativo (escrito antes de que la migración
 `0008_v6_expansion.py` aterrizara) — quedó desincronizado del esquema real
-que WP-V6-01 terminó pinneando en `ARCHITECTURE.md` §15.b (mismo problema
-que ya pasó una vez con `docs/api.md`, ver `HOTFIXES_PENDIENTES.md`). El
+que fase v6 terminó pinneando en `ARCHITECTURE.md` §15.b (mismo problema
+que ya pasó una vez con `docs/api.md`, ver `docs/seguridad-modelo-amenazas.md`). El
 router (`apps/api/edecan_api/routers/reuniones.py`) y el handler
 (`apps/worker/edecan_worker/handlers/process_meeting.py`) ya se corrigieron
 para hablar contra el esquema REAL de abajo — este documento se actualiza
@@ -77,7 +77,7 @@ meetings(
                                         -- "responsable"}], "temas": [...]} — un único
                                         -- blob, NO columnas separadas
     duracion_segundos INTEGER NULL,    -- NO numeric/float (corregido 2026-07-09,
-                                        -- WP-V7-04): `duracion_wav_segundos` (puro
+                                        -- fase v7): `duracion_wav_segundos` (puro
                                         -- Python) devuelve un float con precisión de
                                         -- sub-segundo, pero la columna real es INTEGER
                                         -- — verificado EMPÍRICAMENTE contra Postgres
@@ -97,8 +97,8 @@ El contrato HTTP público de `/v1/reuniones` (`ReunionOut.file_id`, y
 se mantiene tal cual para el cliente — el router traduce internamente entre
 ese contrato y el esquema real de arriba (`source_file_id`/`minutos`).
 
-**Actualizado 2026-07-09 (WP-V7-04, ya no es "pendiente"):** el linchpin de
-v6 (WP-V6-01) aterrizó las tres piezas que este párrafo pedía cuando WP-V6-05
+**Actualizado 2026-07-09 (fase v7, ya no es "pendiente"):** el linchpin de
+v6 (fase v6) aterrizó las tres piezas que este párrafo pedía cuando fase v6
 corría todavía en paralelo — `edecan_schemas.queue.JOB_TYPES` SÍ incluye
 `"process_meeting"` (12º valor), `edecan_schemas.plans` SÍ tiene
 `FLAG_TOOLS_MEETINGS = "tools.meetings"` (`✔` en
@@ -126,18 +126,18 @@ montar manualmente en tests mientras tanto, ver
 
 **Nota sobre el workspace uv**: `packages/meetings` SÍ se agregó a
 `[tool.uv.workspace].members` del `pyproject.toml` raíz (sección "v6
-(WP-V6-05)") — excepción puntual, mínima y documentada al "no tocar el
+(fase v6)") — excepción puntual, mínima y documentada al "no tocar el
 pyproject raíz": se verificó empíricamente (`uv sync --all-packages`) que
 esta lista es explícita, no un glob `packages/*`, así que sin esa línea
 `edecan_meetings` queda no-instalable/no-importable en ningún venv del
 repo, incluidos sus propios tests. `apps/api/pyproject.toml`/
 `apps/worker/pyproject.toml` YA declaran `edecan-meetings` como dependencia
 (cerrado el mismo hueco temporal que documentó en su momento `edecan_travel`
-antes de que WP-V5-01 lo agregara, `ARCHITECTURE.md` §14.f) — el import
+antes de que fase v5 lo agregara, `ARCHITECTURE.md` §14.f) — el import
 directo en `process_meeting.py` funciona igual en dev (`uv sync
 --all-packages` instala TODO miembro del workspace en el mismo venv
 compartido, sin importar quién lo declara como dependencia — mismo mecanismo
-que ya documentó `DIRECCION_ACTUAL.md` para `packages/vehicles`), y ahora
+que ya documentó `docs/roadmap.md` para `packages/vehicles`), y ahora
 también queda declarado para que las imágenes Docker de producción
 (`uv sync --no-dev --package edecan-api`/`edecan-worker`, verificado con
 `uv tree --package edecan-api/edecan-worker --frozen`) y el empaquetado de

@@ -1,7 +1,7 @@
 [project]
 name = "edecan-messaging"
 version = "0.1.0"
-description = "Edecán — mensajería oficial del agente: Telegram, Discord y Slack (edecan_messaging). Ver ARCHITECTURE.md §10.7 y ROADMAP_V2.md §7.7 (WP-V2-05)."
+description = "Official Telegram, Discord, and Slack messaging integrations for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

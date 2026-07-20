@@ -13,8 +13,8 @@ dependencies = [
 
 # Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
 # (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
-# sin argumentos que devuelve `list[Tool]`. Esqueleto (WP-V4-01) — lo
-# completa WP-V4-07 con las tools reales (`ads_resumen`/`ads_preparar_campana`).
+# sin argumentos que devuelve `list[Tool]`, incluidas
+# `ads_resumen` y `ads_preparar_campana`.
 [project.entry-points."edecan.tools"]
 ads = "edecan_ads:get_all_tools"
 

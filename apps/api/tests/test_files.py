@@ -27,6 +27,9 @@ class _FakeS3Client:
         return None
 
     async def put_object(self, **kwargs) -> None:
+        body = kwargs.get("Body")
+        if hasattr(body, "read"):
+            kwargs["Body"] = body.read()
         self._calls.append(kwargs)
 
 
@@ -80,6 +83,7 @@ async def test_upload_file_stores_in_s3_and_enqueues_ingest_job(
     assert len(s3_calls) == 1
     assert s3_calls[0]["Bucket"] == "edecan-files"
     assert s3_calls[0]["Key"] == f"tenants/{tenant_id}/files/{body['id']}/informe.pdf"
+    assert s3_calls[0]["Body"] == b"contenido-del-pdf"
 
     assert len(enqueue_calls) == 1
     assert enqueue_calls[0]["job_type"] == "ingest_file"
@@ -137,3 +141,46 @@ async def test_get_unknown_file_returns_404(client) -> None:
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     response = await client.get(f"/v1/files/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 404
+
+
+async def test_upload_rejects_file_above_configured_hard_limit(
+    client, monkeypatch, test_settings
+) -> None:
+    import edecan_api.routers.files as files_module
+
+    test_settings.MAX_UPLOAD_BYTES = 4
+    s3_calls: list[dict] = []
+    enqueue_calls: list[dict] = []
+    _patch_s3_and_queue(
+        monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=enqueue_calls
+    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+
+    response = await client.post(
+        "/v1/files",
+        files={"file": ("grande.bin", b"12345", "application/octet-stream")},
+        headers=headers,
+    )
+
+    assert response.status_code == 413
+    assert s3_calls == []
+    assert enqueue_calls == []
+
+
+async def test_upload_sanitizes_path_like_filename(client, monkeypatch) -> None:
+    import edecan_api.routers.files as files_module
+
+    s3_calls: list[dict] = []
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=[])
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id)
+
+    response = await client.post(
+        "/v1/files",
+        files={"file": ("../../secret.txt", b"safe", "text/plain")},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["filename"] == "secret.txt"
+    assert s3_calls[0]["Key"].endswith("/secret.txt")

@@ -11,4 +11,4 @@ Documentación extendida del proyecto, en español. Empieza por [`index.md`](./i
 - El resto del ecosistema del producto (negocio/inventario/RRHH/ads/viajes, ecosistema de agentes/automatizaciones/misiones, analista, reuniones, MCP, apps móviles, casa inteligente) — ver `index.md` para el mapa completo por ola.
 - Roadmap de producto.
 
-Para la arquitectura técnica y los contratos vinculantes, ver [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para el plan de producto, [`../PLAN.md`](../PLAN.md).
+Para la arquitectura técnica y los contratos vinculantes, ver [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para la evolución pública del producto, [`roadmap.md`](./roadmap.md).

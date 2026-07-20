@@ -192,3 +192,46 @@ async def test_git_commit_sin_mensaje(make_ctx, repo_local):
     ctx = make_ctx(settings=_settings_local(repo_local))
     resultado = await AccederCodigoLocalTool().run(ctx, {"accion": "git_commit"})
     assert "mensaje" in resultado.content.lower()
+
+
+@pytest.mark.parametrize(
+    ("mensaje", "archivos_inyectados"),
+    [
+        ("literal $(touch inyeccion_dolar)", ["inyeccion_dolar"]),
+        ("literal `touch inyeccion_backtick`", ["inyeccion_backtick"]),
+        ("primera línea\nsegunda línea", []),
+        ('comillas "dobles" y \'simples\'', []),
+        ("--amend", []),
+    ],
+)
+async def test_git_commit_trata_mensaje_como_dato_literal(
+    make_ctx,
+    repo_local,
+    mensaje: str,
+    archivos_inyectados: list[str],
+):
+    """El mensaje completo ocupa un argv: nunca es código ni opciones de Git."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo_local, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo_local, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_local, check=True)
+
+    ctx = make_ctx(settings=_settings_local(repo_local))
+    resultado = await AccederCodigoLocalTool().run(
+        ctx,
+        {"accion": "git_commit", "mensaje": mensaje},
+    )
+
+    assert "commit local" in resultado.content.lower()
+    commit_message = subprocess.run(
+        ["git", "log", "-1", "--format=%B"],
+        cwd=repo_local,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert commit_message == mensaje
+    assert all(not (repo_local / nombre).exists() for nombre in archivos_inyectados)

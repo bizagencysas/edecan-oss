@@ -1,7 +1,7 @@
 [project]
 name = "edecan-skills"
 version = "0.1.0"
-description = "Edecán — skills: integración con el marketplace abierto de \"Agent Skills\" (skills.sh). Ver ARCHITECTURE.md §12 y DIRECCION_ACTUAL.md (WP-V3-04)."
+description = "Open Agent Skills discovery, validation, and installation for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -11,11 +11,7 @@ dependencies = [
     "PyYAML>=6",
 ]
 
-# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
-# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
-# sin argumentos que devuelve `list[Tool]`. Implementado en WP-V3-04 — hoy
-# devuelve las 5 herramientas reales del marketplace, ver
-# `edecan_skills/__init__.py`.
+# Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
 [project.entry-points."edecan.tools"]
 skills = "edecan_skills:get_all_tools"
 

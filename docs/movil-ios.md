@@ -1,8 +1,7 @@
 # App iOS nativa
 
 Guía completa para compilar, firmar e instalar la app iOS de Edecán —
-Swift 6 + SwiftUI puro, diseño Liquid Glass, **nunca React Native**
-(`DIRECCION_ACTUAL.md`, "Apps móviles"; `ROADMAP_V2.md` §6.1). El código
+Swift 6 + SwiftUI puro, diseño Liquid Glass, **nunca React Native**. El código
 vive en [`../apps/mobile/ios/`](../apps/mobile/ios/); este documento es la
 referencia para el CLIENTE que va a compilar su propia app, y el
 `README.md` de ese directorio es el arranque rápido para quien va a tocar
@@ -25,14 +24,14 @@ más abajo). Cada cliente compila, firma e instala su propia copia.
 3. **El servidor lo traes tú.** No hay un servidor Edecán "de fábrica": la
    app pide la URL de tu propia instalación (self-host, o tu app de
    escritorio Tauri) en el primer arranque. Mismo principio bring-your-own
-   que el resto del producto (`DIRECCION_ACTUAL.md`).
+   que el resto del producto (`docs/roadmap.md`).
 4. **Iniciar sesión ES el emparejamiento**, en este v1. Ver
    ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque).
 
 ## Requisitos
 
 - **Un Mac** con Xcode 26 o más nuevo (este esqueleto se generó y compiló
-  con Xcode 26.6 / SDK iOS 26.5 — ver ["Verificado en esta iteración"](#verificado-en-esta-iteración-wp-v3-10)).
+  con Xcode 26.6 / SDK iOS 26.5 — ver ["Verificado en esta iteración"](#verificado-en-esta-iteración-fase-v3)).
 - **[xcodegen](https://github.com/yonaskolb/XcodeGen)**: `brew install xcodegen`.
   `Edecan.xcodeproj` no existe en el repo — se genera desde `project.yml`,
   la única fuente de verdad del proyecto (nunca se edita el `.xcodeproj` a
@@ -46,9 +45,9 @@ más abajo). Cada cliente compila, firma e instala su propia copia.
 
 ### Por qué cada cliente necesita su propia cuenta Apple Developer
 
-Decisión de negocio explícita, documentada en `REQUISITOS_V2.md`
+Decisión de negocio explícita, documentada en `docs/roadmap.md`
 ("Decisión de negocio: instalación con cuenta Apple Developer del propio
-cliente") y confirmada en `DIRECCION_ACTUAL.md`. El resumen técnico:
+cliente") y confirmada en `docs/roadmap.md`. El resumen técnico:
 
 - Firmar con un Apple ID gratis (sin cuenta de pago) funciona por USB, pero
   el build **expira a los 7 días** — inviable para uso real.
@@ -71,7 +70,7 @@ propios dispositivos — y el problema desaparece. El perfil de cliente de
 este producto (alguien con IDE completo, control de computador,
 git/Docker/Kubernetes/AWS/GCP/Azure en la misma app) ya es alguien que
 probablemente crea software: pedirle una cuenta Developer no es una
-barrera real para ese público (`REQUISITOS_V2.md`).
+barrera real para ese público (`docs/roadmap.md`).
 
 ## Arquitectura del proyecto
 
@@ -84,26 +83,26 @@ apps/mobile/ios/
 │   │   ├── NegociosModels.swift    # NegocioKPIs, CanalKPI, ActividadKPI, Factura, FacturaItem
 │   │   ├── CredentialsModels.swift # CredentialsOut, LLMCredentialsIn, SetupStatus, DetectLocalProviders
 │   │   ├── IDEModels.swift         # IDEStatusOut, IDEEntry/IDETree, IDEFileOut
-│   │   ├── DeviceModels.swift      # DeviceOut (POST /v1/devices, WP-V4-01 en paralelo)
+│   │   ├── DeviceModels.swift      # DeviceOut (POST /v1/devices, fase v4 en paralelo)
 │   │   ├── VoiceModels.swift       # TranscribeOut, HablarResultado
-│   │   ├── MissionsModels.swift    # MissionOut, MissionStepOut, MissionDetailOut (v5, WP-V5-06)
-│   │   ├── AutomationsModels.swift # AutomationOut/Trigger/Accion, AutomationRunOut (v5, WP-V5-06)
-│   │   ├── RemindersModels.swift   # ReminderOut (v5, WP-V5-06)
-│   │   ├── RemoteModels.swift      # RemoteSession/RemoteFrame/RemoteInput + mapeo de coordenadas (WP-V6-08)
+│   │   ├── MissionsModels.swift    # MissionOut, MissionStepOut, MissionDetailOut (v5, fase v5)
+│   │   ├── AutomationsModels.swift # AutomationOut/Trigger/Accion, AutomationRunOut (v5, fase v5)
+│   │   ├── RemindersModels.swift   # ReminderOut (v5, fase v5)
+│   │   ├── RemoteModels.swift      # RemoteSession/RemoteFrame/RemoteInput + mapeo de coordenadas (fase v6)
 │   │   ├── APIClient.swift         # actor: auth/register/me/conversaciones/negocios/credenciales/
 │   │   │                           # setup/ide/voz/dispositivos/misiones/automatizaciones/
 │   │   │                           # recordatorios/remoto, auto-refresh en 401
 │   │   ├── MultipartFormData.swift # helpers `Data.append*` para multipart a mano (voz)
 │   │   ├── SSEClient.swift         # URLSession.bytes(for:) → AsyncThrowingStream<ChatEvent>
 │   │   ├── Keychain.swift          # kSecClassGenericPassword, sin App Group
-│   │   └── PairingStore.swift      # URL del servidor + "emparejado" + deviceId (WP-V4-01)
+│   │   └── PairingStore.swift      # URL del servidor + "emparejado" + deviceId (fase v4)
 │   └── Tests/EdecanKitTests/       # 85 tests, offline, corren con `swift test`
 ├── EdecanApp/              # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift    # login + registro (POST /v1/auth/register)
 │   ├── Screens/{Inicio,Chat,IDE,Negocios,Voz,Perfil}View.swift
 │   ├── Screens/{Misiones,Automatizaciones,Recordatorios}View.swift  # v5, alcanzables desde Inicio
-│   ├── Screens/RemotoView.swift             # WP-V6-08, alcanzable desde Inicio (*polling*, no WebRTC)
+│   ├── Screens/RemotoView.swift             # fase v6, alcanzable desde Inicio (*polling*, no WebRTC)
 │   ├── Componentes/
 │   │   ├── ChatViewModel.swift         # turno SSE + confirmación de herramientas peligrosas
 │   │   ├── TarjetaConfirmacion.swift   # tarjeta Aprobar/Rechazar, compartida Chat ↔ Voz ↔ Misiones
@@ -116,7 +115,7 @@ apps/mobile/ios/
 │   │   ├── MisionesViewModel.swift         # lista+detalle con *polling* de /v1/missions (v5)
 │   │   ├── AutomatizacionesViewModel.swift # toggle optimista + runs de /v1/automations (v5)
 │   │   ├── RecordatoriosViewModel.swift    # CRUD simple de /v1/reminders (v5)
-│   │   ├── RemotoViewModel.swift           # visor + input de /v1/remote, *polling* (WP-V6-08)
+│   │   ├── RemotoViewModel.swift           # visor + input de /v1/remote, *polling* (fase v6)
 │   │   ├── BurbujaMensaje.swift, EmptyStateView.swift
 │   └── Resources/Assets.xcassets/
 ├── EdecanWidgets/           # extensión de widgets (placeholder mínimo)
@@ -157,7 +156,7 @@ reimplementarlo cada uno:
 - **`PairingStore`** (`@MainActor @Observable`) guarda la URL del servidor,
   expone `isPaired` y ahora también `deviceId` (el `id` de `devices` que
   devolvió `POST /v1/devices`, si ese endpoint ya existe del lado del
-  servidor — WP-V4-01, contrato en paralelo). **Sin ningún valor por
+  servidor — fase v4, contrato en paralelo). **Sin ningún valor por
   defecto de servidor** — si nunca se configuró nada, `serverURL` es `nil`
   y el onboarding lo pide.
 
@@ -194,7 +193,7 @@ usuario al panel web para eso. **``VozViewModel`` reutiliza el mismo
 confirmación que la pestaña Chat. IDE es de solo lectura (árbol +
 visor monoespaciado); Negocios trae KPIs + dona + facturas reales.
 
-## Pantallas v5 (WP-V5-06): Misiones, Automatizaciones, Recordatorios
+## Pantallas v5: Misiones, Automatizaciones, Recordatorios
 
 Tres pantallas nuevas, **alcanzables desde los accesos directos de
 `InicioView`** (`RootTabView` sigue con las mismas 6 pestañas — este WP no
@@ -203,8 +202,7 @@ las toca), conectadas de verdad a la API real, no maquetas:
 - **Misiones** (`Screens/MisionesView.swift`, `Componentes/MisionesViewModel.swift`)
   — el Orchestrator multi-agente. Consume `GET/POST /v1/missions`,
   `GET /v1/missions/{id}`, `POST /v1/missions/{id}/confirm`,
-  `POST /v1/missions/{id}/cancel` (`ARCHITECTURE.md` §11 `ROADMAP_V2.md`
-  §7.4/§7.9). Lista con badge de estado (`planning|running|
+  `POST /v1/missions/{id}/cancel` (`ARCHITECTURE.md` §11 `docs/roadmap.md`). Lista con badge de estado (`planning|running|
   waiting_confirmation|done|error|cancelled`) y alta con un campo
   `objetivo`; detalle con la línea de tiempo de `agent_steps` (agente, status,
   resultado) y, si un paso queda `waiting_confirmation`, la MISMA
@@ -217,7 +215,7 @@ las toca), conectadas de verdad a la API real, no maquetas:
   activo, y se detienen solos al salir de la pantalla.
 - **Automatizaciones** (`Screens/AutomatizacionesView.swift`,
   `Componentes/AutomatizacionesViewModel.swift`) — reglas de agenda o
-  webhook (`ARCHITECTURE.md` §11 `ROADMAP_V2.md` §7.4/§7.6/§7.10). Consume
+  webhook (`ARCHITECTURE.md` §11 `docs/roadmap.md`). Consume
   `GET /v1/automations`, `PATCH /v1/automations/{id}` (toggle),
   `POST /v1/automations` (alta) y `GET /v1/automations/{id}/runs`. Lista con
   `Toggle` de activar/desactivar **optimista** (refleja el cambio al instante
@@ -388,7 +386,7 @@ corto de 6 dígitos que ya usa el companion de escritorio, `POST
 este iPhone, el dispositivo cuenta como emparejado; "Cerrar sesión" en la
 pestaña Perfil lo borra y vuelve a mostrar el onboarding.
 
-**Registro real por dispositivo, best-effort (WP-V4-03):** justo después de
+**Registro real por dispositivo, best-effort (fase v4):** justo después de
 un login/registro exitoso, `SessionStore.emparejarDispositivo(pairingStore:)`
 llama `POST /v1/devices {nombre, plataforma: "ios", kind: "mobile",
 fingerprint}` (`nombre` = `UIDevice.current.name`, `fingerprint` =
@@ -396,7 +394,7 @@ fingerprint}` (`nombre` = `UIDevice.current.name`, `fingerprint` =
 `id` devuelto en `PairingStore.deviceId` para poder revocarlo luego
 (`POST /v1/devices/{id}/revoke`, disparado al cerrar sesión) sin tener que
 cambiar la contraseña de la cuenta. **Este es un contrato en paralelo
-(WP-V4-01) que todavía no tiene router en `apps/api/edecan_api/routers/`**
+(fase v4) que todavía no tiene router en `apps/api/edecan_api/routers/`**
 al escribir esto — `APIClient.registrarDispositivo`/`.revocarDispositivo`
 tratan un `404` como "todavía no existe" y degradan en silencio, sin
 bloquear ni mostrar error: el emparejamiento v1 de arriba (sesión =
@@ -406,9 +404,8 @@ Ver `EdecanKit/Sources/EdecanKit/PairingStore.swift`/`DeviceModels.swift` y
 
 ## Nunca App Store, nunca TestFlight
 
-Decisión de producto **permanente**, no una limitación de esta iteración
-(`DIRECCION_ACTUAL.md`, "Apps móviles"; `REQUISITOS_V2.md`, "Aclaración
-sobre distribución de las apps nativas"). Ninguna lane de `fastlane/Fastfile`
+Decisión de producto **permanente**, no una limitación de esta iteración.
+Ninguna lane de `fastlane/Fastfile`
 sube nada a App Store Connect. TestFlight también pasa por App Store
 Connect (aunque con revisión más ligera que la tienda completa) — se
 descarta por el mismo motivo. La única vía de distribución es la que
@@ -426,10 +423,10 @@ cuenta Developer del propio cliente.
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
 | **Perfil: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
 | **IDE embebido de solo lectura** (árbol navegable con `OutlineGroup` + visor monoespaciado) | **Real** — `GET /v1/ide/status\|tree\|file`; escribir/editar/correr comandos queda fuera de esta app (sigue siendo terreno del panel web) |
-| **Registro por dispositivo** (`POST /v1/devices`, revocar al cerrar sesión) | Best-effort, degrada con gracia si el servidor todavía no tiene ese router (WP-V4-01 en paralelo) — ver ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque) |
-| **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-wp-v5-06-misiones-automatizaciones-recordatorios) |
-| **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-wp-v5-06-misiones-automatizaciones-recordatorios) |
-| **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-wp-v5-06-misiones-automatizaciones-recordatorios) |
+| **Registro por dispositivo** (`POST /v1/devices`, revocar al cerrar sesión) | Best-effort, degrada con gracia si el servidor todavía no tiene ese router (fase v4 en paralelo) — ver ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque) |
+| **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
+| **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
+| **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | `EdecanKit` completo con 85 tests offline | **Real** |
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
 | Inicio (saludo + `GET /v1/me`), Perfil (datos + cerrar sesión) | **Real** |
@@ -438,11 +435,11 @@ cuenta Developer del propio cliente.
 | Notificaciones push (APNs) | Pendiente — requiere el emparejamiento por dispositivo completo de arriba |
 | Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — la pestaña Voz solo cubre voz web (*push-to-talk*), no telefonía |
 | IDE con escritura/edición/terminal (`PUT /v1/ide/file`, `POST /v1/ide/edit\|run\|search`) | Pendiente — la app móvil solo lee/navega, el panel web sigue siendo donde se edita |
-| **Visor de control remoto** (`RemotoView`/`RemotoViewModel`, *polling* HTTP) | **Real** — ver ["Verificado en esta iteración (WP-V6-08)"](#verificado-en-esta-iteración-wp-v6-08); transporte WebRTC de baja latencia sigue pendiente (§5 de [`control-remoto.md`](./control-remoto.md)) |
+| **Visor de control remoto** (`RemotoView`/`RemotoViewModel`, *polling* HTTP) | **Real** — ver ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6); transporte WebRTC de baja latencia sigue pendiente (§5 de [`control-remoto.md`](./control-remoto.md)) |
 | Widget con datos reales (próxima conversación, recordatorio) | Pendiente — hoy es un placeholder estático, sin App Group con `EdecanApp` |
 | Editar persona (tono, formalidad, instrucciones), tema de la app | Pendiente — placeholder en Perfil |
 
-## Verificado en esta iteración (WP-V3-10)
+## Verificado en esta iteración (fase v3)
 
 Con Xcode 26.6 (SDK iPhoneSimulator 26.5) y Swift 6.3.3 instalados:
 
@@ -456,7 +453,7 @@ Con Xcode 26.6 (SDK iPhoneSimulator 26.5) y Swift 6.3.3 instalados:
   complete`, Swift 6 en modo estricto), incluyendo la compilación y el
   empaquetado de `EdecanWidgets.appex` dentro de `Edecán.app/PlugIns/`.
 
-## Verificado en esta iteración (WP-V4-03)
+## Verificado en esta iteración (fase v4)
 
 Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
 2.45.4), re-verificado tras CADA feature de este paquete de trabajo
@@ -481,7 +478,7 @@ final:
   multipart a mano) usa únicamente frameworks del SDK de Apple (`AVFoundation`,
   `Charts`, `UIKit` para `UIDevice`) — cero paquetes SPM de terceros.
 
-## Verificado en esta iteración (WP-V5-06)
+## Verificado en esta iteración (fase v5)
 
 Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
 2.45.4):
@@ -511,7 +508,7 @@ Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
   las 3 pantallas de `EdecanApp/Screens/` y los 3 ViewModels de
   `EdecanApp/Componentes/` entraron solos al compilar.
 
-## Verificado en esta iteración (WP-V6-08)
+## Verificado en esta iteración (fase v6)
 
 Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
 2.45.4):
@@ -541,7 +538,7 @@ Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
 
 Por orden aproximado de lo que más desbloquea al resto:
 
-1. **Emparejamiento real por dispositivo, completo** — WP-V4-01 (contrato
+1. **Emparejamiento real por dispositivo, completo** — fase v4 (contrato
    en paralelo) debe aterrizar `POST /v1/devices`/`GET /v1/devices`/`POST
    /v1/devices/{id}/revoke` del lado del servidor; esta app ya llama
    `registrarDispositivo`/`revocarDispositivo` y degrada con gracia
@@ -556,8 +553,8 @@ Por orden aproximado de lo que más desbloquea al resto:
    telefonía por tenant (`voice.telephony`, ver
    [`voz-telefonia.md`](./voz-telefonia.md)) sigue sin vivir en la app.
 4. **Visor de control remoto — transporte WebRTC** — la pantalla "Remoto" ya
-   es real hoy con *polling* HTTP (WP-V6-08, ver
-   ["Verificado en esta iteración (WP-V6-08)"](#verificado-en-esta-iteración-wp-v6-08)
+   es real hoy con *polling* HTTP (fase v6, ver
+   ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6)
    arriba), nunca controlando sin sesión aprobada en el Mac. Lo que sigue
    pendiente es reemplazar ese *polling* por WebRTC de baja latencia —
    diseño completo (transporte, niveles de permiso, modelo de amenazas) ya

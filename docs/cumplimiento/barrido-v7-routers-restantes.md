@@ -1,27 +1,28 @@
-# Barrido v7 — routers restantes (WP-V7-08)
+# Barrido v7 — routers restantes (fase v7)
 
 Este documento registra el barrido de los **17 routers de `apps/api/edecan_api/routers/`
 que ningún barrido de evidencia anterior recorrió** (`missions`, `automations`, `ide`,
 `smarthome`, `skills`, `setup`, `voice`, `companion`, `memory`, `files`, `contacts`,
 `finance`, `reminders`, `me`, `persona`, `admin`, `usage`), más `packages/automations/`.
-`docs/cumplimiento/barrido-evidencia-v6.md` (WP-V6-03) cubrió otro conjunto —
+`docs/cumplimiento/barrido-evidencia-v6.md` (fase v6) cubrió otro conjunto —
 `auth`/`billing`/`connectors`/`credentials`/`consents`/`erp`/`rrhh`/`viajes`/`mensajes`/
-`negocios`/`perfil` + `hooks.py` (fix propio) + `premium/` — y los fixes previos de
+`negocios`/`perfil` + `hooks.py` (fix propio) + la extensión comercial externa
+`edecan_premium` — y los fixes previos de
 `remote.py`/`commerce.py`/`ads.py`/`voz_avanzada.py` ya están verificados ahí. Leído
-completo antes de escribir una línea: `DIRECCION_ACTUAL.md`, `ARCHITECTURE.md` §0/§10/§13,
-`HOTFIXES_PENDIENTES.md` completo (imprescindible: el fix de `delegar_mision`/
+completo antes de escribir una línea: `docs/roadmap.md`, `ARCHITECTURE.md` §0/§10/§13,
+`docs/seguridad-modelo-amenazas.md` completo (imprescindible: el fix de `delegar_mision`/
 `_cupo_disponible` y el de `confirm_tool_call`), y `docs/cumplimiento/barrido-evidencia-v6.md`.
 
 Cuatro barridos, igual criterio metodológico que v6: **A** (bring-your-own), **B** (flags de
 plan finos), **C** (evidencia/estado escrito antes de un `raise`/enqueue alcanzable, sin
-commit de por medio — regla de `HOTFIXES_PENDIENTES.md` puntos 8/9), **D** (SQL crudo contra
+commit de por medio — regla de `docs/seguridad-modelo-amenazas.md` puntos 8/9), **D** (SQL crudo contra
 el esquema REAL, no uno asumido).
 
 ## Resumen ejecutivo
 
 - **Hallazgo candidato del enunciado (paridad `delegar_mision` ↔ `gestionar_automatizacion`
   para `LIMIT_AUTOMATIONS_ACTIVE`): investigado y descartado — ya estaba resuelto desde
-  WP-V6-02**, antes de que este WP empezara. Ver sección dedicada abajo con la evidencia.
+  fase v6**, antes de que este WP empezara. Ver sección dedicada abajo con la evidencia.
 - **2 hallazgos reales nuevos, corregidos**: `files.py::_check_storage_quota` y
   `voice.py::_check_voice_quota` defaulteaban a `UNLIMITED` (no a `0`) cuando
   `tenant.flags` no trae la clave de límite — exactamente lo que pasa con un `plan_key`
@@ -33,7 +34,7 @@ el esquema REAL, no uno asumido).
 - El resto de los 17 routers: **sin hallazgos nuevos** — BARRIDO A/B/C/D limpios, con
   evidencia (lectura de código + tests, incluidos 2 tests de integración contra Postgres
   real para BARRIDO D de `missions.py`/`automations.py`).
-- 3 hallazgos **fuera de mi alcance**, documentados para WP-V7-12: `docs/api.md` §`/v1/setup`
+- 3 hallazgos **fuera de mi alcance**, documentados para fase v7: `docs/api.md` §`/v1/setup`
   desactualizado, `companion.py` sin registro persistente de emparejamiento (gap YA
   documentado en `docs/control-remoto.md`, requiere `devices.py`), y el patrón fail-open de
   `UNLIMITED` en `conversations.py`/`connectors.py`/`usage.py` (mismo patrón que corregí en
@@ -48,7 +49,7 @@ tools.py`) aplica `LIMIT_AUTOMATIONS_ACTIVE` igual que lo aplica el router
 `automations.py`, análogo al bug real que tenía `delegar_mision` antes de su fix?
 
 **Respuesta: NO es el mismo bug.** `GestionarAutomatizacionTool._bajo_limite` YA aplica
-`LIMIT_AUTOMATIONS_ACTIVE` — y lo hace desde **WP-V6-02**, con la misma semántica
+`LIMIT_AUTOMATIONS_ACTIVE` — y lo hace desde **fase v6**, con la misma semántica
 fail-closed que el router:
 
 ```python
@@ -87,9 +88,9 @@ FROM automations WHERE tenant_id = ... AND enabled = true`. El chequeo corre **a
 (`FLAG_AUTOMATIONS_RULES`, gate binario, separado del límite numérico).
 
 **¿Por qué NO es el mismo bug que `delegar_mision`?** El bug real de `delegar_mision`
-(`HOTFIXES_PENDIENTES.md`, "RESUELTO 2026-07-09") era que `DelegarMisionTool.run()` **no
+(`docs/seguridad-modelo-amenazas.md`, "RESUELTO 2026-07-09") era que `DelegarMisionTool.run()` **no
 tenía ningún chequeo de `LIMIT_MISSIONS_PER_DAY` en absoluto** — insertaba y encolaba sin
-mirar la cuota, mientras que el router sí la revisaba. Acá, desde WP-V6-02,
+mirar la cuota, mientras que el router sí la revisaba. Acá, desde fase v6,
 `GestionarAutomatizacionTool` ya replica el chequeo — el paquete ya tenía su propio pin de
 regresión (`packages/automations/tests/test_v6_paridad_flag_router.py`, que compara el
 VALOR de la constante local contra `edecan_schemas.plans`) y 6+ tests de comportamiento en
@@ -125,7 +126,7 @@ Los únicos dos de los 17 routers que hablan SQL parametrizado directo contra ta
 propias son `missions.py` (`agent_missions`/`agent_steps`) y `automations.py`
 (`automations`/`automation_runs`) — el resto usa `Repo`/`edecan_skills.store`/el
 companion. Mismo objetivo que la clase de bug crítico que v6 encontró en
-`apps/api/edecan_api/routers/reuniones.py` (`HOTFIXES_PENDIENTES.md`): un router que
+`apps/api/edecan_api/routers/reuniones.py` (`docs/seguridad-modelo-amenazas.md`): un router que
 escribe SQL contra un esquema "asumido" en vez del real, invisible a un `FakeSession` que
 mockea filas con el mismo esquema equivocado que el código.
 
@@ -270,8 +271,8 @@ diseño).
 | `smarthome.py` | Seguro — token del propio tenant (`vault.put`/`vault.get`), sin ningún fallback a config de plataforma; ping (`GET {base_url}/api/`) SIEMPRE antes de persistir | Seguro (por diseño) — **sin flag de plan**, instrucción explícita del work package original (`edecan_smarthome.tools` docstring: "no toques edecan_schemas") — verificado con `test_smarthome_status_no_exige_ningun_flag_de_plan` (200 con `plan_key="plan_no_existe"`) | Seguro — `put_credentials`: ping antes de `vault.put`+`add_audit_log`; `add_audit_log` es la ÚLTIMA operación en `put_credentials`/`delete_credentials`, nada después que pueda lanzar (mismo patrón ya "Seguro" que `credentials.py` en barrido-evidencia-v6.md) | N-A — usa `Repo`, sin SQL crudo | — |
 | `skills.py` | N-A — instalación sin ninguna credencial (fetch anónimo a GitHub raw / búsqueda pública en skills.sh) | Seguro (por diseño) — **sin flag de plan**, `edecan_skills.tools` docstring lo documenta igual que `smarthome` — verificado con `test_skills_list_no_exige_ningun_flag_de_plan` | Seguro — **verificado el punto explícito del enunciado**: `edecan_skills.store.insert_skill` corre `escanear_inyeccion` (scan) ANTES de decidir `enabled` y de persistir la fila (`enabled = not escanear_inyeccion(contenido)`, calculado antes del `INSERT`) — nunca una skill con hallazgos queda `enabled=true` por un instante. Ya cubierto por `test_skills_router.py::test_install_con_hallazgos_queda_desactivada_y_los_expone` | N-A — usa `edecan_skills.store`, sin SQL crudo en el router mismo | `capacidades_peligrosas` (dangerous capabilities declaradas) NO gatea el auto-enable al instalar (solo lo hace `escanear_inyeccion`) — investigado y es DISEÑO deliberado, no bug: declarar una capacidad "no le da a la skill ningún poder real" (`security.py` docstring, `usar_skill` nunca ejecuta código), y el clic humano en "Instalar" ya es la confirmación (ver docstring de `routers/skills.py`) |
 | `setup.py` | N-A | N-A — solo requiere autenticación, sin flag de plan (es un endpoint de diagnóstico/detección, no una capacidad) | N-A — solo lectura, sin escrituras | N-A — sin SQL crudo | Agregada sección faltante a `docs/configuracion.md` con la forma REAL de `/status`/`/detect` (ver §5) |
-| `voice.py` | Seguro — `_stt_para_tenant`/`_tts_para_tenant` fail-closed intactos (tenant → stub, nunca plataforma); gate de Polly (`EDECAN_LOCAL_MODE` + `allow_ambient_credentials=True` solo ahí) intacto — verificados leyendo el código línea por línea contra el fix de v5 (`HOTFIXES_PENDIENTES.md`) | Seguro — `voice.web` (`_require_voice_web`) + `LIMIT_VOICE_MINUTES_MONTH` — **hallazgo real corregido, ver §3** | Seguro — `add_usage_event` es la última operación de `transcribe`/`speak`, nada después que pueda revertirla, y no es evidencia legal | N-A — usa `Repo`, sin SQL crudo | **Hallazgo corregido, ver §3** |
-| `companion.py` | N-A | N-A — `companion` es `True` en los 4 planes (`ARCHITECTURE.md` §10.13), sin flag fino documentado en el contrato v1 pinned para `pair-code`/`ws` | **N-A con nota**: este router NUNCA escribe evidencia de emparejamiento en ninguna tabla — `ConnectionManager.connect`/`.disconnect` solo `logger.info`, nada en `audit_log` ni en `devices`. NO es un bug de rollback (no hay escritura que perder), es una AUSENCIA total de evidencia persistente — y es un gap YA DOCUMENTADO, no descubierto por este WP: `docs/control-remoto.md` línea ~106 ya lo señala explícitamente ("a diferencia del pairing de hoy, que no dejaba ningún registro persistente") como trabajo pendiente que requiere integrar con la tabla `devices` — `devices.py` está fuera de mi alcance (regla dura del WP). Reportado para WP-V7-12/un WP de control remoto de seguimiento, no corregido acá | N-A — sin SQL crudo (usa Redis) | Ver nota arriba |
+| `voice.py` | Seguro — `_stt_para_tenant`/`_tts_para_tenant` fail-closed intactos (tenant → stub, nunca plataforma); gate de Polly (`EDECAN_LOCAL_MODE` + `allow_ambient_credentials=True` solo ahí) intacto — verificados leyendo el código línea por línea contra el fix de v5 (`docs/seguridad-modelo-amenazas.md`) | Seguro — `voice.web` (`_require_voice_web`) + `LIMIT_VOICE_MINUTES_MONTH` — **hallazgo real corregido, ver §3** | Seguro — `add_usage_event` es la última operación de `transcribe`/`speak`, nada después que pueda revertirla, y no es evidencia legal | N-A — usa `Repo`, sin SQL crudo | **Hallazgo corregido, ver §3** |
+| `companion.py` | N-A | N-A — `companion` es `True` en los 4 planes (`ARCHITECTURE.md` §10.13), sin flag fino documentado en el contrato v1 pinned para `pair-code`/`ws` | **N-A con nota**: este router NUNCA escribe evidencia de emparejamiento en ninguna tabla — `ConnectionManager.connect`/`.disconnect` solo `logger.info`, nada en `audit_log` ni en `devices`. NO es un bug de rollback (no hay escritura que perder), es una AUSENCIA total de evidencia persistente — y es un gap YA DOCUMENTADO, no descubierto por este WP: `docs/control-remoto.md` línea ~106 ya lo señala explícitamente ("a diferencia del pairing de hoy, que no dejaba ningún registro persistente") como trabajo pendiente que requiere integrar con la tabla `devices` — `devices.py` está fuera de mi alcance (regla dura del WP). Reportado para fase v7/un WP de control remoto de seguimiento, no corregido acá | N-A — sin SQL crudo (usa Redis) | Ver nota arriba |
 | `memory.py` | N-A | N-A — CRUD core, sin flag (memoria activada/desactivada es config de `PersonaConfig`, no un flag de plan) | N-A — sin escrituras de evidencia | N-A — usa `Repo` | — |
 | `files.py` | N-A (S3 de plataforma, no BYO — mismo criterio que siempre, `S3_BUCKET` es infraestructura de la plataforma, no una credencial de tenant) | Seguro — **hallazgo real corregido, ver §3** (sin flag booleano, solo el límite numérico) | Seguro con nota: `upload_file` sube a S3 (efecto real) ANTES de `repo.create_file`/`add_usage_event`/`enqueue` — si `enqueue` fallara, la sesión revierte el `INSERT`/`usage_event` pero el objeto YA subido a S3 queda huérfano (sin fila que lo referencie). No es el patrón de `hooks.py` (no hay evidencia LEGAL que se pierda — nadie puede alegar "yo subí esto" si no hay fila) y es el patrón preexistente desde v1, no algo que este WP introdujo; arreglarlo de raíz (comitear la fila antes de subir a S3) es un cambio de arquitectura mayor, fuera de alcance de un fix puntual — reportado como nota, no corregido | N-A — usa `Repo` | **Hallazgo corregido, ver §3**; nota de S3 huérfano reportada, no corregida (ver arriba) |
 | `contacts.py` | N-A | N-A — CRUD core sin flag | N-A — sin escrituras de evidencia | N-A — usa `Repo` | — |
@@ -280,7 +281,7 @@ diseño).
 | `me.py` | N-A | N-A — solo lectura de identidad | N-A — sin escrituras | N-A — usa `Repo` | — |
 | `persona.py` | N-A | N-A — CRUD core sin flag | N-A — sin escrituras de evidencia | N-A — usa `Repo` | — |
 | `admin.py` | N-A | N-A — gate de rol (`require_superadmin`), no de plan | N-A — solo lectura | N-A — usa `Repo` | — |
-| `usage.py` | N-A | N-A — solo lectura/dashboard | N-A — solo lectura | N-A — usa `Repo` | Comparte el mismo default `UNLIMITED` que `files.py`/`voice.py` tenían, pero es **puramente de DISPLAY** (no enforcement — la cuota real la aplican `files.py`/`voice.py`/`conversations.py`/`connectors.py`, cada uno con su propio chequeo): deliberadamente NO se tocó — cambiar solo `usage.py` desincronizaría el número mostrado del que de verdad se aplica en `conversations.py`/`connectors.py` (fuera de mi alcance), sería más engañoso, no menos. Reportado para WP-V7-12 junto con esos dos archivos |
+| `usage.py` | N-A | N-A — solo lectura/dashboard | N-A — solo lectura | N-A — usa `Repo` | Comparte el mismo default `UNLIMITED` que `files.py`/`voice.py` tenían, pero es **puramente de DISPLAY** (no enforcement — la cuota real la aplican `files.py`/`voice.py`/`conversations.py`/`connectors.py`, cada uno con su propio chequeo): deliberadamente NO se tocó — cambiar solo `usage.py` desincronizaría el número mostrado del que de verdad se aplica en `conversations.py`/`connectors.py` (fuera de mi alcance), sería más engañoso, no menos. Reportado para fase v7 junto con esos dos archivos |
 
 ---
 
@@ -304,11 +305,11 @@ diseño).
   para `/detect` (el campo real es `local_mode: bool`, no `mode: str`). `docs/api.md` no
   está en mis rutas editables — la sección nueva de `docs/configuracion.md` documenta la
   forma CORRECTA mientras tanto; recomendado corregir `docs/api.md` en un WP de
-  documentación de seguimiento (WP-V7-12 o similar).
+  documentación de seguimiento (fase v7 o similar).
 
 ---
 
-## 6. Hallazgos fuera de alcance — reportados para WP-V7-12
+## 6. Hallazgos fuera de alcance — reportados para fase v7
 
 1. **`docs/api.md` §`/v1/setup` desactualizado** — ver §5 arriba, detalle completo ahí.
 2. **`companion.py` sin evidencia persistente de emparejamiento** — ver la fila de la

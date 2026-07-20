@@ -3,6 +3,9 @@
   "identifier": "default",
   "description": "Permisos mínimos de las ventanas de Edecán. El spawn/kill del sidecar del backend local ocurre siempre en Rust nativo (src/backend.rs), NUNCA vía invoke() desde JS, así que en la práctica esta capability no gatea ese flujo — se declara igual, acotada al sidecar exacto, por si en el futuro se expone algún control desde la UI. Nada de acceso a filesystem, red arbitraria, diálogos nativos ni shell genérico: eso NO está en esta lista a propósito.",
   "windows": ["main", "splash"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
   "permissions": [
     "core:default",
     {
@@ -16,6 +19,13 @@
       ]
     },
     "shell:allow-kill",
-    "shell:allow-stdin-write"
+    "shell:allow-stdin-write",
+    "allow-retry-backend",
+    "allow-quit-app",
+    "allow-always-listen-get-state",
+    "allow-always-listen-record-sample",
+    "allow-always-listen-train",
+    "allow-always-listen-set-enabled",
+    "allow-always-listen-reset-training"
   ]
 }

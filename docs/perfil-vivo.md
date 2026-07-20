@@ -1,7 +1,7 @@
 # Perfil vivo
 
 El perfil vivo es la respuesta de Edecán a "no solo recordar, sino *conocerte*"
-(`REQUISITOS_V2` categoría 21, `ROADMAP_V2.md` §5 WP-V2-13): un resumen
+(`ARCHITECTURE.md` §11): un resumen
 **estructurado y acumulativo** del usuario — gustos, proyectos, metas,
 relaciones, empresas, hábitos — que se reconstruye solo, a partir de tus
 conversaciones, y que influye en **cada respuesta** del asistente sin que

@@ -4,13 +4,16 @@ Rutas pinned en `ARCHITECTURE.md` §10.12. Base URL por defecto en desarrollo: `
 
 ## Autenticación
 
-La API usa **JWT HS256** (`JWT_SECRET`), con claims `{sub, ten, plan, typ, exp}`:
+La API usa **JWT HS256** (`JWT_SECRET`), con claims
+`{sub, ten, plan, typ, iat, exp, jti, sid}`:
 
 - `sub` — id del usuario.
 - `ten` — id del tenant activo.
-- `plan` — `plan_key` del tenant **solo informativo**: los flags y límites reales se recalculan siempre server-side desde `edecan_schemas.plans.PLANES`, nunca se confía en lo que diga el token.
+- `plan` — `plan_key` firmado por el servidor. Los flags se derivan del catálogo server-side, no del cliente; al renovar sesión se releen membresía, estado del tenant y plan actual desde PostgreSQL. Un access token puede conservar el plan anterior como máximo durante sus 30 minutos de vida.
 - `typ` — `"access"` (vida 30 minutos) o `"refresh"` (vida 30 días).
-- `exp` — expiración estándar.
+- `iat` / `exp` — emisión y expiración estándar.
+- `jti` — id único del token; cada refresh se puede usar una sola vez.
+- `sid` — id estable de la sesión durante sus rotaciones.
 
 Las rutas protegidas esperan `Authorization: Bearer <access_token>`. En las tablas de abajo, la columna **Auth** usa estos valores:
 
@@ -26,11 +29,17 @@ Las rutas protegidas esperan `Authorization: Bearer <access_token>`. En las tabl
 
 ### `GET /healthz`
 
-Auth: Ninguna.
+Auth: Ninguna. Liveness: confirma que el proceso responde, sin tocar dependencias.
 
 ```json
 {"status": "ok"}
 ```
+
+### `GET /readyz`
+
+Auth: Ninguna. Readiness: ejecuta `SELECT 1` en PostgreSQL y `PING` en Redis.
+Devuelve `200 {"status":"ok"}` o `503 {"status":"unavailable"}`; úsalo para
+decidir si la instancia puede recibir tráfico.
 
 ## Autenticación y sesión
 
@@ -64,7 +73,15 @@ Body: `{"email": "tu@correo.com", "password": "una-contraseña-fuerte", "totp_co
 
 Auth: Ninguna directa — el refresh token no va en el header `Authorization` sino en el body; `decode_token` exige que sea un JWT válido con `typ: "refresh"`.
 
-Body: `{"refresh_token": "eyJhbGciOiJIUzI1NiIs...", "totp_code": "123456"}`. Respuesta: nuevo par `{"access_token", "refresh_token", "token_type": "bearer"}`. Igual que en `/login`, `totp_code` es **obligatorio** (y verificado) si la cuenta tiene 2FA activado — el refresh token por sí solo no alcanza para renovar la sesión en ese caso; el gate se reevalúa en cada llamada a `/refresh`, no solo en el login inicial.
+Body: `{"refresh_token": "eyJhbGciOiJIUzI1NiIs...", "totp_code": "123456"}`. Respuesta: nuevo par `{"access_token", "refresh_token", "token_type": "bearer"}`. Igual que en `/login`, `totp_code` es **obligatorio** (y verificado) si la cuenta tiene 2FA activado. La API relee usuario, tenant, membresía y plan, y consume el refresh de forma atómica en Redis: reutilizar el token anterior responde `401`.
+
+### `POST /v1/auth/logout`
+
+Auth: refresh token en el body: `{"refresh_token":"..."}`. Revoca la credencial
+server-side y responde `{"revoked":true}` de forma idempotente.
+
+`register`, `login`, `refresh` y `logout` tienen además un límite configurable
+por ruta, IP e identidad hasheada; al excederlo responden `429` con `Retry-After`.
 
 ### `POST /v1/auth/totp/enable`
 
@@ -190,7 +207,7 @@ event: message.done
 data: {"type":"done","usage":{"input_tokens":812,"output_tokens":143}}
 ```
 
-El loop del agente corre como máximo **8 iteraciones** de tool-use por turno. Si una herramienta marcada `dangerous=True` (p. ej. `enviar_correo`, `publicar_social`, o en `premium/`: `llamar_contacto`, `enviar_sms`, `lanzar_campana`) no está pre-aprobada, el turno se detiene emitiendo `confirmation_required` en vez de ejecutarla.
+El loop del agente corre como máximo **8 iteraciones** de tool-use por turno. Si una herramienta marcada `dangerous=True` (p. ej. `enviar_correo`, `publicar_social` o, en la extensión comercial externa `edecan_premium`, `llamar_contacto`, `enviar_sms`, `lanzar_campana`) no está pre-aprobada, el turno se detiene emitiendo `confirmation_required` en vez de ejecutarla.
 
 ### `POST /v1/conversations/{id}/confirm` — reanudar una herramienta pendiente (SSE)
 
@@ -220,7 +237,7 @@ Auth: Bearer (access). Borra un `memory_item` puntual. `204 No Content`. Ver [`p
 
 ### `GET /v1/connectors`
 
-Auth: Bearer (access). Devuelve un array con un elemento por conector registrado (`key`, `display_name` del conector) y sus cuentas ya conectadas del tenant anidadas en `accounts` (no separa "disponibles" de "conectados" en dos listas). El handler concatena cuatro grupos, en este orden: los conectores OAuth de `edecan_connectors.registry.CONNECTORS` (`google`, `microsoft`, `meta`, `x`, `youtube`, `slack` — 6 desde v2/WP-V2-05, ver §10.8), la entrada fija de `twilio` (no vive en `CONNECTORS`; ver `PUT /v1/connectors/twilio/credentials` más abajo), las de los conectores de bot-token sin OAuth (`telegram`, `discord` — v2/WP-V2-05; ver `PUT /v1/connectors/{key}/credentials` más abajo) y, al final, la entrada fija de `whatsapp` (tampoco vive en `CONNECTORS`, v3/WP-V3-13; ver `PUT /v1/connectors/whatsapp/credentials` más abajo): hasta 10 entradas en total.
+Auth: Bearer (access). Devuelve un array con un elemento por conector registrado (`key`, `display_name` del conector) y sus cuentas ya conectadas del tenant anidadas en `accounts` (no separa "disponibles" de "conectados" en dos listas). El handler concatena cuatro grupos, en este orden: los conectores OAuth de `edecan_connectors.registry.CONNECTORS` (`google`, `microsoft`, `meta`, `x`, `youtube`, `slack` — 6 desde v2/fase v2, ver §10.8), la entrada fija de `twilio` (no vive en `CONNECTORS`; ver `PUT /v1/connectors/twilio/credentials` más abajo), las de los conectores de bot-token sin OAuth (`telegram`, `discord` — v2/fase v2; ver `PUT /v1/connectors/{key}/credentials` más abajo) y, al final, la entrada fija de `whatsapp` (tampoco vive en `CONNECTORS`, v3/fase v3; ver `PUT /v1/connectors/whatsapp/credentials` más abajo): hasta 10 entradas en total.
 
 ```json
 [
@@ -253,7 +270,7 @@ Auth: Bearer (access). Devuelve un array con un elemento por conector registrado
 
 ### `GET /v1/connectors/{key}/authorize`
 
-Auth: Bearer (access). `key` ∈ `google|microsoft|meta|x|youtube|slack` (`slack`: v2/WP-V2-05 — ver `ARCHITECTURE.md` §10.8 y `ROADMAP_V2.md` §7.13; mismo contrato `Connector`, sale gratis de este flujo genérico). Devuelve la URL de autorización del proveedor, ya armada con el `client_id` de la plataforma, el `redirect_uri` pinned (`{PUBLIC_BASE_URL}/v1/connectors/{key}/callback`) y un `state` firmado.
+Auth: Bearer (access). `key` ∈ `google|microsoft|meta|x|youtube|slack` (`slack`: v2/fase v2 — ver `ARCHITECTURE.md` §10.8 y `docs/roadmap.md`; mismo contrato `Connector`, sale gratis de este flujo genérico). Devuelve la URL de autorización del proveedor, ya armada con el `client_id` de la plataforma, el `redirect_uri` pinned (`{PUBLIC_BASE_URL}/v1/connectors/{key}/callback`) y un `state` firmado.
 
 ```json
 {"url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fv1%2Fconnectors%2Fgoogle%2Fcallback&state=..."}
@@ -273,9 +290,9 @@ Auth: Bearer (access). Twilio no es un conector OAuth: a propósito no vive en `
 
 Gateado por el plan del tenant (ARCHITECTURE.md §10.13, recalculado server-side desde `plan_key`, nunca confiado del payload): responde `403` si el flag `voice.telephony` del plan es falso (`free_selfhost`, `hosted_basic`), y `429` si conectar este número superaría `limits.phone_numbers` del plan (cuenta las filas `connector_accounts` existentes con `connector_key="twilio"` del tenant). Luego valida formato (`account_sid` = `AC` + 32 hex, `auth_token` = 32 alfanuméricos, `phone_number` en E.164) y responde `400` si no cumple. Además verifica `phone_number` contra la API real de Twilio (`GET .../IncomingPhoneNumbers.json` de la cuenta, `_verify_twilio_phone_ownership`) — hallazgo de auditoría aislamiento-multi-tenant: sin esto, cualquier tenant autenticado podía declararse dueño del número de otro. Responde `400` si Twilio rechaza el Account SID/Auth Token o si el número no aparece entre los suyos, y `502` si Twilio no responde (fail closed: ante cualquier duda no persiste nada). Por último comprueba que ese número no esté ya conectado a otro tenant (`platform_repo.get_connector_account_by_external_id`, sesión sin RLS, respaldado por un índice único parcial global en `connector_accounts` para `connector_key='twilio'` — `packages/db/edecan_db/models.py`), respondiendo `409` si ya está reclamado por otro tenant. Guarda la cuenta bajo el connector key `"twilio"` en el `TokenVault` con la misma convención que lee `edecan_premium` (`TokenBundle.access_token` = Auth Token, `scopes[0]` = Account SID). `204 No Content`.
 
-### `PUT /v1/connectors/{key}/credentials` — bots de mensajería sin OAuth (v2, WP-V2-05)
+### `PUT /v1/connectors/{key}/credentials` — bots de mensajería sin OAuth (v2, fase v2)
 
-Auth: Bearer (access). `key` ∈ `telegram|discord` (`BOT_TOKEN_CONNECTOR_KEYS`) — excepción pinned v2 sobre el contrato v1 de este router (`ARCHITECTURE.md` §10.8/§10.12, `ROADMAP_V2.md` §7.13), con el mismo patrón no-OAuth que `PUT /v1/connectors/twilio/credentials` de arriba: ni Telegram ni Discord tienen OAuth público, así que cada tenant crea su propio bot (BotFather / Discord Developer Portal) y pega el token del bot directamente. `404` si `key` no es `telegram` ni `discord` (incluye `twilio`, que sigue resolviendo por su ruta fija de arriba, declarada antes en el módulo).
+Auth: Bearer (access). `key` ∈ `telegram|discord` (`BOT_TOKEN_CONNECTOR_KEYS`) — excepción pinned v2 sobre el contrato v1 de este router (`ARCHITECTURE.md` §10.8/§10.12, `docs/roadmap.md`), con el mismo patrón no-OAuth que `PUT /v1/connectors/twilio/credentials` de arriba: ni Telegram ni Discord tienen OAuth público, así que cada tenant crea su propio bot (BotFather / Discord Developer Portal) y pega el token del bot directamente. `404` si `key` no es `telegram` ni `discord` (incluye `twilio`, que sigue resolviendo por su ruta fija de arriba, declarada antes en el módulo).
 
 ```json
 {"bot_token": "123456789:AAHtsOm5POK_bl2ZzP1zN1Y1YRXhSHwWMTk"}
@@ -293,7 +310,7 @@ Ver [`conectores.md`](./conectores.md) para el detalle de scopes y cómo registr
 
 ### `POST /v1/files`
 
-Auth: Bearer (access). `multipart/form-data` con el archivo. Antes de subirlo revisa `limits.storage_mb` del plan (suma de `usage_events` de tipo `storage_bytes` + el tamaño del archivo entrante contra el tope, `-1` ilimitado): `429` si lo superaría. Si pasa la cuota, lo sube a `s3://$S3_BUCKET/tenants/{tenant_id}/files/{file_id}/{filename}` y encola el job `ingest_file` (worker lo trocea, extrae texto y genera `file_chunks` con embeddings).
+Auth: Bearer (access). `multipart/form-data` con el archivo. Primero aplica el tope duro `MAX_UPLOAD_BYTES` sin copiar el cuerpo completo a RAM (`413` si lo excede), normaliza el nombre y después revisa `limits.storage_mb` del plan (suma de `usage_events` de tipo `storage_bytes` + el tamaño entrante, `-1` ilimitado; `429` si lo superaría). Si pasa ambos controles, lo sube a `s3://$S3_BUCKET/tenants/{tenant_id}/files/{file_id}/{filename}` y encola el job `ingest_file` (worker lo trocea, extrae texto y genera `file_chunks` con embeddings).
 
 ```json
 {"id": "f001...", "filename": "contrato.pdf", "mime": "application/pdf", "size_bytes": 284213, "status": "uploaded"}
@@ -353,7 +370,7 @@ Auth: Bearer (access). Resumen tipo "CFO personal" del mes indicado.
 
 ## Voz web
 
-Resolución de proveedor STT/TTS en dos niveles, sin ningún paso de plataforma (`DIRECCION_ACTUAL.md` "Modelo de credenciales: TODO lo trae el cliente"; corregido en v3 por WP-V3-02, ver `apps/api/edecan_api/routers/voice.py`): **(1) tenant** — si conectó su propia credencial vía `PUT /v1/credentials/voice/stt`/`/tts` (ver arriba, "Rutas v3"), se usa siempre esa; **(2) stub** — si no (o si algo falla leyéndola), `StubSTT`/`StubTTS` (offline, determinista, usado en tests). `edecan_voice.registry.get_stt`/`get_tts` con `VOICE_STT_PROVIDER`/`VOICE_TTS_PROVIDER`/`DEEPGRAM_API_KEY`/`ELEVENLABS_API_KEY` de `Settings` deliberadamente NUNCA se llaman desde acá, para que ningún tenant sin credencial propia reutilice una API key de voz compartida de la plataforma.
+Resolución de proveedor STT/TTS en dos niveles, sin ningún paso de plataforma (`docs/roadmap.md` "Modelo de credenciales: TODO lo trae el cliente"; corregido en v3 por fase v3, ver `apps/api/edecan_api/routers/voice.py`): **(1) tenant** — si conectó su propia credencial vía `PUT /v1/credentials/voice/stt`/`/tts` (ver arriba, "Rutas v3"), se usa siempre esa; **(2) stub** — si no (o si algo falla leyéndola), `StubSTT`/`StubTTS` (offline, determinista, usado en tests). `edecan_voice.registry.get_stt`/`get_tts` con `VOICE_STT_PROVIDER`/`VOICE_TTS_PROVIDER`/`DEEPGRAM_API_KEY`/`ELEVENLABS_API_KEY` de `Settings` deliberadamente NUNCA se llaman desde acá, para que ningún tenant sin credencial propia reutilice una API key de voz compartida de la plataforma.
 
 ### `POST /v1/voice/transcribe`
 
@@ -428,7 +445,7 @@ Auth: Firma Stripe (`Stripe-Signature` verificada contra `STRIPE_WEBHOOK_SECRET`
 
 Auth: Bearer (access). **Placeholder**: todavía no llama a la API de Stripe (el proyecto no ejecuta llamadas de red reales a servicios de pago — ver reglas del repo). Respuesta actual: `{"url": "<WEB_BASE_URL>/app/facturacion?portal=pendiente-configurar-stripe"}`, un enlace de vuelta a la propia app, no al Billing Portal de Stripe. Pendiente: reemplazar el cuerpo por una llamada real a `POST https://api.stripe.com/v1/billing_portal/sessions` y devolver la `url` que retorne Stripe.
 
-## Rutas de `premium/` (solo si `edecan_premium` está instalado)
+## Rutas de la extensión comercial externa (solo si `edecan_premium` está instalado)
 
 Si el paquete `edecan_premium` está presente en el entorno (`importlib.util.find_spec("edecan_premium")`), la API monta además `edecan_premium.twilio_router.router` bajo el prefijo `/v1/voice/twilio` (con el `WS /v1/twilio/media` de Media Streams "trasplantado" al mismo router, ver más abajo) y `edecan_api.routers.consents.router` bajo `/v1/consents`:
 
@@ -443,7 +460,7 @@ Si el paquete `edecan_premium` está presente en el entorno (`importlib.util.fin
 
 ### `WS /v1/twilio/media` — Media Streams (beta)
 
-Prefix propio `/v1/twilio` (distinto del `/v1/voice/twilio` de arriba, `ARCHITECTURE.md` §15.h) — WebSocket bidireccional de audio μ-law que reemplaza el ciclo `<Gather>`/`<Say>` síncrono por interrupciones naturales (el llamante puede cortar al bot a mitad de frase). Montado incondicionalmente en cuanto `edecan_premium` está instalado (mismo guard de arriba), pero gateado en runtime por `TWILIO_MEDIA_STREAMS_ENABLED` (`bool`, default `False`) — si está apagado o el token no valida, cierra la conexión sin más. **Limitación conocida**: ninguno de los dos despliegues reales (`apps/api` hosted, `apps/local` escritorio) asigna hoy `app.state.settings` dentro de `create_app()`, así que el flag nunca se lee como `True` en producción — la ruta existe y está probada, pero es inalcanzable hasta que un WP de telefonía de seguimiento la cablee. Detalle completo (protocolo, VAD, limitaciones honestas) en [`voz-telefonia.md`](./voz-telefonia.md#interrupciones-naturales-beta).
+Prefix propio `/v1/twilio` (distinto del `/v1/voice/twilio` de arriba, `ARCHITECTURE.md` §15.h) — WebSocket bidireccional de audio μ-law que reemplaza el ciclo `<Gather>`/`<Say>` síncrono por interrupciones naturales (el llamante puede cortar al bot a mitad de frase). Se monta cuando `edecan_premium` está instalado y queda gateado en runtime por `TWILIO_MEDIA_STREAMS_ENABLED` (`bool`, default `False`): `create_app()` inyecta la configuración real en `app.state`, pero el operador debe habilitar explícitamente el flag y completar la identidad/agente que exige la extensión. Si el flag está apagado o el token no valida, la conexión se cierra. Detalle completo en [`voz-telefonia.md`](./voz-telefonia.md#interrupciones-naturales-beta).
 
 ### `POST /v1/consents`
 
@@ -457,7 +474,7 @@ Ver [`voz-telefonia.md`](./voz-telefonia.md) para el detalle de cumplimiento y `
 
 ## Rutas v2 (montaje defensivo)
 
-`edecan_api.main.create_app()` monta además, de forma **defensiva**, hasta 8 routers v2 (prefijos pinned en `ROADMAP_V2.md` §7.6): cada uno se importa con `importlib.import_module` dentro de su propio `try/except ImportError`, así que la API sigue arrancando completa sin importar cuántos de los 8 ya aterrizaron en disco (0, algunos o todos). Hoy los 8 existen y están montados (`test_create_app_no_falla_con_los_routers_v2_reales_que_existan_hoy`). Salvo que se indique lo contrario, Auth: Bearer (access); varios grupos exigen además un flag de plan específico (`403` si el plan no lo incluye — mismo criterio de §10.13: los flags se recalculan siempre server-side, nunca se confía en el token).
+`edecan_api.main.create_app()` monta además, de forma **defensiva**, hasta 8 routers v2 (prefijos pinned en `docs/roadmap.md`): cada uno se importa con `importlib.import_module` dentro de su propio `try/except ImportError`, así que la API sigue arrancando completa sin importar cuántos de los 8 ya aterrizaron en disco (0, algunos o todos). Hoy los 8 existen y están montados (`test_create_app_no_falla_con_los_routers_v2_reales_que_existan_hoy`). Salvo que se indique lo contrario, Auth: Bearer (access); varios grupos exigen además un flag de plan específico (`403` si el plan no lo incluye — mismo criterio de §10.13: los flags se recalculan siempre server-side, nunca se confía en el token).
 
 ### `/v1/missions` — misiones multi-agente
 
@@ -466,7 +483,7 @@ Flag de plan: `agents.missions`. Límite: `limits.missions_per_day` (`-1` ilimit
 - `POST /v1/missions {objetivo}` → `201`. Crea la misión en estado `planning` y encola el job `run_mission` — la planificación/ejecución real ocurre async en el worker, nunca en el turno de esta request. `400` si `objetivo` viene vacío.
 - `GET /v1/missions` — lista las del usuario, más recientes primero.
 - `GET /v1/missions/{id}` — detalle (`mission` + `steps` de `agent_steps`). `404` si no es tuya.
-- `GET /v1/missions/{id}/detalle` (WP-V6-10) — observabilidad enriquecida: mismo `mission`, pero cada `step` trae `resultado_truncado` (cap de 2000 caracteres, en vez del `resultado` íntegro que sí da `GET /{id}`), `usage`/`started`/`finished`, más un bloque `agregados` (`tokens_totales_por_tipo`, `pasos_por_status`) calculado en Python sobre esas mismas filas. Mismo flag/aislamiento/`404` que `GET /{id}`. Ver [`agentes.md`](./agentes.md) sección "Observabilidad de misiones".
+- `GET /v1/missions/{id}/detalle` (fase v6) — observabilidad enriquecida: mismo `mission`, pero cada `step` trae `resultado_truncado` (cap de 2000 caracteres, en vez del `resultado` íntegro que sí da `GET /{id}`), `usage`/`started`/`finished`, más un bloque `agregados` (`tokens_totales_por_tipo`, `pasos_por_status`) calculado en Python sobre esas mismas filas. Mismo flag/aislamiento/`404` que `GET /{id}`. Ver [`agentes.md`](./agentes.md) sección "Observabilidad de misiones".
 - `POST /v1/missions/{id}/confirm {approved}` — aprueba o cancela el step que está `waiting_confirmation`. `409` si la misión no tiene ninguna confirmación pendiente. `approved:true` reencola `run_mission` con `resume:true`; `approved:false` cancela la misión y salta los steps pendientes.
 - `POST /v1/missions/{id}/cancel` — cancela una misión no terminal. `409` si ya está en `done|error|cancelled`.
 
@@ -498,12 +515,12 @@ Flag de plan: `companion.ide`. Requiere companion emparejado y conectado — `50
 
 ### `/v1/remote` — vista y control remoto
 
-Flag de plan base: `companion.remote_view` (todo el router). Prototipo P1 de vista (*polling* HTTP, WP-V2-09) + "fase 2" de input real de teclado/mouse (WP-V4-10, sobre el mismo *polling*, no sobre WebRTC — eso sigue siendo diseño, ver [`control-remoto.md`](./control-remoto.md) §5) — detalle completo de los 4 candados de input en ese mismo documento §7bis/§10.
+Flag de plan base: `companion.remote_view` (todo el router). Prototipo P1 de vista (*polling* HTTP, fase v2) + "fase 2" de input real de teclado/mouse (fase v4, sobre el mismo *polling*, no sobre WebRTC — eso sigue siendo diseño, ver [`control-remoto.md`](./control-remoto.md) §5) — detalle completo de los 4 candados de input en ese mismo documento §7bis/§10.
 
-- `POST /v1/remote/sessions {consent: true, kind?: "view"|"control"}` → `201`. `consent` debe ser exactamente `true` (`422` si no). `kind` (default `"view"`, WP-V4-10): `"control"` exige ADEMÁS el flag `companion.remote_input` (`403` si falta). `503` si no hay companion conectado. Crea la sesión en estado `pending`.
+- `POST /v1/remote/sessions {consent: true, kind?: "view"|"control"}` → `201`. `consent` debe ser exactamente `true` (`422` si no). `kind` (default `"view"`, fase v4): `"control"` exige ADEMÁS el flag `companion.remote_input` (`403` si falta). `503` si no hay companion conectado. Crea la sesión en estado `pending`.
 - `GET /v1/remote/sessions` / `GET /v1/remote/sessions/{id}` — listar / detalle (`404` si no es tuya).
 - `GET /v1/remote/sessions/{id}/frame` → `{image_b64, width, height, seq}`. Pide un screenshot al companion (rate limit ~1 cada `REMOTE_FRAME_MIN_INTERVAL_SECONDS`, default 1s → `429`). `403` si la sesión ya fue denegada (o si el usuario acaba de rechazar la aprobación local en el companion — ese caso además marca la sesión `denied` y audita). `409` si la sesión ya `ended`. `501` si el companion no puede servir capturas (versión vieja, `ide_enabled: false`, o SO distinto de macOS). El primer frame exitoso pasa la sesión de `pending` a iniciada.
-- `POST /v1/remote/sessions/{id}/input {tipo: "pointer"|"key", ...}` (WP-V4-10) — reenvía el comando al companion (`input_pointer`/`input_key`) SOLO sobre una sesión `kind="control"` ya `active`. Exige el flag `companion.remote_input` ADEMÁS de `companion.remote_view`. `404` si la sesión no existe; `403` si no es `kind="control"` o ya fue `denied`; `409` si todavía no está `active` o ya `ended`; `429` con rate limit propio (`REMOTE_INPUT_MIN_INTERVAL_SECONDS`, default 50ms — separado del de `frame`); `501` si el companion no soporta input remoto (versión vieja, `remote_input_enabled: false`, o SO distinto de macOS); `503` si el companion se desconectó. Cada comando exige además una aprobación LOCAL en el companion (nunca `auto_approve`) — nunca se audita/persiste el contenido de `texto` en claro.
+- `POST /v1/remote/sessions/{id}/input {tipo: "pointer"|"key", ...}` (fase v4) — reenvía el comando al companion (`input_pointer`/`input_key`) SOLO sobre una sesión `kind="control"` ya `active`. Exige el flag `companion.remote_input` ADEMÁS de `companion.remote_view`. `404` si la sesión no existe; `403` si no es `kind="control"` o ya fue `denied`; `409` si todavía no está `active` o ya `ended`; `429` con rate limit propio (`REMOTE_INPUT_MIN_INTERVAL_SECONDS`, default 50ms — separado del de `frame`); `501` si el companion no soporta input remoto (versión vieja, `remote_input_enabled: false`, o SO distinto de macOS); `503` si el companion se desconectó. Cada comando exige además una aprobación LOCAL en el companion (nunca `auto_approve`) — nunca se audita/persiste el contenido de `texto` en claro.
 - `POST /v1/remote/sessions/{id}/end` — termina la sesión (idempotente; solo audita la primera vez).
 
 ### `/v1/commerce` — presupuestos, órdenes y holdings
@@ -546,11 +563,11 @@ Flag de plan: `commerce.orders`. **Dinero real nunca se mueve solo** (ver [`dine
 
 ## Rutas v3 (credenciales bring-your-own, escritorio, skills y nuevos conectores)
 
-Contratos nuevos de la ola v3, pinned en `ARCHITECTURE.md` §12 (ver también `DIRECCION_ACTUAL.md`). `edecan_api.main.V3_ROUTER_NAMES = ("credentials", "setup", "skills", "smarthome")` — mismo montaje defensivo que ya usan los 8 routers de v2 (`ARCHITECTURE.md` §11, `V2_ROUTER_NAMES`): la API sigue arrancando completa aunque alguno de estos módulos todavía no haya aterrizado en disco. Los 4 routers de esta ola ya existen en `apps/api/edecan_api/routers/` (`credentials`, `setup`, `skills` y `smarthome`) — lo que sigue de cada uno lo documenta verificado contra los archivos reales. Salvo que se indique lo contrario, Auth: Bearer (access).
+Contratos nuevos de la ola v3, pinned en `ARCHITECTURE.md` §12 (ver también `docs/roadmap.md`). `edecan_api.main.V3_ROUTER_NAMES = ("credentials", "setup", "skills", "smarthome")` — mismo montaje defensivo que ya usan los 8 routers de v2 (`ARCHITECTURE.md` §11, `V2_ROUTER_NAMES`): la API sigue arrancando completa aunque alguno de estos módulos todavía no haya aterrizado en disco. Los 4 routers de esta ola ya existen en `apps/api/edecan_api/routers/` (`credentials`, `setup`, `skills` y `smarthome`) — lo que sigue de cada uno lo documenta verificado contra los archivos reales. Salvo que se indique lo contrario, Auth: Bearer (access).
 
 ### `/v1/credentials` — LLM y voz (STT/TTS), por tenant — ya aterrizado
 
-Corrige el hueco de diseño documentado en `REQUISITOS_V2.md` ("Corrección de diseño: TODO bring-your-own, incluso en hosted"): antes de este router, el proveedor LLM y el de voz web (Deepgram/ElevenLabs) se resolvían desde variables de entorno de PLATAFORMA (`Settings`/`.env`, un solo valor compartido por todos los tenants — ver [`configuracion.md`](./configuracion.md)). Ahora cada tenant conecta su PROPIA credencial, cifrada en el `TokenVault` bajo una `connector_account` singleton por tenant (`connector_key` fijo: `"llm"`, `"voice_stt"` o `"voice_tts"` — a diferencia de un conector OAuth normal, un tenant solo tiene una credencial activa de cada tipo a la vez). Si el tenant no conecta nada, la API **no** cae a ningún proveedor de PLATAFORMA — ni siquiera en self-host de un solo tenant, que también debe conectar su propia credencial en esta pantalla: para LLM, `get_llm_router` corta la request con `HTTPException(400)` (`apps/api/edecan_api/deps.py`); para voz, cae a `StubSTT`/`StubTTS` (offline, determinista). Ver [`credenciales.md`](./credenciales.md) para el detalle completo del orden de resolución.
+Corrige el hueco de diseño documentado en `docs/roadmap.md` ("Corrección de diseño: TODO bring-your-own, incluso en hosted"): antes de este router, el proveedor LLM y el de voz web (Deepgram/ElevenLabs) se resolvían desde variables de entorno de PLATAFORMA (`Settings`/`.env`, un solo valor compartido por todos los tenants — ver [`configuracion.md`](./configuracion.md)). Ahora cada tenant conecta su PROPIA credencial, cifrada en el `TokenVault` bajo una `connector_account` singleton por tenant (`connector_key` fijo: `"llm"`, `"voice_stt"` o `"voice_tts"` — a diferencia de un conector OAuth normal, un tenant solo tiene una credencial activa de cada tipo a la vez). Si el tenant no conecta nada, la API **no** cae a ningún proveedor de PLATAFORMA — ni siquiera en self-host de un solo tenant, que también debe conectar su propia credencial en esta pantalla: para LLM, `get_llm_router` corta la request con `HTTPException(400)` (`apps/api/edecan_api/deps.py`); para voz, cae a `StubSTT`/`StubTTS` (offline, determinista). Ver [`credenciales.md`](./credenciales.md) para el detalle completo del orden de resolución.
 
 #### `GET /v1/credentials`
 
@@ -576,7 +593,7 @@ Nunca devuelve el secreto completo — solo `"masked"` (`"…" + últimos 4 cara
 
 `kind` ∈ `anthropic`\|`openai_compat`\|`vertex`\|`claude_cli`\|`codex_cli`\|`ollama`. Campos según `kind` (los demás quedan en `null`):
 
-- `anthropic`/`vertex`: requieren `api_key`. `vertex` hoy es solo el camino simple de API key de Gemini/Vertex — `DIRECCION_ACTUAL.md` lo prioriza como el default; el flujo avanzado de proyecto GCP + service account todavía no está aterrizado.
+- `anthropic`/`vertex`: requieren `api_key`. `vertex` hoy es solo el camino simple de API key de Gemini/Vertex — `docs/roadmap.md` lo prioriza como el default; el flujo avanzado de proyecto GCP + service account todavía no está aterrizado.
 - `openai_compat`: requiere `base_url` (+ `api_key` opcional).
 - `ollama`: requiere `model_principal` (el nombre de un modelo ya descargado, p. ej. `"llama3.1"`); `base_url` es opcional, por defecto `http://localhost:11434`.
 - `claude_cli`/`codex_cli`: no llevan secreto — el servidor corre `<binario> --version` como subproceso (timeout 10s) para confirmar que está instalado y responde.
@@ -653,7 +670,7 @@ Para que la UI decida si mostrar el wizard corto de bienvenida (2–3 pasos máx
 
 #### `GET /v1/setup/detect`
 
-Auto-detección de un clic (`DIRECCION_ACTUAL.md`, "principio de configuración de pocos clics"): expone `edecan_llm.detect.detect_local_providers` (`ARCHITECTURE.md` §12.d — mismos nombres de campo exactos, `installed`/`path`/`version` para los CLI y `running`/`base_url`/`models` para Ollama) envuelto en un campo `local_mode` adicional que decide el propio router:
+Auto-detección de un clic (`docs/roadmap.md`, "principio de configuración de pocos clics"): expone `edecan_llm.detect.detect_local_providers` (`ARCHITECTURE.md` §12.d — mismos nombres de campo exactos, `installed`/`path`/`version` para los CLI y `running`/`base_url`/`models` para Ollama) envuelto en un campo `local_mode` adicional que decide el propio router:
 
 ```json
 {
@@ -679,7 +696,7 @@ La UI cae directo al flujo de API key / CLI remoto, sin ofrecer nunca el atajo d
 
 ### `/v1/skills` — marketplace abierto de Agent Skills
 
-Integración con el mismo estándar abierto de "Agent Skills" que indexa skills.sh (`DIRECCION_ACTUAL.md`): en vez de un catálogo propietario cerrado, el toolkit de Edecán instala y usa skills de ese marketplace compartido. Router delgado (`apps/api/edecan_api/routers/skills.py`, WP-V3-04): reutiliza `edecan_skills.installer`/`edecan_skills.store`/`edecan_skills.client` sin duplicar lógica — ver `packages/skills/README.md`. Sin flag de plan (disponible en todos los planes, igual que `/v1/reminders`); `POST /v1/skills/install` no exige el gate `confirmation_required` de una tool `dangerous` porque el clic en el botón "Instalar" de la UI autenticada YA es la confirmación humana.
+Integración con el mismo estándar abierto de "Agent Skills" que indexa skills.sh (`docs/roadmap.md`): en vez de un catálogo propietario cerrado, el toolkit de Edecán instala y usa skills de ese marketplace compartido. Router delgado (`apps/api/edecan_api/routers/skills.py`, fase v3): reutiliza `edecan_skills.installer`/`edecan_skills.store`/`edecan_skills.client` sin duplicar lógica — ver `packages/skills/README.md`. Sin flag de plan (disponible en todos los planes, igual que `/v1/reminders`); `POST /v1/skills/install` no exige el gate `confirmation_required` de una tool `dangerous` porque el clic en el botón "Instalar" de la UI autenticada YA es la confirmación humana.
 
 - `GET /v1/skills` — skills **instaladas** por el tenant (no el catálogo completo del marketplace; para descubrir lo que todavía no está instalado usa `POST /v1/skills/search`). Nunca incluye `contenido`/`recursos` (deliberadamente liviano, ver `edecan_skills.store._LIST_COLUMNS`) — eso solo viaja en `GET /v1/skills/{id}` o al instalar.
 
@@ -717,7 +734,7 @@ Integración con el mismo estándar abierto de "Agent Skills" que indexa skills.
 
 ### `/v1/smarthome` — casa inteligente (Home Assistant)
 
-Un solo conector — la propia instancia de Home Assistant del tenant (self-host friendly, API oficial) — para luces, A/C, cámaras, cerraduras y sensores (`ROADMAP_V2.md` §6.3, movido de P2 a construcción real en v3 por `DIRECCION_ACTUAL.md`). `connector_key="homeassistant"` es singleton por tenant, mismo patrón "pegar y validar" que `/v1/credentials` (`apps/api/edecan_api/routers/smarthome.py`, WP-V3-12).
+Un solo conector — la propia instancia de Home Assistant del tenant (self-host friendly, API oficial) — para luces, A/C, cámaras, cerraduras y sensores (`docs/roadmap.md`, movido de P2 a construcción real en v3 por `docs/roadmap.md`). `connector_key="homeassistant"` es singleton por tenant, mismo patrón "pegar y validar" que `/v1/credentials` (`apps/api/edecan_api/routers/smarthome.py`, fase v3).
 
 Body de `PUT /v1/smarthome/credentials` — el campo del token se llama **`token`**, no `access_token`:
 
@@ -747,7 +764,7 @@ Extiende `edecan_connectors`/`PUT /v1/connectors/{key}/credentials` (§10.12, §
 
 Tiene su propio motor de cumplimiento (plantillas pre-aprobadas, ventanas de mensajería de 24 horas, opt-in explícito) — no es un simple copy-paste del checklist de telefonía de [`voz-telefonia.md`](./voz-telefonia.md); guía completa (prerrequisitos en Meta, ejemplo con `curl`, ventana de 24h/plantillas, limitación de solo-lectura de mensajes entrantes) en la sección ["WhatsApp (Cloud API oficial)"](./mensajeria.md#whatsapp-cloud-api-oficial) de [`mensajeria.md`](./mensajeria.md).
 
-Implementado y funcionando (WP-V3-13): `apps/api/edecan_api/routers/connectors.py` trae la ruta real (`connect_whatsapp`) más sus dos helpers, `_verify_whatsapp_phone_ownership` y `_upsert_whatsapp_account`; `list_connectors` incluye una entrada `whatsapp` y `disconnect` acepta esa clave. `packages/messaging/edecan_messaging/_creds.py` lee exactamente lo que este endpoint escribe. Cobertura de tests dedicada en `apps/api/tests/test_connectors_whatsapp.py` (24 tests). El test de v2 que antes usaba `"whatsapp"` como ejemplo de "conector desconocido" (`test_connectors_credentials_v2.py::test_connect_bot_token_rejects_unknown_key`) ya se actualizó para usar `"signal"` en su lugar, ahora que `"whatsapp"` es una clave real.
+Implementado y funcionando (fase v3): `apps/api/edecan_api/routers/connectors.py` trae la ruta real (`connect_whatsapp`) más sus dos helpers, `_verify_whatsapp_phone_ownership` y `_upsert_whatsapp_account`; `list_connectors` incluye una entrada `whatsapp` y `disconnect` acepta esa clave. `packages/messaging/edecan_messaging/_creds.py` lee exactamente lo que este endpoint escribe. Cobertura de tests dedicada en `apps/api/tests/test_connectors_whatsapp.py` (24 tests). El test de v2 que antes usaba `"whatsapp"` como ejemplo de "conector desconocido" (`test_connectors_credentials_v2.py::test_connect_bot_token_rejects_unknown_key`) ya se actualizó para usar `"signal"` en su lugar, ahora que `"whatsapp"` es una clave real.
 
 ## Rutas v4 (montaje defensivo)
 
@@ -755,7 +772,7 @@ Implementado y funcionando (WP-V3-13): `apps/api/edecan_api/routers/connectors.p
 v4 ("con 5 routers nuevos aterrizando en paralelo... mantenerlo
 sincronizado a mano por WP dejaría de ser confiable") y lo dejó como deuda
 aceptada para "una pasada de documentación dedicada posterior, fuera de
-esta ola". Esta sección es esa pasada (WP-V6-11): los 5 routers de
+esta ola". Esta sección es esa pasada (fase v6): los 5 routers de
 `edecan_api.main.V4_ROUTER_NAMES = ("devices", "erp", "ads", "vehiculos",
 "mensajes")` (§13.a), a alto nivel — un prefijo + una línea por endpoint,
 verificado contra el código real de cada router a la fecha de este work
@@ -824,7 +841,7 @@ El router HTTP (`PUT`/`DELETE /credentials`, `GET /status`, `GET ""`, `GET
 /{id}/estado`, `POST /{id}/puertas`) funciona igual que cualquier otro
 conector bring-your-own (Smartcar) — pero las tools de agente
 (`vehiculo_estado`/`vehiculo_controlar`) están deliberadamente excluidas de
-todo build real del producto (`DIRECCION_ACTUAL.md`, "Vehículos (Smartcar)
+todo build real del producto (`docs/roadmap.md`, "Vehículos (Smartcar)
 eliminado del alcance"; §13.e/§13.h). Detalle completo en
 [`vehiculos.md`](./vehiculos.md) — no se invierte más esfuerzo aquí.
 
@@ -834,7 +851,7 @@ A diferencia de v4 (`ARCHITECTURE.md` §13.g, "nadie lo toca en v4" — deuda
 aceptada por el riesgo de conflictos de merge con 5 routers en paralelo), v5
 retoma la convención de v1-v3: esta sección lista los 3 routers nuevos de
 `ARCHITECTURE.md` §14.a a alto nivel — un prefijo + una línea por endpoint
-conocido a la fecha de este work package (WP-V5-01, el linchpin de
+conocido a la fecha de este work package (fase v5, el linchpin de
 contratos compartidos). Los detalles finos (payloads exactos, códigos de
 error, ejemplos) los documenta cada WP dueño en su propio `docs/<feature>.md`
 según vaya aterrizando, mismo patrón que `docs/vehiculos.md`/`docs/ads.md`.
@@ -854,11 +871,11 @@ Dueño real: un WP de seguimiento que extiende `packages/business/edecan_busines
 
 ### `/v1/viajes` — vuelos/hoteles/paquetes (flag `tools.travel`)
 
-Dueño real: WP-V5-09 (`packages/travel`, `edecan_travel`, §14.f). Implementado y funcionando: el router HTTP (`apps/api/edecan_api/routers/viajes.py`) ya aterrizó con 8 endpoints reales y testeados (`PUT`/`DELETE /credentials`, `PUT`/`DELETE /rastreo/credentials`, `GET /status`, `GET /buscar/vuelos`, `GET /buscar/hoteles`, `GET /rastreo/{numero}`) — detalle completo (payloads, códigos de error, ejemplos) en [`docs/viajes.md`](./viajes.md). El paquete Python (`buscar_vuelos`/`buscar_hoteles`/`estado_vuelo`/`preparar_reserva`/`rastrear_paquete`, §14.e) también se ofrece al agente vía el entry point `edecan.tools`, disponible en el chat normal. `preparar_reserva` (`dangerous=True`) nunca llama a un proveedor de viajes real — solo deja un borrador en `orders` (tabla ya existente desde v2).
+Dueño real: fase v5 (`packages/travel`, `edecan_travel`, §14.f). Implementado y funcionando: el router HTTP (`apps/api/edecan_api/routers/viajes.py`) ya aterrizó con 8 endpoints reales y testeados (`PUT`/`DELETE /credentials`, `PUT`/`DELETE /rastreo/credentials`, `GET /status`, `GET /buscar/vuelos`, `GET /buscar/hoteles`, `GET /rastreo/{numero}`) — detalle completo (payloads, códigos de error, ejemplos) en [`docs/viajes.md`](./viajes.md). El paquete Python (`buscar_vuelos`/`buscar_hoteles`/`estado_vuelo`/`preparar_reserva`/`rastrear_paquete`, §14.e) también se ofrece al agente vía el entry point `edecan.tools`, disponible en el chat normal. `preparar_reserva` (`dangerous=True`) nunca llama a un proveedor de viajes real — solo deja un borrador en `orders` (tabla ya existente desde v2).
 
 ### `/v1/voz` — voz avanzada: clonación (flag `voice.cloning`)
 
-Dueño real: WP-V5-10 (`packages/voice`, `edecan_voice`, §14.f). Prefijo real `/v1/voz` — única excepción del repo a la convención "nombre de módulo = último segmento del prefix" (el nombre de módulo sigue siendo `voz_avanzada`, ver §14.a).
+Dueño real: fase v5 (`packages/voice`, `edecan_voice`, §14.f). Prefijo real `/v1/voz` — única excepción del repo a la convención "nombre de módulo = último segmento del prefix" (el nombre de módulo sigue siendo `voz_avanzada`, ver §14.a).
 
 - `GET /v1/voz/voces` — voces disponibles del tenant (equivalente HTTP de la tool `listar_voces`). Gatea `voice.web`, no `voice.cloning` (mismo criterio que la tool, `ARCHITECTURE.md` §14.e: listar/sintetizar no clona nada) — única excepción al flag `voice.cloning` del título de esta sección, que sí aplica a los 3 endpoints de `/clones` de abajo.
 - `POST /v1/voz/clones` — registra un consentimiento de clonación (`voice_consents`, §14.b) y solicita la clonación al proveedor de voz bring-your-own del tenant.
@@ -867,26 +884,26 @@ Dueño real: WP-V5-10 (`packages/voice`, `edecan_voice`, §14.f). Prefijo real `
 
 `crear_podcast`/`generar_efecto_sonido` (flag `tools.podcast`, §14.e) y el
 job `generate_podcast` (§14.d) no tenían endpoint HTTP propio en v5 —
-desde v6 (WP-V6-04) sí lo tienen: ver `/v1/voz/podcasts` en la sección
+desde v6 (fase v6) sí lo tienen: ver `/v1/voz/podcasts` en la sección
 "Rutas v6 (montaje defensivo)" más abajo.
 
 ## Rutas v6 (montaje defensivo)
 
 Contratos nuevos de la ola v6, pinned en `ARCHITECTURE.md` §15.
 `edecan_api.main.V6_ROUTER_NAMES = ("reuniones", "analista", "mcp")` — mismo
-montaje defensivo que v2-v5 (§11 `ROADMAP_V2.md` §7.6, §12.a, §13.a, §14.a):
+montaje defensivo que v2-v5 (§11 `docs/roadmap.md`, §12.a, §13.a, §14.a):
 la API sigue arrancando completa sin importar cuántos de estos 3 módulos
 existan todavía en disco. Al momento de escribir esta sección, los 3 módulos
 (`reuniones`, `analista` y `mcp`) ya existen en `apps/api/edecan_api/routers/`
 y están montados (documentados abajo, verificados contra el código real). Los
 endpoints de podcasts (`/v1/voz/podcasts*`) **no** son parte de `V6_ROUTER_NAMES`:
-WP-V6-04 los agregó DENTRO del router `voz_avanzada`, ya montado desde v5
+fase v6 los agregó DENTRO del router `voz_avanzada`, ya montado desde v5
 (§14.a) — se documentan en esta sección de todas formas por ser contenido
 nuevo de v6.
 
 ### `/v1/reuniones` — resumen y minutas de reuniones (flag `tools.meetings`)
 
-Dueño real: WP-V6-05 (`packages/meetings`, `edecan_meetings`). Ya aterrizado
+Dueño real: fase v6 (`packages/meetings`, `edecan_meetings`). Ya aterrizado
 y verificado contra el código real:
 
 - `POST /v1/reuniones {file_id, titulo?}` → `202`. Valida que el archivo
@@ -921,7 +938,7 @@ participantes para grabar y transcribir esta reunión."* Detalle completo en
 
 ### `/v1/analista` — estadística, pronóstico y gráficos sobre tus archivos (sin flag de plan)
 
-Dueño real: WP-V6-05/WP-V6-06 — expone la superficie PÚBLICA y PURA (sin
+Dueño real: fase v6/fase v6 — expone la superficie PÚBLICA y PURA (sin
 LLM) de `edecan_docanalysis` por REST. Sin flag de plan a propósito:
 paridad con las tools de `edecan_docanalysis` (`predecir_serie`/
 `detectar_anomalias`/etc., §14.e), que tampoco declaran `requires_flags`.
@@ -943,11 +960,11 @@ solo por chat). Ya aterrizado y verificado contra el código real:
 EXACTO de `edecan_docanalysis` si el archivo no parsea o una columna pedida
 no existe; límite propio de este router de 10 MB por archivo (independiente
 de los topes de filas/columnas de `edecan_docanalysis`). Detalle completo en
-[`analista.md`](./analista.md#pantalla-analista-wp-v6-06).
+[`analista.md`](./analista.md#pantalla-analista).
 
 ### `/v1/mcp` — conector MCP por tenant (flag `tools.mcp`)
 
-Dueño real: WP-V6-07 (`packages/mcp`, `edecan_mcp`). Ya aterrizado y
+Dueño real: fase v6 (`packages/mcp`, `edecan_mcp`). Ya aterrizado y
 verificado contra el código real (`apps/api/edecan_api/routers/mcp.py`):
 
 - `GET /v1/mcp/servers` — lista los servidores MCP conectados del tenant
@@ -984,7 +1001,7 @@ Detalle completo en [`mcp.md`](./mcp.md).
 
 ### `/v1/voz/podcasts` — vertical completo de podcasts (flag `tools.podcast`)
 
-Dueño real: WP-V6-04. **No** es un router nuevo — vive DENTRO de
+Dueño real: fase v6. **No** es un router nuevo — vive DENTRO de
 `voz_avanzada`, ya montado desde v5 (§14.a), por eso no aparece en
 `V6_ROUTER_NAMES`. Antes de este WP, `crear_podcast` (tool de chat) era la
 única forma de generar un podcast, sin ninguna fila que el usuario pudiera

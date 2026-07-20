@@ -2,12 +2,9 @@
 
 Edecán transcribe una reunión grabada (audio o video que ya subiste) con el **STT de
 tu propia cuenta** (Deepgram) y genera minutas — resumen, decisiones, acciones y
-temas — con **tu propio modelo de lenguaje**. Cubre "resume reuniones, toma notas"
-(📞 Comunicación) y "📹 Video: resume reuniones" de `REQUISITOS_V2.md`
-(`ARCHITECTURE.md` §15, WP-V6-05).
+temas — con **tu propio modelo de lenguaje** (`ARCHITECTURE.md` §15).
 
-100% bring-your-own, sin excepción (`DIRECCION_ACTUAL.md`, "Modelo de credenciales:
-TODO lo trae el cliente, siempre"): Edecán nunca tiene ni usa una cuenta propia de
+100% bring-your-own, sin excepción ([`credenciales.md`](./credenciales.md)): Edecán nunca tiene ni usa una cuenta propia de
 Deepgram, ni un modelo de lenguaje propio, para procesar reuniones de ningún tenant.
 
 ## Disclaimer de consentimiento — léelo primero
@@ -155,7 +152,7 @@ externo, solo procesa un archivo que el propio tenant ya subió.
 `edecan_schemas.queue.JOB_TYPES` (`process_meeting`, 12º valor) y
 `edecan_schemas.plans` (flag `tools.meetings`, `✔` en
 `free_selfhost`/`hosted_pro`/`hosted_business`, `✖` en `hosted_basic`) están
-pinned de verdad desde que el linchpin de v6 (WP-V6-01) aterrizó —
+pinned de verdad desde que el linchpin de v6 (fase v6) aterrizó —
 `edecan_api.main.V6_ROUTER_NAMES` ya incluye `"reuniones"` y `"analista"`.
 Re-verificado contra Postgres real en v7 (`docs/cumplimiento/barrido-
 v7-reuniones-analista.md`): el esquema completo de `meetings` (columnas,

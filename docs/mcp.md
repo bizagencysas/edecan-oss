@@ -2,8 +2,7 @@
 
 Edecán se conecta a **servidores MCP** de terceros: cada tenant trae los suyos, con sus propias
 credenciales, y las herramientas que ese servidor expone aparecen en el chat, en misiones y en
-automatizaciones como herramientas más del agente (`ARCHITECTURE.md` §15; wishlist
-`REQUISITOS_V2.md`, categoría 👨‍💻 Programador, "MCP Servers"). Es **bring-your-own** al pie de la
+automatizaciones como herramientas más del agente (`ARCHITECTURE.md` §15). Es **bring-your-own** al pie de la
 letra, igual que el resto de conectores (ver [`conectores.md`](./conectores.md)): Edecán nunca
 opera ni administra servidores MCP compartidos — tú conectas los tuyos.
 
@@ -44,7 +43,7 @@ En **Configuración → Servidores MCP** (`apps/web/src/components/configuracion
 5. **Probar y conectar** — antes de guardar nada, Edecán hace el *handshake* MCP real
    (`initialize` + `tools/list`) contra tu servidor; si falla, ves el error exacto y nada se
    persiste — mismo principio de "pegar y validar" que el resto de credenciales
-   (`DIRECCION_ACTUAL.md`).
+   ([`credenciales.md`](./credenciales.md)).
 
 Internamente esto llama a `PUT /v1/mcp/servers` (`apps/api/edecan_api/routers/mcp.py`). `GET
 /v1/mcp/servers` lista lo conectado (nombre, transporte, URL/comando, estado) — **nunca** los

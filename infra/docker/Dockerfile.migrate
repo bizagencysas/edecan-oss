@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# Edecán — migraciones de base de datos (Alembic). Imagen de un solo uso:
+# corre "alembic upgrade head" y sale (exit 0 en éxito, no queda nada
+# corriendo). Existe porque Dockerfile.api/Dockerfile.worker NO traen `uv`
+# ni `packages/db/` en su etapa runtime (a propósito: `uv sync --no-dev
+# --package edecan-api` solo instala el cierre de esa app, y solo se copia
+# `apps/api/edecan_api`/`apps/worker/edecan_worker` al runtime) — así que
+# `docker compose exec api uv run --all-packages alembic ...` (lo que
+# documentaban antes docs/self-hosting.md/scripts/instalar-selfhost.sh)
+# no funciona contra la imagen mínima: ni `uv` ni `alembic.ini` ni
+# `packages/db/alembic/` existen dentro del contenedor `api`.
+#
+# infra/docker/compose.selfhost.yml usa esta imagen como servicio "migrate"
+# que `api`/`worker` esperan con `condition: service_completed_successfully`
+# antes de arrancar — corre las migraciones UNA sola vez, evitando que dos
+# contenedores (api y worker, que Compose puede arrancar en paralelo) corran
+# "alembic upgrade head" al mismo tiempo contra la misma base (Alembic no
+# es seguro ante dos procesos migrando la misma base en paralelo — puede
+# fallar con "relation already exists" si el segundo alcanza a leer el
+# estado antes de que el primero termine de escribir la tabla
+# `alembic_version`).
+#
+# IMPORTANTE: construir con el contexto en la RAÍZ del monorepo (es un
+# workspace uv: `packages/db` depende de `packages/schemas` local vía
+# [tool.uv.sources]):
+#
+#   docker build -f infra/docker/Dockerfile.migrate -t edecan-migrate:dev .
+#
+# ============================================================================
+
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PIP_NO_CACHE_DIR=1
+
+RUN pip install --no-cache-dir uv==0.11.19
+
+WORKDIR /build
+
+# Solo el workspace Python; evita que secretos y artefactos locales terminen
+# dentro de una capa intermedia de la imagen.
+COPY pyproject.toml uv.lock README.md ./
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY apps/companion ./apps/companion
+COPY apps/local ./apps/local
+COPY packages ./packages
+
+# Sincroniza SOLO el paquete edecan-db (SQLAlchemy async + Alembic +
+# asyncpg + pgvector) y su cierre de dependencias del workspace
+# (edecan-schemas, vía [tool.uv.sources]) — esta imagen SOLO corre
+# migraciones, no necesita FastAPI ni el resto de la app. --no-dev excluye
+# pytest/ruff/respx. --no-editable: por defecto `uv sync` instala los
+# miembros del workspace como EDITABLE, con un `.pth` que apunta a la ruta
+# ABSOLUTA de esta etapa builder (`/build/packages/db`, `/build/packages/
+# schemas`), inservible en runtime (no tiene `/build`) — sin esto,
+# "ModuleNotFoundError: No module named 'edecan_db'" al primer import real
+# (mismo problema que resuelven Dockerfile.api y Dockerfile.worker).
+# --no-editable instala edecan-db + edecan-schemas como paquetes reales
+# dentro de /opt/venv/lib/python3.12/site-packages/ — autocontenido.
+RUN uv sync --frozen --no-dev --no-editable --package edecan-db
+
+# ============================================================================
+FROM python:3.12-slim AS runtime
+
+RUN groupadd --system --gid 1000 edecan \
+    && useradd --system --uid 1000 --gid edecan --home-dir /app --shell /usr/sbin/nologin edecan
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# --no-editable (ver arriba) ya deja edecan_db/edecan_schemas instalados de
+# verdad dentro de /opt/venv. Lo único que SÍ hay que copiar aparte son
+# alembic.ini y el directorio alembic/ — no son parte del paquete Python
+# instalable (`[tool.hatch.build.targets.wheel] packages = ["edecan_db"]`
+# los deja fuera del wheel a propósito), son config/migraciones que Alembic
+# lee directo del disco.
+COPY --from=builder --chown=edecan:edecan /opt/venv /opt/venv
+COPY --from=builder --chown=edecan:edecan /build/packages/db/alembic /app/packages/db/alembic
+COPY --from=builder --chown=edecan:edecan /build/packages/db/alembic.ini /app/packages/db/alembic.ini
+
+WORKDIR /app
+USER edecan
+
+# `packages/db/alembic.ini` usa `%(here)s` para resolver `script_location`
+# relativo a su propia carpeta (ver comentario en el propio archivo), así
+# que este comando funciona sin importar el WORKDIR exacto — se mantiene
+# `-c packages/db/alembic.ini` para ser idéntico al comando que ya usan
+# `make db-migrate` y el resto de la documentación.
+CMD ["alembic", "-c", "packages/db/alembic.ini", "upgrade", "head"]

@@ -1,12 +1,12 @@
-# Barrido v7 — Escritorio: E2E real de `apps/local` + revisión de `apps/desktop` (WP-V7-11)
+# Barrido v7 — Escritorio: E2E real de `apps/local` + revisión de `apps/desktop` (fase v7)
 
 Este documento registra la verificación **end-to-end real** (no solo revisión de código) del
 flujo "abrir la app → conectar LLM en pocos clics → chatear" contra el estado ACTUAL del
 backend (tras todo lo que v4/v5/v6 agregaron), más la revisión de `apps/desktop` (sin compilar
 Rust — este entorno sigue sin `cargo`/`rustc`, mismo límite de siempre, ver
 [`desktop-local.md`](../desktop-local.md) §8). Referencias leídas completas antes de escribir
-una línea: `DIRECCION_ACTUAL.md`, `ARCHITECTURE.md` §12 (contratos v3, runner local),
-`HOTFIXES_PENDIENTES.md` (secciones `kill_backend`/apagado grácil, fuga de tareas asyncio en
+una línea: `docs/roadmap.md`, `ARCHITECTURE.md` §12 (contratos v3, runner local),
+`docs/seguridad-modelo-amenazas.md` (secciones `kill_backend`/apagado grácil, fuga de tareas asyncio en
 `runtime.py`, riesgo residual de `uv run` suelto en `dev.sh`), y los cuatro docs que este mismo
 paquete puede tocar (`desktop-local.md`, `desktop.md`, `primeros-pasos.md`, y este archivo).
 
@@ -19,7 +19,7 @@ paquete puede tocar (`desktop-local.md`, `desktop.md`, `primeros-pasos.md`, y es
    MÉTODO `server.get_uri()`. Invisible para la suite normal porque el fake de
    `apps/local/tests/test_pg.py` asumía un `.uri` que el paquete real nunca tuvo — exactamente
    el patrón "esquema asumido vs. esquema real" que ya causó el bug crítico de `reuniones.py` en
-   v6 (`HOTFIXES_PENDIENTES.md`). Corregido + 3 tests actualizados/nuevos (detalle en §1).
+   v6 (`docs/seguridad-modelo-amenazas.md`). Corregido + 3 tests actualizados/nuevos (detalle en §1).
 2. **El flujo completo funciona de punta a punta contra el backend real**, verificado con
    comandos reales (no simulados): arranque del runtime → registro de tenant real → wizard
    `/v1/setup/*` (con autodetección REAL de `claude`/`codex` CLI ya instalados en esta máquina)
@@ -93,7 +93,7 @@ Installed 12 packages in 45ms
 No tocó `pyproject.toml` ni `uv.lock` (ambos ya declaraban estos extras; solo faltaba
 instalarlos en el `.venv` compartido) — confirmado por timestamp: ambos archivos siguen con
 fecha de modificación anterior al inicio de esta sesión. Rust: se confirmó de nuevo que este
-entorno sigue sin `cargo`/`rustc` (mismo límite documentado desde WP-V3-06) — la revisión de
+entorno sigue sin `cargo`/`rustc` (mismo límite documentado desde fase v3) — la revisión de
 `apps/desktop` en §3 es de código, no de compilación.
 
 ---
@@ -208,7 +208,7 @@ de todo el workspace: `toolkit`(17), `docanalysis`(8), `advisory`(8), `business`
 `creative`(6), `travel`(5), `skills`(5), `commerce`(4), `browser`(3), `smarthome`(3),
 `premium`(3), `messaging`(2), `voice`(2), `vehicles`(2), `ads`(2), `agents`(1),
 `automations`(1), `meetings`(1)). Nota esperada, no un bug: `edecan_premium detectado` aparece
-porque el entorno de desarrollo usa `--all-packages` (ver `DIRECCION_ACTUAL.md`, discusión
+porque el entorno de desarrollo usa `--all-packages` (ver `docs/roadmap.md`, discusión
 análoga sobre `edecan_vehicles`) — no cambia el paquete real que se distribuye (§3.2).
 
 ```text
@@ -221,7 +221,7 @@ HTTP_STATUS:200
 
 ```text
 $ curl -s -X POST http://127.0.0.1:8765/v1/auth/register -H "Content-Type: application/json" \
-    -d '{"email":"wp-v7-11-test2@example.com","password":"PlaceholderPass123","tenant_name":"WP-V7-11 Smoke Test 2"}'
+    -d '{"email":"fase v7-test2@example.com","password":"PlaceholderPass123","tenant_name":"fase v7 Smoke Test 2"}'
 {"access_token":"eyJ...","refresh_token":"eyJ...","token_type":"bearer"}
 HTTP_STATUS:201
 ```
@@ -234,8 +234,8 @@ $ curl -s http://127.0.0.1:8765/v1/setup/status -H "Authorization: Bearer $TOKEN
 
 $ curl -s http://127.0.0.1:8765/v1/setup/detect -H "Authorization: Bearer $TOKEN"
 {"local_mode":true,
- "claude_cli":{"installed":true,"path":"/Users/hennsolutionsllc/.local/bin/claude","version":"2.1.202 (Claude Code)"},
- "codex_cli":{"installed":true,"path":"/Users/hennsolutionsllc/.local/bin/codex","version":"codex-cli 0.142.5"},
+ "claude_cli":{"installed":true,"path":"<resolved-at-runtime>","version":"2.1.202 (Claude Code)"},
+ "codex_cli":{"installed":true,"path":"<resolved-at-runtime>","version":"codex-cli 0.142.5"},
  "ollama":{"running":false,"base_url":"http://localhost:11434","models":[]}}
 
 $ curl -s http://127.0.0.1:8765/v1/credentials -H "Authorization: Bearer $TOKEN"
@@ -243,7 +243,7 @@ $ curl -s http://127.0.0.1:8765/v1/credentials -H "Authorization: Bearer $TOKEN"
 ```
 
 Esto confirma en vivo, contra binarios reales de esta máquina, la promesa central de
-"configuración de pocos clicks" (`DIRECCION_ACTUAL.md`): `edecan_llm.detect.
+"configuración de pocos clicks" (`docs/roadmap.md`): `edecan_llm.detect.
 detect_local_providers` detectó de verdad `claude`/`codex` ya instalados y autenticados, sin
 ninguna llamada de red — exactamente lo que la pantalla de Configuración usaría para ofrecer
 "usar mi Claude CLI ya instalado" en un clic.
@@ -262,7 +262,7 @@ dependencias del workspace) — implementa el subconjunto mínimo que
 ```text
 $ uv run --all-packages python fake_openai_compat_server.py --port 8899 &
 $ curl -s http://127.0.0.1:8899/models
-{"data":[{"id":"wp-v7-11-fake-model","object":"model"}]}
+{"data":[{"id":"fase v7-fake-model","object":"model"}]}
 ```
 
 ### Paso 5 — Conectar el LLM vía `PUT /v1/credentials/llm` (pegar-y-validar real)
@@ -272,7 +272,7 @@ $ curl -s -w "\nHTTP_STATUS:%{http_code}\n" -X PUT http://127.0.0.1:8765/v1/cred
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d '{"kind":"openai_compat","base_url":"http://127.0.0.1:8899",
          "api_key":"TU_OPENAI_COMPAT_API_KEY_AQUI",
-         "model_principal":"wp-v7-11-fake-model","model_rapido":"wp-v7-11-fake-model",
+         "model_principal":"fase v7-fake-model","model_rapido":"fase v7-fake-model",
          "validate":true}'
 HTTP_STATUS:204
 ```
@@ -285,7 +285,7 @@ $ curl -s http://127.0.0.1:8765/v1/setup/status -H "Authorization: Bearer $TOKEN
 {"local_mode":true,"llm_configured":true,"version":"0.1.0"}
 
 $ curl -s http://127.0.0.1:8765/v1/credentials -H "Authorization: Bearer $TOKEN"
-{"llm":{"kind":"openai_compat","model_principal":"wp-v7-11-fake-model","model_rapido":"wp-v7-11-fake-model",
+{"llm":{"kind":"openai_compat","model_principal":"fase v7-fake-model","model_rapido":"fase v7-fake-model",
         "base_url":"http://127.0.0.1:8899","masked":"…AQUI"}, "voice_stt":null,...}
 ```
 
@@ -296,13 +296,13 @@ placeholder) — contrato de `docs/credenciales.md` respetado.
 
 ```text
 $ curl -s -X POST http://127.0.0.1:8765/v1/conversations -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" -d '{"title":"WP-V7-11 smoke test","channel":"web"}'
-{"id":"e7114163-...","title":"WP-V7-11 smoke test","channel":"web",...}
+    -H "Content-Type: application/json" -d '{"title":"fase v7 smoke test","channel":"web"}'
+{"id":"e7114163-...","title":"fase v7 smoke test","channel":"web",...}
 HTTP_STATUS:201
 
 $ curl -s -N -X POST http://127.0.0.1:8765/v1/conversations/e7114163-.../messages \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d '{"text":"Hola, esto es una prueba end-to-end de WP-V7-11. Respondeme algo corto."}'
+    -d '{"text":"Hola, esto es una prueba end-to-end de fase v7. Respondeme algo corto."}'
 event: message.delta
 data: {"type": "text_delta", "text": "Hola, soy una respuesta "}
 event: message.delta
@@ -355,7 +355,7 @@ $ lsof -nP -iTCP:8767 -sTCP:LISTEN     # (vacío)
 ```
 
 **Cero procesos huérfanos, cero puertos ocupados.** Esto ejercita empíricamente, por primera
-vez, la MITAD Python del contrato de apagado grácil que `HOTFIXES_PENDIENTES.md`/
+vez, la MITAD Python del contrato de apagado grácil que `docs/seguridad-modelo-amenazas.md`/
 `desktop-local.md` §8 documentan: `edecan_local.runtime.run()` responde a `SIGTERM`, corre su
 `finally` completo, y apaga `pgserver` limpio — exactamente lo que el fix de
 `backend.rs::kill_backend` (mandar `SIGTERM` antes de escalar a `SIGKILL`) necesita del lado
@@ -391,7 +391,7 @@ Mismo límite de siempre (`docs/desktop-local.md` §8, `README.md` de `apps/desk
 **Fix aplicado (hardening, no un bug de comportamiento distinto en la práctica)**: el default
 Rust de `EDECAN_LOCAL_DEV_CMD` (usado SOLO si la env var no está fijada en absoluto) seguía
 siendo `"uv run python -m edecan_local"`, sin `--all-packages` — el mismo riesgo residual que
-`HOTFIXES_PENDIENTES.md` documentó para `dev.sh`. `scripts/dev.sh` YA exporta esa variable
+`docs/seguridad-modelo-amenazas.md` documentó para `dev.sh`. `scripts/dev.sh` YA exporta esa variable
 explícita con `--all-packages` antes de invocar `cargo tauri dev` (§3.3, ya resuelto por
 trabajo previo a este paquete), así que en la práctica el camino documentado (`./scripts/
 dev.sh`) ya estaba cerrado — pero alguien que corriera `cargo tauri dev` DIRECTO, sin pasar por
@@ -402,14 +402,14 @@ string literal, riesgo de compilación esencialmente nulo — pero sigue sin pod
 
 ### 3.2 `packaging/edecan_local.spec` — `EDECAN_TOOL_PACKAGES` contra los entry points reales
 
-Comparación campo por campo entre `EDECAN_TOOL_PACKAGES` del `.spec` y
-`grep -rn 'edecan.tools' packages/*/pyproject.toml premium/pyproject.toml`:
+Comparación campo por campo entre `EDECAN_TOOL_PACKAGES` del `.spec`, los entry points
+públicos `edecan.tools` y el manifiesto de la extensión externa:
 
 | Paquete con entry point `edecan.tools` real | ¿En `EDECAN_TOOL_PACKAGES`? |
 |---|---|
 | `edecan_toolkit`, `edecan_docanalysis`, `edecan_browser`, `edecan_creative`, `edecan_messaging`, `edecan_agents`, `edecan_automations`, `edecan_commerce`, `edecan_advisory`, `edecan_business`, `edecan_skills`, `edecan_smarthome`, `edecan_ads`, `edecan_travel`, `edecan_voice`, `edecan_meetings` | ✅ Los 16, sin faltantes (confirmado también en vivo en el Paso 1 de §2: los 16 aparecen en el log real "Cargadas N herramienta(s)..." — más `agents`/`vehicles` que se explican abajo). |
-| `edecan_vehicles` | ❌ Deliberado — `DIRECCION_ACTUAL.md` "Vehículos eliminado del alcance" sigue vigente, exclusión NO negociable, **no se tocó**. |
-| `edecan_premium` (`premium/pyproject.toml`) | ❌ Correcto, no es un gap — `docs/self-hosting.md` documenta explícitamente que el núcleo funciona completo sin él ("puedes activar `premium/`... instalando el paquete `edecan_premium` por separado"); ninguno de los dos Dockerfiles de producción ni `apps/api/pyproject.toml`/`apps/worker/pyproject.toml` lo declaran como dependencia tampoco — es comercial/opcional en los TRES caminos de distribución real, no solo en el de escritorio. Que aparezca "detectado" en el log de §2 es un artefacto de correr en modo dev con `--all-packages` (mismo mecanismo ya documentado para `edecan_vehicles` en `DIRECCION_ACTUAL.md`), no del build empaquetado real. |
+| `edecan_vehicles` | ❌ Deliberado — `docs/roadmap.md` "Vehículos eliminado del alcance" sigue vigente, exclusión NO negociable, **no se tocó**. |
+| `edecan_premium` (extensión comercial externa) | ❌ Correcto, no es un gap — el núcleo público funciona sin ella; ninguno de los dos Dockerfiles de producción ni `apps/api/pyproject.toml`/`apps/worker/pyproject.toml` la declara como dependencia. Es comercial y opcional en los tres caminos de distribución, no solo en escritorio. |
 | `edecan_mcp` (`packages/mcp`) | ❌ Correcto, no es un gap — a diferencia de los 16 de arriba, MCP **no** expone tools vía el entry point estático `edecan.tools` (`ARCHITECTURE.md` §15.g: las tools `mcp_{slug}_{tool}` son dinámicas POR TENANT, inyectadas en cada turno vía `extra_tools`, nunca vía `ToolRegistry.load_entry_points`) — así que no pertenece a esta lista por diseño. Se captura igual en el binario congelado por una vía distinta: `edecan-mcp` es dependencia DECLARADA de `apps/api`/`apps/worker` (`grep` confirma `"edecan-mcp"` en ambos `pyproject.toml`) y `edecan_api.routers.mcp`/`edecan_api.deps` lo importan con `import` estático (no dinámico) — el análisis de módulos de PyInstaller lo sigue solo, sin necesitar `collect_all()` (que en este paquete solo hace falta para metadata de entry points/datos/submódulos dinámicos, ninguno de los cuales aplica acá: `packages/mcp/edecan_mcp/*.py` no tiene imports dinámicos ni entry points propios, confirmado leyendo los 6 archivos). |
 
 **Conclusión: `EDECAN_TOOL_PACKAGES` está completo, sin faltantes reales — no hizo falta
@@ -430,7 +430,7 @@ $ python -m py_compile packaging/edecan_local_entry.py packaging/edecan_local.sp
 OK (ambos)
 ```
 
-`dev.sh` línea 45 (antes reportada como línea 43 en `HOTFIXES_PENDIENTES.md`, se corrió por los
+`dev.sh` línea 45 (antes reportada como línea 43 en `docs/seguridad-modelo-amenazas.md`, se corrió por los
 comentarios agregados al aplicar el fix):
 
 ```bash
@@ -449,7 +449,7 @@ archivo. El hardening del lado `backend.rs` (§3.1) cierra el único hueco que q
 `edecan_api.main.create_app()` cuando `SERVE_WEB_DIR` apunta ahí). Confirmado que
 `apps/web/next.config.mjs` **sigue** soportando `NEXT_OUTPUT=export` (`isExport = process.env.
 NEXT_OUTPUT === "export"` → `output: "export"`) — el pointer sigue apuntando al build real de
-`apps/web`, sin desincronización. No se tocó ningún archivo de `apps/web` (dueño WP-V7-09).
+`apps/web`, sin desincronización. No se tocó ningún archivo de `apps/web` (responsable de la fase v7).
 
 ---
 
@@ -529,10 +529,10 @@ definen su propio `API_BASE_URL`), y los otros 16 archivos `api-*.ts` importan e
 "NEXT_PUBLIC_API_URL" apps/web/src/lib/*.ts` → cero ocurrencias de `||` para este patrón en
 todo el árbol). No se pudo determinar en qué work package se corrigió `api.ts` (este repo no
 tiene `.git`, y el propio archivo no trae ninguna nota de changelog) — probablemente
-concurrente con WP-V7-09 (dueño de `apps/web`) en esta misma ola v7, o incluso antes. Ambos
+concurrente con fase v7 (dueño de `apps/web`) en esta misma ola v7, o incluso antes. Ambos
 docs corregidos para reflejar el estado real (§0/troubleshooting de `desktop.md`, §4 de
 `primeros-pasos.md`) — este es exactamente el tipo de "trabajo que ya estaba hecho pero el
-reporte/doc quedó desactualizado" que `DIRECCION_ACTUAL.md` pide verificar contra el archivo
+reporte/doc quedó desactualizado" que `docs/roadmap.md` pide verificar contra el archivo
 real antes de asumir que falta.
 
 Sigue pendiente, sin cambios respecto de antes de este paquete (fuera de lo que este entorno
@@ -548,5 +548,5 @@ real (§2 Paso 7) — reduce (no elimina) el riesgo de lo que queda pendiente de
 - [`desktop.md`](../desktop.md) — la app de escritorio en sí (instalación, build, troubleshooting).
 - [`primeros-pasos.md`](../primeros-pasos.md) — el wizard de bienvenida desde la perspectiva de quien lo usa.
 - `ARCHITECTURE.md` §12.f/§12.g — contrato técnico pinned del runner local.
-- `HOTFIXES_PENDIENTES.md` — historial completo de hallazgos previos, incluida la nota de
+- `docs/seguridad-modelo-amenazas.md` — historial completo de hallazgos previos, incluida la nota de
   apagado grácil que este paquete amplía con evidencia empírica nueva (no reemplaza).

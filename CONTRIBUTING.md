@@ -1,58 +1,123 @@
-# Contributing to Edecán
+# Contributing to Edecan
 
-Thanks for your interest in contributing. This document summarizes the monorepo's conventions. The full, binding technical contract lives in [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10 — any change that touches it must update that document in the same PR.
+Thank you for helping build a user-controlled AI operator. This guide covers
+the public Apache-2.0 repository; the binding package and API contracts live in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
-## Monorepo layout
+## Before you start
 
-- `apps/*` — thin applications: `api` (FastAPI), `worker` (job consumer), `web` (Next.js), `companion` (opt-in local desktop agent), `desktop` (Tauri shell, since v3), `local` (the desktop app's packaged backend, since v3), and `mobile` (native iOS/Android projects).
-- `packages/*` — installable, reusable Python packages, prefixed `edecan_` (`edecan_schemas`, `edecan_db`, `edecan_llm`, `edecan_core`, `edecan_toolkit`, `edecan_connectors`, `edecan_voice`, `edecan_evals`, and more — 28 members today in the uv workspace, see `[tool.uv.workspace].members` in `pyproject.toml`).
-- `premium/` — the commercial layer (`edecan_premium`), under a separate license — see [`NOTICE`](./NOTICE). Not part of this public core export.
-- `infra/` — infrastructure as code (Terraform, Dockerfiles); written and reviewed, **never applied automatically**. Not part of this public core export either.
-- `docs/` — extended documentation (self-hosting, connectors, compliance, runbooks). Mostly in Spanish, since the product itself targets Spanish-speaking users first.
+- Search existing issues and pull requests.
+- Use an issue for a substantial feature, new dependency, contract change, or
+  security-sensitive design so the direction can be agreed before coding.
+- Report vulnerabilities privately as described in [`SECURITY.md`](./SECURITY.md).
+- Keep a pull request focused. Unrelated cleanup belongs in a separate PR.
 
-## Code conventions
+Good first contributions include documentation fixes, deterministic test
+coverage, accessibility improvements, provider fakes, and isolated bug fixes.
 
-- Python **3.12**, managed with **uv** (workspace declared in the root `pyproject.toml`). Each package lives at `packages/<dir>/edecan_<name>/` with its own `pyproject.toml` and `tests/`.
-  - **Never run a bare `uv sync`/`uv run <command>` (without `--all-packages`) at the root**: the root `pyproject.toml` has no `dependencies` of its own, so that silently prunes the workspace's editable packages (you'll see `ModuleNotFoundError` in pytest afterward). Use `make test`/`make lint`/`make fmt` (already guarded) or `uv sync --all-packages` / `uv run --all-packages <command>` if you're calling `uv` directly.
-- Formatting and linting with **ruff**, max line length **100**. Type hints are required.
-- Tests with **pytest** + **pytest-asyncio**; must be **offline and deterministic** — use `respx`/fakes for HTTP, never real network calls or calls to paid services.
-- **A package's tests never import sibling packages**: they use the fakes/stubs that implement the contracts defined in `ARCHITECTURE.md` §10. Importing sibling packages in production code (not tests) is fine, by module name.
-- Frontend in `apps/web`: **Next.js 14 (App Router) + TypeScript + Tailwind**.
-- UI and docs default to **Spanish**.
+## Development setup
 
-## Hard rules (non-negotiable)
+Required for the Python core: Python 3.12 and
+[`uv`](https://docs.astral.sh/uv/). The web app additionally needs Node.js 22;
+the full local stack needs Docker Compose v2.
 
-1. **Zero real secrets.** Only `YOUR_X_HERE`-style placeholders in `.env.example`/docs. Never real API keys, tokens, or anyone's real personal data.
-2. **LinkedIn is banned** in any form: code, scopes, URLs, UI copy, or documentation. The `test_no_linkedin` test in `packages/connectors/` must always keep passing.
-3. **Official APIs only.** Each tenant connects their own credentials via OAuth. Never scraping, never shared or hardcoded credentials.
-4. **Never run**, from this repo's dev flow, CI, or automated agents: `terraform apply`, `aws` commands with real effects, `docker push`, or tests that hit real network calls to paid services. `infra/terraform` is written and reviewed like any other code; applying it is always a manual step outside this repository.
-5. Changes to the contracts in `ARCHITECTURE.md` §10 (table names, signatures, routes, job types, tool names) require explicit coordination, since other packages are developed in parallel against those same contracts.
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/edecan.git
+cd edecan
+git remote add upstream https://github.com/isaccmanuel/edecan.git
+uv sync --all-packages --frozen
+make check
+```
 
-## Contributor License Agreement (CLA)
+Never run bare `uv sync` or `uv run` at the workspace root. Because the root
+project is only a workspace container, uv can prune editable member packages.
+Use the Make targets or pass `--all-packages`.
 
-By opening a PR against this repository's core (any path outside `premium/`), you agree that your contribution is licensed under **Apache License 2.0** (the same terms covering the rest of the project — see [`LICENSE`](./LICENSE) §5, "Submission of Contributions"), with no additional conditions. There's no separate CLA document to sign for core contributions: submitting the PR is itself that agreement ("inbound = outbound").
+For the web and desktop checks:
 
-If your contribution touches `premium/` (commercially licensed software, see [`NOTICE`](./NOTICE) and `premium/LICENSE-COMMERCIAL.md`), a separately signed contributor license agreement with the Edecán Project is required before the PR can be reviewed; reach out to the maintainers through the channel described in [`SECURITY.md`](./SECURITY.md) to arrange it.
+```bash
+make web-check
+make desktop-test
+```
 
-## Workflow
+Changes to Dockerfiles, Compose, migrations, runtime settings, or lockfiles
+must also run `make selfhost-smoke`. It creates and removes an isolated Docker
+project and never reuses a developer's existing stack.
 
-1. Open an issue or discuss the proposed change before investing a lot of time in a large PR.
-2. Create a descriptive branch and keep the PR small, focused on a single goal.
-3. Make sure `make lint` and `make test` pass locally before opening the PR.
-4. Describe what changes and why in the PR; if the change touches an `ARCHITECTURE.md` §10 contract, update that document in the same PR.
-5. If your change adds a new agent tool, a new job type, a new HTTP route, or a new environment variable, reflect that in `ARCHITECTURE.md` and `.env.example` as appropriate.
+For the runtime environment, copy `.env.example` to `.env`, generate your own
+local secrets, then follow the developer stack in [`README.md`](./README.md).
+Never commit `.env`.
 
-## How to fork and open a pull request
+## Repository structure
 
-1. Click "Fork" on the repo page to get your own copy under your GitHub account.
-2. Clone your fork, create a branch, and make your change there.
-3. Push the branch to your fork and open a pull request back against `isaccmanuel/edecan`.
-4. A maintainer reviews it and merges when it's ready. Forking and opening a PR never grants write access to the original repo — only a maintainer can merge.
+- `apps/api`, `apps/worker`, `apps/local`, `apps/companion`: thin Python apps.
+- `packages/*`: installable `edecan_*` domain and integration packages.
+- `apps/web`: Next.js + TypeScript + Tailwind.
+- `apps/desktop`: Tauri shell and packaging.
+- `apps/mobile`: native iOS and Android companion clients.
+- `infra/docker`: public self-host container definitions.
+- `docs`: operator, feature, security, and runbook documentation.
 
-## Running the local environment
+Everything versioned in this repository is Apache-2.0. Optional extensions
+distributed elsewhere are not part of this contribution workflow.
 
-See the "Developer mode (self-host from source)" section in [`README.md`](./README.md).
+## Engineering rules
 
-## Reporting security issues
+### Python
 
-Don't use public issues for vulnerabilities — follow the process described in [`SECURITY.md`](./SECURITY.md).
+- Python 3.12, full type hints, Ruff, maximum line length 100.
+- Tests use pytest/pytest-asyncio and must be offline and deterministic.
+- Use fakes or `respx` for HTTP; never call a paid service or real account.
+- Package tests should test the package contract without depending on sibling
+  implementations unless the test explicitly verifies an integration contract.
+
+### Web and native clients
+
+- Keep the in-product language Spanish-first.
+- Preserve API behavior across web, iOS, and Android when a shared workflow
+  changes.
+- Run lint, typecheck, and production build for web changes.
+- Keep lockfiles updated and do not suppress dependency advisories without a
+  documented risk decision.
+
+### Security and product boundaries
+
+- Never commit secrets, tokens, personal data, private endpoints, or local
+  filesystem paths. Examples use obvious placeholders.
+- Integrations use official APIs and credentials supplied by the user/tenant.
+- Real-money execution is not supported. Do not add a live commerce path.
+- Dangerous tools must retain explicit approval and server-side authorization;
+  hiding a UI control is not a security boundary.
+- Remote input stays opt-in and local sandbox escapes are treated as security
+  defects.
+
+## Contracts and documentation
+
+A change to a route, table, job type, tool name, feature flag, environment
+variable, or package interface must update the relevant contract and docs in
+the same PR. Prefer an ADR in `docs/adr/` for decisions that affect several
+packages or long-term compatibility.
+
+Do not leave references to private plans, local paths, agent work-package IDs,
+or absent files in public documentation.
+
+## Pull request workflow
+
+1. Fork the repository and create a descriptive branch.
+2. Add or update tests before changing behavior when practical.
+3. Implement the smallest coherent solution and preserve compatibility.
+4. Run `make check`; run the path-specific checks the PR template selects.
+5. Update docs, configuration examples, and lockfiles together with code.
+6. Open a PR explaining the user impact, design, validation, and security risk.
+7. Resolve review comments and keep CI green. Maintainers merge; contributors
+   never need write access to the upstream repository.
+
+## Licensing of contributions
+
+Under section 5 of Apache License 2.0, contributions intentionally submitted to
+this project are provided under the same Apache-2.0 terms unless explicitly
+stated otherwise. Opening a PR does not require a separate contributor license
+agreement.
+
+Community behavior is governed by [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md),
+and maintainer responsibilities are described in [`GOVERNANCE.md`](./GOVERNANCE.md).

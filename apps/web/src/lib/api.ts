@@ -252,7 +252,20 @@ export async function login(email: string, password: string, totpCode?: string):
 }
 
 export function logout(): void {
+  const refreshToken = getRefreshToken();
   clearTokens();
+  if (!refreshToken) return;
+  // El cierre local es inmediato; la revocación remota es best-effort para
+  // que una caída de red nunca deje la UI atrapada en una sesión aparente.
+  void rawFetch(
+    "/v1/auth/logout",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    },
+    true,
+  ).catch(() => undefined);
 }
 
 export async function enableTotp(): Promise<{ secret: string; provisioning_uri: string }> {

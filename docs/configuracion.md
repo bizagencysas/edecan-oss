@@ -19,7 +19,9 @@ Recuerda la regla dura del proyecto: **nunca** un secreto real fuera de tu `.env
 | `PUBLIC_BASE_URL` | Obligatoria en prod | `http://localhost:8000` | URL pública donde vive la API. Se usa para construir los `redirect_uri` de OAuth (`{PUBLIC_BASE_URL}/v1/connectors/{key}/callback`) y los webhooks de Twilio. |
 | `WEB_BASE_URL` | Obligatoria en prod | `http://localhost:3000` | URL pública del frontend Next.js. La API la usa para configurar CORS (solo este origen puede llamar a la API). |
 | `LOG_LEVEL` | Opcional | `INFO` | Nivel de logging de todas las apps (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `JWT_SECRET` | Obligatoria en prod | `TU_JWT_SECRET_AQUI` | Clave HS256 con la que la API firma y valida los JWT de sesión (`{sub, ten, plan, typ, exp}`). Un valor de placeholder invalida cualquier expectativa de seguridad de sesión. |
+| `JWT_SECRET` | Obligatoria en prod | `TU_JWT_SECRET_AQUI` | Clave HS256 con la que la API firma y valida los JWT de sesión. Un valor de placeholder invalida cualquier expectativa de seguridad de sesión. |
+| `AUTH_RATE_LIMIT_REQUESTS` | Opcional | `10` | Máximo de intentos por ruta, IP e identidad hasheada para registro, login, refresh y logout. |
+| `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Opcional | `60` | Duración de la ventana fija del límite de autenticación. |
 
 ## Cifrado del `TokenVault`
 
@@ -33,7 +35,7 @@ Recuerda la regla dura del proyecto: **nunca** un secreto real fuera de tu `.env
 | Variable | Obligatoria | Default | Para qué sirve |
 |---|---|---|---|
 | `DATABASE_URL` | Obligatoria en prod | `postgresql+asyncpg://edecan:edecan@localhost:5432/edecan` | Cadena de conexión async (asyncpg) a PostgreSQL 16 + pgvector. La usan `edecan_db`, Alembic y todos los servicios que abren sesión. |
-| `REDIS_URL` | Obligatoria en prod | `redis://localhost:6379/0` | Caché, rate-limiting y códigos de emparejamiento del companion (`pair-code`, TTL 600s). |
+| `REDIS_URL` | Obligatoria en prod | `redis://localhost:6379/0` | Sesiones refresh revocables, rate limiting, confirmaciones y códigos de emparejamiento del companion. Reiniciar o vaciar Redis cierra las sesiones renovables de forma fail-closed. |
 
 ## AWS (S3, SQS, KMS)
 
@@ -44,6 +46,7 @@ Recuerda la regla dura del proyecto: **nunca** un secreto real fuera de tu `.env
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Solo contra LocalStack | `test` / `test` (en `.env.example`) | Credenciales dummy que exige el SDK de AWS para hablar con LocalStack. **Nunca se usan contra AWS real** — ahí la identidad la da el rol IAM de la tarea ECS, no estas variables. |
 | `S3_BUCKET` | Opcional | `edecan-files` | Bucket donde se guardan los archivos subidos, con prefijo por tenant (`tenants/{tenant_id}/files/{file_id}/{filename}`, ver `ARCHITECTURE.md` §10.14). |
 | `SQS_QUEUE_URL` | Obligatoria en prod | *(vacío; en dev apunta a la cola de LocalStack)* | Cola principal de jobs asíncronos (`edecan-jobs`) que consume `apps/worker`. |
+| `MAX_UPLOAD_BYTES` | Opcional | `26214400` (25 MiB) | Tope duro por archivo antes de subir a S3, independiente de la cuota acumulada del plan. `0` deshabilita uploads. |
 
 ## LLM
 
@@ -112,7 +115,7 @@ Cada par `*_CLIENT_ID` / `*_CLIENT_SECRET` (o `*_APP_ID` / `*_APP_SECRET`) ident
 
 ## v3 — modo local, proveedores LLM nuevos, marketplace de skills
 
-Variables nuevas de `ARCHITECTURE.md` §12g (`DIRECCION_ACTUAL.md`: pivote a app de escritorio Tauri + proveedores LLM CLI/Ollama/Vertex + marketplace abierto de skills.sh). Mismo criterio que el resto del documento: cada tool/router v3 las lee con `getattr(ctx.settings, "CAMPO", default)` y nunca revienta si falta una.
+Variables nuevas de `ARCHITECTURE.md` §12g (`docs/roadmap.md`: pivote a app de escritorio Tauri + proveedores LLM CLI/Ollama/Vertex + marketplace abierto de skills.sh). Mismo criterio que el resto del documento: cada tool/router v3 las lee con `getattr(ctx.settings, "CAMPO", default)` y nunca revienta si falta una.
 
 ### Modo local / app de escritorio
 
@@ -144,7 +147,7 @@ Nota: cuál proveedor usa cada tenant (API key normal, Vertex, o un CLI local) s
 | `SKILLS_INDEX_URL` | Opcional | `https://skills.sh` | Índice del marketplace abierto de "Agent Skills" contra el que el toolkit de Edecán busca/instala skills reusables de terceros (`ARCHITECTURE.md` §12e). |
 | `HOMEASSISTANT_TIMEOUT_SECONDS` | Opcional | `15` | Timeout de cada llamada a la API REST de Home Assistant (instancia propia del cliente, credenciales por tenant vía `TokenVault` — connector key `"homeassistant"`, §12b). |
 
-## El wizard de primer arranque — `/v1/setup/*` (barrido v7, WP-V7-08)
+## El wizard de primer arranque — `/v1/setup/*` (barrido v7, fase v7)
 
 Estas dos rutas (`apps/api/edecan_api/routers/setup.py`, montada defensivamente, ver
 `V3_ROUTER_NAMES`) son las que la pantalla de bienvenida (`docs/primeros-pasos.md`)
@@ -168,7 +171,7 @@ routers/setup.py::get_setup_status`, no asumida):
   `connector_key="llm"` Y un `TokenBundle` guardado de verdad en el vault para ella
   (mismo criterio que `routers/credentials.py::get_credentials`) — si es `false`, el
   wizard debe forzar el paso de conectar un LLM antes de dejar chatear
-  (`DIRECCION_ACTUAL.md`, "configuración de pocos clicks").
+  (`docs/roadmap.md`, "configuración de pocos clicks").
 - `version` — `edecan_api.__version__`, para mostrarla en la UI/reportes de bugs.
 
 ### `GET /v1/setup/detect`
@@ -193,7 +196,7 @@ aterrizó en el entorno (import perezoso con guardia): `{"local_mode": false, ..
 las tres claves de proveedor en su forma vacía (`installed`/`running` en `false`,
 `path`/`models` vacíos) — nunca lanza, nunca omite ninguna clave.
 
-**Nota de consistencia (barrido v7, WP-V7-08)**: `docs/api.md` §`/v1/setup` documenta
+**Nota de consistencia (barrido v7, fase v7)**: `docs/api.md` §`/v1/setup` documenta
 una forma de respuesta distinta y desactualizada para las dos rutas —
 `{"llm_connected", "voice_connected", "onboarding_complete"}` para `/status` (los campos
 reales son `local_mode`/`llm_configured`/`version`, arriba) y un campo `"mode":

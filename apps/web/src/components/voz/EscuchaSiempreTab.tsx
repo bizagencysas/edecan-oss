@@ -95,7 +95,8 @@ function EscuchaSiempreTabNativa() {
     setError(null);
     setEntrenando(true);
     try {
-      await tauriInvoke("always_listen_train", { wake_label: wakeWord });
+      // Tauri transforma los argumentos Rust snake_case a camelCase en JS.
+      await tauriInvoke("always_listen_train", { wakeLabel: wakeWord });
       await cargarEstado();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo entrenar la palabra clave.");

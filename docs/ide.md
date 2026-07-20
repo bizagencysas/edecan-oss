@@ -1,6 +1,6 @@
 # IDE embebido
 
-El IDE embebido (pantalla 3 del mockup, `ROADMAP_V2.md` §4 WP-V2-08) deja explorar, editar y correr comandos en una carpeta de **tu propia computadora** desde el panel web de Edecán, apoyándose por completo en el companion de escritorio que ya existe (`apps/companion/`, ver también [`api.md`](./api.md) sección "Companion de escritorio"). No hay nada de esto en la nube: cada acción viaja `web → API → WebSocket del companion → tu máquina`, y tu máquina decide si la ejecuta.
+El IDE embebido deja explorar, editar y correr comandos en una carpeta de **tu propia computadora** desde el panel web de Edecán, apoyándose por completo en el companion de escritorio que ya existe (`apps/companion/`, ver también [`api.md`](./api.md) sección "Companion de escritorio"). No hay nada de esto en la nube: cada acción viaja `web → API → WebSocket del companion → tu máquina`, y tu máquina decide si la ejecuta.
 
 Es **P0: real y funcional hoy**, no un diseño. Las cuatro acciones nuevas del companion (`list_tree`, `search_files`, `apply_edit`, `screenshot`) pasan por el mismo pipeline de sandbox + aprobación humana + auditoría que ya usaban `read_dir`/`read_file`/`write_file`/`run_command` desde v1 — nada de esto es una vía nueva ni más permisiva.
 
@@ -93,11 +93,11 @@ Mapeo de errores, igual en los 7 endpoints:
 
 - **Tabs "Editor" / "Archivos".** "Editor" muestra el árbol lateral (compacto) más el editor central; "Archivos" muestra el árbol y la búsqueda uno al lado del otro, a mayor tamaño — cualquiera de los dos abre un archivo en el editor y cambia a la pestaña "Editor".
 - **Árbol de archivos** (`FileTree.tsx`): carga perezosa, carpeta por carpeta (`GET /tree?path=...&max_depth=1` cada vez que se expande una carpeta) — nunca trae el sandbox completo de una sola vez.
-- **Editor** (`CodeEditor.tsx`): textarea monoespaciada con una columna de números de línea aparte, sincronizada por scroll. Indicador de "cambios sin guardar" (punto ámbar) + botón **Guardar** (`PUT /file`), deshabilitado si no hay cambios. **Sin resaltado de sintaxis** — deliberadamente fuera de alcance de este WP (cero dependencias npm nuevas, ver `ROADMAP_V2.md` §7.10); queda como mejora futura.
+- **Editor** (`CodeEditor.tsx`): textarea monoespaciada con una columna de números de línea aparte, sincronizada por scroll. Indicador de "cambios sin guardar" (punto ámbar) + botón **Guardar** (`PUT /file`), deshabilitado si no hay cambios. **Sin resaltado de sintaxis** — queda como mejora futura para mantener la implementación actual sin dependencias npm adicionales.
 - **Terminal** (`Terminal.tsx`): panel fijo abajo, siempre visible en las dos pestañas. Input de comando + historial *append-only* mostrando `$ comando`, `stdout`/`stderr` y el código de salida (`POST /run`).
 - **Búsqueda** (`SearchPanel.tsx`): caja de texto + lista de resultados clicables (`ruta:línea` + fragmento) que abren el archivo correspondiente en el editor.
 
-Todo en español, cero dependencias npm nuevas, y `lib/api.ts` compartido no se tocó — `lib/api-ide.ts` replica localmente su mismo patrón de autenticación (Bearer + reintento tras refrescar en 401), igual que ya hizo `lib/api-remoto.ts` (WP-V2-09).
+Todo en español, cero dependencias npm nuevas, y `lib/api.ts` compartido no se tocó — `lib/api-ide.ts` replica localmente su mismo patrón de autenticación (Bearer + reintento tras refrescar en 401), igual que ya hizo `lib/api-remoto.ts` (fase v2).
 
 ## Seguridad
 
@@ -119,9 +119,9 @@ Todo en español, cero dependencias npm nuevas, y `lib/api.ts` compartido no se 
 ## Referencias cruzadas
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §10.7 (`ToolContext.extras["companion"]`), §10.12 (`/v1/companion/*`).
-- [`../ROADMAP_V2.md`](../ROADMAP_V2.md) §4 (WP-V2-08), §7.2 (flag `companion.ide`), §7.6 (montaje del router), §7.8 (contrato pinned de las 4 acciones nuevas), §7.10 (convenciones de frontend).
+- [`roadmap.md`](./roadmap.md) — estado público y próximas prioridades del IDE.
 - [`api.md`](./api.md) sección "Companion de escritorio" — emparejamiento (`POST /v1/companion/pair-code`, `WS /v1/companion/ws`).
-- [`control-remoto.md`](./control-remoto.md) — reutiliza directamente la acción `screenshot` de este documento para su prototipo de vista remota (WP-V2-09); ver su "Contrato de degradación con el companion".
+- [`control-remoto.md`](./control-remoto.md) — reutiliza directamente la acción `screenshot` de este documento para su prototipo de vista remota (fase v2); ver su "Contrato de degradación con el companion".
 - `apps/companion/README.md` — instalación, configuración completa y advertencias de seguridad del companion.
 - `apps/companion/edecan_companion/actions.py` — implementación real de las 4 acciones nuevas, extensamente documentada en cada docstring.
 - `apps/api/edecan_api/routers/ide.py` — implementación real de los 7 endpoints, con el mapeo de errores completo en su docstring de módulo.

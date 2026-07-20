@@ -3,7 +3,7 @@
 Cliente **MCP (Model Context Protocol)** bring-your-own: cada tenant conecta SUS PROPIOS
 servidores MCP (con SUS PROPIAS credenciales) y, si el plan trae el flag `tools.mcp`, las
 tools que ese servidor expone aparecen en el chat/misiones/automatizaciones del tenant como
-herramientas más del agente (`ARCHITECTURE.md` §15, `DIRECCION_ACTUAL.md` "Modelo de
+herramientas más del agente (`ARCHITECTURE.md` §15, `docs/roadmap.md` "Modelo de
 credenciales: TODO lo trae el cliente, siempre"). Ver [`docs/mcp.md`](../../docs/mcp.md)
 para el flujo completo desde la UI.
 

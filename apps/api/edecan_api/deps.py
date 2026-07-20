@@ -3,7 +3,8 @@
 Contiene (ARCHITECTURE.md §10.12, §2, §10.4, §10.6):
 
 - `CurrentUser` / `TenantCtx`: se construyen ÚNICAMENTE a partir de los claims
-  del JWT `Authorization: Bearer <token>` (`{sub, ten, plan, typ, exp}`). Los
+  del JWT `Authorization: Bearer <token>`
+  (`{sub, ten, plan, typ, iat, exp, jti, sid}`). Los
   *flags* del plan se recalculan siempre con `edecan_schemas.plans.PLANES[plan]`
   — **nunca** se confía en un flag que viniera embebido en el token.
 - Sesión/])Repo: `get_platform_repo` (sesión sin `tenant_id`, rol dueño, para

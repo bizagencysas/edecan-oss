@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import time
 import uuid
 
 import redis.asyncio as redis_asyncio
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from edecan_api.config import Settings, get_settings
@@ -27,6 +29,7 @@ from edecan_api.security import (
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-used-only-to-equalize-login-timing")
 
 
 def _validar_email(value: str) -> str:
@@ -55,6 +58,10 @@ class LoginIn(BaseModel):
 class RefreshIn(BaseModel):
     refresh_token: str
     totp_code: str | None = None
+
+
+class LogoutIn(BaseModel):
+    refresh_token: str
 
 
 class TotpVerifyIn(BaseModel):
@@ -91,13 +98,74 @@ def _pending_totp_key(user_id: uuid.UUID) -> str:
     return f"pending_totp:{user_id}"
 
 
+def _refresh_token_key(token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"auth:refresh:{digest}"
+
+
+async def _enforce_auth_rate_limit(
+    request: Request,
+    redis_client: redis_asyncio.Redis,
+    settings: Settings,
+    *,
+    identity: str,
+) -> None:
+    """Límite por ruta + IP + identidad, sin persistir PII en la key."""
+    max_requests = settings.AUTH_RATE_LIMIT_REQUESTS
+    window_seconds = settings.AUTH_RATE_LIMIT_WINDOW_SECONDS
+    if max_requests <= 0 or window_seconds <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El límite de autenticación está mal configurado.",
+        )
+
+    client_host = request.client.host if request.client is not None else "unknown"
+    subject = hashlib.sha256(f"{client_host}:{identity}".encode()).hexdigest()[:24]
+    window = int(time.time()) // window_seconds
+    key = f"ratelimit:auth:{request.url.path}:{subject}:{window}"
+    count = await redis_client.incr(key)
+    if count == 1:
+        await redis_client.expire(key, window_seconds)
+    if count > max_requests:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados intentos de autenticación. Intenta de nuevo más tarde.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
+
+async def _issue_token_pair(
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    plan_key: str,
+    settings: Settings,
+    redis_client: redis_asyncio.Redis,
+    session_id: uuid.UUID | None = None,
+) -> TokenPairOut:
+    access, refresh = create_token_pair(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        plan_key=plan_key,
+        secret=settings.JWT_SECRET,
+        session_id=session_id,
+    )
+    decoded = decode_token(refresh, secret=settings.JWT_SECRET, expected_typ="refresh")
+    ttl_seconds = max(1, decoded.exp - int(time.time()))
+    await redis_client.set(_refresh_token_key(refresh), str(decoded.sid), ex=ttl_seconds)
+    return TokenPairOut(access_token=access, refresh_token=refresh)
+
+
 @router.post("/register", response_model=TokenPairOut, status_code=status.HTTP_201_CREATED)
 async def register(
     body: RegisterIn,
+    request: Request,
     repo: Repo = Depends(get_platform_repo),
     settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> TokenPairOut:
     """Crea tenant + usuario (owner) + persona por defecto, y devuelve tokens."""
+    await _enforce_auth_rate_limit(request, redis_client, settings, identity=body.email)
     existing = await repo.get_user_by_email(body.email)
     if existing is not None:
         raise HTTPException(
@@ -119,23 +187,28 @@ async def register(
         target=str(user["id"]),
     )
 
-    access, refresh = create_token_pair(
+    return await _issue_token_pair(
         user_id=user["id"],
         tenant_id=tenant["id"],
         plan_key=tenant["plan_key"],
-        secret=settings.JWT_SECRET,
+        settings=settings,
+        redis_client=redis_client,
     )
-    return TokenPairOut(access_token=access, refresh_token=refresh)
 
 
 @router.post("/login", response_model=TokenPairOut)
 async def login(
     body: LoginIn,
+    request: Request,
     repo: Repo = Depends(get_platform_repo),
     settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> TokenPairOut:
+    await _enforce_auth_rate_limit(request, redis_client, settings, identity=body.email)
     user = await repo.get_user_by_email(body.email)
-    if user is None or not verify_password(user["password_hash"], body.password):
+    candidate_hash = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
+    password_matches = verify_password(candidate_hash, body.password)
+    if user is None or not password_matches:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Correo o contraseña incorrectos."
         )
@@ -164,21 +237,32 @@ async def login(
     if needs_rehash(user["password_hash"]):
         await repo.update_user_password_hash(user["id"], hash_password(body.password))
 
-    access, refresh = create_token_pair(
+    await repo.add_audit_log(
+        tenant_id=tenant["id"],
+        actor_user_id=user["id"],
+        action="auth.login",
+        target=str(user["id"]),
+    )
+    return await _issue_token_pair(
         user_id=user["id"],
         tenant_id=tenant["id"],
         plan_key=tenant["plan_key"],
-        secret=settings.JWT_SECRET,
+        settings=settings,
+        redis_client=redis_client,
     )
-    return TokenPairOut(access_token=access, refresh_token=refresh)
 
 
 @router.post("/refresh", response_model=TokenPairOut)
 async def refresh(
     body: RefreshIn,
+    request: Request,
     repo: Repo = Depends(get_platform_repo),
     settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> TokenPairOut:
+    await _enforce_auth_rate_limit(
+        request, redis_client, settings, identity=_refresh_token_key(body.refresh_token)
+    )
     try:
         decoded = decode_token(
             body.refresh_token, secret=settings.JWT_SECRET, expected_typ="refresh"
@@ -191,6 +275,12 @@ async def refresh(
     if user is None or tenant is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o tenant ya no existen."
+        )
+    membership = await repo.get_membership(user_id=decoded.sub, tenant_id=decoded.ten)
+    if membership is None or tenant.get("status") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La sesión ya no tiene acceso a este tenant.",
         )
 
     # Mismo enforcement de 2FA que /login (§10.12): si la cuenta tiene TOTP
@@ -206,16 +296,60 @@ async def refresh(
                 detail="Se requiere un código TOTP válido para esta cuenta.",
             )
 
-    # Rota también el refresh token (buena práctica: cada refresh invalida
-    # implícitamente el anterior en el cliente, aunque el servidor no lleve
-    # una lista de revocación explícita en este paquete de trabajo).
-    access, new_refresh = create_token_pair(
+    # GETDEL es atómico: entre dos refresh concurrentes solo uno consume el
+    # token. Así la rotación es real en servidor, no solo una convención del UI.
+    consumed_session = await redis_client.getdel(_refresh_token_key(body.refresh_token))
+    if consumed_session is None or consumed_session != str(decoded.sid):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="El refresh token fue revocado o ya fue utilizado.",
+        )
+
+    await repo.add_audit_log(
+        tenant_id=tenant["id"],
+        actor_user_id=user["id"],
+        action="auth.refresh",
+        target=str(decoded.sid),
+    )
+    return await _issue_token_pair(
         user_id=user["id"],
         tenant_id=tenant["id"],
         plan_key=tenant["plan_key"],
-        secret=settings.JWT_SECRET,
+        settings=settings,
+        redis_client=redis_client,
+        session_id=decoded.sid,
     )
-    return TokenPairOut(access_token=access, refresh_token=new_refresh)
+
+
+@router.post("/logout")
+async def logout(
+    body: LogoutIn,
+    request: Request,
+    repo: Repo = Depends(get_platform_repo),
+    settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
+) -> dict[str, bool]:
+    """Revoca el refresh token actual; es idempotente para el cliente."""
+    await _enforce_auth_rate_limit(
+        request, redis_client, settings, identity=_refresh_token_key(body.refresh_token)
+    )
+    try:
+        decoded = decode_token(
+            body.refresh_token, secret=settings.JWT_SECRET, expected_typ="refresh"
+        )
+    except TokenError:
+        return {"revoked": True}
+
+    await redis_client.delete(_refresh_token_key(body.refresh_token))
+    membership = await repo.get_membership(user_id=decoded.sub, tenant_id=decoded.ten)
+    if membership is not None:
+        await repo.add_audit_log(
+            tenant_id=decoded.ten,
+            actor_user_id=decoded.sub,
+            action="auth.logout",
+            target=str(decoded.sid),
+        )
+    return {"revoked": True}
 
 
 @router.post("/totp/enable", response_model=TotpEnableOut)

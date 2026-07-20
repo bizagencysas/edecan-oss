@@ -19,13 +19,13 @@ porque los demás paquetes se escriben en paralelo contra estos mismos contratos
 ## 1. Stack elegido (y por qué)
 
 - **Backend: Python 3.12 + FastAPI + Pydantic v2** — el mejor ecosistema para agentes/LLM, async nativo (SSE y WebSocket), tipado suficiente.
-- **Monorepo con uv workspaces** — paquetes instalables (`packages/*`), apps delgadas (`apps/*`), capa comercial separada (`premium/`).
+- **Monorepo con uv workspaces** — paquetes instalables (`packages/*`) y apps delgadas (`apps/*`); las extensiones comerciales viven fuera del core público.
 - **PostgreSQL 16 + pgvector** (RDS en prod) — relacional + embeddings + **Row-Level Security** para multi-tenancy en una sola tecnología.
-- **Redis** (ElastiCache) — caché, rate-limit, códigos de emparejamiento.
+- **Redis** (ElastiCache) — sesiones refresh revocables, rate-limit, confirmaciones y códigos de emparejamiento.
 - **SQS + DLQ** — trabajos asíncronos; **EventBridge Scheduler** — crons en prod.
-- **Frontend: Next.js 14 (App Router) + TypeScript + Tailwind.**
+- **Frontend: Next.js 15 (App Router) + React 19 + TypeScript + Tailwind.**
 - **LLM: Anthropic primario** vía REST puro (httpx), con adaptadores OpenAI-compatible y Bedrock detrás de una interfaz común intercambiable.
-- **Infra: Terraform + ECS Fargate** — se escribe, jamás se aplica automáticamente.
+- **Despliegue objetivo: ECS Fargate** — la automatización de infraestructura no forma parte del repositorio público.
 
 ## 2. Multi-tenancy y aislamiento
 
@@ -39,7 +39,7 @@ porque los demás paquetes se escriben en paralelo contra estos mismos contratos
 - **Credenciales del tenant (OAuth, Twilio)**: **cifrado envolvente** — data key AES-256-GCM por tenant
   (tabla `tenant_keys`), envuelta con KMS en prod o con `LOCAL_MASTER_KEY` (Fernet) en dev. Nunca en claro, nunca en logs.
 - **Medición por tenant** en `usage_events` → cuotas de plan y facturación.
-- Tier «dedicado» futuro: mismo código, stack Terraform separado por cliente.
+- Tier «dedicado» futuro: mismo código, despliegue aislado por cliente.
 
 ## 3. Abstracción de proveedor LLM
 
@@ -71,9 +71,9 @@ ningún call site de primera parte lo conecta hoy (detalle en `edecan_llm.router
 
 ## 6. Open-core vs Premium
 
-- **Core (Apache-2.0)**: todo el repo salvo `premium/`. Self-host con docker-compose, trae-tus-API-keys.
-- **`premium/` (licencia comercial)**: telefonía y campañas, cuotas/planes, herramientas premium.
-  La API lo detecta con `importlib.util.find_spec("edecan_premium")` y monta sus rutas/herramientas.
+- **Core (Apache-2.0)**: todo este repositorio público. Self-host con docker-compose y credenciales propias.
+- **Extensión comercial externa**: telefonía y campañas, cuotas/planes y herramientas premium.
+  La API detecta el paquete opcional `edecan_premium` con `importlib.util.find_spec(...)` y monta sus rutas/herramientas cuando está instalado.
   Los flags del plan del tenant gatean cada capacidad en runtime.
 
 ## 7. Topología AWS (prod)
@@ -83,13 +83,12 @@ VPC 3 AZ; subredes privadas para **RDS PostgreSQL 16 Multi-AZ (pgvector)** y **E
 (S3, SQS, Secrets Manager, KMS). **SQS** `edecan-jobs` + `edecan-jobs-dlq` (redrive tras 5 intentos).
 **S3** `edecan-files` (SSE-KMS, privado). **Secrets Manager** para secretos de plataforma inyectados a las task
 definitions; **KMS CMK** para vault/S3/RDS. **EventBridge Scheduler**: cada minuto envía a SQS
-`{"type":"send_reminder_scan"}` y `{"type":"automation_scan"}` (dos `aws_scheduler_schedule` separados,
-mismo rol IAM, `infra/terraform/modules/scheduler/`; el segundo dispara el barrido de agenda de
-`ROADMAP_V2.md` §7.3 WP-V2-07, ver `docs/automatizaciones.md`). **ECR**, CloudWatch (logs/alarmas/dashboard), AWS Budgets, **SES** para email
+`{"type":"send_reminder_scan"}` y `{"type":"automation_scan"}` (dos schedules separados
+con el mismo rol IAM; el segundo dispara el barrido de agenda
+documentado en `docs/automatizaciones.md`). **ECR**, CloudWatch (logs/alarmas/dashboard), AWS Budgets, **SES** para email
 transaccional de la plataforma. Opcional: Bedrock como proveedor LLM regional.
-Route53 y SES describen la topología objetivo pero **no** están codificados como Terraform en `infra/terraform/`
-(DNS es un paso manual vía `alb_zone_id`/`distribution_hosted_zone_id`; SES queda pendiente de provisionar) —
-detalle en `infra/terraform/README.md`.
+Esta sección describe una topología objetivo; sus módulos Terraform, configuración DNS y
+provisionamiento de SES no forman parte del repositorio público.
 
 ## 8. Entorno local de desarrollo
 
@@ -115,7 +114,7 @@ el worker consolida memoria (job `memory_consolidate`).
 ### 10.1 Naming y estructura
 
 - Producto codename **Edecán**; paquetes Python con prefijo `edecan_`.
-- Layout de paquete: `packages/<dir>/pyproject.toml` (hatchling) + código en `packages/<dir>/edecan_<nombre>/` + `packages/<dir>/tests/` (salvo que se indique otra ruta de tests). Apps: `apps/api/edecan_api/`, `apps/worker/edecan_worker/`, `apps/companion/edecan_companion/`, `premium/edecan_premium/`.
+- Layout de paquete: `packages/<dir>/pyproject.toml` (hatchling) + código en `packages/<dir>/edecan_<nombre>/` + `packages/<dir>/tests/` (salvo que se indique otra ruta de tests). Apps: `apps/api/edecan_api/`, `apps/worker/edecan_worker/`, `apps/companion/edecan_companion/`.
 - Python ≥3.12, type hints obligatorios, `ruff` (line-length 100), `pytest` + `pytest-asyncio`.
 - **Los tests NO importan paquetes hermanos**: usa stubs/fakes que implementen los contratos de esta sección. Importar hermanos en código de producción sí está permitido (por nombre de módulo).
 
@@ -123,8 +122,9 @@ el worker consolida memoria (job `memory_consolidate`).
 
 `ENV` (dev|prod), `PUBLIC_BASE_URL` (default `http://localhost:8000`), `WEB_BASE_URL` (default `http://localhost:3000`),
 `DATABASE_URL` (default `postgresql+asyncpg://edecan:edecan@localhost:5432/edecan`), `REDIS_URL` (default `redis://localhost:6379/0`),
-`JWT_SECRET`, `LOCAL_MASTER_KEY` (Fernet, dev), `KMS_KEY_ID` (prod, opcional), `AWS_REGION` (default `us-east-1`),
-`AWS_ENDPOINT_URL` (dev → LocalStack), `S3_BUCKET` (default `edecan-files`), `SQS_QUEUE_URL`,
+`JWT_SECRET`, `AUTH_RATE_LIMIT_REQUESTS` (default `10`), `AUTH_RATE_LIMIT_WINDOW_SECONDS` (default `60`),
+`LOCAL_MASTER_KEY` (Fernet, dev), `KMS_KEY_ID` (prod, opcional), `AWS_REGION` (default `us-east-1`),
+`AWS_ENDPOINT_URL` (dev → LocalStack), `S3_BUCKET` (default `edecan-files`), `SQS_QUEUE_URL`, `MAX_UPLOAD_BYTES` (default 25 MiB),
 `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL_PRINCIPAL` (default `claude-sonnet-4-5`), `ANTHROPIC_MODEL_RAPIDO` (default `claude-haiku-4-5`),
 `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPAT_API_KEY`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIM` (default `1536`),
 `SEARCH_PROVIDER` (stub|brave|tavily), `BRAVE_API_KEY`, `TAVILY_API_KEY`,
@@ -247,7 +247,7 @@ class Connector(ABC):
 `edecan_connectors.registry.CONNECTORS: dict[str, Connector]` con keys EXACTAS: `"google"`, `"microsoft"`, `"meta"`, `"x"`, `"youtube"`.
 El registry importa `edecan_connectors.social` con `try/except ImportError` y mezcla `SOCIAL_CONNECTORS`.
 Las funciones de cada conector reciben el `TokenBundle` como argumento — **nunca** almacenan tokens.
-Nota v2 (no reabre este contrato v1 — ver §11): WP-V2-05 amplía `CONNECTORS` con una 6ª key (`"slack"`) mediante el mismo patrón `try/except ImportError`, ahora también sobre `edecan_connectors.messaging` (mezcla `MESSAGING_CONNECTORS`); contrato pinned en `ROADMAP_V2.md` §7.13.
+Nota v2 (no reabre este contrato v1 — ver §11): fase v2 amplía `CONNECTORS` con una 6ª key (`"slack"`) mediante el mismo patrón `try/except ImportError`, ahora también sobre `edecan_connectors.messaging` (mezcla `MESSAGING_CONNECTORS`); contrato fijado en §11.13.
 
 ### 10.9 `edecan_voice`
 
@@ -261,12 +261,12 @@ class TTSProvider(ABC):
 Impls: `DeepgramSTT`, `ElevenLabsTTS`, `PollyTTS`, y stubs offline (`StubSTT` → texto fijo; `StubTTS` → WAV de silencio).
 La telefonía NO vive aquí (ver §10.10).
 
-### 10.10 `edecan_premium` (dir `premium/`, licencia comercial)
+### 10.10 `edecan_premium` (extensión comercial opcional y externa)
 
 - Entry point `edecan.tools` → `edecan_premium.tools:get_all_tools` con: `llamar_contacto`, `enviar_sms` (flag `voice.telephony`), `lanzar_campana` (flag `campaigns`) — todas `dangerous=True`.
 - `edecan_premium.telephony.TwilioTenantClient` — credenciales del tenant desde el vault (connector key `"twilio"`; `TokenBundle.access_token`=AUTH_TOKEN, `scopes=[ACCOUNT_SID]`). Métodos `start_call(to, from_, twiml_url)` y `send_sms(...)` que EXIGEN consentimiento (`consents`) + ventana 08:00–21:00 del destinatario y registran `audit_log` + `usage_events`.
 - `edecan_premium.twilio_router.router` — APIRouter con prefix `/v1/voice/twilio`: `POST /incoming` (TwiML `<Say>`+`<Gather input="speech">`), `POST /gather` (turno del agente sin streaming → `<Say>` + `<Gather>`), `POST /sms` (SMS entrante; solo reconoce opt-out STOP/BAJA, sin agente conversacional), `POST /status` (duración → `usage_events`). Valida `X-Twilio-Signature`.
-- `edecan_premium.compliance.grant_consent(session, tenant_id, phone_e164, kind, source)` — único invocador fuera de `edecan_premium`: `edecan_api.routers.consents.router` (`POST /v1/consents`, Bearer + flag `voice.telephony`; §10.12). Vive en `apps/api` (no en `premium/`) porque necesita `edecan_api.deps` para la auth JWT/tenant.
+- `edecan_premium.compliance.grant_consent(session, tenant_id, phone_e164, kind, source)` — único invocador fuera de `edecan_premium`: `edecan_api.routers.consents.router` (`POST /v1/consents`, Bearer + flag `voice.telephony`; §10.12). Vive en `apps/api`, no en la extensión externa, porque necesita `edecan_api.deps` para la auth JWT/tenant.
 - `edecan_premium.limits.check_quota(session, tenant_id, plan_key, kind) -> bool` contra `PLANES`.
 - `edecan_premium.campaigns.handle(env: JobEnvelope, deps)` — procesa hasta 10 `campaign_targets` por paso y re-encola.
 
@@ -275,17 +275,17 @@ La telefonía NO vive aquí (ver §10.10).
 Cola principal `SQS_QUEUE_URL` (dev: LocalStack `edecan-jobs`). Mensaje = JSON de `JobEnvelope`.
 Worker: `edecan_worker.handlers.HANDLERS: dict[str, Handler]`, `Handler = Callable[[JobEnvelope, Deps], Awaitable[None]]`.
 Reintentos: si `attempt < 5` re-encolar con backoff `min(900, 2**attempt * 30)`s; si no, dejar ir a DLQ.
-Tipos: los 7 de `JOB_TYPES` (§10.5). `send_reminder_scan` busca `reminders` vencidos y encola `send_reminder` por cada uno.
+Tipos: los 12 de `JOB_TYPES` (§10.5). `send_reminder_scan` busca `reminders` vencidos y encola `send_reminder` por cada uno.
 
 ### 10.12 API HTTP (`edecan_api`, prefijos pinned)
 
-- `GET /healthz` → `{"status":"ok"}`
-- `POST /v1/auth/register {email, password, tenant_name}` (crea tenant+owner+persona default; devuelve tokens) · `POST /v1/auth/login` · `POST /v1/auth/refresh` · `POST /v1/auth/totp/enable|verify|disable` (`disable {password}` re-exige la contraseña, no un código TOTP — es la ruta de recuperación para dispositivo perdido)
+- `GET /healthz` → `{"status":"ok"}` (liveness) · `GET /readyz` → DB + Redis (readiness)
+- `POST /v1/auth/register {email, password, tenant_name}` (crea tenant+owner+persona default; devuelve tokens) · `POST /v1/auth/login` · `POST /v1/auth/refresh` (rotación atómica de un solo uso) · `POST /v1/auth/logout` (revocación) · `POST /v1/auth/totp/enable|verify|disable` (`disable {password}` re-exige la contraseña, no un código TOTP — es la ruta de recuperación para dispositivo perdido)
 - `GET /v1/me` · `GET|PUT /v1/persona` · `GET /v1/persona/preview` → `{system_prompt}`
 - `GET|POST /v1/conversations` · `GET|DELETE /v1/conversations/{id}` · `POST /v1/conversations/{id}/messages {text}` → **SSE** · `POST /v1/conversations/{id}/confirm {tool_call_id, approved}` → SSE (si `approved`, ejecuta DIRECTO —sin volver a llamar al LLM— la tool `dangerous` que quedó pendiente: la lee de Redis por `tool_call_id` (TTL 15 min, de un solo uso; guardada ahí cuando el turno original se detuvo en `confirmation_required`, ver `edecan_api.routers.conversations`) — una llamada nueva al LLM acuñaría un `tool_call_id` distinto que jamás coincidiría con el aprobado. Sin confirmación pendiente → 409)
 - `GET /v1/memory?q=` · `POST /v1/memory` · `DELETE /v1/memory/{id}`
-- `GET /v1/connectors` · `GET /v1/connectors/{key}/authorize` → `{url}` · `GET /v1/connectors/{key}/callback` · `PUT /v1/connectors/twilio/credentials {account_sid, auth_token, phone_number}` → `204` (Twilio no es OAuth, no pasa por `authorize`/`callback`; ver §4) · `DELETE /v1/connectors/{key}/{account_id}` · *(v2, WP-V2-05, no reabre este pinned v1 — contrato en `ROADMAP_V2.md` §7.13)* `PUT /v1/connectors/{key}/credentials {bot_token}` → `204`, genérico para bots de mensajería sin OAuth (`key` ∈ `{"telegram", "discord"}`)
-- `POST /v1/files` (multipart → S3 `tenants/{tid}/files/{fid}/{filename}` + job `ingest_file`) · `GET /v1/files` · `GET /v1/files/{id}`
+- `GET /v1/connectors` · `GET /v1/connectors/{key}/authorize` → `{url}` · `GET /v1/connectors/{key}/callback` · `PUT /v1/connectors/twilio/credentials {account_sid, auth_token, phone_number}` → `204` (Twilio no es OAuth, no pasa por `authorize`/`callback`; ver §4) · `DELETE /v1/connectors/{key}/{account_id}` · *(v2, fase v2, no reabre este contrato v1 — ver §11.13)* `PUT /v1/connectors/{key}/credentials {bot_token}` → `204`, genérico para bots de mensajería sin OAuth (`key` ∈ `{"telegram", "discord"}`)
+- `POST /v1/files` (multipart con tope `MAX_UPLOAD_BYTES` → S3 `tenants/{tid}/files/{fid}/{filename}` + job `ingest_file`) · `GET /v1/files` · `GET /v1/files/{id}`
 - CRUD `/v1/reminders`, `/v1/contacts`, `/v1/finance/transactions` · `GET /v1/finance/summary?mes=YYYY-MM`
 - `POST /v1/voice/transcribe` (audio → `{text}`) · `POST /v1/voice/speak {text}` → `audio/mpeg` — flag `voice.web` + cuota
 - `POST /v1/companion/pair-code` → `{code}` (Redis TTL 600) · `WS /v1/companion/ws?code=` (device WS; la API expone `ConnectionManager.send_command(tenant_id, action, params, timeout=30)` e inyecta `extras["companion"]`)
@@ -293,8 +293,8 @@ Tipos: los 7 de `JOB_TYPES` (§10.5). `send_reminder_scan` busca `reminders` ven
 - `POST /v1/billing/webhook` (Stripe, verifica firma) · `POST /v1/billing/portal` → `{url}`
 - Si `edecan_premium` está instalado, montar `edecan_premium.twilio_router.router` y `edecan_api.routers.consents.router` — `POST /v1/consents {phone_e164, kind: sms|voice, source}` → `201`, flag `voice.telephony`; único invocador de `edecan_premium.compliance.grant_consent` (§10.10).
 
-JWT HS256 (`JWT_SECRET`), claims `{sub, ten, plan, typ: access|refresh, exp}` (access 30 min, refresh 30 días).
-Los flags se recalculan server-side desde `PLANES[plan]` — nunca se confía en el token.
+JWT HS256 (`JWT_SECRET`), claims `{sub, ten, plan, typ: access|refresh, iat, exp, jti, sid}` (access 30 min, refresh 30 días). Cada refresh se registra en Redis, se consume una sola vez de forma atómica y vuelve a validar membresía/tenant/plan contra PostgreSQL antes de rotar.
+Los flags se derivan server-side desde `PLANES[plan]`; el `plan` es un claim firmado por la API y se actualiza contra PostgreSQL en cada refresh. Un access token puede conservar el plan anterior durante sus 30 minutos de vida.
 
 ### 10.13 Flags y planes (pinned en `edecan_schemas.plans`)
 
@@ -327,20 +327,16 @@ Cada paquete: `README.md` corto, tests offline deterministas (respx para HTTP), 
 
 ## 11. Contratos v2
 
-Desde la fase v2, `ROADMAP_V2.md` §7 ("CONTRATOS v2") es **EL CONTRATO** de
-todo lo nuevo — con la MISMA fuerza obligatoria que §10 de este documento.
-No lo reemplaza ni lo reabre: §10 sigue pinned tal cual para v1 (naming,
+Esta sección es **EL CONTRATO técnico público** de la fase v2, con la misma
+fuerza normativa que §10 de este documento. No lo reemplaza ni lo reabre:
+§10 sigue fijado tal cual para v1 (naming,
 env vars, esquema de datos v1, `edecan_llm`/`edecan_core`/`edecan_connectors`/
 `edecan_voice`/`edecan_premium` v1, jobs v1, API HTTP v1, planes v1). Todo
-agente que escriba código v2 debe leer `ROADMAP_V2.md` §7 completo ANTES de
-escribir una línea, exactamente igual que §10 exige para v1 — y, como con
-§10, los nombres/rutas/tablas/flags de esa sección se siguen **al pie de la
-letra** porque los demás work packages v2 se escriben en paralelo contra
-esos mismos contratos (ver `ROADMAP_V2.md` §2, "lecciones de v1 → decisiones
-de ejecución v2").
+ cambio de la fase v2 debe respetar §11 igual que §10 para v1. Los nombres,
+rutas, tablas y flags se siguen **al pie de la letra** para que las
+contribuciones entre paquetes conserven contratos compatibles.
 
-Resumen de qué pinnea cada subsección (el contenido normativo vive ahí, no
-se duplica aquí):
+Resumen de qué fija cada subsección:
 
 | § | Contrato |
 |---|---|
@@ -356,12 +352,12 @@ se duplica aquí):
 | 7.10 | Frontend v2 (vertical slices, navegación central) |
 | 7.11 | Dependencias Python nuevas permitidas |
 | 7.12 | Reglas de calidad v2 (idénticas a §10.15 + recordatorios) |
-| 7.13 | Excepción pinned v2 sobre `edecan_connectors`/API v1 (§10.8, §10.12): 6ª key `"slack"` + endpoint genérico de credenciales por bot (dueño WP-V2-05) |
+| 7.13 | Excepción pinned v2 sobre `edecan_connectors`/API v1 (§10.8, §10.12): 6ª key `"slack"` + endpoint genérico de credenciales por bot (responsable de la fase v2) |
 
 Los guardrails de producto no negociables de v2 (dinero real, control
 remoto, salud/legal/finanzas informativo, solo APIs oficiales, LinkedIn
-prohibido) están en `ROADMAP_V2.md` §8 y aplican con el mismo peso que
-`ARCHITECTURE.md` §0.
+prohibido) se resumen en `docs/roadmap.md` y aplican con el mismo peso que
+§0.
 
 ---
 
@@ -369,33 +365,33 @@ prohibido) están en `ROADMAP_V2.md` §8 y aplican con el mismo peso que
 
 Desde la fase v3, esta sección es **EL CONTRATO** de todo lo nuevo — misma
 fuerza obligatoria que §10/§11. No los reemplaza ni los reabre: §10 sigue
-pinned para v1 y §11 (`ROADMAP_V2.md` §7) sigue pinned para v2. Todo agente
+pinned para v1 y §11 sigue pinned para v2. Todo agente
 que escriba código v3 debe leer esta sección completa ANTES de escribir una
 línea; los nombres/rutas/tablas/settings de abajo se siguen **al pie de la
 letra** porque los demás work packages v3 se escriben en paralelo contra
-estos mismos contratos (mismo criterio que dejó WP-V2-01 en §11 — WP-V3-01 es
+estos mismos contratos (mismo criterio que dejó fase v2 en §11 — fase v3 es
 el "linchpin" equivalente de v3).
 
-### 12.a Routers v3 (montaje defensivo en `main.py`, dueño WP-V3-01)
+### 12.a Routers v3 (montaje defensivo en `main.py`, responsable de la fase v3)
 
-Igual patrón que v2 (§11, `ROADMAP_V2.md` §7.6): cada WP crea su archivo en
+Igual patrón que v2 (§11): cada WP crea su archivo en
 `apps/api/edecan_api/routers/` exportando `router`; `edecan_api.main` los
 monta con `importlib.import_module` + `try/except ImportError` +
 `logger.warning` si falta — tolerante a aterrizajes parciales.
 
 | módulo | prefix | dueño |
 |---|---|---|
-| `credentials` | `/v1/credentials` | WP-V3-02 |
-| `setup` | `/v1/setup` | WP-V3-05 |
-| `skills` | `/v1/skills` | WP-V3-04 |
-| `smarthome` | `/v1/smarthome` | WP-V3-12 |
+| `credentials` | `/v1/credentials` | fase v3 |
+| `setup` | `/v1/setup` | fase v3 |
+| `skills` | `/v1/skills` | fase v3 |
+| `smarthome` | `/v1/smarthome` | fase v3 |
 
 `edecan_api.main.V3_ROUTER_NAMES = ("credentials", "setup", "skills", "smarthome")`.
 
-### 12.b Credenciales por tenant bring-your-own (TokenVault, dueño WP-V3-02)
+### 12.b Credenciales por tenant bring-your-own (TokenVault, responsable de la fase v3)
 
-Corrige el hueco que señaló `DIRECCION_ACTUAL.md` ("Pendiente corregir en
-v3"): Deepgram/ElevenLabs/LLM dejan de leer config de plataforma
+Aplica el principio bring-your-own de `docs/roadmap.md`: Deepgram,
+ElevenLabs y LLM dejan de leer config de plataforma
 (`Settings`/`.env` global) y se resuelven por tenant, mismo mecanismo que ya
 usa Twilio (§10.10) — `edecan_db.vault.TokenVault` (§10.4), sin tabla nueva.
 
@@ -418,7 +414,7 @@ usa Twilio (§10.10) — `edecan_db.vault.TokenVault` (§10.4), sin tabla nueva.
   (§10.4): cifrado AES-256-GCM con la data key del tenant, nunca en claro,
   nunca en logs.
 
-### 12.c `edecan_llm.config.LLMProviderConfig` (dueño WP-V3-03)
+### 12.c `edecan_llm.config.LLMProviderConfig` (responsable de la fase v3)
 
 ```python
 @dataclass(frozen=True)
@@ -432,7 +428,7 @@ class LLMProviderConfig:
 ```
 
 Resuelve la configuración de proveedor LLM **por tenant** (bring-your-own,
-`DIRECCION_ACTUAL.md`), leída del `TokenBundle` de `connector_key="llm"`
+`docs/roadmap.md`), leída del `TokenBundle` de `connector_key="llm"`
 (§12.b) cuando existe. `LLMRouter.__init__` (§10.6) gana un kwarg opcional
 nuevo: `LLMRouter(settings, on_usage=None, provider_config=None)` — con
 `provider_config=None` (default) el comportamiento es IDÉNTICO al de v1/v2
@@ -445,13 +441,13 @@ nuevo: `LLMRouter(settings, on_usage=None, provider_config=None)` — con
 `project`/`location`/credenciales de service account o ADC;
 `kind="ollama"` usa `base_url` (default `OLLAMA_BASE_URL` de §12.g).
 
-### 12.d `edecan_llm.detect.detect_local_providers` (dueño WP-V3-03)
+### 12.d `edecan_llm.detect.detect_local_providers` (responsable de la fase v3)
 
 ```python
 def detect_local_providers(settings: SettingsLike | None = None) -> dict: ...
 ```
 
-Autodetección para la UX de "pocos clicks" (`DIRECCION_ACTUAL.md`): nunca
+Autodetección para la UX de "pocos clicks" (`docs/roadmap.md`): nunca
 lanza, siempre devuelve el shape completo (con `False`/`None`/`[]` donde no
 detectó nada), nunca hace red real salvo un ping local a `OLLAMA_BASE_URL`.
 
@@ -467,11 +463,11 @@ detectó nada), nunca hace red real salvo un ping local a `OLLAMA_BASE_URL`.
 `CODEX_CLI_PATH` de §12.g si están fijados) + `<bin> --version` con timeout
 corto; `"running"` de Ollama hace `GET {OLLAMA_BASE_URL}/api/tags` con
 timeout corto (offline/caído ⇒ `False`, nunca excepción). El router de setup
-(§12.a `setup`, WP-V3-05) expone esto en `GET /v1/setup/detect` para que la
+(§12.a `setup`, fase v3) expone esto en `GET /v1/setup/detect` para que la
 pantalla de Configuración ofrezca "usar mi Claude CLI ya instalado" en un
 clic sin pedir ninguna credencial.
 
-### 12.e Tabla nueva — migración `0004_v3_expansion` (dueño WP-V3-01)
+### 12.e Tabla nueva — migración `0004_v3_expansion` (responsable de la fase v3)
 
 Mismo patrón que `0001_initial`/`0003_v2_expansion`: `id UUID PK`,
 `created_at`/`updated_at`, `tenant_id UUID NOT NULL` + RLS `tenant_isolation`
@@ -487,10 +483,10 @@ Mismo patrón que `0001_initial`/`0003_v2_expansion`: `id UUID PK`,
 El modelo SQLAlchemy correspondiente (`Skill`) vive en `edecan_db.models`
 con el mismo estilo (mixins, `Text` para las columnas de texto) que v1/v2.
 
-### 12.f Runner local — app de escritorio Tauri (dueño WP-V3-05, `apps/local`)
+### 12.f Runner local — app de escritorio Tauri (responsable de la fase v3, `apps/local`)
 
 Empaqueta `edecan_api` + `edecan_worker` + `edecan_db` para correr en la
-máquina del cliente (`DIRECCION_ACTUAL.md`: backend local de la app Tauri).
+máquina del cliente (`docs/roadmap.md`: backend local de la app Tauri).
 Contrato pinned:
 
 - Se invoca `python -m edecan_local`.
@@ -511,9 +507,9 @@ Contrato pinned:
   (evita depender de LocalStack/SQS en la máquina del cliente); `sqs` sigue
   disponible si el runner local decide usarlo igual.
 
-### 12.g Settings/env nuevos (dueño WP-V3-01: `edecan_api.config` + `.env.example`)
+### 12.g Settings/env nuevos (responsable de la fase v3: `edecan_api.config` + `.env.example`)
 
-Misma convención dura que v2 (§11, `ROADMAP_V2.md` §7.5): toda tool/router
+Misma convención dura que v2 (§11): toda tool/router
 v3 lee estos campos con `getattr(ctx.settings, "CAMPO", default)`, nunca
 revienta si falta uno.
 
@@ -532,33 +528,29 @@ None`, default `None` = autodetectar en PATH), `LLM_CLI_TIMEOUT_SECONDS`
 `REDIS_URL` (ya pinned en §10.2) gana un esquema especial en v3:
 `memory://` selecciona un `fakeredis` en memoria en vez de un Redis real —
 pensado para `EDECAN_LOCAL_MODE=True` (single-user, sin infraestructura
-propia que levantar). Lo interpreta `edecan_api.deps` (dueño WP-V3-02); el
+propia que levantar). Lo interpreta `edecan_api.deps` (responsable de la fase v3); el
 tipo/default de `REDIS_URL` en `Settings` no cambia.
 
-### 12.h Paquetes nuevos del workspace uv (dueño WP-V3-01)
+### 12.h Paquetes nuevos del workspace uv (responsable de la fase v3)
 
 `pyproject.toml` raíz agrega a `[tool.uv.workspace].members`: `packages/skills`
-(WP-V3-04), `packages/smarthome` (WP-V3-12), `apps/local` (WP-V3-05) — mismo
-criterio que v2 (§11, `ROADMAP_V2.md` §7.1): esqueleto mínimo (hatchling +
+(fase v3), `packages/smarthome` (fase v3), `apps/local` (fase v3) — mismo
+criterio que v2 (§11): esqueleto mínimo (hatchling +
 `edecan_<nombre>/__init__.py` + README de una línea) para que `uv sync` no
 rompa mientras el WP dueño de cada uno aterriza su código real en paralelo.
 
 ### 12.i Nota de negocio
 
-`DIRECCION_ACTUAL.md` es la fuente de verdad de dirección de PRODUCTO
-vigente para v3 (pivote a app de escritorio Tauri, bring-your-own
-credenciales incluyendo LLM, proveedores CLI/Ollama/Vertex, marketplace
-skills.sh) — reemplaza en autoridad a cualquier decisión de negocio previa
-de `PLAN.md`/`REQUISITOS_V2.md` que la contradiga. Esta sección 12 es su
-traducción a contratos técnicos pinned; ante cualquier ambigüedad de
-PRODUCTO (no de nombres/rutas/tipos, que son los que pinnea esta sección),
-`DIRECCION_ACTUAL.md` manda.
+`docs/roadmap.md` resume las prioridades y los principios de producto
+vigentes. Esta sección 12 define sus contratos técnicos para la app de
+escritorio Tauri, credenciales bring-your-own, proveedores
+CLI/Ollama/Vertex y skills. Ante una ambigüedad técnica sobre nombres,
+rutas o tipos, esta sección es la referencia normativa.
 
 Los guardrails de producto no negociables (dinero real, control remoto,
 salud/legal/finanzas informativo, solo APIs oficiales, LinkedIn prohibido,
 cero secretos reales, cero comandos git, cero infraestructura real aplicada)
-siguen sin cambios desde `DIRECCION_ACTUAL.md` ("Guardrails de seguridad")
-y aplican con el mismo peso que `ARCHITECTURE.md` §0.
+se resumen en `docs/roadmap.md` y aplican con el mismo peso que §0.
 
 ---
 
@@ -566,31 +558,31 @@ y aplican con el mismo peso que `ARCHITECTURE.md` §0.
 
 Desde la fase v4, esta sección es **EL CONTRATO** de todo lo nuevo — misma
 fuerza obligatoria que §10/§11/§12. No los reemplaza ni los reabre: §10 sigue
-pinned para v1, §11 (`ROADMAP_V2.md` §7) para v2, y §12 para v3. Todo agente
+pinned para v1, §11 para v2 y §12 para v3. Todo agente
 que escriba código v4 debe leer esta sección completa ANTES de escribir una
 línea; los nombres/rutas/tablas/flags de abajo se siguen **al pie de la
 letra** porque los demás work packages v4 se escriben en paralelo contra
-estos mismos contratos (mismo criterio que dejaron WP-V2-01/WP-V3-01 en
-§11/§12 — WP-V4-01 es el "linchpin" equivalente de v4).
+estos mismos contratos (mismo criterio que dejaron las fases v2 y v3 en
+§11/§12 — fase v4 es el "linchpin" equivalente de v4).
 
-### 13.a Routers v4 (montaje defensivo en `main.py`, dueño WP-V4-01)
+### 13.a Routers v4 (montaje defensivo en `main.py`, responsable de la fase v4)
 
-Igual patrón que v2/v3 (§11 `ROADMAP_V2.md` §7.6, §12.a): cada WP crea su
+Igual patrón que v2/v3 (§11, §12.a): cada WP crea su
 archivo en `apps/api/edecan_api/routers/` exportando `router`; `edecan_api.main`
 los monta con `importlib.import_module` + `try/except ImportError` +
 `logger.warning` si falta — tolerante a aterrizajes parciales.
 
 | módulo | prefix | dueño |
 |---|---|---|
-| `devices` | `/v1/devices` | WP-V4-01 (construido en este WP, ver §13.f) |
-| `erp` | `/v1/erp` | WP-V4-06 |
-| `ads` | `/v1/ads` | WP-V4-07 |
-| `vehiculos` | `/v1/vehiculos` | WP-V4-08 |
-| `mensajes` | `/v1/mensajes` | WP-V4-11 |
+| `devices` | `/v1/devices` | fase v4 (construido en este WP, ver §13.f) |
+| `erp` | `/v1/erp` | fase v4 |
+| `ads` | `/v1/ads` | fase v4 |
+| `vehiculos` | `/v1/vehiculos` | fase v4 |
+| `mensajes` | `/v1/mensajes` | fase v4 |
 
 `edecan_api.main.V4_ROUTER_NAMES = ("devices", "erp", "ads", "vehiculos", "mensajes")`.
 
-### 13.b Tablas nuevas — migración `0006_v4_expansion` (dueño WP-V4-01)
+### 13.b Tablas nuevas — migración `0006_v4_expansion` (responsable de la fase v4)
 
 Mismo patrón que `0001_initial`/`0003_v2_expansion`/`0004_v3_expansion`:
 `id UUID PK`, `created_at`/`updated_at`, `tenant_id UUID NOT NULL` + RLS
@@ -603,7 +595,7 @@ con el mismo estilo (mixins, `_enum_check`) que v1/v2/v3.
   'unidad', precio numeric(14,2) nullable, costo numeric(14,2) nullable,
   stock numeric(14,3) default 0, stock_minimo numeric(14,3) default 0,
   activo default true)` + `UNIQUE(tenant_id, sku)` — inventario/ERP ligero
-  (dueño real WP-V4-06, flag `erp.inventory`).
+  (responsable de la fase v4, flag `erp.inventory`).
 - `stock_moves(user_id, product_id UUID FK→products ON DELETE CASCADE, delta
   numeric(14,3), motivo, nota default '', ref nullable)` — movimiento
   (entrada/salida/ajuste) de un `product`.
@@ -611,17 +603,17 @@ con el mismo estilo (mixins, `_enum_check`) que v1/v2/v3.
   presupuesto_diario numeric(14,2) nullable, moneda char(3) default 'USD',
   payload jsonb default '{}', status default 'draft', external_id nullable,
   error nullable, confirmed_at nullable, pushed_at nullable)` — borrador de
-  campaña publicitaria (dueño real WP-V4-07, flag `tools.ads`).
+  campaña publicitaria (responsable de la fase v4, flag `tools.ads`).
   `status ∈ draft|confirmed|pushed|error|cancelled` (CHECK, mismo vocabulario
   y mismo espíritu que `orders`, §7.4 v2/§8.1: nace SIEMPRE `draft`, ninguna
   fila publica/gasta nada real por sí sola — empujarla de verdad a un
   proveedor de ads real es una acción del router `ads` que exige
   confirmación humana explícita, nunca una tool por sí sola).
 
-### 13.c Flags nuevos v4 (pinned en `edecan_schemas.plans`, dueño WP-V4-01)
+### 13.c Flags nuevos v4 (pinned en `edecan_schemas.plans`, responsable de la fase v4)
 
 Cuatro flags booleanos nuevos, espejo EXACTO de la fila `tools.images` (v2,
-§11 `ROADMAP_V2.md` §7.2) en los 4 planes:
+§11) en los 4 planes:
 
 | flag | free_selfhost | hosted_basic | hosted_pro | hosted_business |
 |---|---|---|---|---|
@@ -631,8 +623,8 @@ Cuatro flags booleanos nuevos, espejo EXACTO de la fila `tools.images` (v2,
 | `companion.remote_input` | ✔ | ✖ | ✔ | ✔ |
 
 `companion.remote_input` gatea la capacidad de control remoto real
-(inyección de mouse/teclado) que WP-V4-10 construyó sobre
-`remote_sessions`/`companion.remote_view` (v2, WP-V2-09, que se queda como
+(inyección de mouse/teclado) que fase v4 construyó sobre
+`remote_sessions`/`companion.remote_view` (v2, fase v2, que se queda como
 el nivel solo-vista): `kind="control"` en `POST /v1/remote/sessions` +
 `POST /v1/remote/sessions/{id}/input`
 (`apps/api/edecan_api/routers/remote.py::send_input`), ejecutado en el
@@ -642,7 +634,7 @@ comando (`approval.py::_approve_input_action`) y el opt-in explícito
 `remote_input_enabled` de `companion.yaml` (`config.py`) — detalle completo
 de los 4 candados en serie en `docs/control-remoto.md` §7bis. Aplica el
 mismo guardrail no negociable de
-`DIRECCION_ACTUAL.md` ("Control remoto del Mac/PC desde el móvil"):
+`docs/control-remoto.md`:
 arquitectura tipo TeamViewer/AnyDesk, emparejamiento explícito + aprobación
 humana, NUNCA un backdoor silencioso — ningún flag de plan reemplaza esa
 aprobación explícita en el momento de la sesión.
@@ -691,15 +683,15 @@ Mismo mecanismo bring-your-own que §12.b (`edecan_db.vault.TokenVault`,
 §10.4, sin tabla nueva): una `connector_account` singleton por
 `(tenant_id, connector_key)`.
 
-- `"ads"` (dueño real WP-V4-07): credenciales de la cuenta de ads del propio
+- `"ads"` (responsable de la fase v4): credenciales de la cuenta de ads del propio
   cliente (p. ej. Meta/Google/TikTok ads — el `provider` de cada `ad_draft`,
   §13.b, decide contra cuál). `TokenBundle.access_token` = JSON serializado
   con al menos una clave `"kind"` discriminadora (mismo criterio que
   `LLMProviderConfig.kind`, §12.c) más lo que cada proveedor necesite; forma
-  exacta la fija WP-V4-07. `token_type = "config"` (mismo criterio que
+  exacta la fija fase v4. `token_type = "config"` (mismo criterio que
   `"llm"`/`"voice_stt"`/`"voice_tts"` en §12.b: "hay que `json.loads()`
   esto", a diferencia del `"bearer"` de un token crudo).
-- `"vehicles"` (dueño real WP-V4-08): credenciales de la cuenta del
+- `"vehicles"` (responsable de la fase v4): credenciales de la cuenta del
   fabricante/plataforma del vehículo del cliente (p. ej. Tesla/SmartCar).
   Misma forma que `"ads"`: `TokenBundle.access_token` JSON con `"kind"`
   discriminador, `token_type = "config"`.
@@ -710,22 +702,22 @@ inventar el nombre de la clave ni su forma.
 
 ### 13.e Herramientas nuevas pinned (nombres exactos, español, snake_case)
 
-Mismo criterio que §10.14/§11 (`ROADMAP_V2.md` §7.7): nombres fijados desde
+Mismo criterio que §10.14/§11: nombres fijados desde
 ya aunque el paquete todavía sea un esqueleto (§13.h), para que ningún WP en
 paralelo invente un nombre distinto.
 
 | tool | dueño real | `requires_flags` | `dangerous` |
 |---|---|---|---|
-| `gestionar_inventario` | WP-V4-06 | `{"erp.inventory"}` | `False` |
-| `estado_inventario` | WP-V4-06 | `{"erp.inventory"}` | `False` |
-| `ads_resumen` | WP-V4-07 (`edecan_ads`) | `{"tools.ads"}` | `False` |
-| `ads_preparar_campana` | WP-V4-07 (`edecan_ads`) | `{"tools.ads"}` | `True` |
-| `vehiculo_estado` | WP-V4-08 (`edecan_vehicles`) | `{"tools.vehicles"}` | `False` |
-| `vehiculo_controlar` | WP-V4-08 (`edecan_vehicles`) | `{"tools.vehicles"}` | `True` |
+| `gestionar_inventario` | fase v4 | `{"erp.inventory"}` | `False` |
+| `estado_inventario` | fase v4 | `{"erp.inventory"}` | `False` |
+| `ads_resumen` | fase v4 (`edecan_ads`) | `{"tools.ads"}` | `False` |
+| `ads_preparar_campana` | fase v4 (`edecan_ads`) | `{"tools.ads"}` | `True` |
+| `vehiculo_estado` | fase v4 (`edecan_vehicles`) | `{"tools.vehicles"}` | `False` |
+| `vehiculo_controlar` | fase v4 (`edecan_vehicles`) | `{"tools.vehicles"}` | `True` |
 
 `gestionar_inventario`/`estado_inventario`: el paquete Python que las aloja
 (un `packages/erp` nuevo, o una extensión de `packages/business` ya
-existente) queda a criterio de WP-V4-06 — este WP (§13.h) solo reserva
+existente) queda a criterio de fase v4 — este WP (§13.h) solo reserva
 esqueleto de workspace para `ads`/`vehicles`, no para `erp`; el router `erp`
 en sí (prefix `/v1/erp`) SÍ es un módulo nuevo pinned en `apps/api/
 edecan_api/routers/erp.py` (§13.a), sea cual sea el paquete Python que
@@ -738,15 +730,14 @@ gate es la confirmación del *tool call* en el chat (`dangerous=True`, loop
 de `Agent.run_turn`, `ARCHITECTURE.md` §10.7) y el segundo es la
 confirmación humana explícita en el router `ads` antes de empujar el
 borrador a Meta (mismo criterio que `preparar_orden`/`preparar_pago` en v2,
-§11 `ROADMAP_V2.md` §7.7, que también son `dangerous=True` pese a solo dejar
+§11, que también son `dangerous=True` pese a solo dejar
 un borrador — ver también §14.e, mismo criterio para `preparar_reserva`/
 `preparar_nomina`). `vehiculo_controlar` también es `dangerous=True`:
 cualquier acción que mueva/abra/encienda algo físico real exige
 confirmación explícita del usuario (`ARCHITECTURE.md` §10.7, loop de
 `Agent.run_turn`), mismo criterio que `usar_computadora`/`llamar_contacto`.
 
-**Nota de alcance (2026-07-08, ver `DIRECCION_ACTUAL.md` "Vehículos
-(Smartcar) eliminado del alcance")**: `vehiculo_estado`/`vehiculo_controlar`
+**Nota de alcance (ver `docs/vehiculos.md`)**: `vehiculo_estado`/`vehiculo_controlar`
 quedan pinned arriba por completitud histórica, pero el dueño del proyecto
 decidió sacar vehículos del alcance del producto. `apps/api/pyproject.toml`
 a propósito NO declara `edecan-vehicles` como dependencia, así que estas dos
@@ -756,10 +747,10 @@ real (ver `docs/vehiculos.md`). El código de
 nada — esto NO es trabajo pendiente de un WP futuro, es una exclusión de
 producto deliberada. No inviertas más agentes completándolo.
 
-### 13.f Router `devices` (dueño WP-V4-01, construido en este WP)
+### 13.f Router `devices` (responsable de la fase v4, construido en este WP)
 
 `prefix="/v1/devices"`, sobre la tabla `devices` que ya existe desde
-`0003_v2_expansion` (§11 `ROADMAP_V2.md` §7.4) — este WP no le agrega
+`0003_v2_expansion` (§11) — este WP no le agrega
 columnas, solo la primera superficie HTTP CRUD:
 
 - `GET /v1/devices` → lista los dispositivos del tenant (todos los usuarios
@@ -787,10 +778,10 @@ si un WP no aterriza todavía). Queda como deuda aceptada para una pasada de
 documentación dedicada posterior, fuera de esta ola — mismo espíritu que el
 "enlace roto temporal es deuda aceptada" de la navegación (§13.i).
 
-### 13.h Paquetes nuevos del workspace uv (dueño WP-V4-01)
+### 13.h Paquetes nuevos del workspace uv (responsable de la fase v4)
 
 `pyproject.toml` raíz agrega a `[tool.uv.workspace].members`: `packages/ads`
-(dueño real WP-V4-07), `packages/vehicles` (dueño real WP-V4-08) — mismo
+(responsable de la fase v4), `packages/vehicles` (responsable de la fase v4) — mismo
 criterio que v2/v3 (§11, §12.h): esqueleto mínimo (hatchling +
 `edecan_<nombre>/__init__.py` defensivo + README de una línea) para que
 `uv sync` nunca rompa mientras el WP dueño de cada uno aterriza `tools.py`
@@ -799,12 +790,12 @@ real en paralelo. El `__init__.py` de ambos sigue EXACTAMENTE esta forma:
 ```python
 try:
     from .tools import get_all_tools
-except ImportError:  # el módulo de tools lo aporta WP-V4-07/08 en paralelo
+except ImportError:  # el módulo de tools lo aporta fase v4 en paralelo
     def get_all_tools():
         return []
 ```
 
-Los WPs dueños de `tools.py` (WP-V4-07/WP-V4-08) NUNCA editan este
+Los paquetes responsables de `tools.py` en la fase v4 NUNCA editan este
 `__init__.py` — solo agregan `tools.py` (y lo que haga falta) junto a él.
 Entry points `[project.entry-points."edecan.tools"]`: `ads =
 "edecan_ads:get_all_tools"` / `vehicles = "edecan_vehicles:get_all_tools"`.
@@ -814,22 +805,21 @@ no rompe) pero, a diferencia de `ads`, su entry point nunca se activa en un
 build real: `edecan-vehicles` a propósito no es dependencia de
 `apps/api/pyproject.toml` (ver nota de alcance en §13.e y `docs/vehiculos.md`).
 
-### 13.i Frontend v4 (dueño WP-V4-01 para la navegación; páginas en paralelo)
+### 13.i Frontend v4 (responsable de la fase v4 para la navegación; páginas en paralelo)
 
 `apps/web/src/components/layout/nav-items.ts` gana dos entradas: `{ href:
 "/app/inventario", label: "Inventario", icon: BoxIcon }` (junto a Negocios,
-página la construye WP-V4-06) y `{ href: "/app/mensajes", label: "Mensajes",
-icon: InboxIcon }` (junto a Conectores, página la construye WP-V4-11) —
+página la construye fase v4) y `{ href: "/app/mensajes", label: "Mensajes",
+icon: InboxIcon }` (junto a Conectores, página la construye fase v4) —
 `BoxIcon`/`InboxIcon` nuevos en `apps/web/src/components/icons.tsx`, mismo
 estilo SVG inline que el resto. Enlace roto temporal hasta que esos WPs
 aterricen sus páginas es deuda aceptada, mismo criterio que v2 (§11
-`ROADMAP_V2.md` §7.10).
+§11).
 
 ### 13.j Nota de negocio
 
-Sin cambios de dirección de producto nuevos respecto a `DIRECCION_ACTUAL.md`
-("v3 completado, v4 lanzado") — ERP/ads/vehículos son wishlist de
-`REQUISITOS_V2.md` que esa nota pide seguir empujando hacia código real. Los
+Las capacidades ERP, ads y vehículos de esta sección conservan los
+principios de producto resumidos en `docs/roadmap.md`. Los
 guardrails no negociables (dinero real nunca se mueve solo — aplica
 directo a `ad_drafts`/`ads_preparar_campana`, §13.b/§13.e —, control remoto
 con emparejamiento explícito, salud/legal/finanzas informativo, solo APIs
@@ -843,17 +833,17 @@ peso que `ARCHITECTURE.md` §0.
 
 Desde la fase v5, esta sección es **EL CONTRATO** de todo lo nuevo — misma
 fuerza obligatoria que §10/§11/§12/§13. No los reemplaza ni los reabre: §10
-sigue pinned para v1, §11 (`ROADMAP_V2.md` §7) para v2, §12 para v3 y §13
+sigue pinned para v1, §11 para v2, §12 para v3 y §13
 para v4. Todo agente que escriba código v5 debe leer esta sección completa
 ANTES de escribir una línea; los nombres/rutas/tablas/flags de abajo se
 siguen **al pie de la letra** porque los demás work packages v5 se escriben
 en paralelo contra estos mismos contratos (mismo criterio que dejaron
-WP-V2-01/WP-V3-01/WP-V4-01 en §11/§12/§13 — WP-V5-01 es el "linchpin"
+las fases v2, v3 y v4 en §11/§12/§13 — fase v5 es el "linchpin"
 equivalente de v5).
 
-### 14.a Routers v5 (montaje defensivo en `main.py`, dueño WP-V5-01)
+### 14.a Routers v5 (montaje defensivo en `main.py`, responsable de la fase v5)
 
-Igual patrón que v2/v3/v4 (§11 `ROADMAP_V2.md` §7.6, §12.a, §13.a): cada WP
+Igual patrón que v2/v3/v4 (§11, §12.a, §13.a): cada WP
 crea su archivo en `apps/api/edecan_api/routers/` exportando `router`;
 `edecan_api.main` los monta con `importlib.import_module` +
 `try/except ImportError` + `logger.warning` si falta — tolerante a
@@ -862,20 +852,20 @@ aterrizajes parciales.
 | módulo | prefix | dueño real |
 |---|---|---|
 | `rrhh` | `/v1/rrhh` | un WP de seguimiento (extiende `packages/business/edecan_business`, ver §14.f) |
-| `viajes` | `/v1/viajes` | WP-V5-09 (`packages/travel`, `edecan_travel`) |
-| `voz_avanzada` | `/v1/voz` | WP-V5-10 (`packages/voice`, `edecan_voice`) |
+| `viajes` | `/v1/viajes` | fase v5 (`packages/travel`, `edecan_travel`) |
+| `voz_avanzada` | `/v1/voz` | fase v5 (`packages/voice`, `edecan_voice`) |
 
 `edecan_api.main.V5_ROUTER_NAMES = ("rrhh", "viajes", "voz_avanzada")` — el
 NOMBRE DE MÓDULO (`edecan_api/routers/voz_avanzada.py`) sigue el patrón
 `rrhh`/`viajes`/`voz_avanzada` de este WP; su `prefix=` interno (`/v1/voz`,
 más corto) es la única excepción a la convención módulo=prefix que siguen
-el resto de routers del repo — decisión de su dueño real (WP-V5-10), no de
+el resto de routers del repo — decisión de su dueño real (fase v5), no de
 este WP: el montaje defensivo de `main.py` solo importa por nombre de
-módulo, nunca asume el prefix. A diferencia de v4 (donde WP-V4-01 construyó
+módulo, nunca asume el prefix. A diferencia de v4 (donde fase v4 construyó
 `devices` de verdad, §13.f), este WP NO construye ningún router v5 real —
 los 3 quedan para WPs paralelos.
 
-### 14.b Tablas nuevas — migración `0007_v5_expansion` (dueño WP-V5-01)
+### 14.b Tablas nuevas — migración `0007_v5_expansion` (responsable de la fase v5)
 
 Mismo patrón que `0001_initial`/`0003_v2_expansion`/`0004_v3_expansion`/
 `0006_v4_expansion`: `id UUID PK`, `created_at`/`updated_at`, `tenant_id
@@ -897,11 +887,11 @@ estilo (mixins, `_enum_check`) que v1-v4.
 - `payroll_runs(user_id, periodo, status default 'draft', total default 0,
   moneda default 'USD', notas default '', approved_at nullable)` — una
   corrida de nómina. `status ∈ draft|approved|paid|cancelled` (CHECK) —
-  mismo espíritu que `ad_drafts`/`orders` (§13.b/§11 `ROADMAP_V2.md` §7.4):
+  mismo espíritu que `ad_drafts`/`orders` (§13.b/§11):
   nace SIEMPRE `draft`, ninguna fila paga nada real por sí sola;
   `approved_at` queda `NULL` hasta que un paso explícito y confirmado por
-  el humano la apruebe (`DIRECCION_ACTUAL.md`: "dinero real nunca se mueve
-  solo").
+  el humano la apruebe (principio de aprobación humana de
+  `docs/roadmap.md`).
 - `payroll_items(payroll_run_id FK→payroll_runs, employee_id FK→employees,
   bruto, deducciones default 0, neto)` — la línea de un `employee` dentro
   de un `payroll_run`.
@@ -914,14 +904,14 @@ estilo (mixins, `_enum_check`) que v1-v4.
 
 Además, dos `ALTER TABLE` sobre tablas ya existentes (misma migración):
 
-- `devices` (v2, `ROADMAP_V2.md` §7.4) gana `push_token text NULL` y
+- `devices` (v2, §11) gana `push_token text NULL` y
   `push_platform text NULL` — token de push nativo (APNs/FCM) y qué
-  plataforma lo emitió, dueño real WP-V5-13 (`notifications.push`). Sin
+  plataforma lo emitió, responsable de la fase v5 (`notifications.push`). Sin
   CHECK en `push_platform`: vocabulario abierto a propósito.
 - `skills` (v3, §12e) gana `trust_tier text NOT NULL DEFAULT 'sin_revisar'`
   y `capabilities jsonb NOT NULL DEFAULT '[]'` — modelo de trust
   tiers/capacidades adaptado de OpenJarvis (`src/openjarvis/skills/`, ver
-  `NOTICE` y `DIRECCION_ACTUAL.md` "Usar OpenJarvis más agresivamente"),
+  `NOTICE`),
   dueño real un WP de seguimiento. `trust_tier` queda texto abierto a
   propósito (ese WP define su propia escala); nace `'sin_revisar'` para que
   ninguna skill recién instalada quede marcada como confiable por
@@ -936,7 +926,7 @@ cualquier `INSERT INTO jobs` con `type='generate_podcast'` con un
 `CheckViolationError` — exactamente la clase de bug que ya documentó
 `0005_jobs_type_check_v2_types` para los 3 tipos de v2.
 
-### 14.c Flags nuevos v5 (pinned en `edecan_schemas.plans`, dueño WP-V5-01)
+### 14.c Flags nuevos v5 (pinned en `edecan_schemas.plans`, responsable de la fase v5)
 
 Cinco flags booleanos nuevos. A diferencia de v4 (§13.c, espejo EXACTO de
 `tools.images` en los 4 planes), la matriz v5 NO es uniforme:
@@ -954,12 +944,12 @@ mismo criterio que `companion`, §10.13); `tools.travel`/`voice.cloning`/
 `tools.podcast` siguen el patrón premium de `tools.images` (✖ solo en
 `hosted_basic`).
 
-### 14.d Canal `"mobile"` de recordatorios (dueño WP-V5-01)
+### 14.d Canal `"mobile"` de recordatorios (responsable de la fase v5)
 
 `apps/api/edecan_api/routers/reminders.py::ReminderIn.channel`/
 `ReminderPatch.channel` (§10.12) suman `"mobile"` al vocabulario de v1
 (`web|voice|phone|api`, §10.3) — push nativo a la app móvil, dueño real
-WP-V5-13, que consume `devices.push_token`/`push_platform` (§14.b). Este WP
+fase v5, que consume `devices.push_token`/`push_platform` (§14.b). Este WP
 además convierte `channel` en un campo VALIDADO explícitamente (antes de v5
 `ReminderIn.channel` era `str` sin restricción, cualquier valor pasaba) —
 `Literal["web", "voice", "phone", "api", "mobile"]`.
@@ -974,10 +964,10 @@ en las rutas que este WP puede tocar.
 
 `edecan_schemas.queue.JOB_TYPES` (§10.5) suma un 11º valor, `generate_podcast`
 (al final, después de los 10 de v1+v2) — job del generador de podcasts
-(§14.e/§14.f), dueño real WP-V5-11. `apps/worker/edecan_worker/handlers`
+(§14.e/§14.f), responsable de la fase v5. `apps/worker/edecan_worker/handlers`
 lo registra vía `_register_defensive(HANDLERS, "generate_podcast",
 "generate_podcast")`, mismo criterio defensivo que `run_mission`/
-`run_automation`/`automation_scan` de v2 (§11 `ROADMAP_V2.md` §7.3/§7.6).
+`run_automation`/`automation_scan` de v2 (§11).
 
 ### 14.e Herramientas nuevas pinned (nombres exactos, español, snake_case)
 
@@ -989,15 +979,15 @@ ningún WP en paralelo invente un nombre distinto.
 | `gestionar_empleado` | un WP de seguimiento (`packages/business/edecan_business/rrhh.py`) | `{"erp.hr"}` | `False` |
 | `registrar_ausencia` | ídem | `{"erp.hr"}` | `False` |
 | `preparar_nomina` | ídem | `{"erp.hr"}` | `True` |
-| `buscar_vuelos` | WP-V5-09 (`edecan_travel`) | `{"tools.travel"}` | `False` |
-| `buscar_hoteles` | WP-V5-09 (`edecan_travel`) | `{"tools.travel"}` | `False` |
-| `estado_vuelo` | WP-V5-09 (`edecan_travel`) | `{"tools.travel"}` | `False` |
-| `preparar_reserva` | WP-V5-09 (`edecan_travel`) | `{"tools.travel"}` | `True` |
-| `rastrear_paquete` | WP-V5-09 (`edecan_travel`) | `{"tools.travel"}` | `False` |
-| `sintetizar_voz` | WP-V5-10 (`edecan_voice`) | `{"voice.web"}` | `False` |
-| `listar_voces` | WP-V5-10 (`edecan_voice`) | `{"voice.web"}` | `False` |
-| `crear_podcast` | un WP de seguimiento (WP-V5-11) | `{"tools.podcast"}` | `False` |
-| `generar_efecto_sonido` | un WP de seguimiento (WP-V5-11) | `{"tools.podcast"}` | `False` |
+| `buscar_vuelos` | fase v5 (`edecan_travel`) | `{"tools.travel"}` | `False` |
+| `buscar_hoteles` | fase v5 (`edecan_travel`) | `{"tools.travel"}` | `False` |
+| `estado_vuelo` | fase v5 (`edecan_travel`) | `{"tools.travel"}` | `False` |
+| `preparar_reserva` | fase v5 (`edecan_travel`) | `{"tools.travel"}` | `True` |
+| `rastrear_paquete` | fase v5 (`edecan_travel`) | `{"tools.travel"}` | `False` |
+| `sintetizar_voz` | fase v5 (`edecan_voice`) | `{"voice.web"}` | `False` |
+| `listar_voces` | fase v5 (`edecan_voice`) | `{"voice.web"}` | `False` |
+| `crear_podcast` | un WP de seguimiento (fase v5) | `{"tools.podcast"}` | `False` |
+| `generar_efecto_sonido` | un WP de seguimiento (fase v5) | `{"tools.podcast"}` | `False` |
 | `predecir_serie` | un WP de seguimiento (extiende `edecan_docanalysis`, ver nota) | — (sin flag) | `False` |
 | `detectar_anomalias` | un WP de seguimiento (extiende `edecan_docanalysis`, ver nota) | — (sin flag) | `False` |
 
@@ -1026,7 +1016,7 @@ listado de voces ya conectadas.
 
 `predecir_serie`/`detectar_anomalias` (predicción de series de tiempo,
 detección de anomalías/outliers) encajan temáticamente con "📊 Analista" de
-`REQUISITOS_V2.md` (predice ventas, detecta fraude, calcula riesgos) — mismo
+`docs/analista.md` — mismo
 dominio que `edecan_docanalysis` (`docs/analista.md`), cuyas 6 tools
 existentes tampoco llevan flag de plan ni son `dangerous` ("son un punto de
 partida útil, no un reemplazo de una revisión humana"). Este WP (linchpin de
@@ -1034,7 +1024,7 @@ contratos compartidos) solo reserva los NOMBRES — no crea ningún paquete ni
 router nuevo para ellas; su dueño real y su paquete final quedan para un WP
 de seguimiento.
 
-### 14.f Paquete nuevo del workspace uv: `packages/travel` (dueño WP-V5-01 el esqueleto; WP-V5-09 el código real)
+### 14.f Paquete nuevo del workspace uv: `packages/travel` (responsable de la fase v5 el esqueleto; fase v5 el código real)
 
 `pyproject.toml` raíz agrega a `[tool.uv.workspace].members`:
 `packages/travel` — mismo criterio que v2/v3/v4 (§11, §12.h, §13.h):
@@ -1047,7 +1037,7 @@ aterriza su código real en paralelo. Entry point
 —los Dockerfiles de producción— la excluirían en silencio).
 
 `edecan_voice` (paquete YA existente desde v1, §10.9) gana su PROPIO entry
-point `edecan.tools` en v5 (dueño real WP-V5-10, sin esqueleto de por medio
+point `edecan.tools` en v5 (responsable de la fase v5, sin esqueleto de por medio
 — a diferencia de `travel`/`ads`/`vehicles`, este paquete ya existía con
 código real): `[project.entry-points."edecan.tools"] voice =
 "edecan_voice:get_all_tools"` → `sintetizar_voz`/`listar_voces` (§14.e).
@@ -1062,10 +1052,10 @@ STT/TTS) ahora también declara `edecan-voice` — mismo motivo silencioso que
 estático, y ahora también en `EDECAN_TOOL_PACKAGES` por su entry point
 nuevo; `collect_all()` corriendo dos veces sobre el mismo paquete es
 inofensivo). `edecan_vehicles` NO se agrega a ninguna de estas 3 listas —
-exclusión deliberada que sigue vigente (§13.e/§13.h, `DIRECCION_ACTUAL.md`
-"Vehículos eliminado del alcance").
+exclusión deliberada que sigue vigente (§13.e/§13.h y
+`docs/vehiculos.md`).
 
-### 14.g Frontend v5 (dueño WP-V5-01 para la navegación; páginas en paralelo)
+### 14.g Frontend v5 (responsable de la fase v5 para la navegación; páginas en paralelo)
 
 `apps/web/src/components/layout/nav-items.ts` gana tres entradas: `{ href:
 "/app/rrhh", label: "RRHH", icon: TeamIcon }` (junto a Inventario), `{ href:
@@ -1077,7 +1067,7 @@ existente (usado por el composer de chat y por Configuración) en vez de
 declarar un ícono nuevo con el mismo nombre — el trabajo pedía "MicIcon"
 sin saber que ya existía; redeclararlo habría roto la compilación. Enlace
 roto temporal hasta que cada WP dueño aterrice su página es deuda aceptada,
-mismo criterio que v2/v4 (§11 `ROADMAP_V2.md` §7.10, §13.i).
+mismo criterio que v2/v4 (§11, §13.i).
 
 ### 14.h `docs/api.md` — SÍ se actualiza en v5 (a diferencia de v4)
 
@@ -1093,10 +1083,9 @@ botella de merge.
 
 ### 14.i Nota de negocio
 
-Sin cambios de dirección de producto nuevos respecto a `DIRECCION_ACTUAL.md`
-("v4 completado, v5 lanzado") — RRHH/nómina, viajes y voz avanzada
-(clonación, podcasts) son wishlist de `REQUISITOS_V2.md` que esa nota pide
-seguir empujando hacia código real, además de los dos objetivos de reuso de
+RRHH/nómina, viajes y voz avanzada (clonación, podcasts) conservan los
+principios de producto resumidos en `docs/roadmap.md`, además de los dos
+objetivos de reuso de
 OpenJarvis pendientes (`scripts/install/install.sh` → `scripts/
 instalar-selfhost.sh`; `src/openjarvis/skills/` → `packages/skills/
 edecan_skills`, trust tiers/capacidades, ver `NOTICE`). Los guardrails no
@@ -1105,8 +1094,8 @@ negociables (dinero real nunca se mueve solo — aplica directo a
 §14.b/§14.e —, control remoto con emparejamiento explícito, salud/legal/
 finanzas informativo, solo APIs oficiales, LinkedIn prohibido, cero secretos
 reales, cero comandos git, cero infraestructura real aplicada, y la regla
-de `DIRECCION_ACTUAL.md` "Vehículos (Smartcar) eliminado del alcance": cero
-inversión nueva en `packages/vehicles`/`routers/vehiculos.py`) siguen sin
+de §13.e y `docs/vehiculos.md`: cero inversión nueva en
+`packages/vehicles`/`routers/vehiculos.py`) siguen sin
 cambios y aplican con el mismo peso que `ARCHITECTURE.md` §0.
 
 ---
@@ -1115,18 +1104,18 @@ cambios y aplican con el mismo peso que `ARCHITECTURE.md` §0.
 
 Desde la fase v6, esta sección es **EL CONTRATO** de todo lo nuevo — misma
 fuerza obligatoria que §10/§11/§12/§13/§14. No los reemplaza ni los reabre:
-§10 sigue pinned para v1, §11 (`ROADMAP_V2.md` §7) para v2, §12 para v3, §13
+§10 sigue pinned para v1, §11 para v2, §12 para v3, §13
 para v4 y §14 para v5. Todo agente que escriba código v6 debe leer esta
 sección completa ANTES de escribir una línea; los nombres/rutas/tablas/flags
 de abajo se siguen **al pie de la letra** porque los demás work packages v6
 se escriben en paralelo contra estos mismos contratos (mismo criterio que
-dejaron WP-V2-01/WP-V3-01/WP-V4-01/WP-V5-01 en §11/§12/§13/§14 — WP-V6-01 es
+dejaron las fases v2, v3, v4 y v5 en §11/§12/§13/§14 — fase v6 es
 el "linchpin" equivalente de v6). Igual que v5 (§14.a), este WP NO construye
 ningún router v6 real — los 3 quedan para WPs paralelos.
 
-### 15.a Routers v6 (montaje defensivo en `main.py`, dueño WP-V6-01)
+### 15.a Routers v6 (montaje defensivo en `main.py`, responsable de la fase v6)
 
-Igual patrón que v2-v5 (§11 `ROADMAP_V2.md` §7.6, §12.a, §13.a, §14.a): cada
+Igual patrón que v2-v5 (§11, §12.a, §13.a, §14.a): cada
 WP crea su archivo en `apps/api/edecan_api/routers/` exportando `router`;
 `edecan_api.main` los monta con `importlib.import_module` +
 `try/except ImportError` + `logger.warning` si falta — tolerante a
@@ -1134,17 +1123,17 @@ aterrizajes parciales.
 
 | módulo | prefix | flag | dueño real |
 |---|---|---|---|
-| `reuniones` | `/v1/reuniones` | `tools.meetings` | WP-V6-05 |
-| `analista` | `/v1/analista` | — (sin flag, paridad con `edecan_docanalysis`, que tampoco declara `requires_flags`, ver §14.e) | WP-V6-05/WP-V6-06 |
-| `mcp` | `/v1/mcp` | `tools.mcp` | WP-V6-07 |
+| `reuniones` | `/v1/reuniones` | `tools.meetings` | fase v6 |
+| `analista` | `/v1/analista` | — (sin flag, paridad con `edecan_docanalysis`, que tampoco declara `requires_flags`, ver §14.e) | fase v6 |
+| `mcp` | `/v1/mcp` | `tools.mcp` | fase v6 |
 
 `edecan_api.main.V6_ROUTER_NAMES = ("reuniones", "analista", "mcp")`.
 
 Los endpoints de podcasts (`/v1/voz/podcasts*`) **NO** son un router nuevo:
-WP-V6-04 los agrega DENTRO del router `voz_avanzada` ya montado por v5
+fase v6 los agrega DENTRO del router `voz_avanzada` ya montado por v5
 (§14.a) — no aparecen en `V6_ROUTER_NAMES` (ver §15.e).
 
-### 15.b Tablas nuevas — migración `0008_v6_expansion` (dueño WP-V6-01)
+### 15.b Tablas nuevas — migración `0008_v6_expansion` (responsable de la fase v6)
 
 Mismo patrón que `0001_initial`/`0003_v2_expansion`/`0004_v3_expansion`/
 `0006_v4_expansion`/`0007_v5_expansion`: `id UUID PK`, `created_at`/
@@ -1179,7 +1168,7 @@ La misma migración también actualiza el `CHECK` de `jobs.type` (creado en
 `DROP CONSTRAINT` + `ADD CONSTRAINT` que usaron esas dos migraciones
 (Postgres no soporta modificar la expresión de un CHECK existente in place).
 
-### 15.c Flags nuevos v6 (pinned en `edecan_schemas.plans`, dueño WP-V6-01)
+### 15.c Flags nuevos v6 (pinned en `edecan_schemas.plans`, responsable de la fase v6)
 
 Dos flags booleanos nuevos, espejo EXACTO de la fila `tools.images` (v2) /
 `tools.travel`/`voice.cloning`/`tools.podcast` (v5) en los 4 planes:
@@ -1189,14 +1178,14 @@ Dos flags booleanos nuevos, espejo EXACTO de la fila `tools.images` (v2) /
 | `tools.meetings` | ✔ | ✖ | ✔ | ✔ |
 | `tools.mcp` | ✔ | ✖ | ✔ | ✔ |
 
-### 15.d Job type nuevo `process_meeting` + payload extendido de `generate_podcast` (dueño WP-V6-01)
+### 15.d Job type nuevo `process_meeting` + payload extendido de `generate_podcast` (responsable de la fase v6)
 
 `edecan_schemas.queue.JOB_TYPES` (§10.5) suma un 12º valor, `process_meeting`
 (al final, después de los 11 de v1+v2+v5) — job de `resumir_reunion` (§15.f),
-dueño real WP-V6-05. `apps/worker/edecan_worker/handlers` lo registra vía
+responsable de la fase v6. `apps/worker/edecan_worker/handlers` lo registra vía
 `_register_defensive(HANDLERS, "process_meeting", "process_meeting")`, mismo
 criterio defensivo que `generate_podcast`/`run_mission`/etc. (§11
-`ROADMAP_V2.md` §7.3/§7.6, §14.d). Payload: DOS shapes válidos desde el
+§11, §14.d). Payload: DOS shapes válidos desde el
 arranque, según quién encole el job — `{"meeting_id": "<uuid>"}` (la fila
 `meetings` ya existe; la encoló `POST /v1/reuniones` dentro de la MISMA
 transacción HTTP corta que su `INSERT`) o `{"file_id": "<uuid>", "titulo":
@@ -1219,9 +1208,9 @@ chat `crear_podcast`) sigue funcionando tal cual; el nuevo `{"podcast_id"}`
 carga la fila `podcasts` (§15.b) para resolver `titulo`/`guion`/`user_id` y
 escribe `file_id`/`status`/`error` de vuelta en esa misma fila en vez de
 crear un `file` suelto sin fila padre. Dueño real de esta extensión:
-WP-V6-04 (mismo WP que agrega los endpoints de §15.e).
+fase v6 (mismo WP que agrega los endpoints de §15.e).
 
-### 15.e Endpoints de podcasts dentro de `voz_avanzada` (dueño real WP-V6-04)
+### 15.e Endpoints de podcasts dentro de `voz_avanzada` (responsable de la fase v6)
 
 Router `voz_avanzada` (ya montado por v5, prefix `/v1/voz`, §14.a) gana 3
 endpoints nuevos:
@@ -1234,14 +1223,14 @@ endpoints nuevos:
 - `GET /v1/voz/podcasts/{id}` — un podcast puntual. `404` si no existe o no
   es del tenant.
 
-### 15.f Herramienta nueva pinned: `resumir_reunion` (dueño real WP-V6-05)
+### 15.f Herramienta nueva pinned: `resumir_reunion` (responsable de la fase v6)
 
 Mismo criterio que §10.14/§11/§13.e/§14.e: nombre fijado desde ya para que
 ningún WP en paralelo invente uno distinto.
 
 | tool | dueño real | `requires_flags` | `dangerous` |
 |---|---|---|---|
-| `resumir_reunion` | WP-V6-05 (`edecan_meetings`) | `{"tools.meetings"}` | `False` |
+| `resumir_reunion` | fase v6 (`edecan_meetings`) | `{"tools.meetings"}` | `False` |
 
 Vive en un paquete NUEVO `edecan_meetings` (entry point
 `[project.entry-points."edecan.tools"] meetings = "edecan_meetings:get_all_tools"`,
@@ -1258,21 +1247,21 @@ como primer paso — sin bloquear el turno de chat esperando el resultado,
 igual que `crear_podcast`/`vehiculo_estado` con jobs de fondo. `dangerous=False`:
 solo lee/resume contenido que el propio tenant ya subió, no mueve nada real.
 
-**Nota de alcance para WP-V6-05**: a diferencia de `packages/travel`/
-`packages/ads`/`packages/vehicles` (v4/v5, §13.h/§14.f), este WP (WP-V6-01)
+**Nota de alcance para fase v6**: a diferencia de `packages/travel`/
+`packages/ads`/`packages/vehicles` (v4/v5, §13.h/§14.f), este WP (fase v6)
 **NO** reserva el esqueleto de `packages/meetings` en `pyproject.toml` raíz
 ni en `apps/api/pyproject.toml`/`apps/worker/pyproject.toml` — el enunciado
 de este WP deliberadamente no incluyó `pyproject.toml` entre sus rutas
-editables. WP-V6-05 debe crear `packages/meetings/` completo (con su propio
+editables. fase v6 debe crear `packages/meetings/` completo (con su propio
 `pyproject.toml`) Y sumarlo a `[tool.uv.workspace].members` del
 `pyproject.toml` raíz Y declarar `edecan-meetings` como dependencia de
 `apps/api/pyproject.toml`/`apps/worker/pyproject.toml` (mismo motivo
 silencioso documentado en §14.f para `edecan-travel`/`edecan-voice`: sin esas
 líneas, `uv sync --no-dev --package edecan-api`/`edecan-worker` —los
 Dockerfiles de producción— excluirían el paquete en silencio) — nadie más lo
-hace por WP-V6-05 esta vez.
+hace por fase v6 esta vez.
 
-### 15.g MCP: conector dinámico por tenant (dueño real WP-V6-07)
+### 15.g MCP: conector dinámico por tenant (responsable de la fase v6)
 
 Model Context Protocol como conector bring-your-own — un tenant conecta
 SERVIDORES MCP de terceros (o propios) y sus tools quedan disponibles para el
@@ -1305,7 +1294,7 @@ alcanza sin ninguna migración nueva, usando `external_account_id` como el
   todos los tenants, §10.7), estas se resuelven POR TENANT en tiempo de
   turno de chat a partir de sus `connector_accounts` con `connector_key="mcp"`
   — el mecanismo exacto de inyección en `Agent.run_turn`/`ToolRegistry`
-  queda a criterio de diseño de WP-V6-07, no pinned aquí.
+  queda a criterio de diseño de fase v6, no pinned aquí.
 - SIEMPRE `dangerous=True`, sin excepción — a diferencia del resto de tools
   bring-your-own del repo (que declaran `dangerous` según lo que hacen), una
   tool MCP ejecuta código de un servidor de TERCEROS que Edecán no audita ni
@@ -1319,7 +1308,7 @@ alcanza sin ninguna migración nueva, usando `external_account_id` como el
   tiene esa restricción (mismo criterio que cualquier llamada HTTP
   bring-your-own del repo).
 
-### 15.h Settings/env nuevos (dueño WP-V6-01: `edecan_api.config` + `.env.example`) y Media Streams
+### 15.h Settings/env nuevos (responsable de la fase v6: `edecan_api.config` + `.env.example`) y Media Streams
 
 Misma convención dura que v2/v3/v5 (§7.5/§12.g/§14): toda tool/router v6 lee
 estos campos con `getattr(ctx.settings, "CAMPO", default)`, nunca revienta si
@@ -1328,65 +1317,56 @@ nuevas: reuniones/analista/MCP/podcasts se configuran por tenant vía
 TokenVault (§15.f/§15.g), no vía `.env`.
 
 `TWILIO_MEDIA_STREAMS_ENABLED` (bool, default `False`) — gatea la ruta
-WebSocket `WS /v1/twilio/media` en `premium/` (interrupciones naturales
+WebSocket `WS /v1/twilio/media` de la extensión comercial externa (interrupciones naturales
 durante una llamada real vía Twilio Media Streams, en vez del ciclo
 `<Gather>`/`<Say>` síncrono que ya usa `edecan_premium.twilio_router`,
 §10.10). Beta, dueño real un WP de telefonía de seguimiento — a diferencia
 de otros settings v3 que solo "reservan el nombre y el gate" antes de que
 la ruta exista (ver §12.g), acá la ruta YA se construyó completa y probada:
-`premium/edecan_premium/media_streams.py` (VAD por energía, códec μ-law,
+el módulo externo `edecan_premium.media_streams` (VAD por energía, códec μ-law,
 `SesionMediaStream` como máquina de estados de la llamada, y el propio
 endpoint WS) se trasplanta a `twilio_router.router` de forma incondicional
 al importar el módulo (`router.routes.extend(media_streams.media_router.
 routes)` — ver docstring de `twilio_router.py`). Prefix nuevo (`/v1/twilio`,
 distinto del `/v1/voice/twilio` ya pinned en §10.10) porque es un endpoint
 WebSocket de streaming de audio bidireccional, no un webhook TwiML más —
-vive en `premium/` (licencia comercial, mismo criterio que el resto de
+vive en la extensión comercial (mismo criterio que el resto de
 telefonía, §6/§10.10). El endpoint WS se monta siempre que `edecan_premium`
 esté instalado (mismo guard `find_spec` de siempre, §10.12/`main.py`) — NO
 hay un segundo guard de montaje condicionado al flag.
 
-Brecha conocida, sin dueño asignado todavía: aunque la ruta está montada,
-sigue INALCANZABLE en los dos despliegues reales del producto (`apps/api`
-hosted y `apps/local` desktop) porque ninguno de los dos asigna
-`app.state.settings` dentro de `create_app()` (junto a
-`app.state.get_session`/`app.state.make_vault`, que sí están) — sin esa
-línea, `_media_streams_enabled()` evalúa siempre `False` sin importar el
-flag, así que `/incoming` nunca llega a emitir el `<Connect><Stream>` con
-token firmado que haría falta para llegar al WS. `app.state.phone_agent`
-(§10.12/`main.py`, deliberadamente sin configurar: resolver identidad de un
-llamante entrante no autenticado es una decisión de producto fuera de este
-contrato) es un segundo gate independiente, también sin aterrizar en ningún
-camino real. Ambas asignaciones quedan, a propósito, para el WP de
-telefonía de seguimiento dueño de esta función — detalle en
+Al montar la extensión, `create_app()` inyecta `app.state.settings`, por lo
+que `_media_streams_enabled()` puede leer el flag en runtime.
+`app.state.phone_agent` sigue deliberadamente sin configurar: resolver la
+identidad de un llamante entrante no autenticado es una decisión de producto
+fuera de este contrato. Esa limitación se documenta en
 `docs/voz-telefonia.md` ("Interrupciones naturales (beta)" → "Limitación
 conocida") y en los docstrings de `twilio_router.py`/`media_streams.py`.
 
-### 15.i Frontend v6 (dueño WP-V6-01 para la navegación; páginas en paralelo)
+### 15.i Frontend v6 (responsable de la fase v6 para la navegación; páginas en paralelo)
 
 `apps/web/src/components/layout/nav-items.ts` gana dos entradas: `{ href:
 "/app/reuniones", label: "Reuniones", icon: VideoIcon }` (junto a Mensajes) y
 `{ href: "/app/analista", label: "Analista", icon: ChartBarIcon }` (junto a
 Panel) — `VideoIcon`/`ChartBarIcon` nuevos en
 `apps/web/src/components/icons.tsx`, mismo estilo SVG inline (stroke, 24x24,
-`currentColor`) que el resto. Enlace roto temporal hasta que WP-V6-05/
-WP-V6-06 aterricen sus páginas es deuda aceptada, mismo criterio que v2/v4/v5
-(§11 `ROADMAP_V2.md` §7.10, §13.i, §14.g). MCP **NO** va en la navegación
-principal: vive dentro de `/app/configuracion` (WP-V6-07, §15.g) como una
+`currentColor`) que el resto. Enlace roto temporal hasta que fase v6/
+fase v6 aterricen sus páginas es deuda aceptada, mismo criterio que v2/v4/v5
+(§11, §13.i, §14.g). MCP **NO** va en la navegación
+principal: vive dentro de `/app/configuracion` (fase v6, §15.g) como una
 tarjeta más de conectores, no como una sección propia.
 
 ### 15.j Nota de negocio
 
-Sin cambios de dirección de producto nuevos respecto a `DIRECCION_ACTUAL.md`
-— reuniones/analista/podcasts HTTP/MCP son wishlist de `REQUISITOS_V2.md`
-que esa nota pide seguir empujando hacia código real, con el mismo modelo
+Reuniones, analista, podcasts HTTP y MCP conservan los principios de
+producto resumidos en `docs/roadmap.md`, con el mismo modelo
 bring-your-own reforzado (§15.g: incluso los secretos de servidores MCP de
 terceros pasan por `TokenVault`, nunca `.env` de plataforma). Los guardrails
 no negociables (dinero real nunca se mueve solo, control remoto con
 emparejamiento explícito, salud/legal/finanzas informativo, solo APIs
 oficiales, LinkedIn prohibido, cero secretos reales, cero comandos git, cero
-infraestructura real aplicada, y la regla de `DIRECCION_ACTUAL.md`
-"Vehículos (Smartcar) eliminado del alcance": cero inversión nueva en
+infraestructura real aplicada, y la exclusión de §13.e y
+`docs/vehiculos.md`: cero inversión nueva en
 `packages/vehicles`/`routers/vehiculos.py`) siguen sin cambios y aplican con
 el mismo peso que `ARCHITECTURE.md` §0. Guardrail nuevo específico de v6: una
 tool MCP ejecuta código de un servidor de terceros no auditado por Edecán —

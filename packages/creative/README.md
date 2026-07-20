@@ -2,7 +2,7 @@
 
 Creatividad: generación de imágenes y documentos de oficina (Word/PowerPoint/PDF),
 guardados como archivos del tenant en S3 + tabla `files` (`ARCHITECTURE.md` §10.14,
-`ROADMAP_V2.md` §7.7 — WP-V2-04). Cada herramienta implementa el contrato `Tool` de
+`ARCHITECTURE.md` §11 — fase v2). Cada herramienta implementa el contrato `Tool` de
 `edecan_core` (§10.7): `name`, `description`, `input_schema`, `requires_flags`,
 `dangerous` y `async run(ctx, args)`.
 
@@ -10,7 +10,7 @@ guardados como archivos del tenant en S3 + tabla `files` (`ARCHITECTURE.md` §10
 consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`, declarado en
 `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## Las 4 herramientas (nombres exactos, pinned en `ROADMAP_V2.md` §7.7)
+## Las 4 herramientas (nombres exactos, pinned en `ARCHITECTURE.md` §11)
 
 | Tool | Módulo | Flag | `dangerous` | Genera |
 |---|---|---|---|---|

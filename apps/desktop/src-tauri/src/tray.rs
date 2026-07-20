@@ -24,6 +24,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
 
 use crate::backend;
+use crate::listen;
 use crate::util;
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -34,9 +35,17 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let open_data = MenuItem::with_id(app, "open_data", "Ver carpeta de datos", true, None::<&str>)?;
+    let open_data =
+        MenuItem::with_id(app, "open_data", "Ver carpeta de datos", true, None::<&str>)?;
+    let stop_listen = MenuItem::with_id(
+        app,
+        "stop_listen",
+        "Detener escucha siempre",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_browser, &open_data, &quit])?;
+    let menu = Menu::with_items(app, &[&open_browser, &open_data, &stop_listen, &quit])?;
 
     let icon = app
         .default_window_icon()
@@ -60,6 +69,11 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     let dir = backend::data_dir(&app_for_events);
                     let _ = std::fs::create_dir_all(&dir);
                     util::open_in_file_manager(&dir);
+                }
+                "stop_listen" => {
+                    if let Err(err) = listen::set_enabled(app_for_events.clone(), false) {
+                        eprintln!("[edecan-desktop] no se pudo detener la escucha en segundo plano: {err}");
+                    }
                 }
                 "quit" => app_for_events.exit(0),
                 _ => {}

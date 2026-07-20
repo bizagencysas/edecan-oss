@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edecán — API HTTP (FastAPI): auth, persona, chat SSE, conectores OAuth, voz, companion WS, billing"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -25,70 +26,12 @@ dependencies = [
     "edecan-connectors",
     "edecan-voice",
     "edecan-toolkit",
-    # `edecan-business` (WP-V2-12): `edecan_api.routers.negocios` hace
-    # `from edecan_business import ...` directo (totales/numeración/PDF/KPIs
-    # "puros y fakeables", ver su docstring) — sin esta línea,
-    # `infra/docker/Dockerfile.api` (`uv sync --no-dev --package edecan-api`,
-    # que instala SOLO este paquete y sus dependencias declaradas) no
-    # incluiría `edecan_business` y el montaje defensivo de `main.py`
-    # silenciosamente saltaría `/v1/negocios` en producción. CORRECCIÓN
-    # (2026-07-08): este comentario afirmaba antes que los paquetes v2 que
-    # SOLO exponen herramientas vía entry points (`edecan.tools`) "no
-    # requieren declarar la dependencia acá porque `uv sync` ya instala todo
-    # el workspace" — eso es FALSO para cualquier `uv sync --package
-    # edecan-api` (exactamente lo que usan ambos Dockerfiles en producción,
-    # ver el comentario de `edecan-smarthome` más abajo para el mecanismo
-    # completo). Los 8 paquetes que faltaban por esa premisa incorrecta
-    # (`edecan-docanalysis`/`edecan-browser`/`edecan-creative`/
-    # `edecan-messaging`/`edecan-agents`/`edecan-automations`/
-    # `edecan-commerce`/`edecan-advisory`) ya están declarados más abajo.
+    # Domain packages are direct dependencies because production images use
+    # `uv sync --package edecan-api`; entry points are only discoverable when
+    # their distributions are installed in that isolated environment.
     "edecan-business",
-    # `edecan-skills` (v3, WP-V3-04): mismo motivo que `edecan-business` de
-    # arriba — `edecan_api.routers.skills` hace `from edecan_skills... import
-    # ...` directo (reutiliza `installer.install_from_source`/`store.*`/
-    # `client.SkillsIndexClient`, sin duplicar ese pipeline, ver el docstring
-    # de ese router) en vez de solo exponer herramientas por entry points.
     "edecan-skills",
-    # `edecan-smarthome` (v3, WP-V3-12, casa inteligente): a diferencia de
-    # `edecan-business`/`edecan-skills` de arriba, `edecan_api.routers.
-    # smarthome` NO hace `from edecan_smarthome import ...` (ver el docstring
-    # de ese router) — pero igual hay que declararlo acá, por un motivo
-    # DISTINTO: `edecan_smarthome` expone sus 3 herramientas del agente
-    # (`casa_dispositivos`/`casa_estado`/`casa_controlar`,
-    # `packages/smarthome/edecan_smarthome/tools.py`) SOLO vía el entry point
-    # `edecan.tools`, que `ToolRegistry.load_entry_points` resuelve con
-    # `importlib.metadata.entry_points()` — y esa función solo ve paquetes
-    # REALMENTE instalados, sin importar si algún módulo los importa o no. La
-    # nota de arriba ("no requieren declarar la dependencia acá porque
-    # `uv sync` ya instala todo el workspace") solo vale para un `uv sync`
-    # SIN `--package` (dev/test); NO vale para `infra/docker/Dockerfile.api`
-    # (`uv sync --no-dev --package edecan-api`, que instala SOLO este paquete
-    # y sus dependencias declaradas) ni para `infra/docker/
-    # compose.selfhost.yml` (build-ea desde ese mismo Dockerfile). Sin esta
-    # línea, esas imágenes dejaban al agente sin esas 3 tools EN SILENCIO —
-    # `PUT /v1/smarthome/credentials` seguía dejando "conectar" Home
-    # Assistant sin ningún error, porque ese endpoint valida contra Home
-    # Assistant directo, no contra el `ToolRegistry`. Mismo mecanismo que ya
-    # resuelve `apps/desktop/packaging/edecan_local.spec` para el build de
-    # escritorio (`collect_all` sobre los 12 paquetes de `edecan.tools`,
-    # incluido `edecan_smarthome`) — ver también el docstring de
-    # `edecan_api.routers.smarthome`.
     "edecan-smarthome",
-    # Los 8 paquetes restantes de `edecan.tools` (de los 12 que enumera
-    # `apps/desktop/packaging/edecan_local.spec`): mismo mecanismo exacto que
-    # `edecan-smarthome` arriba (SOLO exponen herramientas vía el entry point
-    # `edecan.tools`, que `ToolRegistry.load_entry_points` resuelve con
-    # `importlib.metadata.entry_points()` — visible únicamente si el paquete
-    # está REALMENTE instalado en el venv, sin importar si algún módulo lo
-    # importa). Faltaban acá por el comentario incorrecto que tenía
-    # `edecan-business` (ya corregido arriba): un `uv sync --no-dev --package
-    # edecan-api` (`infra/docker/Dockerfile.api` y, por el mismo Dockerfile,
-    # `infra/docker/compose.selfhost.yml`) los excluía en silencio de
-    # cualquier imagen construida con Docker — las tools de análisis de
-    # documentos, navegador, creatividad, mensajería, el Orchestrator,
-    # automatizaciones, comercio y los asesores informativos nunca
-    # aparecían en el `ToolRegistry` de esas imágenes, sin ningún error
-    # visible (mismo síntoma silencioso que tenía `edecan-smarthome`).
     "edecan-docanalysis",
     "edecan-browser",
     "edecan-creative",
@@ -97,96 +40,13 @@ dependencies = [
     "edecan-automations",
     "edecan-commerce",
     "edecan-advisory",
-    # `edecan-ads` (v4, WP-V4-07, `ARCHITECTURE.md` §13.a/§13.e): mismo
-    # motivo que `edecan-business`/`edecan-skills` arriba — a diferencia de
-    # `edecan-smarthome`/los 8 paquetes de justo arriba (que SOLO exponen
-    # herramientas vía el entry point `edecan.tools`), `edecan_api.routers.
-    # ads` hace `from edecan_ads.providers import (...)` directo (reutiliza
-    # `get_tenant_ads_provider`/`normalizar_ad_account_id`, ver el docstring
-    # de ese router para el guardrail de dinero de `confirmar_borrador`: la
-    # campaña siempre nace en pausa). Sin esta línea, `infra/docker/
-    # Dockerfile.api` (`uv sync --no-dev --package edecan-api`, que instala
-    # SOLO este paquete y sus dependencias declaradas) no incluye
-    # `edecan_ads`, y el montaje defensivo de `main.py` (`V4_ROUTER_NAMES`,
-    # `try/except ImportError` + `logger.warning`) saltaba todo `/v1/ads` en
-    # producción SIN ningún error visible para quien opera el despliegue —
-    # verificado con `uv tree --package edecan-api --frozen`: antes de esta
-    # línea `edecan-ads` no aparecía en el árbol resuelto. Este hueco estaba
-    # auto-documentado como pendiente en el docstring de `apps/api/tests/
-    # test_ads_router.py` (que por eso todavía agrega `packages/ads` a
-    # `sys.path` a mano antes de importar el router).
     "edecan-ads",
-    # `edecan-vehicles` (WP-V4-08, `edecan_vehicles`) NO se declara acá — a
-    # diferencia de `edecan-ads` justo arriba y de todos los paquetes de
-    # `edecan.tools` de esta lista, esto es EXCLUSIÓN A PROPÓSITO, no un
-    # descuido. `edecan_vehicles` también expone sus tools
-    # (`vehiculo_estado`/`vehiculo_controlar`, pinned en `ARCHITECTURE.md`
-    # §13.e) solo vía el entry point `edecan.tools` — mismo mecanismo que
-    # dejaría a `ToolRegistry.load_entry_points` sin verlas si el paquete no
-    # estuviera instalado — PERO `DIRECCION_ACTUAL.md` ("Vehículos (Smartcar)
-    # eliminado del alcance", 2026-07-08, decisión confirmada por el dueño
-    # del proyecto) ordena explícitamente "No conectarlo a la
-    # API/worker/apps móviles" y deja `packages/vehicles/` huérfano/inerte a
-    # propósito. Ese mismo documento cita ESTE estado exacto (`edecan-vehicles`
-    # ausente de `apps/api/pyproject.toml`) como el estado correcto y
-    # esperado, y cierra con: "si algún audit futuro lo encuentra
-    # 'incompleto', la respuesta correcta es 'fuera de alcance', no
-    # 'arreglarlo'". Mismo criterio que la exclusión ya documentada de
-    # `edecan_vehicles` en `apps/desktop/packaging/edecan_local.spec`
-    # (`EDECAN_TOOL_PACKAGES`). NO agregar "edecan-vehicles" a esta lista sin
-    # antes revertir esa decisión de producto.
-    # `edecan-travel` (v5, WP-V5-09, `ARCHITECTURE.md` §14): mismo criterio
-    # que `edecan-ads` arriba — expone `buscar_vuelos`/`buscar_hoteles`/
-    # `estado_vuelo`/`preparar_reserva`/`rastrear_paquete` vía el entry point
-    # `edecan.tools`. Sin esta línea, `infra/docker/Dockerfile.api` (`uv sync
-    # --no-dev --package edecan-api`, que instala SOLO este paquete y sus
-    # dependencias declaradas) no incluye `edecan_travel`, y esas 5 tools
-    # nunca aparecen en el `ToolRegistry` de producción — mismo síntoma
-    # silencioso que ya tuvieron `edecan-business`/`edecan-smarthome`/
-    # `edecan-ads` antes de declararse acá.
+    # Vehicle tools remain outside the API/worker product surface; see the
+    # current scope in docs/roadmap.md before adding edecan-vehicles here.
     "edecan-travel",
-    # `edecan-meetings` (v6, WP-V6-05, `ARCHITECTURE.md` §15.f): mismo
-    # criterio que `edecan-smarthome`/`edecan-travel` arriba — `edecan_api`
-    # nunca hace `from edecan_meetings import ...` (el router
-    # `/v1/reuniones/*` solo encola el job `process_meeting`, ver su propio
-    # docstring), expone `resumir_reunion` SOLO vía el entry point
-    # `edecan.tools`. Sin esta línea, `infra/docker/Dockerfile.api` (`uv sync
-    # --no-dev --package edecan-api`, que instala SOLO este paquete y sus
-    # dependencias declaradas) no incluye `edecan_meetings`, y esa tool nunca
-    # aparece en el `ToolRegistry` de producción — mismo síntoma silencioso
-    # que ya tuvieron `edecan-business`/`edecan-smarthome`/`edecan-ads`/
-    # `edecan-travel` antes de declararse acá. Gap ya documentado como
-    # pendiente en `packages/meetings/README.md`, sección "Nota sobre el
-    # workspace uv" — §15.f pinneaba esta línea como responsabilidad
-    # explícita de WP-V6-05 ("nadie más lo hace por WP-V6-05 esta vez").
     "edecan-meetings",
-    # `edecan-mcp` (v6, WP-V6-07, `ARCHITECTURE.md` §15.g): a diferencia de
-    # `edecan-meetings` arriba (`edecan_api` nunca hace `from edecan_meetings
-    # import ...`), `edecan_api.routers.mcp` SÍ hace `from edecan_mcp import
-    # (...)` directo a nivel de módulo, SIN try/except (ver el docstring de
-    # ese router: "este módulo solo declara `router`", el montaje defensivo
-    # vive en `main.py`) — y por separado, `edecan_api.deps.
-    # get_mcp_tools_for_tenant` importa `edecan_mcp.provider_config`/
-    # `edecan_mcp.tool_adapter` CON guardia (`try/except ImportError`, falla
-    # abierto a "sin tools MCP", nunca rompe el chat) pero solo sirve tools de
-    # verdad si el paquete SÍ está instalado. Sin esta línea, `infra/docker/
-    # Dockerfile.api` (`uv sync --no-dev --package edecan-api`, que instala
-    # SOLO este paquete y sus dependencias declaradas) no incluye
-    # `edecan_mcp`: el montaje defensivo de `main.py` (`V6_ROUTER_NAMES`,
-    # `try/except ImportError` + `logger.warning`) salta TODO `/v1/mcp/*` en
-    # producción sin ningún error visible, y ningún tenant ve jamás una tool
-    # MCP en el chat — mismo síntoma silencioso que ya tuvieron
-    # `edecan-business`/`edecan-smarthome`/`edecan-ads`/`edecan-travel`/
-    # `edecan-meetings` antes de declararse acá. Gap ya documentado como
-    # pendiente en la nota final de `packages/mcp/pyproject.toml` — a
-    # diferencia de `edecan-meetings` (§15.f, dueño explícito WP-V6-05 de esa
-    # línea), §15.g nunca asignó este registro a ningún WP, así que quedó
-    # pendiente hasta ahora.
     "edecan-mcp",
-    # `vobject` — parseo de vCard para `routers/contacts.py::import_contacts_icloud`
-    # (import de contactos por CardDAV, docstring de ese router). No es un
-    # paquete del workspace: dependencia externa de PyPI, se declara acá igual
-    # que `httpx`/`pyjwt` de arriba.
+    # vCard parsing for CardDAV contact imports.
     "vobject>=0.9",
 ]
 

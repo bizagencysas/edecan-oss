@@ -2,7 +2,7 @@
 
 Guía del primer arranque de Edecán desde la perspectiva de quien lo usa (no de quien lo despliega — para eso ver [`self-hosting.md`](./self-hosting.md) y [`configuracion.md`](./configuracion.md), que cubren variables de entorno a nivel de instancia). Cubre exactamente lo que ves en pantalla: registro → wizard de bienvenida → Configuración → chat.
 
-Principio que gobierna todo este recorrido (`DIRECCION_ACTUAL.md`, "Principio de UX no negociable: configuración de pocos clicks"): **conectar tu inteligencia (LLM) es lo único obligatorio para chatear.** Todo lo demás — voz, teléfono, correo/calendario, redes sociales, bots de mensajería — es opcional, se configura cuando quieras, y nunca bloquea el primer uso.
+Principio que gobierna todo este recorrido: **conectar tu inteligencia (LLM) es lo único obligatorio para chatear.** Todo lo demás — voz, teléfono, correo/calendario, redes sociales, bots de mensajería — es opcional, se configura cuando quieras, y nunca bloquea el primer uso.
 
 ## 1. Crea tu cuenta
 
@@ -68,7 +68,7 @@ Cada tarjeta muestra su estado actual (proveedor, modelo cuando aplica, y la key
 
 ## 4. Notas para quien construye el build de escritorio
 
-El frontend (`apps/web`, Next.js 14) soporta un modo de export estático pensado para empaquetarse dentro de la app de escritorio Tauri (`DIRECCION_ACTUAL.md`, "Stack de la app de escritorio: Tauri"):
+El frontend (`apps/web`, Next.js 14) soporta un modo de export estático pensado para empaquetarse dentro de la app de escritorio Tauri:
 
 ```bash
 NEXT_OUTPUT=export NEXT_PUBLIC_API_URL='' npm run build
@@ -76,4 +76,4 @@ NEXT_OUTPUT=export NEXT_PUBLIC_API_URL='' npm run build
 
 Esto genera HTML/CSS/JS estático (carpeta `out/`) sin necesitar un servidor Next corriendo — el backend local empaquetado en la app de escritorio sirve tanto la API como estos archivos estáticos desde el mismo origen.
 
-**Por qué `NEXT_PUBLIC_API_URL=''` (vacío) y no simplemente omitirla:** con la variable vacía, el fetch de la API queda relativo (`'' + '/v1/credentials'` → same-origin), en vez de apuntar a una URL absoluta fija. `lib/api-configuracion.ts` (esta pantalla) maneja esto con `process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ?? "http://localhost:8000"` — el operador `??` respeta un vacío explícito y solo cae al default cuando la variable ni siquiera está definida. **Actualización (verificado 2026-07-09, WP-V7-11): `lib/api.ts` (compartido, usado por el resto de la app) YA usa ese mismo `??`** — este párrafo antes advertía que todavía resolvía la variable con `||` (lo que sí habría convertido un vacío explícito de vuelta a `http://localhost:8000`), pero eso ya no es cierto contra el código real (`lib/api.ts` línea 39; confirmado además que cada `lib/api-*.ts` que importa `API_BASE_URL` desde ahí hereda el mismo `??`, sin ninguna ocurrencia de `||` restante para este patrón en todo `apps/web/src/lib/`). Same-origin real en modo escritorio para todas las pantallas, no solo para esta.
+**Por qué `NEXT_PUBLIC_API_URL=''` (vacío) y no simplemente omitirla:** con la variable vacía, el fetch de la API queda relativo (`'' + '/v1/credentials'` → same-origin), en vez de apuntar a una URL absoluta fija. `lib/api-configuracion.ts` (esta pantalla) maneja esto con `process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ?? "http://localhost:8000"` — el operador `??` respeta un vacío explícito y solo cae al default cuando la variable ni siquiera está definida. **Actualización (verificado 2026-07-09, fase v7): `lib/api.ts` (compartido, usado por el resto de la app) YA usa ese mismo `??`** — este párrafo antes advertía que todavía resolvía la variable con `||` (lo que sí habría convertido un vacío explícito de vuelta a `http://localhost:8000`), pero eso ya no es cierto contra el código real (`lib/api.ts` línea 39; confirmado además que cada `lib/api-*.ts` que importa `API_BASE_URL` desde ahí hereda el mismo `??`, sin ninguna ocurrencia de `||` restante para este patrón en todo `apps/web/src/lib/`). Same-origin real en modo escritorio para todas las pantallas, no solo para esta.

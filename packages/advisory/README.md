@@ -1,6 +1,6 @@
 # packages/advisory — `edecan_advisory`
 
-Asesores informativos del agente (ROADMAP_V2.md §5 WP-V2-11): legal, salud y
+Asesores informativos del agente (`ARCHITECTURE.md` §11 fase v2): legal, salud y
 educación. Cada tool implementa el contrato `Tool` de `edecan_core`
 (ARCHITECTURE.md §10.7): `name`, `description`, `input_schema`,
 `requires_flags` (vacío en las 8), `dangerous` (`False` en las 8) y
@@ -10,7 +10,7 @@ educación. Cada tool implementa el contrato `Tool` de `edecan_core`
 entry point que consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`,
 declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## GUARDRAIL no negociable (ROADMAP_V2.md §8.3)
+## GUARDRAIL no negociable (`ARCHITECTURE.md` §0)
 
 Salud/legal = **informativo + disclaimer SIEMPRE**, jamás sustituto de un
 profesional. El disclaimer va embebido en código (`_disclaimers.py`) y
@@ -18,7 +18,7 @@ profesional. El disclaimer va embebido en código (`_disclaimers.py`) y
 es el test más importante de este paquete: itera las 8 tools y comprueba que
 `resultado.content` termina exactamente con el disclaimer correcto.
 
-## Las 8 herramientas (nombres exactos, pinned en ROADMAP_V2.md §7.7)
+## Las 8 herramientas (nombres exactos, pinned en `ARCHITECTURE.md` §11)
 
 | Módulo | Tool | Qué hace | Disclaimer |
 |---|---|---|---|

@@ -64,9 +64,9 @@ Pensado para que `apps/api` lo reutilice al implementar las rutas `/v1/voice/*`
 
 La telefonía (Twilio, llamadas/SMS) **no vive en este paquete**: Twilio hace su propio
 reconocimiento y síntesis de voz vía TwiML (`<Gather input="speech">` / `<Say>`), así que esa
-capa no depende de `STTProvider`/`TTSProvider`. Vive en `premium/`
-(`edecan_premium.telephony` y `edecan_premium.twilio_router`, ver `ARCHITECTURE.md` §10.10):
-es parte de la capa comercial y usa credenciales **por tenant** desde el `TokenVault`, nunca
+capa no depende de `STTProvider`/`TTSProvider`. Pertenece a la extensión comercial externa
+`edecan_premium` (`edecan_premium.telephony` y `edecan_premium.twilio_router`, ver
+`ARCHITECTURE.md` §10.10), no incluida en este repositorio: usa credenciales **por tenant** desde el `TokenVault`, nunca
 variables de entorno.
 
 ## Tests

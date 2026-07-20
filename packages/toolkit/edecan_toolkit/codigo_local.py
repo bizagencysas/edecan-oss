@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -81,14 +82,20 @@ def _resolver_dentro_de_raiz(raiz: Path, ruta_relativa: str) -> Path | None:
 
 
 async def _correr(
-    comando: str, *, cwd: Path, timeout: float = _TIMEOUT_SEGUNDOS
+    *argv: str, cwd: Path, timeout: float = _TIMEOUT_SEGUNDOS
 ) -> tuple[int, str]:
-    proceso = await asyncio.create_subprocess_shell(
-        comando,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    """Ejecuta un proceso sin reinterpretar sus argumentos en un shell."""
+    if not argv:
+        raise ValueError("_correr requiere al menos un argumento")
+    try:
+        proceso = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return 127, f"No se pudo iniciar {argv[0]!r}: {exc}"
     try:
         salida_bytes, _ = await asyncio.wait_for(proceso.communicate(), timeout=timeout)
     except TimeoutError:
@@ -256,27 +263,37 @@ class AccederCodigoLocalTool(Tool):
         comando = str(args.get("comando", "")).strip()
         if not comando:
             return ToolResult(content="Falta 'comando' para ejecutar_comando.")
-        codigo, salida = await _correr(comando, cwd=raiz)
+        # Esta acción representa explícitamente un comando de shell arbitrario
+        # confirmado por el usuario. El ejecutable y sus flags sí son argv
+        # fijos: `comando` ocupa un único argumento y nunca se concatena con
+        # operaciones internas como Git.
+        argv_shell = (
+            ("cmd.exe", "/d", "/s", "/c", comando)
+            if sys.platform == "win32"
+            else ("/bin/sh", "-c", comando)
+        )
+        codigo, salida = await _correr(*argv_shell, cwd=raiz)
         prefijo = "OK" if codigo == 0 else f"código de salida {codigo}"
         return ToolResult(
             content=f"[{prefijo}]\n{salida}", data={"comando": comando, "codigo": codigo}
         )
 
     async def _git_status(self, raiz: Path, _args: dict[str, Any]) -> ToolResult:
-        _codigo, salida = await _correr("git status --short --branch", cwd=raiz)
+        _codigo, salida = await _correr("git", "status", "--short", "--branch", cwd=raiz)
         return ToolResult(content=salida or "(sin cambios)")
 
     async def _git_diff(self, raiz: Path, _args: dict[str, Any]) -> ToolResult:
-        _codigo, salida = await _correr("git diff", cwd=raiz)
+        _codigo, salida = await _correr("git", "diff", cwd=raiz)
         return ToolResult(content=salida or "(sin diferencias)")
 
     async def _git_commit(self, raiz: Path, args: dict[str, Any]) -> ToolResult:
         mensaje = str(args.get("mensaje", "")).strip()
         if not mensaje:
             return ToolResult(content="Falta 'mensaje' para git_commit.")
-        await _correr("git add -A", cwd=raiz)
-        mensaje_escapado = mensaje.replace('"', '\\"')
-        codigo, salida = await _correr(f'git commit -m "{mensaje_escapado}"', cwd=raiz)
+        codigo_add, salida_add = await _correr("git", "add", "--all", cwd=raiz)
+        if codigo_add != 0:
+            return ToolResult(content=f"No se pudieron preparar los cambios:\n{salida_add}")
+        codigo, salida = await _correr("git", "commit", "--message", mensaje, cwd=raiz)
         if codigo != 0:
             return ToolResult(content=f"No se pudo hacer el commit:\n{salida}")
         return ToolResult(

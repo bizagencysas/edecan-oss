@@ -1,7 +1,7 @@
 # edecan_business
 
 Negocios: facturación ligera (borrador → PDF real → S3) y KPIs mensuales del negocio
-(`ROADMAP_V2.md` §5 P1 WP-V2-12, §7.4, §7.7).
+(`ARCHITECTURE.md` §11 P1 fase v2, §7.4, §7.7).
 
 - `invoices.py` — numeración (`next_numero`), totales con `Decimal` y redondeo bancario
   (`compute_totals`), PDF (`render_pdf`, fpdf2), y el orquestador `crear_factura` (usado
@@ -10,7 +10,7 @@ Negocios: facturación ligera (borrador → PDF real → S3) y KPIs mensuales de
 - `kpis.py` — `kpis_mes`: ingresos/gastos/beneficio/nuevos clientes/facturado/cobrado/dona
   por canal/actividad reciente, reutilizando `transactions` y `contacts` de v1 (no duplica
   ningún cálculo financiero: ver el docstring del módulo para el criterio anti-doble-conteo).
-- `tools.py` — `crear_factura`, `estado_negocio` (nombres exactos, `ROADMAP_V2.md` §7.7).
+- `tools.py` — `crear_factura`, `estado_negocio` (nombres exactos, `ARCHITECTURE.md` §11).
   Ninguna es `dangerous`: crear un borrador no mueve dinero.
 - `_files.py` — sube el PDF a S3 + fila `files`. Copia adaptada (no import) de
   `edecan_creative._files.subir_archivo`: recibe `session`/`tenant_id`/`user_id`/`settings`

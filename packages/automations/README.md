@@ -1,6 +1,6 @@
 # packages/automations — `edecan_automations`
 
-Automatizaciones: reglas **disparador → acción** (`ROADMAP_V2.md` §4 WP-V2-07,
+Automatizaciones: reglas **disparador → acción** (`ARCHITECTURE.md` §11 fase v2,
 `ARCHITECTURE.md` §10.7/§10.11/§10.12). Un disparador es una agenda (`rrule`
 RFC 5545) o un webhook entrante autenticado con un secreto por automatización;
 la acción, hoy, siempre es "correr esta instrucción con el agente en modo
@@ -26,7 +26,7 @@ automatizaciones o misiones)".
 - `apps/api/edecan_api/routers/automations.py` (CRUD autenticado) y
   `routers/hooks.py` (webhook público) importan `engine` para validar antes
   de guardar en Postgres — hablan SQL parametrizado directo contra las
-  tablas `automations`/`automation_runs` (`ROADMAP_V2.md` §7.4): ese esquema
+  tablas `automations`/`automation_runs` (`ARCHITECTURE.md` §11): ese esquema
   está pinned por nombre de tabla/columna, no por una clase ORM de
   `edecan_db.models` (mismo criterio que `edecan_api.repo`/`edecan_worker.repo`
   con las tablas v1 — ver el docstring de esos módulos).

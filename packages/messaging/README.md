@@ -1,7 +1,7 @@
 # packages/messaging — `edecan_messaging`
 
 Mensajería oficial del agente: Telegram, Discord y Slack (`ARCHITECTURE.md` §10.7;
-`ROADMAP_V2.md` §7.7, WP-V2-05). Dos herramientas del contrato `Tool` de
+`ARCHITECTURE.md` §11, fase v2). Dos herramientas del contrato `Tool` de
 `edecan_core` (§10.7): `name`, `description`, `input_schema`, `requires_flags`,
 `dangerous` y `async run(ctx, args)`.
 
@@ -18,8 +18,8 @@ declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
 Ambas requieren el flag de plan `connectors.messaging` (`requires_flags`).
 Ese flag y su literal (`"connectors.messaging"`) están pinned en
-`ROADMAP_V2.md` §7.2; la constante `edecan_schemas.plans.FLAG_CONNECTORS_MESSAGING`
-la agrega WP-V2-01 — mientras tanto, `tools.py` usa el string directamente
+`ARCHITECTURE.md` §11; la constante `edecan_schemas.plans.FLAG_CONNECTORS_MESSAGING`
+la agrega fase v2 — mientras tanto, `tools.py` usa el string directamente
 (ver su docstring).
 
 ## Cómo se conecta cada plataforma (no vive en este paquete)
@@ -69,5 +69,5 @@ que `packages/toolkit/tests/conftest.py`, ver `ARCHITECTURE.md` §10.1).
 `tests/conftest.py` agrega este paquete a `sys.path` a mano (mismo motivo y
 técnica que `apps/api/tests/_stub_siblings.py`): todavía no está registrado
 en `[tool.uv.workspace].members` del `pyproject.toml` raíz (lo hace
-WP-V2-01), así que sin ese shim `import edecan_messaging` fallaría al correr
+fase v2), así que sin ese shim `import edecan_messaging` fallaría al correr
 la suite de este paquete de forma aislada.

@@ -1,14 +1,13 @@
-//! Comandos invocables desde `splash/index.html`
-//! (`window.__TAURI__.core.invoke`). Son comandos de la APP (registrados
-//! directo con `tauri::generate_handler!` en `lib.rs`), no de un plugin —
-//! el sistema de permisos/capabilities de Tauri v2 gatea comandos
-//! *expuestos por plugins*; los que la propia app registra así quedan
-//! invocables sin necesitar una entrada extra en `capabilities/default.json`
-//! (mismo comportamiento que en v1).
+//! Comandos invocables desde la UI mediante `window.__TAURI__.core.invoke`.
+//! La splash usa el origen local de Tauri, pero la ventana principal carga
+//! desde `http://127.0.0.1:<puerto>` y Tauri v2 la considera remota. Por eso
+//! estos comandos se declaran también en `build.rs` y se autorizan de forma
+//! explícita en la capability `default`.
 
 use tauri::AppHandle;
 
 use crate::backend;
+use crate::listen;
 
 /// Botón "Reintentar" del panel de error de splash. Repite exactamente el
 /// mismo camino que el arranque inicial (elige puerto, lanza, espera).
@@ -22,4 +21,31 @@ pub async fn retry_backend(app: AppHandle) {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+// --- "Escuchar siempre" (src/listen.rs) -----------------------------------
+
+#[tauri::command]
+pub fn always_listen_get_state(app: AppHandle) -> listen::AlwaysListenStateOut {
+    listen::get_state(&app)
+}
+
+#[tauri::command]
+pub async fn always_listen_record_sample(app: AppHandle, index: u8) -> Result<(), String> {
+    listen::record_sample(app, index).await
+}
+
+#[tauri::command]
+pub async fn always_listen_train(app: AppHandle, wake_label: String) -> Result<(), String> {
+    listen::train(app, wake_label).await
+}
+
+#[tauri::command]
+pub fn always_listen_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    listen::set_enabled(app, enabled)
+}
+
+#[tauri::command]
+pub fn always_listen_reset_training(app: AppHandle) -> Result<(), String> {
+    listen::reset_training(app)
 }

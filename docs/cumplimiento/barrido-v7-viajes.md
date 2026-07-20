@@ -1,13 +1,13 @@
-# Barrido v7 — Viajes (WP-V7-02): fuga BYO, plan-flag, evidencia vs. rollback, esquema real de `orders`
+# Barrido v7 — Viajes (fase v7): fuga BYO, plan-flag, evidencia vs. rollback, esquema real de `orders`
 
 Este documento registra el barrido dedicado de la vertical **Viajes**
 (`apps/api/edecan_api/routers/viajes.py` + `packages/travel/edecan_travel/`:
 `amadeus.py`, `tracking.py`, `providers.py`, `tools.py`) — el primero que la
-recibe: el barrido bring-your-own de v5 (`WP-V5-02`, ver
-`HOTFIXES_PENDIENTES.md` sección "Barrido v5") cubrió 11 dominios pero
+recibe: el barrido bring-your-own de v5 (`fase v5`, ver
+`docs/seguridad-modelo-amenazas.md` sección "Barrido v5") cubrió 11 dominios pero
 **explícitamente no incluyó `packages/travel`** entre ellos, así que esta
 vertical llegó a v7 genuinamente sin auditar. Referencias canónicas leídas
-antes de escribir una línea de este WP: `HOTFIXES_PENDIENTES.md` completo
+antes de escribir una línea de este WP: `docs/seguridad-modelo-amenazas.md` completo
 (los 4 patrones de bug ya documentados: fuga de credencial v4/Polly v5,
 plan-flag-bypass v6/v7, evidencia-vs-rollback v6, y el bug de esquema de
 `reuniones.py`/`process_meeting.py` en v6), `docs/cumplimiento/
@@ -18,7 +18,7 @@ pinned de v5 para `packages/travel`).
 **Resultado global: LIMPIO en los 4 criterios — cero hallazgos que corregir.**
 No se modificó ningún archivo de producción (`viajes.py`, `amadeus.py`,
 `tracking.py`, `providers.py`, `tools.py`): la vertical ya seguía, desde que
-se construyó en v5 (WP-V5-09), el mismo patrón bring-your-own correcto que
+se construyó en v5 (fase v5), el mismo patrón bring-your-own correcto que
 `packages/ads`. Lo que este WP SÍ aporta: **regresiones nuevas que anclan
 cada veredicto** (para que un cambio futuro que reintroduzca cualquiera de
 los 4 patrones de bug falle en CI en vez de descubrirse en producción), una
@@ -42,7 +42,7 @@ los 4 patrones de bug falle en CI en vez de descubrirse en producción), una
 
 ## BARRIDO A — Fuga bring-your-own (prioridad alta, dominio genuinamente sin auditar)
 
-Metodología (misma que v5, `HOTFIXES_PENDIENTES.md` "Barrido v5"): lectura
+Metodología (misma que v5, `docs/seguridad-modelo-amenazas.md` "Barrido v5"): lectura
 línea por línea buscando (a) el patrón v4 clásico
 (`config.campo or getattr(self._settings, "X", None)` / `os.environ`) y (b)
 el patrón v5-Polly (un SDK de terceros que resuelve credenciales AMBIENTE por
@@ -88,14 +88,14 @@ campo_amadeus_ni_aftership`) vive en `apps/api/tests/test_v7_sweep_viajes.py`
 |---|---|---|
 | Las 8 rutas de `viajes.router` | **LIMPIO** | Las 8 (`PUT`/`DELETE` credentials ×2, `GET status`, `GET buscar/vuelos`, `GET buscar/hoteles`, `GET rastreo/{numero}`) dependen de `_require_tools_travel` — verificado estructuralmente vía `route.dependant.dependencies` (no una lista de paths a mano: una ruta nueva sin el gate se detectaría sola). |
 | Las 5 tools de `edecan_travel.tools` | **LIMPIO** | Las 5 (`buscar_vuelos`, `buscar_hoteles`, `estado_vuelo`, `rastrear_paquete`, `preparar_reserva`) tienen `requires_flags == frozenset({"tools.travel"})` — ya cubierto exhaustivamente por `packages/travel/tests/test_catalogo.py` (preexistente), re-confirmado por este WP. |
-| Multiplexado de acciones (patrón `_bloqueo_por_plan` de `computadora.py`) | **N/A — no aplica** | Ninguna de las 5 tools despacha, vía un parámetro tipo `accion`/`action`, a sub-capacidades con flags MÁS finos que el `requires_flags` de la clase (el patrón que sí hizo falta en `usar_computadora`, `HOTFIXES_PENDIENTES.md`). Es 1 tool = 1 acción × 5, todas bajo el mismo flag — verificado inspeccionando `input_schema["properties"]` de las 5 (ninguna tiene `accion`/`action`). |
-| `PLANES["*"].flags["tools.travel"]` | **LIMPIO, y un hallazgo de documentación menor corregido** | Verificado contra el `PLANES` REAL (no un mock): `free_selfhost=True`, `hosted_basic=False`, `hosted_pro=True`, `hosted_business=True` — coincide EXACTO con la matriz pinned en `ARCHITECTURE.md` §14.c. **Hallazgo menor**: el docstring de `apps/api/tests/test_viajes_router.py` afirmaba "HOY ningún plan real tiene la clave `tools.travel`" — eso era cierto cuando WP-V5-09 escribió el archivo, pero dejó de serlo en algún punto posterior (el linchpin de v5, WP-V5-01, sí terminó pinneando el flag) sin que nadie actualizara el comentario. No es un bug de comportamiento (el fixture `_con_flag_travel` que ese docstring justifica sigue siendo inofensivo — forzar `True` sobre un valor que ya es `True` es un no-op), pero SÍ es información falsa para cualquiera que lea ese archivo después. Corregido el docstring; el fixture se conservó tal cual (red de seguridad legítima). |
+| Multiplexado de acciones (patrón `_bloqueo_por_plan` de `computadora.py`) | **N/A — no aplica** | Ninguna de las 5 tools despacha, vía un parámetro tipo `accion`/`action`, a sub-capacidades con flags MÁS finos que el `requires_flags` de la clase (el patrón que sí hizo falta en `usar_computadora`, `docs/seguridad-modelo-amenazas.md`). Es 1 tool = 1 acción × 5, todas bajo el mismo flag — verificado inspeccionando `input_schema["properties"]` de las 5 (ninguna tiene `accion`/`action`). |
+| `PLANES["*"].flags["tools.travel"]` | **LIMPIO, y un hallazgo de documentación menor corregido** | Verificado contra el `PLANES` REAL (no un mock): `free_selfhost=True`, `hosted_basic=False`, `hosted_pro=True`, `hosted_business=True` — coincide EXACTO con la matriz pinned en `ARCHITECTURE.md` §14.c. **Hallazgo menor**: el docstring de `apps/api/tests/test_viajes_router.py` afirmaba "HOY ningún plan real tiene la clave `tools.travel`" — eso era cierto cuando fase v5 escribió el archivo, pero dejó de serlo en algún punto posterior (el linchpin de v5, fase v5, sí terminó pinneando el flag) sin que nadie actualizara el comentario. No es un bug de comportamiento (el fixture `_con_flag_travel` que ese docstring justifica sigue siendo inofensivo — forzar `True` sobre un valor que ya es `True` es un no-op), pero SÍ es información falsa para cualquiera que lea ese archivo después. Corregido el docstring; el fixture se conservó tal cual (red de seguridad legítima). |
 
 **Nota sobre el mecanismo genérico de `dangerous=True`**: `preparar_reserva`
 (la única tool `dangerous=True` de este paquete) pasa por el mismo gate
 genérico que ya corrigió el hallazgo CRITICAL "`POST /v1/conversations/{id}/
 confirm` ejecutaba una tool `dangerous` sin revisar su flag de plan"
-(`HOTFIXES_PENDIENTES.md`, `_tool_requires_flags_satisfechos` en
+(`docs/seguridad-modelo-amenazas.md`, `_tool_requires_flags_satisfechos` en
 `conversations.py`) — ese archivo está fuera de las rutas que este WP puede
 tocar, y el fix ya es genérico (no específico por nombre de tool), así que no
 hace falta ningún tratamiento especial para `preparar_reserva` ahí.
@@ -109,7 +109,7 @@ hace falta ningún tratamiento especial para `preparar_reserva` ahí.
 
 ## BARRIDO C — Evidencia legal/cumplimiento vs. rollback de sesión
 
-`docs/cumplimiento/barrido-evidencia-v6.md` (WP-V6-03) ya había verificado
+`docs/cumplimiento/barrido-evidencia-v6.md` (fase v6) ya había verificado
 "Seguro" los 4 sitios de escritura de `viajes.py` (`put_credentials`,
 `delete_credentials`, `put_rastreo_credentials`, `delete_rastreo_credentials`)
 bajo el criterio "¿el ping de validación corre DESPUÉS de escribir?" (no) y
@@ -123,7 +123,7 @@ no cubrió porque `packages/travel` no formaba parte de su alcance.
 La verificación de 2026-07-09 (v6) fue lectura humana. Este WP la repite con
 una aserción **estructural** (`ast`, no solo lectura) — el mismo tipo de
 chequeo que, aplicado a tiempo, habría detectado directamente el bug real de
-`_apply_optout` (`HOTFIXES_PENDIENTES.md`): ahí la escritura de evidencia NO
+`_apply_optout` (`docs/seguridad-modelo-amenazas.md`): ahí la escritura de evidencia NO
 era la última sentencia de la función, y un barrido que solo miró "¿algo toca
 la sesión DESPUÉS de que la función retorna?" (tratándola como caja negra) se
 lo perdió por completo.
@@ -140,7 +140,7 @@ lo perdió por completo.
 | sitio | efecto externo irreversible previo | veredicto |
 |---|---|---|
 | `preparar_reserva`/`_crear_reserva_draft` (`packages/travel/edecan_travel/tools.py`) — creación de borradores de reserva | Ninguno (nunca llama a Amadeus, ver BARRIDO A) | **Seguro.** Único `INSERT` de todo el paquete. Una `Tool` nunca es dueña de `ctx.session` — la sesión vive y comitea a nivel de la REQUEST/turno completo. La garantía real la dan `edecan_core.agent.Agent._run_turn` y `edecan_api.routers.conversations._stream_approved_confirmation` (fuera de las rutas de este WP), que envuelven CADA `tool.run(ctx, args)` en su propio `try/except Exception` sin dejarlo escapar hacia el límite de la transacción HTTP — el MISMO mecanismo que ya protege a `LanzarCampanaTool` (`docs/cumplimiento/barrido-evidencia-v6.md`). Verificado con dos regresiones: una `FakeSession` sin `.commit()` (fallaría con `AttributeError` si el código lo llamara) y una variante con `.commit()` que revienta si se invoca — el camino feliz de `preparar_reserva` nunca lo toca en ninguno de los dos casos. |
-| **Confirmaciones** | — | **No existe ningún endpoint de confirmación propio en `viajes.py`** (a diferencia de `ads.py::confirmar_borrador`) — verificado estructuralmente (ningún path contiene `confirm`/`reserva`/`orders`/`book`). Un borrador `orders(kind='purchase')` solo puede avanzar de estado vía el router genérico `commerce.py::confirm_order`, que YA tiene su propio `commit()` explícito antes del 501 de `kind` no manejado (WP-V6-03, ver "Verificación de los 4 fixes previos" en `barrido-evidencia-v6.md`) — fuera de las rutas de este WP, re-confirmado intacto por lectura (no se tocó). |
+| **Confirmaciones** | — | **No existe ningún endpoint de confirmación propio en `viajes.py`** (a diferencia de `ads.py::confirmar_borrador`) — verificado estructuralmente (ningún path contiene `confirm`/`reserva`/`orders`/`book`). Un borrador `orders(kind='purchase')` solo puede avanzar de estado vía el router genérico `commerce.py::confirm_order`, que YA tiene su propio `commit()` explícito antes del 501 de `kind` no manejado (fase v6, ver "Verificación de los 4 fixes previos" en `barrido-evidencia-v6.md`) — fuera de las rutas de este WP, re-confirmado intacto por lectura (no se tocó). |
 | `GET /v1/viajes/rastreo/{numero}` (tracking) | — | **Seguro — no hay nada que proteger.** Confirmado que el cuerpo de `rastreo()` no contiene `add_audit_log`/`INSERT`/`UPDATE` en absoluto: es un proxy de solo lectura de punta a punta hacia `provider.rastrear(...)`, sin ninguna escritura a la base de datos. |
 
 **Tests nuevos**: `apps/api/tests/test_v7_sweep_viajes.py` —
@@ -248,7 +248,7 @@ infraestructura nueva corriendo en cada `make test`.
 | `packages/travel/tests/test_tools.py` | Extendido (+3 tests, 23→26) — BARRIDO C |
 | `apps/api/tests/test_v7_sweep_viajes.py` | **Nuevo** (12 tests) — BARRIDO A/B/C/D consolidado, lado `apps/api` |
 | `apps/api/tests/test_viajes_router.py` | Corrección de docstring únicamente (matriz de `PLANES` desactualizada) — cero tests nuevos/eliminados, sigue en 36 |
-| `docs/viajes.md` | Sección nueva "Auditoría v7 (WP-V7-02)" al final |
+| `docs/viajes.md` | Sección nueva "Auditoría v7 (fase v7)" al final |
 | `docs/cumplimiento/barrido-v7-viajes.md` | **Nuevo** (este documento) |
 
 **Ningún archivo de producción se modificó** — `apps/api/edecan_api/routers/

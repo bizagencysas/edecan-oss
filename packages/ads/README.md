@@ -2,7 +2,7 @@
 
 Ads: preparación de campañas publicitarias con guardrail de dinero, proveedor real Meta
 Marketing API (bring-your-own cuenta del tenant) + stub offline determinista
-(`ARCHITECTURE.md` §13, WP-V4-07 — completa el esqueleto de WP-V4-01). Ver
+(`ARCHITECTURE.md` §13, fase v4 — completa el esqueleto de fase v4). Ver
 [`docs/ads.md`](../../docs/ads.md) para el flujo completo y el modelo bring-your-own.
 
 ## Guardrail de dinero (lo más importante del paquete)
@@ -22,7 +22,7 @@ doble gate.
 | `ads_resumen` | `tools.ads` | No | Campañas + métricas del proveedor del tenant (Meta real, o datos de ejemplo si no hay cuenta conectada). |
 | `ads_preparar_campana` | `tools.ads` | **Sí** | `INSERT ad_drafts(status='draft')` — nunca llama a Meta. |
 
-`get_all_tools() -> list[Tool]` (`edecan_ads/__init__.py`, WP-V4-01, NUNCA editado por
+`get_all_tools() -> list[Tool]` (`edecan_ads/__init__.py`, fase v4, NUNCA editado por
 este WP) es el entry point que consume
 `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`.
 

@@ -7,8 +7,10 @@ Valida `limits.storage_mb` del plan antes de aceptar el archivo.
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 import aioboto3
@@ -24,6 +26,50 @@ from edecan_api.repo import Repo
 router = APIRouter(prefix="/v1/files", tags=["files"], dependencies=[Depends(rate_limit)])
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_UPLOAD_SIZE_PROBE_BYTES = 64 * 1024
+
+
+def _safe_filename(raw_filename: str | None) -> str:
+    """Devuelve un nombre de objeto portable, sin rutas ni caracteres de control."""
+    candidate = unicodedata.normalize("NFKC", (raw_filename or "archivo").replace("\\", "/"))
+    candidate = PurePosixPath(candidate).name
+    candidate = "".join(char for char in candidate if ord(char) >= 32 and ord(char) != 127)
+    candidate = candidate.strip().strip(".")
+    if not candidate:
+        return "archivo"
+
+    # S3 admite keys mucho mayores, pero 255 bytes mantiene interoperabilidad
+    # con filesystems y herramientas que materializan el objeto localmente.
+    encoded = candidate.encode("utf-8")
+    if len(encoded) <= 255:
+        return candidate
+    return encoded[:255].decode("utf-8", errors="ignore").rstrip(".") or "archivo"
+
+
+async def _upload_size(file: UploadFile, *, max_bytes: int) -> int:
+    """Mide sin cargar el archivo completo y aplica un límite duro fail-closed."""
+    if max_bytes <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La carga de archivos está deshabilitada por configuración.",
+        )
+
+    if file.size is not None:
+        size_bytes = file.size
+    else:
+        size_bytes = 0
+        while chunk := await file.read(_UPLOAD_SIZE_PROBE_BYTES):
+            size_bytes += len(chunk)
+            if size_bytes > max_bytes:
+                break
+
+    await file.seek(0)
+    if size_bytes > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"El archivo supera el máximo permitido de {max_bytes} bytes.",
+        )
+    return size_bytes
 
 
 def _file_out(row: dict[str, Any]) -> dict[str, Any]:
@@ -74,21 +120,30 @@ async def upload_file(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     tenant = current_user.tenant
-    raw = await file.read()
-    size_bytes = len(raw)
+    size_bytes = await _upload_size(file, max_bytes=settings.MAX_UPLOAD_BYTES)
 
     await _check_storage_quota(repo, tenant, size_bytes)
 
     file_id = uuid.uuid4()
-    filename = file.filename or "archivo"
-    mime = file.content_type or "application/octet-stream"
+    filename = _safe_filename(file.filename)
+    supplied_mime = file.content_type or "application/octet-stream"
+    mime = (
+        supplied_mime
+        if len(supplied_mime) <= 255
+        and all(ord(char) >= 32 and ord(char) != 127 for char in supplied_mime)
+        else "application/octet-stream"
+    )
     s3_key = f"tenants/{tenant.tenant_id}/files/{file_id}/{filename}"
 
     session = aioboto3.Session()
     async with session.client(
         "s3", region_name=settings.AWS_REGION, endpoint_url=settings.AWS_ENDPOINT_URL
     ) as s3:
-        await s3.put_object(Bucket=settings.S3_BUCKET, Key=s3_key, Body=raw, ContentType=mime)
+        # `UploadFile.file` ya es un SpooledTemporaryFile: botocore lo transmite
+        # desde memoria o disco sin crear una segunda copia de hasta N MiB.
+        await s3.put_object(
+            Bucket=settings.S3_BUCKET, Key=s3_key, Body=file.file, ContentType=mime
+        )
 
     row = await repo.create_file(
         tenant_id=tenant.tenant_id,

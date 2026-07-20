@@ -13,8 +13,8 @@ dependencies = [
 
 # Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
 # (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
-# sin argumentos que devuelve `list[Tool]`. Esqueleto (WP-V4-01) — lo
-# completa WP-V4-08 con las tools reales (`vehiculo_estado`/`vehiculo_controlar`).
+# sin argumentos que devuelve `list[Tool]`, incluidas
+# `vehiculo_estado` y `vehiculo_controlar`.
 [project.entry-points."edecan.tools"]
 vehicles = "edecan_vehicles:get_all_tools"
 

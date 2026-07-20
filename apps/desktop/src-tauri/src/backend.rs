@@ -201,7 +201,12 @@ fn build_command(
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     let port_arg = port.to_string();
     let data_dir_arg = target_data_dir.to_string_lossy().to_string();
-    let backend_args = ["--port", port_arg.as_str(), "--data-dir", data_dir_arg.as_str()];
+    let backend_args = [
+        "--port",
+        port_arg.as_str(),
+        "--data-dir",
+        data_dir_arg.as_str(),
+    ];
 
     let cmd = match app.shell().sidecar("edecan-local") {
         Ok(cmd) => cmd.args(backend_args),
@@ -339,7 +344,11 @@ fn with_ollama_env(
 ///    verificables sin `cargo build`, ver `docs/desktop-local.md` §8/§9):
 ///    se busca cualquier archivo que EMPIECE con `ollama-` en esa carpeta.
 fn resolve_ollama_sidecar() -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") { "ollama.exe" } else { "ollama" };
+    let exe_name = if cfg!(target_os = "windows") {
+        "ollama.exe"
+    } else {
+        "ollama"
+    };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(exe_name);
@@ -412,13 +421,14 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
         existing.show().map_err(|e| e.to_string())?;
         existing.set_focus().map_err(|e| e.to_string())?;
     } else {
-        let main_window = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
-            .title("Edecán")
-            .inner_size(1280.0, 800.0)
-            .min_inner_size(960.0, 600.0)
-            .center()
-            .build()
-            .map_err(|e| e.to_string())?;
+        let main_window =
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
+                .title("Edecán")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(960.0, 600.0)
+                .center()
+                .build()
+                .map_err(|e| e.to_string())?;
         let _ = main_window.set_focus();
     }
 

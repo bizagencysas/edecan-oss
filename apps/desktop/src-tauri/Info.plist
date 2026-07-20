@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Claves de Info.plist específicas de "Escuchar siempre" (src/listen.rs).
+
+  Confirmado leyendo el código fuente de tauri-cli 2.11.4
+  (interface/rust.rs, función que arma `BundleSettings` para `cargo tauri
+  build`/`bundle` en macOS): SIN que haga falta declarar nada en
+  tauri.conf.json, el bundler busca `Info.plist` en el mismo directorio que
+  tauri.conf.json (`src-tauri/`, este archivo) y, si existe, mergea sus
+  claves con el Info.plist que arma automáticamente a partir de
+  tauri.conf.json (nombre, identifier, versión, etc.) — las claves de este
+  archivo GANAN si hay conflicto. No se pudo confirmar además con un
+  `cargo tauri build` real (bundler completo, no se corrió — no hacía falta
+  para este work package, que solo pide `cargo check`/`cargo build`), pero
+  la lógica de merge en sí se leyó directo del código fuente del CLI, no se
+  asumió de memoria.
+
+  NSMicrophoneUsageDescription es obligatoria en macOS para que `cpal`
+  pueda abrir el micrófono de entrada en una app empaquetada — sin esta
+  clave, macOS deniega el acceso en silencio (o el sistema ni siquiera
+  muestra el diálogo de permiso) y `cpal::default_input_device()` termina
+  fallando en runtime.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Edecán necesita acceso al micrófono para escuchar tu palabra clave y tus comandos de voz en segundo plano, incluso con la ventana cerrada o minimizada.</string>
+</dict>
+</plist>

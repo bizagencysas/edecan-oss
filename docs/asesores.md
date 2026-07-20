@@ -2,8 +2,8 @@
 
 `edecan_advisory` (`packages/advisory/`) le da al agente ocho herramientas de asesoría
 **informativa** en tres dominios: legal, salud y educación. Corresponde al work package
-**WP-V2-11** de `ROADMAP_V2.md` §5, con el contrato de nombres/tools pinned en
-`ROADMAP_V2.md` §7.7.
+**fase v2** de `docs/roadmap.md`, con el contrato de nombres/tools pinned en
+`docs/roadmap.md`.
 
 ## Alcance: informativo, no profesional
 
@@ -11,7 +11,7 @@
 contrato reemplaza a un abogado, ni el tracking de salud o la lectura de un laboratorio
 reemplazan a un médico, ni una lección o evaluación del tutor reemplaza una evaluación
 académica oficial. Esto no es una política de producto que viva solo en este documento:
-es un **guardrail de código** (`ROADMAP_V2.md` §8.3, regla no negociable del proyecto) —
+es un **guardrail de código** (`docs/roadmap.md`, regla no negociable del proyecto) —
 cada respuesta del camino feliz de las ocho tools termina, siempre, con el disclaimer
 exacto de su categoría, y `packages/advisory/tests/test_disclaimers.py::test_disclaimers_en_todas`
 verifica ese comportamiento para las ocho.
@@ -47,7 +47,7 @@ en el texto exacto de `DISCLAIMER_SALUD`.
 | `educacion.py` | `tutor_leccion` | Genera una lección (explicación + ejemplos + ejercicios) sobre un tema y nivel, la persiste en `learning_progress`, y muestra las preguntas SIN las respuestas correctas. | edu |
 | `educacion.py` | `tutor_evaluar` | Corrige las respuestas del estudiante contra la última lección de ese tema, de forma tolerante a la redacción, y guarda el resultado. | edu |
 
-Ninguna es `dangerous` ni requiere un flag de plan (`ROADMAP_V2.md` §7.7 no lista
+Ninguna es `dangerous` ni requiere un flag de plan (`docs/roadmap.md` no lista
 ningún flag para `edecan_advisory`): todas son de lectura/generación informativa, nunca
 actúan sobre una cuenta externa del usuario ni mueven datos fuera del propio tenant.
 

@@ -1,0 +1,214 @@
+# ============================================================================
+# Edecán — compose de referencia para el núcleo OSS (Apache-2.0).
+#
+# Levanta el núcleo COMPLETO (dependencias + api + worker + web) con las
+# imágenes construidas localmente a partir de infra/docker/Dockerfile.*,
+# usando un solo archivo .env para todo. Pensado para "trae tus propias
+# claves": tú corres tu propia base de datos, tu propio Redis y tus propias
+# API keys (Anthropic, OAuth de Google/Microsoft/Meta/X, etc.) — ninguna
+# credencial de nadie viene incluida.
+#
+# Camino recomendado — instalador guiado (hace todo lo de abajo por ti,
+# incluida la elección de ruta A/B para S3+SQS y la reescritura del .env):
+#   scripts/instalar-selfhost.sh   (ver docs/self-hosting.md §2)
+#
+# Uso manual:
+#   1. cp ../../.env.example ../../.env   y edita ../../.env con tus claves.
+#   2. Sobrescribe DATABASE_URL y REDIS_URL en ese .env para usar los NOMBRES
+#      DE SERVICIO de este compose en vez de "localhost" (que es lo que trae
+#      .env.example para el flujo de desarrollo normal, ver ARCHITECTURE.md §8):
+#        DATABASE_URL=postgresql+asyncpg://edecan:edecan@postgres:5432/edecan
+#        REDIS_URL=redis://redis:6379/0
+#   3. Elige UNA ruta para S3/SQS (detalle completo más abajo) y arranca.
+#      El nombre de proyecto queda fijado en `edecan`; `-p` permite
+#      sobreescribirlo si operas varias instalaciones en el mismo host.
+#        docker compose -p edecan -f compose.selfhost.yml up -d --build                      # ruta A
+#        docker compose -p edecan --profile local-aws -f compose.selfhost.yml up -d --build  # ruta B
+#
+# ----------------------------------------------------------------------------
+# S3 y SQS: dos rutas, elige una (o deja que scripts/instalar-selfhost.sh te
+# pregunte). Sin ninguna de las dos, la subida de archivos (`/v1/files`) y los
+# jobs asíncronos del worker (recordatorios, consolidación de memoria,
+# `ingest_file`, ...) fallan.
+#
+#   RUTA A — tu propia cuenta AWS real. Recomendada si vas a dejar esto
+#   corriendo de forma permanente en internet (self-host "producción ligera").
+#     1. Crea un bucket S3 y dos colas SQS (`edecan-jobs`,
+#        `edecan-jobs-dlq`) en tu cuenta AWS.
+#     2. En tu .env: AWS_ENDPOINT_URL vacío, AWS_ACCESS_KEY_ID/
+#        AWS_SECRET_ACCESS_KEY con credenciales IAM reales (permisos mínimos
+#        sobre ese bucket/esas colas), S3_BUCKET y SQS_QUEUE_URL con tus
+#        nombres/URL reales, AWS_REGION con tu región real.
+#     3. docker compose -p edecan -f compose.selfhost.yml up -d --build
+#
+#   RUTA B — LocalStack local, CERO cuenta AWS (para tener todo el stack
+#   funcionando sin salir a AWS real; S3/SQS quedan emulados en el volumen
+#   `localstack_data`, no en AWS — mismo patrón que el docker-compose.yml de
+#   dev en la raíz del repo, ver ARCHITECTURE.md §8, pero aquí además
+#   arrancan las apps).
+#     1. En tu .env:
+#          AWS_ENDPOINT_URL=http://localstack:4566   (hostname del SERVICIO
+#            dentro de la red de Docker — "localhost", el default de
+#            .env.example, NO funciona aquí: el contenedor de api/worker no
+#            es tu propio host)
+#          SQS_QUEUE_URL=http://localstack:4566/000000000000/edecan-jobs
+#          AWS_ACCESS_KEY_ID=test
+#          AWS_SECRET_ACCESS_KEY=test
+#          S3_BUCKET=edecan-files      (ya es el default de .env.example)
+#          AWS_REGION=us-east-1        (ya es el default de .env.example)
+#     2. docker compose -p edecan --profile local-aws -f compose.selfhost.yml up -d --build
+#        Con el profile activo se levanta TODO en un solo comando: postgres,
+#        redis, api, worker, web + localstack + un contenedor init-aws que
+#        crea el bucket `edecan-files` y las colas `edecan-jobs`/
+#        `edecan-jobs-dlq` una sola vez dentro de LocalStack. Sin el flag
+#        --profile, los servicios localstack/init-aws de más abajo ni
+#        siquiera se consideran (quedan completamente opcionales).
+# ============================================================================
+
+name: edecan
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edecan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edecan}
+      POSTGRES_DB: ${POSTGRES_DB:-edecan}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Solo con `--profile local-aws` (RUTA B de arriba) -----------------------
+  # Emula S3 y SQS para que el self-host funcione completo sin cuenta AWS.
+  # Sin el flag --profile, este servicio no arranca ni se valida — self-host
+  # "ruta A" (tu propia AWS real) queda intacto y no paga el costo de tenerlo.
+  localstack:
+    image: localstack/localstack:3
+    restart: unless-stopped
+    profiles: ["local-aws"]
+    environment:
+      SERVICES: s3,sqs
+      DEFAULT_REGION: us-east-1
+      PERSISTENCE: "1"
+    ports:
+      - "${LOCALSTACK_BIND_ADDRESS:-127.0.0.1}:${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Crea una sola vez el bucket S3 y las colas SQS que espera la app dentro de
+  # LocalStack (nunca AWS real — siempre apunta a localstack:4566). Mismo
+  # patrón que el contenedor init-aws de docker-compose.yml en la raíz del
+  # repo (modo desarrollo, ARCHITECTURE.md §8), adaptado a self-host.
+  init-aws:
+    image: amazon/aws-cli:2.15.30
+    profiles: ["local-aws"]
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      sh -c "
+      aws --endpoint-url=http://localstack:4566 s3 mb s3://edecan-files || true &&
+      aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name edecan-jobs &&
+      aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name edecan-jobs-dlq
+      "
+
+  # Corre "alembic upgrade head" UNA sola vez y sale (exit 0) — api/worker
+  # esperan a que termine bien antes de arrancar (ver su `depends_on` abajo).
+  # Existe porque ni Dockerfile.api ni Dockerfile.worker traen `uv` ni
+  # `packages/db/` en su imagen de runtime (a propósito, imagen mínima) —
+  # "docker compose exec api uv run --all-packages alembic ..." NUNCA
+  # funciona contra estas imágenes mínimas; ver Dockerfile.migrate.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.migrate
+    env_file:
+      - path: ../../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: ../../infra/docker/Dockerfile.web
+      args:
+        # Debe ser alcanzable desde EL NAVEGADOR del usuario final (se
+        # hornea en el bundle del cliente), no la URL interna de Docker.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
+  # Solo se crea/usa si levantas el profile local-aws — persiste el estado
+  # emulado de S3/SQS de LocalStack entre reinicios (no es AWS real).
+  localstack_data:

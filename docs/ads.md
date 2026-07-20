@@ -4,8 +4,7 @@ Edecán conecta **tu propia cuenta de anuncios de Meta** (Facebook/Instagram Ads
 mostrarte un resumen de tus campañas y preparar campañas nuevas — pero **nunca activa
 gasto por su cuenta**: toda campaña que Edecán crea nace **en pausa**, y activarla es
 siempre una decisión tuya, tomada en el Ads Manager de Meta. Es **bring-your-own** al pie
-de la letra (`ARCHITECTURE.md` §13; `DIRECCION_ACTUAL.md`, "Modelo de credenciales: TODO
-lo trae el cliente, siempre"): conectas TU PROPIA app de Meta for Developers con TUS
+de la letra (`ARCHITECTURE.md` §13 y [`credenciales.md`](./credenciales.md)): conectas TU PROPIA app de Meta for Developers con TUS
 propios permisos — Edecán nunca opera una cuenta de anuncios compartida ni guarda una
 credencial de plataforma.
 
@@ -115,7 +114,7 @@ Con `validate: true` (el default), Edecán hace **antes de guardar nada**:
 Si cualquiera de las dos falla, `PUT` responde `400` con el mensaje EXACTO que dio Meta
 (p. ej. "Error validating access token") — nunca se guarda una credencial sin probarla
 primero, mismo principio de "pegar y validar" que el resto de conectores bring-your-own
-(`DIRECCION_ACTUAL.md`, "Principio de UX no negociable"; mismo patrón que
+(mismo patrón que
 `docs/casa-inteligente.md`). `validate: false` es la escotilla de escape (tests,
 migraciones).
 
@@ -166,7 +165,7 @@ token vencido a mitad de camino, cuenta suspendida, lo que sea), el handler deja
 constancia (`status='error'`, `error=<mensaje exacto de Meta>`, un segundo registro de
 auditoría) y hace un `commit` explícito de esa evidencia **antes** de devolver el error —
 mismo guardrail que ya aplican `edecan_api.routers.commerce.confirm_order` y
-`edecan_api.routers.remote.get_frame` (`HOTFIXES_PENDIENTES.md`, puntos 8 y 9): sin este
+`edecan_api.routers.remote.get_frame` (`docs/seguridad-modelo-amenazas.md`, puntos 8 y 9): sin este
 cuidado, el rollback automático de la transacción de la request se llevaría puesta
 justamente la prueba de que el usuario confirmó — el peor momento para perderla. Un
 borrador en `status='error'` sigue siendo cancelable, o se puede volver a intentar creando
@@ -195,8 +194,7 @@ Meta propia que ofrecer como alternativa — la única opción además de la tuy
 
 ## Google Ads — proveedor futuro, documentado pero no implementado
 
-El wishlist de marketing (`REQUISITOS_V2.md`, "📈 Marketing") también menciona Google Ads.
-Queda **fuera de esta ola a propósito** — mejor no implementarlo a medias que dejar un
+Google Ads es un proveedor futuro, todavía no implementado. Queda **fuera del alcance actual a propósito** — mejor no implementarlo a medias que dejar un
 proveedor roto o engañoso:
 
 - La API de Google Ads (`google-ads` API v18+) exige un **developer token aprobado por

@@ -544,13 +544,10 @@ private fun VisorRemoto(
     // ningún ajuste manual por el zoom actual.
     var zoom by remember(sesion.id) { mutableStateOf(1f) }
     var pan by remember(sesion.id) { mutableStateOf(Offset.Zero) }
-    // `rememberTransformableState(onTransformation: (Float, Offset, Float) -> Unit)` es la
-    // única sobrecarga real disponible en Compose Multiplatform 1.11.1 (verificado
-    // decompilando `foundation-api.jar` real de este build — no hay una variante con
-    // centroide en este classpath); el warning de deprecación del compilador queda
-    // aceptado a propósito, mismo criterio que las deprecaciones de MasterKey/
-    // EncryptedSharedPreferences ya documentadas en `TokenStore.android.kt`.
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+    // La sobrecarga moderna incluye el centroide como primer argumento. Este
+    // visor mantiene su comportamiento previo (zoom centrado por graphicsLayer),
+    // por lo que no necesita consumirlo todavía.
+    val transformState = rememberTransformableState { _, zoomChange, panChange, _ ->
         zoom = (zoom * zoomChange).coerceIn(1f, 4f)
         pan += panChange
     }

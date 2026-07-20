@@ -1,10 +1,10 @@
 # Documentación de Edecán — mapa
 
-Esta carpeta es la documentación extendida del proyecto. Para el contrato técnico vinculante entre paquetes usa siempre [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para la propuesta de producto y negocio, [`../PLAN.md`](../PLAN.md). Esta página es solo el índice — cada documento enlazado abajo es la fuente completa de su tema.
+Esta carpeta es la documentación extendida del proyecto. Para el contrato técnico vinculante entre paquetes usa siempre [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para la evolución pública del producto, [`roadmap.md`](./roadmap.md). Esta página es solo el índice — cada documento enlazado abajo es la fuente completa de su tema.
 
 ## Empezar
 
-El camino recomendado hoy es la app de escritorio (v3, en construcción — ver `PLAN.md` y la tabla "v3" más abajo); `self-hosting.md` sigue siendo la referencia completa para quien prefiere correr Edecán desde el código fuente.
+El camino recomendado hoy es la app de escritorio (en construcción; ver [`roadmap.md`](./roadmap.md)); [`self-hosting.md`](./self-hosting.md) sigue siendo la referencia completa para quien prefiere correr Edecán desde el código fuente.
 
 | Documento | Para qué sirve |
 |---|---|
@@ -43,30 +43,30 @@ El camino recomendado hoy es la app de escritorio (v3, en construcción — ver 
 | [`runbooks/restore-rds.md`](./runbooks/restore-rds.md) | Restaurar PostgreSQL (RDS en prod, volumen local en self-host) desde backup. |
 | [`runbooks/cola-atascada.md`](./runbooks/cola-atascada.md) | Redrive de la Dead Letter Queue (`edecan-jobs-dlq`) cuando hay jobs atascados o fallando en bucle. |
 
-## v2 — ecosistema de agentes, automatizaciones y más (en construcción)
+## Ecosistema de agentes, automatizaciones y herramientas
 
-Cada fila la escribe su work package dueño (ver `ROADMAP_V2.md` §9); hasta
-que aterrice, el enlace puede dar 404 — es esperado (montaje defensivo,
-`ARCHITECTURE.md` §11).
+La tabla enlaza documentación pública existente; `ARCHITECTURE.md` §11 define el contrato
+de montaje defensivo para capacidades opcionales.
 
-| Documento | Para qué sirve | WP dueño |
+| Documento | Para qué sirve | Origen |
 |---|---|---|
-| [`analista.md`](./analista.md) | Analista total: XLSX/CSV/PDF/DOCX/PPTX, estadística, gráficos, visión (OCR/descripción de imágenes), predicción de series y detección de anomalías; desde v6 también como pantalla propia (`/v1/analista`, sin LLM). | WP-V2-02 |
-| [`navegador.md`](./navegador.md) | Navegador de investigación: fetch headless, extracción legible, comparación de precios. Jamás compra ni llena formularios. | WP-V2-03 |
-| [`creatividad.md`](./creatividad.md) | Generación de imágenes y documentos de oficina (DOCX/PPTX/PDF), más podcasts y efectos de sonido con el TTS bring-your-own del tenant. | WP-V2-04 |
-| [`mensajeria.md`](./mensajeria.md) | Telegram, Slack y Discord oficiales por tenant; por qué WhatsApp/Signal quedan fuera por ahora. | WP-V2-05 |
-| [`agentes.md`](./agentes.md) | Orchestrator + misiones: los 3 sub-agentes reales y los 13 perfiles declarados del ecosistema. | WP-V2-06 |
-| [`automatizaciones.md`](./automatizaciones.md) | Reglas disparador→acción (agenda/webhook → instrucción de agente). | WP-V2-07 |
-| [`ide.md`](./ide.md) | IDE embebido sobre el companion: árbol, editor, ediciones quirúrgicas, terminal allowlisted. | WP-V2-08 |
-| [`control-remoto.md`](./control-remoto.md) | Arquitectura completa de control remoto (nivel TeamViewer) + qué entrega hoy el prototipo solo-vista. | WP-V2-09 |
-| [`dinero-real.md`](./dinero-real.md) | Presupuestos, cotizaciones y órdenes: por qué toda orden nace borrador y nunca se auto-ejecuta. | WP-V2-10 |
-| [`asesores.md`](./asesores.md) | Legal, salud y educación: siempre informativo, disclaimers obligatorios. | WP-V2-11 |
-| [`negocios.md`](./negocios.md) | Facturación y dashboard de KPIs. | WP-V2-12 |
-| [`perfil-vivo.md`](./perfil-vivo.md) | Cómo se construye el perfil estructurado del usuario y dónde se usa. | WP-V2-13 |
+| [`analista.md`](./analista.md) | Analista total: XLSX/CSV/PDF/DOCX/PPTX, estadística, gráficos, visión (OCR/descripción de imágenes), predicción de series y detección de anomalías; desde v6 también como pantalla propia (`/v1/analista`, sin LLM). | fase v2 |
+| [`navegador.md`](./navegador.md) | Navegador de investigación: fetch headless, extracción legible, comparación de precios. Jamás compra ni llena formularios. | fase v2 |
+| [`creatividad.md`](./creatividad.md) | Generación de imágenes y documentos de oficina (DOCX/PPTX/PDF), más podcasts y efectos de sonido con el TTS bring-your-own del tenant. | fase v2 |
+| [`mensajeria.md`](./mensajeria.md) | Telegram, Slack y Discord oficiales por tenant; por qué WhatsApp/Signal quedan fuera por ahora. | fase v2 |
+| [`agentes.md`](./agentes.md) | Orchestrator + misiones: los 3 sub-agentes reales y los 13 perfiles declarados del ecosistema. | fase v2 |
+| [`automatizaciones.md`](./automatizaciones.md) | Reglas disparador→acción (agenda/webhook → instrucción de agente). | fase v2 |
+| [`ide.md`](./ide.md) | IDE embebido sobre el companion: árbol, editor, ediciones quirúrgicas, terminal allowlisted. | fase v2 |
+| [`control-remoto.md`](./control-remoto.md) | Arquitectura completa de control remoto (nivel TeamViewer) + qué entrega hoy el prototipo solo-vista. | fase v2 |
+| [`dinero-real.md`](./dinero-real.md) | Presupuestos, cotizaciones y órdenes: por qué toda orden nace borrador y nunca se auto-ejecuta. | fase v2 |
+| [`asesores.md`](./asesores.md) | Legal, salud y educación: siempre informativo, disclaimers obligatorios. | fase v2 |
+| [`negocios.md`](./negocios.md) | Facturación y dashboard de KPIs. | fase v2 |
+| [`perfil-vivo.md`](./perfil-vivo.md) | Cómo se construye el perfil estructurado del usuario y dónde se usa. | fase v2 |
 
-## v3 — escritorio, bring-your-own y marketplace de skills (en construcción)
+## Escritorio, bring-your-own y marketplace de skills
 
-`DIRECCION_ACTUAL.md` es la dirección vigente que reemplaza en autoridad cualquier decisión de negocio previa que la contradiga. Cada fila la escribe su propio paquete de trabajo v3; hasta que aterrice, el enlace puede dar 404 — es esperado (montaje defensivo, mismo criterio que la tabla v2 de arriba). Ya aterrizados: `desktop.md`, `desktop-local.md`, `primeros-pasos.md`, `proveedores-llm.md`, `credenciales.md` y `casa-inteligente.md`.
+[`roadmap.md`](./roadmap.md) publica el estado y las prioridades vigentes. Los documentos
+siguientes describen las capacidades y limitaciones actuales de cada superficie.
 
 | Documento | Para qué sirve |
 |---|---|
@@ -82,15 +82,13 @@ que aterrice, el enlace puede dar 404 — es esperado (montaje defensivo,
 
 ## v4-v6 — negocio, viajes, voz avanzada, reuniones y MCP
 
-Documentos de las olas v4-v6 (`ARCHITECTURE.md` §13-§15) que todavía no
-tenían fila en este índice — mismo criterio que las tablas de arriba: hasta
-que su WP dueño aterrice, el enlace puede dar 404, es esperado (montaje
-defensivo).
+Documentos de las olas v4-v6 (`ARCHITECTURE.md` §13-§15), reunidos aquí para
+que el estado de cada integración y sus límites operativos sean descubribles.
 
 | Documento | Para qué sirve | Versión |
 |---|---|---|
 | [`ads.md`](./ads.md) | Borradores de campañas publicitarias con tu propia cuenta de Meta Ads — nunca activa gasto por su cuenta. | v4 |
-| [`vehiculos.md`](./vehiculos.md) | Conector Smartcar (multi-marca): estado y control de cerraduras de tu vehículo vía el router HTTP. Fuera de alcance para nueva inversión (`DIRECCION_ACTUAL.md`), el router sigue activo. | v4 |
+| [`vehiculos.md`](./vehiculos.md) | Conector Smartcar (multi-marca): estado y control de cerraduras de tu vehículo vía el router HTTP. Fuera de alcance para nueva inversión (`docs/roadmap.md`), el router sigue activo. | v4 |
 | [`notificaciones-push.md`](./notificaciones-push.md) | Recordatorios como notificación push nativa (APNs/FCM) con tus propias credenciales. | v5 |
 | [`rrhh.md`](./rrhh.md) | Empleados, ausencias y nómina — toda corrida de nómina nace en borrador, nunca se paga sola. | v5 |
 | [`viajes.md`](./viajes.md) | Buscar vuelos/hoteles (Amadeus) y rastrear paquetes (AfterShip) con tus propias cuentas — nunca reserva ni paga nada. | v5 |
@@ -103,8 +101,8 @@ defensivo).
 v7 no agregó verticales nuevas — releyó las ya construidas (v2-v6) contra los patrones de bug
 que fue encontrando cada ola anterior (fuga de credencial, plan-flag-bypass, evidencia perdida
 en rollback, esquema SQL asumido vs. real) y cerró lo que seguía abierto. Resumen ejecutivo y
-lista completa de bugs reales encontrados/corregidos en `DIRECCION_ACTUAL.md` ("v7 completado")
-y `HOTFIXES_PENDIENTES.md` ("Barrido v7"); los 11 informes de barrido completos, con
+lista completa de bugs reales encontrados/corregidos en
+`docs/seguridad-modelo-amenazas.md`; los 11 informes de barrido completos, con
 metodología y tabla de veredicto archivo-por-archivo, en `docs/cumplimiento/`:
 
 | Informe | Dominio |
@@ -125,12 +123,21 @@ metodología y tabla de veredicto archivo-por-archivo, en `docs/cumplimiento/`:
 
 | Documento | Para qué sirve |
 |---|---|
-| [`roadmap.md`](./roadmap.md) | Qué se construyó en v2, qué entra en v3 (escritorio, bring-your-own completo, skills, apps móviles reales, casa inteligente, WhatsApp, video) y qué sigue sin fecha (tier dedicado, más conectores, marketplace de personas). |
+| [`roadmap.md`](./roadmap.md) | Estado público actual, prioridades, criterios de salida y capacidades deliberadamente fuera de alcance. |
+
+## Proyecto abierto
+
+| Documento | Para qué sirve |
+|---|---|
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Entorno de desarrollo, convenciones, validación y proceso de contribución. |
+| [`../GOVERNANCE.md`](../GOVERNANCE.md) | Cómo se toman decisiones y cómo puede crecer el equipo mantenedor. |
+| [`adr/README.md`](./adr/README.md) | Registro de decisiones arquitectónicas públicas. |
+| [`claude-for-oss.md`](./claude-for-oss.md) | Borrador verificable y checklist de elegibilidad para Claude for Open Source; no es una afirmación de aceptación. |
 
 ## Otros documentos de referencia (fuera de `docs/`)
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — arquitectura técnica y contratos obligatorios entre paquetes (§10).
-- [`../PLAN.md`](../PLAN.md) — propuesta de valor, clientes, competencia, precios y go-to-market.
-- [`../RIESGOS.md`](../RIESGOS.md) — registro de riesgos técnicos, legales, de producto y de seguridad.
+- [`roadmap.md`](./roadmap.md) — capacidades implementadas y próximas prioridades públicas.
+- [`seguridad-modelo-amenazas.md`](./seguridad-modelo-amenazas.md) — riesgos técnicos, límites de confianza y mitigaciones.
 - [`../SECURITY.md`](../SECURITY.md) — política de seguridad y reporte de vulnerabilidades.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — convenciones de código y flujo de contribución.

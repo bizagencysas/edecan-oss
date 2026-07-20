@@ -1,6 +1,6 @@
 # Vehículos (Smartcar)
 
-Edecán se conecta a tus vehículos a través de **Smartcar** (https://smartcar.com) — un agregador con **API OAuth oficial y documentada** que cubre decenas de marcas (Tesla, GM/Chevrolet, Ford, Toyota, BMW, Hyundai/Kia, Nissan, Volvo, Jaguar/Land Rover y más) con una única integración (`ARCHITECTURE.md` §13; `ROADMAP_V2.md` §6.3, que ya señalaba "Tesla Fleet API / Smartcar" como la opción bring-your-own razonable; WP-V4-08). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), es **bring-your-own** al pie de la letra: creas TU PROPIA app en el dashboard de Smartcar (gratis) y autorizas TU PROPIO vehículo — Edecán nunca opera una app de Smartcar compartida ni guarda una credencial de plataforma.
+Edecán se conecta a tus vehículos a través de **Smartcar** (https://smartcar.com) — un agregador con **API OAuth oficial y documentada** que cubre decenas de marcas (Tesla, GM/Chevrolet, Ford, Toyota, BMW, Hyundai/Kia, Nissan, Volvo, Jaguar/Land Rover y más) con una única integración (`ARCHITECTURE.md` §13). Como con el resto de conectores (ver [`conectores.md`](./conectores.md)), es **bring-your-own** al pie de la letra: creas TU PROPIA app en el dashboard de Smartcar (gratis) y autorizas TU PROPIO vehículo — Edecán nunca opera una app de Smartcar compartida ni guarda una credencial de plataforma.
 
 ## Por qué Smartcar y no el API propietario de cada fabricante
 
@@ -33,7 +33,7 @@ En el panel de Edecán, ve a **Configuración → Vehículos** y pega:
 - **Client ID** y **Client Secret** de tu app de Smartcar (paso 1).
 - **Refresh token** que obtuviste en el paso 2.
 
-Internamente esto llama a `PUT /v1/vehiculos/credentials {client_id, client_secret, refresh_token}` (`apps/api/edecan_api/routers/vehiculos.py`). Por defecto (`validate: true`) Edecán hace una comprobación real —refresca el token contra Smartcar y confirma con un `GET /vehicles`— **antes de guardar nada**: si Smartcar rechaza cualquier parte, la pantalla te muestra el error exacto (mismo principio de "pegar y validar" que el resto de credenciales, ver `DIRECCION_ACTUAL.md`). Solo si la comprobación pasa se guarda, cifrado en tu `TokenVault` (`ARCHITECTURE.md` §10.4) — nunca en texto plano, nunca en logs.
+Internamente esto llama a `PUT /v1/vehiculos/credentials {client_id, client_secret, refresh_token}` (`apps/api/edecan_api/routers/vehiculos.py`). Por defecto (`validate: true`) Edecán hace una comprobación real —refresca el token contra Smartcar y confirma con un `GET /vehicles`— **antes de guardar nada**: si Smartcar rechaza cualquier parte, la pantalla te muestra el error exacto (mismo principio de "pegar y validar" de [`credenciales.md`](./credenciales.md)). Solo si la comprobación pasa se guarda, cifrado en tu `TokenVault` (`ARCHITECTURE.md` §10.4) — nunca en texto plano, nunca en logs.
 
 `GET /v1/vehiculos/status` te deja consultar en cualquier momento si está configurado y si Smartcar responde ahora mismo (`{"configured", "reachable"}` — `reachable` queda en `null`, nunca en error, si la red falla al comprobar). `DELETE /v1/vehiculos/credentials` desconecta.
 
@@ -46,8 +46,7 @@ Smartcar puede emitir un `refresh_token` **nuevo** cada vez que Edecán lo canje
 `edecan_vehicles` (`packages/vehicles/`) tiene escrito el código de 2 herramientas de agente —
 `vehiculo_estado` (solo lectura) y `vehiculo_controlar` (bloquear/desbloquear, `dangerous=True`,
 requeriría el flag `tools.vehicles`) — pero **el dueño del proyecto decidió sacar vehículos del
-alcance del producto** (`DIRECCION_ACTUAL.md`, sección "Vehículos (Smartcar) eliminado del alcance",
-2026-07-08): no vale la pena el esfuerzo de mantener esta integración cuando la app oficial de cada
+alcance del producto** (`ARCHITECTURE.md` §13.e): no vale la pena el esfuerzo de mantener esta integración cuando la app oficial de cada
 fabricante ya resuelve lo mismo mejor, y no es el foco del producto.
 
 Por eso `apps/api/pyproject.toml` **a propósito** no declara `edecan-vehicles` como dependencia: el
@@ -80,7 +79,7 @@ Igual que Home Assistant ([`casa-inteligente.md`](./casa-inteligente.md)) o cual
 
 - **Arrancar el motor / climatización remota / bocina y luces**: Smartcar expone estas capacidades (`START`/`STOP` en algunos fabricantes, `climate`, `panic`...) pero este work package solo implementa lectura de estado + bloqueo/desbloqueo de puertas — el resto queda para una ampliación futura del mismo proveedor (`edecan_vehicles.providers.SmartcarProvider` ya tiene la estructura para agregarlas).
 - **Flujo Connect in-app**: ver "Mejora futura" en la sección 2 — hoy el `refresh_token` inicial se obtiene con la propia herramienta de Smartcar, a mano.
-- **Tesla Fleet API directo**: se evaluó como alternativa (`ROADMAP_V2.md` §6.3) pero se descartó a favor de Smartcar por ser multi-marca — una integración Tesla-específica queda fuera de alcance mientras Smartcar cubra Tesla igual (lo hace).
+- **Tesla Fleet API directo**: se evaluó como alternativa pero se descartó a favor de Smartcar por ser multi-marca — una integración Tesla-específica queda fuera de alcance mientras Smartcar cubra Tesla igual (lo hace).
 
 ## Referencia técnica
 

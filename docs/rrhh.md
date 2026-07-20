@@ -1,18 +1,16 @@
 # RRHH — empleados, ausencias y nómina en borrador
 
 `edecan_business.rrhh` (extiende `packages/business/`, mismo paquete que ya usan
-`invoices.py`/`kpis.py` de WP-V2-12 e `inventory.py` de WP-V4-06) + `apps/api/edecan_api/
-routers/rrhh.py` (`/v1/rrhh/*`) + `/app/rrhh` en el frontend. Corresponde a la categoría
-"RRHH, nómina, reclutamiento" del wishlist de `REQUISITOS_V2.md` — `ROADMAP_V2.md` la había
-dejado en P2 ("tras validar facturación"); `DIRECCION_ACTUAL.md` levantó esa barrera para v5.
-Contrato pinned en `ARCHITECTURE.md` §14 (WP-V5-01, ya aterrizado: migración
+`invoices.py`/`kpis.py` e `inventory.py`) + `apps/api/edecan_api/
+routers/rrhh.py` (`/v1/rrhh/*`) + `/app/rrhh` en el frontend.
+Contrato público en `ARCHITECTURE.md` §14 (ya implementado: migración
 `0007_v5_expansion`, flag `erp.hr`, nombres exactos de tools).
 
 > **Estado**: real y funcional, mismo criterio de "sin datos simulados" que `docs/negocios.md`
 > — SQL parametrizado contra el esquema pinned, nunca un stub. Verificado con la suite
 > automatizada offline (`FakeSession` programable, ver "Tests" al final), contra la app real
 > montada vía `edecan_api.main.create_app()` (`V5_ROUTER_NAMES`, ya incluye `"rrhh"`), y desde
-> WP-V7-01 también **empíricamente contra Postgres real migrado** (columna por columna, más
+> fase v7 también **empíricamente contra Postgres real migrado** (columna por columna, más
 > las dos carreras `FOR UPDATE` bajo concurrencia real) — ver
 > `packages/business/tests/test_rrhh_integration.py` y
 > `docs/cumplimiento/barrido-v7-rrhh.md`.
@@ -28,9 +26,8 @@ Esto es **RRHH ligero para un negocio pequeño/freelance**, no un sistema de nó
   de nómina certificado.
 - **No emite recibos de nómina timbrados** ante ninguna autoridad — no hay PDF ni documento
   fiscal, solo registros en base de datos.
-- **No gestiona reclutamiento** (vacantes, candidatos, entrevistas) — el wishlist de
-  `REQUISITOS_V2.md` menciona "reclutamiento" en la misma categoría, pero este work package
-  cubre solo la mitad "empleados/nómina"; reclutamiento queda para un WP de seguimiento.
+- **No gestiona reclutamiento** (vacantes, candidatos, entrevistas): el módulo cubre
+  empleados y nómina; reclutamiento queda como trabajo futuro.
 - Si el negocio necesita nómina fiscal real (retenciones correctas, timbrado, cumplimiento
   legal), sigue haciendo falta un proveedor de nómina certificado o una persona contadora —
   **este módulo no sustituye a ninguno de los dos.**
@@ -171,7 +168,7 @@ de estado usa `FOR UPDATE`, así que dos aprobaciones concurrentes sobre la MISM
 serializan — la segunda SIEMPRE encuentra la corrida ya `'approved'` y cae en el `409`, nunca
 aprueba dos veces.
 
-**Corrección (WP-V7-01, 2026-07-09)**: `resolver_ausencia` (aprobar/rechazar una ausencia)
+**Corrección (fase v7, 2026-07-09)**: `resolver_ausencia` (aprobar/rechazar una ausencia)
 tenía el MISMO tipo de carrera check-then-act pero SIN el lock `FOR UPDATE` que sí protege a
 `aprobar_nomina`/`cancelar_nomina` — dos llamadas concurrentes sobre la MISMA ausencia
 `pending` (p. ej. "aprobar" y "rechazar" disparadas casi al mismo tiempo por dos personas
@@ -259,14 +256,13 @@ tabs (mismo patrón que `/app/ide`, sin un componente `Tabs` compartido en `comp
 Componentes en `apps/web/src/components/rrhh/`; fetchers en `apps/web/src/lib/api-rrhh.ts`
 (duplica el bloque de fetch autenticado de `lib/api.ts`, incluido el manejo de
 `TOTP_REQUIRED_DETAIL` en el refresh de `/v1/auth/refresh` — mismo criterio EXACTO que
-`lib/api-negocios.ts`, ver su docstring/`HOTFIXES_PENDIENTES.md` punto 2). Español, dark/light
+`lib/api-negocios.ts`, ver su docstring/`docs/seguridad-modelo-amenazas.md` punto 2). Español, dark/light
 con los tokens existentes, cero dependencias npm nuevas. La entrada de navegación ("RRHH",
-`/app/rrhh`) ya la agregó WP-V5-01 en `components/layout/nav-items.ts`.
+`/app/rrhh`) ya la agregó fase v5 en `components/layout/nav-items.ts`.
 
-## Qué queda para P2
+## Trabajo futuro
 
-- **Reclutamiento** (vacantes, candidatos, entrevistas) — mitad de la categoría "RRHH,
-  nómina, reclutamiento" del wishlist que este work package NO cubre.
+- **Reclutamiento** (vacantes, candidatos, entrevistas), fuera del alcance actual.
 - **Deducciones individuales por empleado** (IMSS/ISR/seguridad social real, préstamos,
   faltas) — hoy `deducciones_pct` es un único porcentaje global por corrida, no una tabla de
   conceptos por empleado.
@@ -290,11 +286,11 @@ uv run --all-packages pytest -q packages/business/tests/test_rrhh.py       # ló
 uv run --all-packages pytest -q packages/business/tests/test_tools.py      # las 3 tools + las
                                                                             # 4 preexistentes
 uv run --all-packages pytest -q apps/api/tests/test_rrhh_router.py         # contrato HTTP
-uv run --all-packages pytest -q apps/api/tests/test_v7_sweep_rrhh.py       # WP-V7-01: las 11
+uv run --all-packages pytest -q apps/api/tests/test_v7_sweep_rrhh.py       # fase v7: las 11
                                                                             # rutas exigen el
                                                                             # flag + evidencia
                                                                             # en rollback
-uv run --all-packages pytest -q packages/business/tests/test_rrhh_integration.py  # WP-V7-01:
+uv run --all-packages pytest -q packages/business/tests/test_rrhh_integration.py  # fase v7:
                                                                             # Postgres real
                                                                             # (ver abajo)
 ```
@@ -306,13 +302,13 @@ en esas suites. `test_rrhh_router.py` cubre el gate de flag (`403` apagándolo e
 `hosted_basic` con `monkeypatch`, ya que `erp.hr` es `True` en los 4 planes reales — ver el
 docstring del archivo), el camino feliz de cada endpoint, `404`/`409`/`422` según corresponda,
 la doble aprobación de nómina, y que `POST .../aprobar` sin `{"confirmar": true}` responda
-`400` sin tocar la base de datos. `test_v7_sweep_rrhh.py` (WP-V7-01) extiende el gate de flag
+`400` sin tocar la base de datos. `test_v7_sweep_rrhh.py` (fase v7) extiende el gate de flag
 a las 11 rutas (no solo 2), confirma que los sitios de escritura restantes (alta de empleado,
 ausencia, generar nómina) nunca comitean su propia sesión — mismo criterio que
 `test_v6_sweep_evidencia.py` ya verificó para `aprobar_nomina`/`cancelar_nomina` —, y confirma
 por AST que el router no lee ninguna credencial de terceros ni importa un cliente de pagos.
 
-**Verificación empírica contra Postgres real (WP-V7-01, cierra el hueco que este documento
+**Verificación empírica contra Postgres real (fase v7, cierra el hueco que este documento
 dejaba pendiente)**: `packages/business/tests/test_rrhh_integration.py`
 (`@pytest.mark.integration`, gateado por `DATABASE_URL`, mismo patrón que
 `packages/db/tests/test_rls.py`) migra un Postgres desechable hasta `0007_v5_expansion` y
@@ -323,5 +319,5 @@ sobre las 4 tablas nuevas, y — lo más importante — las DOS carreras `FOR UP
 (`resolver_ausencia`/`aprobar_nomina` vs. `cancelar_nomina`) bajo concurrencia REAL de
 Postgres (dos transacciones simultáneas disputando el mismo lock de fila, no algo que una
 `FakeSession` pueda ejercitar). Encontró y cerró un hallazgo real en el proceso: ver la nota
-de "Corrección (WP-V7-01, 2026-07-09)" en la sección de Nómina arriba. Detalle completo en
+de "Corrección (fase v7, 2026-07-09)" en la sección de Nómina arriba. Detalle completo en
 `docs/cumplimiento/barrido-v7-rrhh.md`.

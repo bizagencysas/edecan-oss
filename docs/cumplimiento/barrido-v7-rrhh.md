@@ -1,9 +1,9 @@
-# Barrido v7 — RRHH/nómina: esquema real, plan-flag, evidencia en rollback y BYO (WP-V7-01)
+# Barrido v7 — RRHH/nómina: esquema real, plan-flag, evidencia en rollback y BYO (fase v7)
 
 Este documento registra el barrido dedicado de la vertical RRHH/nómina de v5
 (`apps/api/edecan_api/routers/rrhh.py`, `packages/business/edecan_business/rrhh.py`) contra
 los cuatro patrones de bug que las auditorías v4-v6 encontraron repetidamente en el resto del
-repo (ver `HOTFIXES_PENDIENTES.md` y `docs/seguridad-modelo-amenazas.md`, referencias
+repo (ver `docs/seguridad-modelo-amenazas.md` y `docs/seguridad-modelo-amenazas.md`, referencias
 canónicas leídas completas antes de escribir una línea de este WP):
 
 - **BARRIDO D** — esquema SQL asumido vs. esquema real (patrón del bug de v6 en
@@ -11,20 +11,20 @@ canónicas leídas completas antes de escribir una línea de este WP):
 - **BARRIDO B** — flag de plan de grano fino aplicado a TODAS las superficies, no solo
   algunas (patrón de v5/v6, `usar_computadora`/`delegar_mision`/`confirm_tool_call`).
 - **BARRIDO C** — escritura de evidencia legal/cumplimiento perdida en un rollback de sesión
-  (patrón de los puntos 8/9 de `HOTFIXES_PENDIENTES.md`, `crear_clon_voz`, `hooks.py`,
+  (patrón de los puntos 8/9 de `docs/seguridad-modelo-amenazas.md`, `crear_clon_voz`, `hooks.py`,
   `_apply_optout`).
 - **BARRIDO A** — bring-your-own (RRHH no debería depender de ninguna credencial de terceros).
 - **Guardrail de dinero real**: la nómina es SIEMPRE borrador, nunca ejecuta un pago.
 
 **Resumen ejecutivo**: los cuatro barridos con nombre confirmaron que `rrhh.py` (router +
 capa de negocio) ya estaba correcto — no hizo falta ningún fix en esos cuatro frentes,
-consistente con que WP-V5-08/v6 ya lo habían construido/verificado con cuidado. La
+consistente con que fase v5/v6 ya lo habían construido/verificado con cuidado. La
 verificación empírica de BARRIDO D (Postgres real, nunca antes corrida para esta vertical —
 `docs/rrhh.md` lo documentaba explícitamente como pendiente) sí encontró y cerró **un
 hallazgo real de concurrencia** en `resolver_ausencia` — fuera de los cuatro barridos con
 nombre, pero dentro del archivo que sí es alcance de este WP
 (`packages/business/edecan_business/rrhh.py`) y del mismo espíritu de "endurecer" que pide
-`DIRECCION_ACTUAL.md` para v7 (ver la sección dedicada más abajo).
+`docs/roadmap.md` para v7 (ver la sección dedicada más abajo).
 
 ---
 
@@ -180,7 +180,7 @@ barrido ejercita — avisa si algún día se agrega/quita una ruta sin actualiza
 **Tools del agente (`packages/business/edecan_business/tools.py`)**: las 3 tools de RRHH
 (`GestionarEmpleadoTool`, `RegistrarAusenciaTool`, `PrepararNominaTool`) ya declaraban
 `requires_flags = frozenset({FLAG_ERP_HR})` — confirmado por lectura y por
-`apps/api/tests/test_v6_sweep_flags.py` (WP-V6-02, no tocado en este WP), que ya pinnea la
+`apps/api/tests/test_v6_sweep_flags.py` (fase v6, no tocado en este WP), que ya pinnea la
 paridad tool↔router para las 3 (`rrhh:GestionarEmpleadoTool`/`RegistrarAusenciaTool`/
 `PrepararNominaTool` vs. `rrhh_module._require_erp_hr`).
 
@@ -210,7 +210,7 @@ barrido dedicado v6 (`docs/cumplimiento/barrido-evidencia-v6.md`, tabla "Resto d
 análisis**: releído el código real, `EstadoNominaError` (409) se sigue lanzando ANTES de
 `_audit()` en ambos handlers (nunca después), y ninguno de los dos hace una llamada de red que
 pudiera fallar después de auditar (la nómina nunca mueve dinero — ver el guardrail más abajo).
-`apps/api/tests/test_v6_sweep_evidencia.py` (WP-V6-03, no tocado) ya pinnea
+`apps/api/tests/test_v6_sweep_evidencia.py` (fase v6, no tocado) ya pinnea
 `test_aprobar_nomina_camino_feliz_nunca_comitea_su_propia_sesion` (`fake_session.commits ==
 0`) — re-ejecutado sin cambios: **9 passed** (archivo completo). Este WP agrega
 `test_cancelar_nomina_camino_feliz_nunca_comitea_su_propia_sesion` en
@@ -233,7 +233,7 @@ retorna inmediatamente después, sin ninguna otra operación de sesión que pudi
 | `POST /empleados` | `crear_empleado` | No | No — valida todo (nombre/email/salario/status) antes del único `INSERT`; el handler retorna justo después | **Seguro** |
 | `PATCH /empleados/{id}` | `editar_empleado` | No | No — mismo patrón, un solo `UPDATE` como última operación | **Seguro** |
 | `POST /ausencias` | `registrar_ausencia` | No | No — las dos posibles excepciones (`ValueError` de validación, `AusenciaSolapadaError` de solapamiento) ocurren ANTES del `INSERT` (el chequeo de solapamiento es un `SELECT`, no puede fallar por datos de negocio) | **Seguro** |
-| `PATCH /ausencias/{id}` | `resolver_ausencia` | No | No — `EstadoAusenciaError` se lanza ANTES del `UPDATE` (tras el `SELECT ... FOR UPDATE`, WP-V7-01) | **Seguro** |
+| `PATCH /ausencias/{id}` | `resolver_ausencia` | No | No — `EstadoAusenciaError` se lanza ANTES del `UPDATE` (tras el `SELECT ... FOR UPDATE`, fase v7) | **Seguro** |
 | `POST /nominas` | `calcular_nomina` | No | No — el único INSERT de negocio (`payroll_runs` + `payroll_items`, todo el cálculo aritmético en Python ocurre ANTES de tocar la sesión) es la última operación de la rama feliz | **Seguro** |
 | `GET *` (5 rutas) | solo `SELECT` | No | N/A — sin escritura | **N/A** |
 
@@ -295,7 +295,7 @@ dinero: genera un borrador contable que apruebas tú en la pantalla RRHH."*
 **Test nuevo**: `apps/api/tests/test_v7_sweep_rrhh.py::
 test_router_rrhh_no_importa_ningun_cliente_de_pagos_ni_hace_llamadas_de_red` — confirma que
 `rrhh.py` no importa `httpx`/`stripe`/`requests`/`aiohttp` en ninguna forma.
-`docs/rrhh.md` ya documentaba este guardrail con el mismo rigor desde WP-V5-08 — sigue
+`docs/rrhh.md` ya documentaba este guardrail con el mismo rigor desde fase v5 — sigue
 vigente y sin cambios.
 
 **Veredicto: Correcto.** Nada que corregir; doc y código coinciden.

@@ -1,0 +1,72 @@
+# ============================================================================
+# Edecán — plantilla de exclusiones compartida por los Dockerfiles.
+# El build siempre se lanza con el contexto en la RAÍZ del monorepo, ej.:
+#   docker build -f infra/docker/Dockerfile.api -t edecan-api .
+# ============================================================================
+
+# --- Control de versiones / editor / SO --------------------------------------
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Node / Next.js (apps/web) — irrelevante para las imágenes Python -------
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+**/node_modules/
+**/.next/
+**/.turbo/
+**/*.tsbuildinfo
+
+# --- Secretos / entorno local --------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# --- Bases de datos / logs / cobertura locales --------------------------------
+*.sqlite3
+*.db
+*.log
+logs/
+coverage/
+.nyc_output/
+dist/
+build/
+
+# --- Documentación de nivel repo (NO excluyas *.md a secas: cada paquete
+# Python declara `readme = "README.md"` en su pyproject.toml y hatchling
+# falla el build si ese archivo no está en el contexto). Ancladas con "/"
+# para no chocar por accidente con un README.md de algún paquete. -----------
+/docs/
+/ARCHITECTURE.md
+/PLAN.md
+/RIESGOS.md
+/CONTRIBUTING.md
+/NOTICE
+/LICENSE

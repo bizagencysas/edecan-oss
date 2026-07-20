@@ -1,8 +1,8 @@
 """Seguridad de `edecan_api`: hash de contraseñas, JWT y TOTP.
 
 - Contraseñas: `argon2-cffi` (Argon2id, parámetros por defecto de la librería).
-- JWT: HS256 (`PyJWT`) firmado con `Settings.JWT_SECRET`. Claims EXACTOS
-  pinned en `ARCHITECTURE.md` §10.12: `{sub, ten, plan, typ, exp}` —
+- JWT: HS256 (`PyJWT`) firmado con `Settings.JWT_SECRET`. Claims de identidad
+  `{sub, ten, plan, typ}` y claims estándar/de sesión `{iat, exp, jti, sid}` —
   `sub`=user_id, `ten`=tenant_id, `plan`=plan_key, `typ`="access"|"refresh".
   Access token: 30 min. Refresh token: 30 días. Los flags del plan NUNCA se
   guardan en el token — `deps.py` los recalcula siempre desde
@@ -73,11 +73,22 @@ class DecodedToken:
     ten: uuid.UUID
     plan: str
     typ: TokenType
+    iat: int
     exp: int
+    jti: uuid.UUID
+    sid: uuid.UUID
 
 
 def _encode(
-    *, sub: uuid.UUID, ten: uuid.UUID, plan: str, typ: TokenType, ttl_seconds: int, secret: str
+    *,
+    sub: uuid.UUID,
+    ten: uuid.UUID,
+    plan: str,
+    typ: TokenType,
+    ttl_seconds: int,
+    secret: str,
+    session_id: uuid.UUID,
+    token_id: uuid.UUID,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -85,14 +96,23 @@ def _encode(
         "ten": str(ten),
         "plan": plan,
         "typ": typ,
+        "iat": now,
         "exp": now + ttl_seconds,
+        "jti": str(token_id),
+        "sid": str(session_id),
     }
     return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
 
 
 def create_access_token(
-    *, user_id: uuid.UUID, tenant_id: uuid.UUID, plan_key: str, secret: str
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    plan_key: str,
+    secret: str,
+    session_id: uuid.UUID | None = None,
 ) -> str:
+    session_id = session_id or uuid.uuid4()
     return _encode(
         sub=user_id,
         ten=tenant_id,
@@ -100,12 +120,20 @@ def create_access_token(
         typ="access",
         ttl_seconds=ACCESS_TOKEN_TTL_SECONDS,
         secret=secret,
+        session_id=session_id,
+        token_id=uuid.uuid4(),
     )
 
 
 def create_refresh_token(
-    *, user_id: uuid.UUID, tenant_id: uuid.UUID, plan_key: str, secret: str
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    plan_key: str,
+    secret: str,
+    session_id: uuid.UUID | None = None,
 ) -> str:
+    session_id = session_id or uuid.uuid4()
     return _encode(
         sub=user_id,
         ten=tenant_id,
@@ -113,18 +141,34 @@ def create_refresh_token(
         typ="refresh",
         ttl_seconds=REFRESH_TOKEN_TTL_SECONDS,
         secret=secret,
+        session_id=session_id,
+        token_id=uuid.uuid4(),
     )
 
 
 def create_token_pair(
-    *, user_id: uuid.UUID, tenant_id: uuid.UUID, plan_key: str, secret: str
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    plan_key: str,
+    secret: str,
+    session_id: uuid.UUID | None = None,
 ) -> tuple[str, str]:
     """Devuelve `(access_token, refresh_token)`."""
+    session_id = session_id or uuid.uuid4()
     access = create_access_token(
-        user_id=user_id, tenant_id=tenant_id, plan_key=plan_key, secret=secret
+        user_id=user_id,
+        tenant_id=tenant_id,
+        plan_key=plan_key,
+        secret=secret,
+        session_id=session_id,
     )
     refresh = create_refresh_token(
-        user_id=user_id, tenant_id=tenant_id, plan_key=plan_key, secret=secret
+        user_id=user_id,
+        tenant_id=tenant_id,
+        plan_key=plan_key,
+        secret=secret,
+        session_id=session_id,
     )
     return access, refresh
 
@@ -132,7 +176,12 @@ def create_token_pair(
 def decode_token(token: str, *, secret: str, expected_typ: TokenType | None = None) -> DecodedToken:
     """Decodifica y valida `token`. Lanza `TokenError` si es inválido/expirado/tipo incorrecto."""
     try:
-        payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub", "ten", "plan", "typ", "iat", "exp", "jti", "sid"]},
+        )
     except jwt.ExpiredSignatureError as exc:
         raise TokenError("El token expiró") from exc
     except jwt.InvalidTokenError as exc:
@@ -143,7 +192,10 @@ def decode_token(token: str, *, secret: str, expected_typ: TokenType | None = No
         ten = uuid.UUID(str(payload["ten"]))
         plan = str(payload["plan"])
         typ = str(payload["typ"])
+        iat = int(payload["iat"])
         exp = int(payload["exp"])
+        jti = uuid.UUID(str(payload["jti"]))
+        sid = uuid.UUID(str(payload["sid"]))
     except (KeyError, ValueError, TypeError) as exc:
         raise TokenError(f"Claims del token incompletos o mal formados: {exc}") from exc
 
@@ -152,7 +204,9 @@ def decode_token(token: str, *, secret: str, expected_typ: TokenType | None = No
     if expected_typ is not None and typ != expected_typ:
         raise TokenError(f"Se esperaba un token '{expected_typ}', se recibió '{typ}'")
 
-    return DecodedToken(sub=sub, ten=ten, plan=plan, typ=typ, exp=exp)  # type: ignore[arg-type]
+    return DecodedToken(  # type: ignore[arg-type]
+        sub=sub, ten=ten, plan=plan, typ=typ, iat=iat, exp=exp, jti=jti, sid=sid
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edecán — worker asíncrono: consumidor SQS, ingesta de documentos, recordatorios, sync de conectores, generación de contenido y consolidación de memoria"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "aioboto3>=13.0",
     "pypdf>=4.3",
@@ -18,21 +19,8 @@ dependencies = [
     "edecan-core",
     "edecan-llm",
     "edecan-connectors",
-    # Los 13 paquetes de `edecan.tools` (mismo mecanismo y mismo bug que
-    # `apps/api/pyproject.toml`, ver el comentario de `edecan-smarthome` ahí
-    # para el detalle completo): `run_automation.py`/`run_mission.py`
-    # (`apps/worker/edecan_worker/handlers/`) arman un `ToolRegistry` real
-    # con `registry.load_entry_points(group="edecan.tools")` para darle
-    # herramientas de verdad a un agente headless (recortado DESPUÉS por un
-    # allowlist vía `edecan_agents.RestrictedRegistry`, no por partir de un
-    # registro vacío). `importlib.metadata.entry_points()` solo ve paquetes
-    # REALMENTE instalados en el venv — sin estas líneas, cualquier imagen
-    # construida con `infra/docker/Dockerfile.worker` (`uv sync --no-dev
-    # --package edecan-worker`, incluye el servicio worker de
-    # `infra/docker/compose.selfhost.yml`) dejaba esos handlers casi sin
-    # ninguna herramienta real, en silencio. `edecan-agents` además hace
-    # falta por import directo: `run_automation.py` hace `from edecan_agents
-    # import PROFILES, RestrictedRegistry`, no solo por entry points.
+    # Headless automations discover these tool packages through entry points.
+    # Keep them direct so isolated production installs retain the full registry.
     "edecan-toolkit",
     "edecan-docanalysis",
     "edecan-browser",
@@ -45,85 +33,13 @@ dependencies = [
     "edecan-business",
     "edecan-skills",
     "edecan-smarthome",
-    # `edecan-ads` (v4, WP-V4-07): mismo mecanismo exacto que los 12 de
-    # arriba — solo expone `ads_resumen`/`ads_preparar_campana` vía el entry
-    # point `edecan.tools` (gateadas por el flag de plan `tools.ads`, no por
-    # `RestrictedRegistry`: ningún perfil de `edecan_agents.PROFILES` las
-    # referencia todavía, así que solo llegan al agente headless "genérico"
-    # sin perfil, `edecan_worker.handlers.run_automation._apply_agent_profile`).
-    # Sin esta línea, `uv sync --no-dev --package edecan-worker`
-    # (`infra/docker/Dockerfile.worker`) no instala `edecan_ads` y esas dos
-    # tools faltan en silencio del `ToolRegistry` de automatizaciones/
-    # misiones — verificado con `uv tree --package edecan-worker --frozen`:
-    # antes de esta línea ni `edecan-ads` aparecía en el árbol resuelto.
-    # NO se agrega `edecan-vehicles` (también v4, mismo entry point): a
-    # diferencia de `edecan-ads`, es exclusión A PROPÓSITO — ver
-    # `DIRECCION_ACTUAL.md` §"Vehículos (Smartcar) eliminado del alcance"
-    # (2026-07-08), que deja pinned "no conectarlo a la API/worker/apps
-    # móviles" y que un audit futuro que lo encuentre "incompleto" debe
-    # responder "fuera de alcance", no arreglarlo.
+    # Vehicle tools are intentionally outside the worker product surface.
     "edecan-ads",
-    # `edecan-travel` (v5, WP-V5-09, `ARCHITECTURE.md` §14): mismo mecanismo
-    # que `edecan-ads` arriba — sin esta línea, `uv sync --no-dev --package
-    # edecan-worker` (`infra/docker/Dockerfile.worker`) no instala
-    # `edecan_travel` y sus 5 tools faltan en silencio del `ToolRegistry` de
-    # automatizaciones/misiones.
     "edecan-travel",
-    # `edecan-voice` (v5, WP-V5-10, `ARCHITECTURE.md` §14): a diferencia de
-    # `apps/api/pyproject.toml` (donde `edecan-voice` YA es dependencia
-    # directa desde v1, para el registro STT/TTS de voz web,
-    # `edecan_voice.registry.get_stt/get_tts`), el worker nunca la había
-    # necesitado — hasta que `edecan_voice` ganó su propio entry point
-    # `edecan.tools` (`listar_voces`/`sintetizar_voz`, WP-V5-10) para que el
-    # Orchestrator (`run_automation`/`run_mission`, mismo mecanismo que
-    # `edecan-ads`/`edecan-travel` arriba) también pueda ofrecerlas. Sin esta
-    # línea quedaban excluidas en silencio del `ToolRegistry` del worker —
-    # mismo síntoma que ya tuvieron `edecan-business`/`edecan-smarthome`
-    # antes de declararse acá.
     "edecan-voice",
-    # `edecan-meetings` (v6, WP-V6-05, `ARCHITECTURE.md` §15.f): DOS motivos,
-    # no solo uno. (1) mismo mecanismo que `edecan-ads`/`edecan-travel`/
-    # `edecan-voice` arriba — expone `resumir_reunion` vía el entry point
-    # `edecan.tools` para que el Orchestrator (`run_automation`/
-    # `run_mission`) también pueda ofrecerla. (2) además, a diferencia de
-    # esos tres, `apps/worker/edecan_worker/handlers/process_meeting.py` hace
-    # `from edecan_meetings.audio import ...`/`from edecan_meetings.minutas
-    # import ...`/`from edecan_meetings.stt import ...` — import directo,
-    # aunque perezoso (dentro de la función, ver el docstring del propio
-    # módulo, sección "Import perezoso de `edecan_meetings`"). Sin esta
-    # línea, `infra/docker/Dockerfile.worker` (`uv sync --no-dev --package
-    # edecan-worker`) no instala `edecan_meetings`: la tool falta en
-    # silencio del `ToolRegistry` Y el handler `process_meeting` revienta con
-    # `ModuleNotFoundError` en cuanto un job real llega a esa línea en
-    # producción. Gap ya documentado como pendiente en
-    # `packages/meetings/README.md`, sección "Nota sobre el workspace uv" —
-    # §15.f pinneaba esta línea como responsabilidad explícita de WP-V6-05
-    # ("nadie más lo hace por WP-V6-05 esta vez").
     "edecan-meetings",
-    # `edecan-mcp` (v6, WP-V6-07, `ARCHITECTURE.md` §15.g): mismo mecanismo
-    # que `edecan-ads`/`edecan-travel`/`edecan-voice` arriba —
-    # `apps/worker/edecan_worker/deps.py::Deps.mcp_tools_para` importa
-    # `edecan_mcp.provider_config`/`edecan_mcp.tool_adapter` CON guardia
-    # (`try/except ImportError`, falla abierto a `[]`, nunca rompe una
-    # automatización/misión), pero solo devuelve tools de verdad si el
-    # paquete SÍ está instalado; la usan `run_automation.py` y
-    # `run_mission.py` para registrar en el `ToolRegistry` de cada corrida las
-    # tools MCP que el tenant conectó. Sin esta línea, `uv sync --no-dev
-    # --package edecan-worker` (`infra/docker/Dockerfile.worker`) no instala
-    # `edecan_mcp` y las automatizaciones/misiones headless nunca ven una tool
-    # MCP, en silencio — mismo síntoma que ya tuvieron `edecan-business`/
-    # `edecan-smarthome`/`edecan-ads`/`edecan-travel`/`edecan-meetings` antes
-    # de declararse acá. A diferencia de `edecan-meetings` (§15.f, dueño
-    # explícito WP-V6-05 de esa línea), §15.g nunca asignó este registro a
-    # ningún WP — quedó pendiente hasta ahora (ver la nota final de
-    # `packages/mcp/pyproject.toml`).
     "edecan-mcp",
-    # APNs/FCM (push nativo, WP-V5-13, `devices.push_token`/`push_platform`,
-    # migración `0007_v5_expansion`): `pyjwt` firma el token de proveedor de
-    # APNs (JWT ES256 con la clave `.p8` del propio tenant); `cryptography`
-    # es el backend que `pyjwt` necesita para firmar con curvas EC
-    # (`algorithm="ES256"`) — ya está resuelta en `uv.lock` como
-    # dependencia transitiva, esto solo la fija como dependencia directa.
+    # APNs provider-token signing requires PyJWT's cryptography backend.
     "pyjwt>=2.9",
     "cryptography>=42",
 ]

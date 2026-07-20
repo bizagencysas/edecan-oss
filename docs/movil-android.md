@@ -1,8 +1,8 @@
 # App Android nativa
 
 Cliente Android nativo de Edecán: **Kotlin 2.4.0 + Compose Multiplatform**,
-nunca React Native ni Flutter (`DIRECCION_ACTUAL.md`, `ROADMAP_V2.md` §6.1
-— ver "Por qué no React Native" más abajo). Habla contra la misma API HTTP
+nunca React Native ni Flutter — ver "Por qué no React Native" más abajo.
+Habla contra la misma API HTTP
 que el panel web y la app de escritorio (`docs/api.md`) — self-host propio
 o la app de escritorio Tauri de tu tenant, nunca un servidor "de fábrica"
 compartido.
@@ -42,8 +42,7 @@ válido solo para desarrollo local, nunca para distribuir).
 
 ## Instalación: USB / orígenes desconocidos — nunca Play Store
 
-Decisión de producto permanente (`DIRECCION_ACTUAL.md`, "Apps móviles"):
-esta app **nunca se publica en Google Play**. Se instala:
+Esta app **nunca se publica en Google Play**. Se instala:
 
 1. **Por USB con `adb`** (lo más simple mientras desarrollas):
    ```bash
@@ -122,7 +121,7 @@ adb install androidApp/build/outputs/apk/release/androidApp-release.apk
 ## Emparejamiento al primer arranque
 
 La app pide, en un onboarding de 2 pasos (mismo principio de "pocos
-clicks" que la app de escritorio, `DIRECCION_ACTUAL.md`):
+clicks" que la app de escritorio, `docs/roadmap.md`):
 
 1. **La URL de tu servidor** — self-host propio o tu app de escritorio
    Tauri. Sin servidor "de fábrica": cada cliente trae el suyo.
@@ -140,16 +139,16 @@ sesión desde la pestaña Perfil borra los tokens y vuelve a mostrar el
 onboarding — la URL del servidor SÍ se conserva, para no tener que volver a
 escribirla.
 
-**Además, desde WP-V4-04, un login/registro exitoso registra el
+**Además, desde fase v4, un login/registro exitoso registra el
 dispositivo de verdad**: `POST /v1/devices {nombre: "<fabricante> <modelo>",
 plataforma: "android", kind: "mobile", fingerprint: ANDROID_ID}` (contrato
-de WP-V4-01, tabla `devices`, `ROADMAP_V2.md` §6.1/§7.4) — el `id` que
+de fase v4, tabla `devices`, `docs/roadmap.md`) — el `id` que
 devuelve el servidor se guarda local (no cifrado — un id de dispositivo no
 autentica nada por sí solo) y se usa para `DELETE /v1/devices/{id}` al
 cerrar sesión, revocando el emparejamiento en el servidor. Ambas llamadas
 son **mejor esfuerzo**: `EdecanApi.emparejarDispositivo`/`.revocarDispositivo`
 nunca lanzan — si `/v1/devices` todavía no existe del lado del servidor
-(`404`, WP-V4-01 corriendo en paralelo) o falla por cualquier otro motivo,
+(`404`, fase v4 corriendo en paralelo) o falla por cualquier otro motivo,
 el login/logout de todas formas sigue su curso normal. Emparejamiento real
 por **QR + verificación de *fingerprint*** (en vez de simplemente confiar
 en la sesión) sigue diseñado en [`control-remoto.md`](./control-remoto.md)
@@ -174,7 +173,7 @@ en la sesión) sigue diseñado en [`control-remoto.md`](./control-remoto.md)
   `nav/RootNav.kt` agrega un segundo nivel de navegación de un solo paso
   (mismo `remember { mutableStateOf(...) }` local, sin `androidx.navigation`
   tampoco) para "Misiones"/"Automatizaciones"/"Recordatorios" (`Pantallas
-  v5`, WP-V5-07) y "Remoto" (WP-V6-09, ver ["Pantalla Remoto"](#pantalla-remoto-wp-v6-09)
+  v5`, fase v5) y "Remoto" (fase v6, ver ["Pantalla Remoto"](#pantalla-remoto)
   más abajo) — se llega a esas cuatro SOLO desde los accesos directos de
   Inicio, no son pestañas nuevas. `ViewModel`s con `StateFlow`, uno por
   pantalla con lógica real: `SessionViewModel` (emparejamiento/sesión,
@@ -205,7 +204,7 @@ en JavaScript/Dart no da con la misma calidad ni el mismo control:
   Native introduce *jank* y complejidad de mantenimiento reales.
 - **Input injection / grabación de audio nativa / notificaciones del
   sistema** (`NotificationListenerService` para "control del teléfono",
-  `ROADMAP_V2.md` §6.3): APIs de plataforma que penden de servicios/
+  `docs/roadmap.md`): APIs de plataforma que penden de servicios/
   permisos de Android específicos, más simples y más confiables de
   mantener en Kotlin directo que a través de un puente de plugins.
 
@@ -214,7 +213,7 @@ además el problema que React Native "resolvía" del otro lado — compartir
 la capa de red/dominio entre plataformas — sin pagar el costo del puente en
 UI ni renunciar a APIs nativas cuando hagan falta.
 
-### Qué es real hoy (WP-V4-04, además de auth/chat de la iteración anterior)
+### Qué es real hoy (fase v4, además de auth/chat de la iteración anterior)
 
 - **Negocios real**: `NegociosScreen` — KPIs del mes (`GET
   /v1/negocios/kpis`: ingresos/gastos/beneficio/nuevos clientes/facturado/
@@ -243,7 +242,7 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   del `StubSTT`/`StubTTS` offline (texto fijo, silencio) en vez de dejar
   que parezca un reconocimiento real fallando.
 - **Conectar LLM desde el teléfono**: pestaña Perfil — "pegar y validar"
-  (`DIRECCION_ACTUAL.md`) contra `PUT /v1/credentials/llm`: selector de
+  (`docs/roadmap.md`) contra `PUT /v1/credentials/llm`: selector de
   `kind` (`anthropic`/`openai_compat`/`vertex` siempre;
   `claude_cli`/`codex_cli`/`ollama` solo si `GET /v1/setup/status` dice
   `local_mode: true`), campos según el `kind` elegido
@@ -253,7 +252,7 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   algo conectado.
 - **Registro in-app + emparejamiento de dispositivo real**: `POST
   /v1/auth/register` desde el propio onboarding (ver arriba) y `POST`/
-  `DELETE /v1/devices` en login/logout (contrato de WP-V4-01, "mejor
+  `DELETE /v1/devices` en login/logout (contrato de fase v4, "mejor
   esfuerzo" — nunca bloquea el flujo si el endpoint no está listo del lado
   del servidor todavía).
 - **IDE de solo lectura**: pestaña IDE — árbol del sandbox del companion de
@@ -262,7 +261,7 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   es binario). `EmptyState` si no hay companion conectado (`GET
   /v1/ide/status`).
 
-### Pantallas v5 (WP-V5-07): Misiones, Automatizaciones, Recordatorios
+### Pantallas v5 (fase v5): Misiones, Automatizaciones, Recordatorios
 
 Tres pantallas nuevas, conectadas a la API real. Las tres se llegan **solo**
 desde los accesos directos de "Inicio" (`InicioScreen`, tarjetas "Misiones"/
@@ -274,7 +273,7 @@ tocarlas. Mismo criterio de "push" de un solo nivel que usaría
 construye).
 
 - **Misiones** (`edecan_api.routers.missions`, `ARCHITECTURE.md` §11,
-  `ROADMAP_V2.md` §7.4/§7.9) — `ui/MisionesScreen.kt` +
+  `docs/roadmap.md`) — `ui/MisionesScreen.kt` +
   `vm/MisionesViewModel.kt`: lista con badge por `status`
   (`planning|running|waiting_confirmation|done|error|cancelled`), alta de
   misión (`POST /v1/missions {objetivo}`), detalle con sus pasos y resultado
@@ -289,8 +288,7 @@ construye).
   `planning`/`running`. `403` si el plan del tenant no trae el flag
   `agents.missions` (p. ej. `hosted_basic`) — el error del servidor se
   muestra tal cual, sin pantalla especial.
-- **Automatizaciones** (`edecan_api.routers.automations`, `ROADMAP_V2.md`
-  §7.4/§7.6/§7.10) — `ui/AutomatizacionesScreen.kt` +
+- **Automatizaciones** (`edecan_api.routers.automations`, `docs/roadmap.md`) — `ui/AutomatizacionesScreen.kt` +
   `vm/AutomatizacionesViewModel.kt`: lista con `Switch` **optimista**
   (cambia en pantalla al toque, dispara `PATCH /v1/automations/{id}
   {enabled}` de verdad, y si falla revierte la fila a mano a su valor
@@ -329,21 +327,21 @@ construye).
   `reminders`.
 - **Solo *polling*, sin SSE**: a diferencia del chat, ninguno de estos tres
   routers expone un stream — es una decisión del propio backend (§7.9/§7.6
-  de `ROADMAP_V2.md`), no una limitación de este work package.
+  de `docs/roadmap.md`), no una limitación de este work package.
 - Misiones no expone editar el `plan` ni reintentar un paso puntual — solo
   crear, ver el avance y aprobar/rechazar el paso pendiente, igual que hace
   el panel web hoy.
 
-### Pantalla Remoto (WP-V6-09)
+### Pantalla Remoto
 
-Control remoto del Mac/PC del tenant desde el teléfono — mismo guardrail no
-negociable de `DIRECCION_ACTUAL.md` ("Control remoto del Mac/PC desde el
-móvil"): consentimiento explícito en el teléfono MÁS una segunda aprobación
+Control remoto del Mac/PC del tenant desde el teléfono — aplica el guardrail
+de [`control-remoto.md`](./control-remoto.md): consentimiento explícito en
+el teléfono MÁS una segunda aprobación
 LOCAL en el companion antes de que salga un solo *frame* o se mueva un solo
 píxel. Se llega **solo** desde el acceso directo "Remoto" de Inicio
 (`InicioScreen.kt`), mismo criterio de pantalla secundaria de `RootNav.kt`
 (`PantallaSecundaria.REMOTO`) que Misiones/Automatizaciones/Recordatorios de
-arriba — espejo Android de WP-V6-08 en iOS.
+arriba — espejo Android de fase v6 en iOS.
 
 - `ui/RemotoScreen.kt` + `vm/RemotoViewModel.kt` (`shared/RemoteModels.kt`/
   `RemoteCoords.kt`) contra `/v1/remote` (`ARCHITECTURE.md` §13.c/§14,
@@ -369,7 +367,7 @@ arriba — espejo Android de WP-V6-08 en iOS.
 - **Telefonía real / voz avanzada**: la pestaña Voz de hoy es push-to-talk
   simple (una grabación, una respuesta) contra el mismo asistente — la
   telefonía Twilio bring-your-own (`docs/voz-telefonia.md`) y un modo
-  conversación continua con barge-in (`ROADMAP_V2.md` §6.3) siguen
+  conversación continua con barge-in (`docs/roadmap.md`) siguen
   pendientes.
 - **Negocios de escritura**: crear facturas y cambiar su estado
   (`POST /v1/negocios/facturas`, `POST /v1/negocios/facturas/{id}/estado`)
@@ -381,13 +379,13 @@ arriba — espejo Android de WP-V6-08 en iOS.
   (tono, formalidad, instrucciones) y tema de la app también.
 - **Push**: Firebase Cloud Messaging (FCM) — la tabla `devices` ya tiene el
   lugar donde registrar el token por dispositivo una vez exista
-  `POST /v1/devices` del lado del servidor (WP-V4-01). Primer consumidor
+  `POST /v1/devices` del lado del servidor (fase v4). Primer consumidor
   natural una vez exista: avisar cuando una misión queda
   `waiting_confirmation`/termina (`Pantallas v5` arriba) o cuando vence un
   recordatorio, en vez de depender del *polling*/de volver a entrar a la
   pantalla.
 - **Visor de control remoto — transporte WebRTC**: la pantalla "Remoto" ya
-  es real hoy con *polling* HTTP (ver ["Pantalla Remoto"](#pantalla-remoto-wp-v6-09)
+  es real hoy con *polling* HTTP (ver ["Pantalla Remoto"](#pantalla-remoto)
   arriba) — lo que sigue pendiente es reemplazar ese *polling* por WebRTC
   (`libwebrtc` para Android) de baja latencia, diseño completo en
   [`control-remoto.md`](./control-remoto.md) §5/§9.

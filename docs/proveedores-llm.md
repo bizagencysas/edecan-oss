@@ -1,6 +1,6 @@
 # Proveedores LLM — API, CLI local u Ollama
 
-Edecán necesita un modelo de lenguaje para pensar. Este documento explica las seis formas de conectarlo (`edecan_llm`, `ARCHITECTURE.md` §3, §10.6 y §12): cuál elegir, qué requiere cada una, y sus limitaciones. Filosofía del producto (`DIRECCION_ACTUAL.md`): **todo lo trae el cliente** — nunca una llave compartida de la plataforma, y siempre el camino de menos clicks posible.
+Edecán necesita un modelo de lenguaje para pensar. Este documento explica las seis formas de conectarlo (`edecan_llm`, `ARCHITECTURE.md` §3, §10.6 y §12): cuál elegir, qué requiere cada una, y sus limitaciones. Filosofía del producto ([`credenciales.md`](./credenciales.md)): **todo lo trae el cliente** — nunca una llave compartida de la plataforma, y siempre el camino de menos clicks posible.
 
 ## Resumen — cuál elegir
 
@@ -31,7 +31,7 @@ class LLMProviderConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 ```
 
-`LLMRouter(settings, provider_config=mi_config)` construye el proveedor correspondiente y resuelve los alias `"principal"`/`"rapido"` según lo que traiga esa config (con un default sano por proveedor si falta algo — ver `edecan_llm.router.LLMRouter._config_models`). Sin `provider_config` (el valor por defecto, `None`), el router se comporta exactamente igual que antes de WP-V3-03: resuelve desde `ANTHROPIC_API_KEY`/`OPENAI_COMPAT_*` de la plataforma.
+`LLMRouter(settings, provider_config=mi_config)` construye el proveedor correspondiente y resuelve los alias `"principal"`/`"rapido"` según lo que traiga esa config (con un default sano por proveedor si falta algo — ver `edecan_llm.router.LLMRouter._config_models`). Sin `provider_config` (el valor por defecto, `None`), el router se comporta exactamente igual que antes de fase v3: resuelve desde `ANTHROPIC_API_KEY`/`OPENAI_COMPAT_*` de la plataforma.
 
 ## Auto-detección: `detect_local_providers`
 
@@ -46,7 +46,7 @@ detect_local_providers(settings)
 # }
 ```
 
-Síncrona, rápida (timeouts cortos: 5s para `--version`, 2s para Ollama) y **nunca lanza** — cualquier fallo se traduce en silencio a "no detectado". La pantalla de Configuración la llama al abrir para poder ofrecer "usar mi Claude CLI ya instalado" o "usar Ollama" como botones de un solo clic, sin pedir ninguna credencial (`DIRECCION_ACTUAL.md`, "configuración de pocos clicks").
+Síncrona, rápida (timeouts cortos: 5s para `--version`, 2s para Ollama) y **nunca lanza** — cualquier fallo se traduce en silencio a "no detectado". La pantalla de Configuración la llama al abrir para poder ofrecer "usar mi Claude CLI ya instalado" o "usar Ollama" como botones de un solo clic, sin pedir ninguna credencial.
 
 ## Claude CLI y Codex CLI: usa lo que ya tienes
 
@@ -107,7 +107,7 @@ LLMProviderConfig(
 )
 ```
 
-Esto es lo que la pantalla de Configuración debe ofrecer primero: un campo, un botón "Conectar" — igual que Anthropic/OpenAI. **Nunca** empezar por pedirle a un cliente nuevo que configure un proyecto de Google Cloud (`DIRECCION_ACTUAL.md`, "Para Vertex AI específicamente").
+Esto es lo que la pantalla de Configuración debe ofrecer primero: un campo, un botón "Conectar" — igual que Anthropic/OpenAI. **Nunca** empezar por pedirle a un cliente nuevo que configure un proyecto de Google Cloud.
 
 ### Modo `service_account` (avanzado — proyecto GCP propio)
 
@@ -131,7 +131,7 @@ Ambos modos comparten toda la traducción de mensajes/herramientas al formato `g
 
 ## Anthropic y OpenAI-compatible
 
-Mismos dos proveedores de siempre (`AnthropicProvider`/`OpenAICompatProvider`, ver `docs/configuracion.md` para los campos `ANTHROPIC_API_KEY`/`OPENAI_COMPAT_BASE_URL`/`OPENAI_COMPAT_API_KEY` que usa `apps/worker` para sus propios jobs de sistema), pero para el chat de un tenant es SIEMPRE `LLMProviderConfig(kind="anthropic", api_key=...)` / `LLMProviderConfig(kind="openai_compat", base_url=..., api_key=...)` con la API key que el propio tenant conectó (bring-your-own, `DIRECCION_ACTUAL.md`) — `apps/api` nunca depende de la de plataforma como alternativa (ver `docs/credenciales.md` "Orden de resolución").
+Mismos dos proveedores de siempre (`AnthropicProvider`/`OpenAICompatProvider`, ver `docs/configuracion.md` para los campos `ANTHROPIC_API_KEY`/`OPENAI_COMPAT_BASE_URL`/`OPENAI_COMPAT_API_KEY` que usa `apps/worker` para sus propios jobs de sistema), pero para el chat de un tenant es SIEMPRE `LLMProviderConfig(kind="anthropic", api_key=...)` / `LLMProviderConfig(kind="openai_compat", base_url=..., api_key=...)` con la API key que el propio tenant conectó (bring-your-own) — `apps/api` nunca depende de la de plataforma como alternativa (ver `docs/credenciales.md` "Orden de resolución").
 
 ## Resolución de modelo (`"principal"`/`"rapido"`)
 

@@ -2,7 +2,7 @@
 
 Viajes: búsqueda real de vuelos/hoteles vía **Amadeus Self-Service** (bring-your-own
 credenciales del tenant) + rastreo de paquetes vía **AfterShip**, con guardrail de dinero
-— igual que `packages/ads` (`ARCHITECTURE.md` §13/§14, WP-V5-09). Ver
+— igual que `packages/ads` (`ARCHITECTURE.md` §13/§14, fase v5). Ver
 [`docs/viajes.md`](../../docs/viajes.md) para el flujo completo y el modelo bring-your-own.
 
 ## Guardrail de dinero (lo más importante del paquete)

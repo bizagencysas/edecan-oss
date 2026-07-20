@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edecán — abstracción de proveedor LLM (Anthropic, OpenAI-compatible, Vertex AI/Gemini, Claude CLI, Codex CLI, Ollama, Bedrock stub)"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.7",
@@ -12,7 +13,7 @@ dependencies = [
 # `google-auth` SOLO hace falta para `VertexAIProvider` en modo
 # "service_account" (el modo "api_key", por defecto, no lo necesita en
 # absoluto — ver `edecan_llm/vertex.py` y `docs/proveedores-llm.md`).
-# Dependencia OPCIONAL a propósito (ROADMAP_V2.md §7.11: mismo patrón que el
+# Optional by design, following the same pattern as the
 # extra `playwright` de `packages/browser`): el import es diferido y
 # guardeado dentro de `vertex.py`, y ningún test de este paquete la requiere
 # instalada (mockean el `token_provider`).

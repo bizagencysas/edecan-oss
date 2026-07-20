@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edecán — suites de evaluación del agente y biblioteca de prompts versionada (edecan_evals). Ver ARCHITECTURE.md §10.6, §10.7."
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.7",

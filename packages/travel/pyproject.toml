@@ -1,7 +1,7 @@
 [project]
 name = "edecan-travel"
 version = "0.1.0"
-description = "Edecán — travel: búsqueda de vuelos/hoteles vía Amadeus Self-Service (bring-your-own credenciales del tenant) y rastreo de paquetes vía AfterShip. Reservas SIEMPRE quedan como borrador para que decida un humano. Ver ARCHITECTURE.md §14 (WP-V5-09)."
+description = "Bring-your-own travel search and package tracking tools with human-approved booking drafts"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -11,13 +11,7 @@ dependencies = [
     "edecan-core",
 ]
 
-# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
-# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
-# sin argumentos que devuelve `list[Tool]`. Mismo criterio EXACTO que
-# `packages/ads/pyproject.toml` (ARCHITECTURE.md §13.h) — este WP (WP-V5-09)
-# entrega el paquete completo de una vez (no un esqueleto vacío a rellenar
-# después), así que `edecan_travel/tools.py` ya existe desde el commit
-# inicial de este paquete.
+# Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
 [project.entry-points."edecan.tools"]
 travel = "edecan_travel:get_all_tools"
 

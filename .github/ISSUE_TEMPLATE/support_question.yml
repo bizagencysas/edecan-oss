@@ -1,0 +1,69 @@
+name: Support question
+description: Ask a focused setup or usage question.
+title: "[Support]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Community support is best effort. Do not include credentials, private documents, personal data, or security vulnerabilities.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I read the available documentation and searched existing issues.
+          required: true
+        - label: I read and agree to follow the Code of Conduct.
+          required: true
+        - label: This question does not disclose a security vulnerability.
+          required: true
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Installation
+        - Configuration
+        - Local development
+        - Deployment
+        - API integration
+        - Web application
+        - Desktop application
+        - Mobile application
+        - Companion runtime
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: What are you trying to accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include relevant commands, configuration structure, and the exact result after redacting sensitive data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, architecture, relevant tool versions, and deployment method.
+    validations:
+      required: true

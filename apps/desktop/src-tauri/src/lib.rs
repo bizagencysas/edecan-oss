@@ -8,6 +8,7 @@
 
 mod backend;
 mod commands;
+mod listen;
 mod tray;
 mod util;
 
@@ -22,10 +23,16 @@ pub fn run() {
     tauri::Builder::default()
         .manage(BackendState(Mutex::new(None)))
         .manage(PortState(Mutex::new(0)))
+        .manage(listen::AlwaysListenRuntime::default())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::retry_backend,
             commands::quit_app,
+            commands::always_listen_get_state,
+            commands::always_listen_record_sample,
+            commands::always_listen_train,
+            commands::always_listen_set_enabled,
+            commands::always_listen_reset_training,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -55,14 +62,29 @@ pub fn run() {
             // src/backend.rs y src-tauri/splash/index.html).
             tauri::async_runtime::spawn(backend::start_backend(handle));
 
+            // Retoma la escucha nativa si el usuario la dejó activada y el
+            // modelo entrenado sigue disponible. Un fallo de micrófono no
+            // debe impedir que el resto de la aplicación arranque.
+            if let Err(err) = listen::maybe_autostart(app.handle()) {
+                eprintln!(
+                    "[edecan-desktop] no se pudo autoarrancar la escucha en segundo plano: {err}"
+                );
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
             // Esta app solo tiene una ventana visible a la vez (splash XOR
-            // main) — cerrarla, la que sea, cierra toda la aplicación (y
-            // dispara RunEvent::Exit más abajo, que mata el sidecar).
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+            // main). Con la escucha nativa activa, cerrar oculta la ventana y
+            // mantiene el proceso en la bandeja; de otro modo conserva el
+            // comportamiento normal de salir y apagar el sidecar.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if listen::is_enabled(window.app_handle()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    window.app_handle().exit(0);
+                }
             }
         })
         .build(tauri::generate_context!())

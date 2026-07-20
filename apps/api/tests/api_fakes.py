@@ -769,7 +769,8 @@ class FakeRepo:
 
 class FakeRedis:
     """Réplica mínima, en memoria, de los comandos de `redis.asyncio.Redis` que
-    usa `edecan_api`: `incr`, `expire`, `set` (con `ex=`), `get`, `delete`."""
+    usa `edecan_api`: `incr`, `expire`, `set` (con `ex=`), `get`, `getdel`,
+    `delete`."""
 
     def __init__(self) -> None:
         self._store: dict[str, str] = {}
@@ -787,6 +788,9 @@ class FakeRedis:
         self._store[key] = str(value)
         return value
 
+    async def ping(self) -> bool:
+        return True
+
     async def expire(self, key: str, seconds: int) -> bool:
         self._expiry[key] = time.time() + seconds
         return True
@@ -802,6 +806,12 @@ class FakeRedis:
     async def get(self, key: str) -> str | None:
         self._expire_if_needed(key)
         return self._store.get(key)
+
+    async def getdel(self, key: str) -> str | None:
+        self._expire_if_needed(key)
+        value = self._store.pop(key, None)
+        self._expiry.pop(key, None)
+        return value
 
     async def delete(self, key: str) -> int:
         self._expire_if_needed(key)

@@ -1,7 +1,7 @@
 # edecan_skills
 
 Marketplace de "Agent Skills" — el estándar abierto que indexa skills.sh (`ARCHITECTURE.md`
-§12, `DIRECCION_ACTUAL.md` "Confirmado: agregar Ollama + integrar el marketplace de
+§12, `docs/roadmap.md` "Confirmado: agregar Ollama + integrar el marketplace de
 skills.sh"). Ver [`../../docs/skills.md`](../../docs/skills.md) para la documentación de
 producto completa (qué es, cómo instalar, modelo de seguridad).
 
@@ -16,10 +16,10 @@ búsqueda best-effort contra la API de skills.sh.
 | Módulo | Qué hace |
 |---|---|
 | `client.py` | `SkillsIndexClient.search(q, k)` — búsqueda best-effort en el índice de skills.sh; `[]` ante cualquier fallo (el índice es solo descubrimiento, nunca bloquea instalar por `owner/repo` directo). |
-| `installer.py` | `parse_source(source)` (valida y descompone `owner/repo[/subpath]`, anti path-traversal/SSRF), `fetch_skill(...)` (descarga el `SKILL.md` con 3 rutas candidatas + cap de tamaño), `parse_skill_md(texto)` (frontmatter YAML + cuerpo), `parse_capabilities(texto)` (campo `allowed-tools`, WP-V5-04), `install_from_source(...)` (pipeline completo, sin tocar la base de datos). |
-| `security.py` | (WP-V5-04) Trust tiers (`TRUST_TIERS`, `clasificar_trust_tier`), capacidades (`CAPACIDADES_PELIGROSAS`, `capacidades_peligrosas`, `validar_capacidades`) y el escáner heurístico anti-inyección (`escanear_inyeccion`, `HallazgoInyeccion`) — ver `docs/skills.md` "Seguridad de skills de terceros". |
-| `sources.py` | (WP-V5-04) `OpenClawSource`/`HermesSource` — búsqueda en esos dos índices vía tarball de `codeload.github.com` recorrido en memoria con `tarfile` (nunca `git`), ver `docs/skills.md` "Fuentes OpenClaw y Hermes". |
-| `store.py` | CRUD de la tabla `skills` con `sqlalchemy.text` — nunca importa `edecan_db.models` (mismo criterio que `edecan_toolkit`/`edecan_premium`/`edecan_business`). `insert_skill` corre `security.escanear_inyeccion` y decide `enabled` (WP-V5-04). |
+| `installer.py` | `parse_source(source)` (valida y descompone `owner/repo[/subpath]`, anti path-traversal/SSRF), `fetch_skill(...)` (descarga el `SKILL.md` con 3 rutas candidatas + cap de tamaño), `parse_skill_md(texto)` (frontmatter YAML + cuerpo), `parse_capabilities(texto)` (campo `allowed-tools`, fase v5), `install_from_source(...)` (pipeline completo, sin tocar la base de datos). |
+| `security.py` | (fase v5) Trust tiers (`TRUST_TIERS`, `clasificar_trust_tier`), capacidades (`CAPACIDADES_PELIGROSAS`, `capacidades_peligrosas`, `validar_capacidades`) y el escáner heurístico anti-inyección (`escanear_inyeccion`, `HallazgoInyeccion`) — ver `docs/skills.md` "Seguridad de skills de terceros". |
+| `sources.py` | (fase v5) `OpenClawSource`/`HermesSource` — búsqueda en esos dos índices vía tarball de `codeload.github.com` recorrido en memoria con `tarfile` (nunca `git`), ver `docs/skills.md` "Fuentes OpenClaw y Hermes". |
+| `store.py` | CRUD de la tabla `skills` con `sqlalchemy.text` — nunca importa `edecan_db.models` (mismo criterio que `edecan_toolkit`/`edecan_premium`/`edecan_business`). `insert_skill` corre `security.escanear_inyeccion` y decide `enabled` (fase v5). |
 | `tools.py` | Las 5 herramientas del agente: `buscar_skills` (con `fuente`), `instalar_skill` (`dangerous=True`, con `fuente`/`trust_tier`/aviso de hallazgos), `listar_skills`, `usar_skill` (banner de capacidades peligrosas + recordatorio anti-inyección), `desinstalar_skill`. |
 
 `get_all_tools()` (en `edecan_skills/__init__.py`) es el entry point que consume

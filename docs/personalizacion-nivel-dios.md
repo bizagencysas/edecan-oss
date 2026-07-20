@@ -126,4 +126,4 @@ En cada turno, si `persona.memoria_activada` es `true`, el agente llama a `Memor
 
 ## Relación con la voz
 
-Si `voice_id` está definido, se usa para TTS (`POST /v1/voice/speak` y, en `premium/`, las respuestas TwiML de telefonía) en vez del default de la plataforma. Esto permite que cada persona (no solo cada tenant) tenga una voz propia coherente con su carácter — por ejemplo, la "Sole" cercana del ejemplo 3 puede sonar distinta al "Ricardo" formal del ejemplo 2, aunque compartan el mismo tenant y el mismo proveedor TTS.
+Si `voice_id` está definido, se usa para TTS (`POST /v1/voice/speak` y, cuando está instalada la extensión comercial externa `edecan_premium`, las respuestas TwiML de telefonía) en vez del default de la plataforma. Esto permite que cada persona (no solo cada tenant) tenga una voz propia coherente con su carácter — por ejemplo, la "Sole" cercana del ejemplo 3 puede sonar distinta al "Ricardo" formal del ejemplo 2, aunque compartan el mismo tenant y el mismo proveedor TTS.

@@ -3,6 +3,14 @@ package cc.edecan.app.vm
 import android.app.Application
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.edecan.shared.ApiException
@@ -14,6 +22,8 @@ import cc.edecan.shared.SseClient
 import cc.edecan.shared.VoiceAudio
 import cc.edecan.shared.edecanJson
 import java.io.File
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,13 +53,15 @@ data class VozUiState(
     /** La confirmación aparece y se resuelve dentro de Voz. Una frase hablada
      * nunca obliga a abandonar el flujo para buscar una pestaña técnica. */
     val confirmacionPendiente: ConfirmacionPendiente? = null,
-    /** `true` si el tenant no conectó su propio proveedor de STT ni TTS
-     * (`GET /v1/credentials`) — la voz igual "funciona" (el servidor cae al
-     * `StubSTT`/`StubTTS` offline, `docs/api.md` §"Voz web") pero
-     * `StubSTT` siempre devuelve el mismo texto fijo sin importar lo que se
-     * dijo, así que [VozScreen] muestra un aviso claro en vez de dejar que
-     * el usuario piense que el reconocimiento real está fallando. */
-    val vozNoConectada: Boolean = false,
+    /** `true` si faltan ambos proveedores. Android usa sus servicios locales
+     * y nunca llama los stubs del servidor en ese caso. */
+    val vozNoConectada: Boolean = true,
+    /** Defaults fail-safe: hasta confirmar credenciales, no se envía audio
+     * ni texto a los stubs del servidor. */
+    val sttDelDispositivo: Boolean = true,
+    val ttsDelDispositivo: Boolean = true,
+    /** Mismo hilo del chat principal cuando Voz se abrió desde él. */
+    val conversationId: String? = null,
 )
 
 /**
@@ -61,11 +73,8 @@ data class VozUiState(
  * porque tanto grabar como reproducir necesitan un `Context` (archivos
  * temporales en `cacheDir`).
  *
- * Usa su propia conversación (no comparte `conversationId` con
- * `ChatViewModel`): mantiene este esqueleto simple —una pantalla, un flujo
- * de ida y vuelta— sin acoplar dos `ViewModel`s que hoy Compose ya
- * resolvería como la MISMA instancia si pidieran `ChatViewModel` con
- * `viewModel()` (mismo `ViewModelStore`, ver docstring de `App.kt`).
+ * Recibe el `conversationId` del chat al abrirse. Si todavía no existe,
+ * crea uno y lo publica para que Chat lo adopte al volver.
  */
 class VozViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(VozUiState())
@@ -74,6 +83,11 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
     private val sseClient = SseClient()
     private var grabador: MediaRecorder? = null
     private var archivoGrabacion: File? = null
+    private var reconocimientoLocal: SpeechRecognizer? = null
+    private var apiReconocimientoLocal: EdecanApi? = null
+    private var ttsLocal: TextToSpeech? = null
+    private var reproductorRespuesta: MediaPlayer? = null
+    private var archivoRespuestaVoz: File? = null
     private var conversationId: String? = null
     private var yaVerificoVoz = false
 
@@ -87,7 +101,11 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val credenciales = api.credentials()
                 _uiState.update {
-                    it.copy(vozNoConectada = credenciales.voiceStt == null && credenciales.voiceTts == null)
+                    it.copy(
+                        vozNoConectada = credenciales.voiceStt == null && credenciales.voiceTts == null,
+                        sttDelDispositivo = credenciales.voiceStt == null,
+                        ttsDelDispositivo = credenciales.voiceTts == null,
+                    )
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -97,8 +115,18 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun iniciarGrabacion() {
+    fun usarConversacion(id: String?) {
+        if (_uiState.value.procesando || _uiState.value.grabando) return
+        conversationId = id
+        _uiState.update { it.copy(conversationId = id) }
+    }
+
+    fun iniciarGrabacion(api: EdecanApi) {
         if (_uiState.value.grabando || _uiState.value.procesando) return
+        if (_uiState.value.sttDelDispositivo) {
+            iniciarReconocimientoDelDispositivo(api)
+            return
+        }
         val contexto = getApplication<Application>()
         val archivo = File(contexto.cacheDir, "voz_${System.currentTimeMillis()}.m4a")
         val recorder = crearMediaRecorder()
@@ -134,7 +162,109 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
     @Suppress("DEPRECATION")
     private fun crearMediaRecorder(): MediaRecorder = MediaRecorder()
 
+    private fun iniciarReconocimientoDelDispositivo(api: EdecanApi) {
+        val contexto = getApplication<Application>()
+        if (!SpeechRecognizer.isRecognitionAvailable(contexto)) {
+            _uiState.update {
+                it.copy(errorMensaje = "Este dispositivo no tiene reconocimiento de voz disponible.")
+            }
+            return
+        }
+        val recognizer = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                SpeechRecognizer.isOnDeviceRecognitionAvailable(contexto)
+            ) {
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(contexto)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(contexto)
+            }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorMensaje = "No pude abrir el reconocimiento de voz: ${e.message}") }
+            return
+        }
+        reconocimientoLocal?.destroy()
+        reconocimientoLocal = recognizer
+        apiReconocimientoLocal = api
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) = Unit
+            override fun onBeginningOfSpeech() = Unit
+            override fun onRmsChanged(rmsdB: Float) = Unit
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() {
+                _uiState.update { it.copy(grabando = false, procesando = true) }
+            }
+            override fun onError(error: Int) {
+                liberarReconocimientoLocal()
+                _uiState.update {
+                    it.copy(
+                        grabando = false,
+                        procesando = false,
+                        errorMensaje = mensajeErrorReconocimiento(error),
+                    )
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                val texto = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.trim().orEmpty()
+                val currentApi = apiReconocimientoLocal
+                liberarReconocimientoLocal()
+                if (texto.isBlank() || currentApi == null) {
+                    _uiState.update {
+                        it.copy(grabando = false, procesando = false, errorMensaje = "No entendí lo que dijiste. Intenta de nuevo.")
+                    }
+                } else {
+                    procesarTextoReconocido(texto, currentApi)
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) = Unit
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        try {
+            recognizer.startListening(intent)
+            _uiState.update {
+                it.copy(
+                    grabando = true,
+                    procesando = false,
+                    errorMensaje = null,
+                    textoTranscrito = null,
+                    respuesta = null,
+                    confirmacionPendiente = null,
+                )
+            }
+        } catch (e: Exception) {
+            liberarReconocimientoLocal()
+            _uiState.update { it.copy(errorMensaje = "No pude empezar a escuchar: ${e.message}") }
+        }
+    }
+
+    private fun mensajeErrorReconocimiento(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Android no tiene permiso para usar el micrófono."
+        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+            "El reconocimiento de este dispositivo necesita conexión y no pudo acceder a ella."
+        SpeechRecognizer.ERROR_NO_MATCH -> "No entendí lo que dijiste. Intenta de nuevo."
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No escuché ninguna voz. Intenta de nuevo."
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "El reconocimiento de voz está ocupado. Espera un momento."
+        else -> "El reconocimiento de voz del dispositivo falló ($error)."
+    }
+
+    private fun liberarReconocimientoLocal() {
+        reconocimientoLocal?.destroy()
+        reconocimientoLocal = null
+        apiReconocimientoLocal = null
+    }
+
     fun detenerYEnviar(api: EdecanApi) {
+        if (_uiState.value.sttDelDispositivo && reconocimientoLocal != null) {
+            _uiState.update { it.copy(grabando = false, procesando = true) }
+            reconocimientoLocal?.stopListening()
+            return
+        }
         val recorder = grabador
         val archivo = archivoGrabacion
         grabador = null
@@ -164,6 +294,12 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
     /** Cancela una grabación en curso sin enviarla (p. ej. el usuario
      * suelta el botón fuera del área de push-to-talk). */
     fun cancelarGrabacion() {
+        if (_uiState.value.sttDelDispositivo && reconocimientoLocal != null) {
+            reconocimientoLocal?.cancel()
+            liberarReconocimientoLocal()
+            _uiState.update { it.copy(grabando = false, procesando = false) }
+            return
+        }
         val recorder = grabador ?: return
         grabador = null
         try {
@@ -185,24 +321,7 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
                 val texto = api.transcribirVoz(audioBytes, archivo.name, "audio/mp4", language = "es")
                 _uiState.update { it.copy(textoTranscrito = texto) }
 
-                val resultado = ejecutarTurno(
-                    api = api,
-                    path = "/v1/conversations/${asegurarConversacion(api)}/messages",
-                    bodyJson = edecanJson.encodeToString(ChatMessageIn(texto)),
-                )
-                if (resultado.confirmacion != null) {
-                    _uiState.update {
-                        it.copy(
-                            respuesta = resultado.texto.ifBlank { null },
-                            procesando = false,
-                            confirmacionPendiente = resultado.confirmacion,
-                        )
-                    }
-                } else {
-                    val respuesta = resultado.texto.ifBlank { "Listo." }
-                    _uiState.update { it.copy(respuesta = respuesta, procesando = false) }
-                    reproducir(respuesta, api)
-                }
+                procesarTextoEnConversacion(texto, api)
             } catch (e: ApiException) {
                 _uiState.update { it.copy(procesando = false, errorMensaje = e.message) }
             } catch (e: CancellationException) {
@@ -215,10 +334,49 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun procesarTextoReconocido(texto: String, api: EdecanApi) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(grabando = false, procesando = true, textoTranscrito = texto, errorMensaje = null)
+            }
+            try {
+                procesarTextoEnConversacion(texto, api)
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(procesando = false, errorMensaje = e.message) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(procesando = false, errorMensaje = e.message ?: "Error desconocido") }
+            }
+        }
+    }
+
+    private suspend fun procesarTextoEnConversacion(texto: String, api: EdecanApi) {
+        val resultado = ejecutarTurno(
+            api = api,
+            path = "/v1/conversations/${asegurarConversacion(api)}/messages",
+            bodyJson = edecanJson.encodeToString(ChatMessageIn(texto)),
+        )
+        if (resultado.confirmacion != null) {
+            _uiState.update {
+                it.copy(
+                    respuesta = resultado.texto.ifBlank { null },
+                    procesando = false,
+                    confirmacionPendiente = resultado.confirmacion,
+                )
+            }
+        } else {
+            val respuesta = resultado.texto.ifBlank { "Listo." }
+            _uiState.update { it.copy(respuesta = respuesta, procesando = false) }
+            reproducir(respuesta, api)
+        }
+    }
+
     private suspend fun asegurarConversacion(api: EdecanApi): String {
         conversationId?.let { return it }
         val id = api.createConversation(titulo = "Voz").id
         conversationId = id
+        _uiState.update { it.copy(conversationId = id) }
         return id
     }
 
@@ -281,12 +439,19 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
         var errorDelTurno: String? = null
         var confirmacion: ConfirmacionPendiente? = null
         var yaRefresco = false
+        val idempotencyKey = path.takeIf { it.endsWith("/messages") }?.let { UUID.randomUUID().toString() }
 
         while (true) {
             try {
                 val url = api.urlCompleta(path)
                 val token = api.tokenDeAccesoValido()
-                sseClient.stream(api.httpClientParaStream, url, token, bodyJson).collect { evento ->
+                sseClient.stream(
+                    api.httpClientParaStream,
+                    url,
+                    token,
+                    bodyJson,
+                    idempotencyKey,
+                ).collect { evento ->
                     when (evento) {
                         is ChatEvent.TextDelta -> textoAcumulado.append(evento.text)
                         is ChatEvent.ConfirmationRequired ->
@@ -320,6 +485,10 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun reproducir(texto: String, api: EdecanApi) {
+        if (_uiState.value.ttsDelDispositivo) {
+            reproducirConVozDelDispositivo(texto)
+            return
+        }
         try {
             val audio = api.hablar(texto)
             reproducirAudio(audio)
@@ -327,6 +496,61 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
             throw e
         } catch (e: Exception) {
             _uiState.update { it.copy(errorMensaje = "No se pudo reproducir la respuesta: ${e.message}") }
+        }
+    }
+
+    private fun reproducirConVozDelDispositivo(texto: String) {
+        val contexto = getApplication<Application>()
+        ttsLocal?.stop()
+        ttsLocal?.shutdown()
+        _uiState.update { it.copy(reproduciendo = true) }
+        lateinit var engine: TextToSpeech
+        engine = TextToSpeech(contexto) { status ->
+            if (status != TextToSpeech.SUCCESS) {
+                _uiState.update {
+                    it.copy(reproduciendo = false, errorMensaje = "Android no pudo iniciar la voz del dispositivo.")
+                }
+                engine.shutdown()
+                if (ttsLocal === engine) ttsLocal = null
+                return@TextToSpeech
+            }
+            val languageStatus = engine.setLanguage(Locale.getDefault())
+            if (languageStatus == TextToSpeech.LANG_MISSING_DATA ||
+                languageStatus == TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                _uiState.update {
+                    it.copy(reproduciendo = false, errorMensaje = "La voz del dispositivo no admite tu idioma actual.")
+                }
+                engine.shutdown()
+                if (ttsLocal === engine) ttsLocal = null
+                return@TextToSpeech
+            }
+            val utteranceId = "edecan-${System.currentTimeMillis()}"
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) = terminarTts(engine)
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) = fallarTts(engine)
+                override fun onError(utteranceId: String?, errorCode: Int) = fallarTts(engine)
+            })
+            if (engine.speak(texto, TextToSpeech.QUEUE_FLUSH, null, utteranceId) == TextToSpeech.ERROR) {
+                fallarTts(engine)
+            }
+        }
+        ttsLocal = engine
+    }
+
+    private fun terminarTts(engine: TextToSpeech) {
+        engine.shutdown()
+        if (ttsLocal === engine) ttsLocal = null
+        _uiState.update { it.copy(reproduciendo = false) }
+    }
+
+    private fun fallarTts(engine: TextToSpeech) {
+        engine.shutdown()
+        if (ttsLocal === engine) ttsLocal = null
+        _uiState.update {
+            it.copy(reproduciendo = false, errorMensaje = "Android no pudo leer la respuesta en voz alta.")
         }
     }
 
@@ -338,10 +562,24 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
 
         _uiState.update { it.copy(reproduciendo = true) }
         val player = MediaPlayer()
+        reproductorRespuesta?.let { anterior ->
+            anterior.setOnCompletionListener(null)
+            anterior.setOnErrorListener(null)
+            anterior.release()
+        }
+        archivoRespuestaVoz?.delete()
+        reproductorRespuesta = player
+        archivoRespuestaVoz = archivo
 
         fun terminar() {
+            if (reproductorRespuesta !== player) {
+                archivo.delete()
+                return
+            }
             player.release()
+            reproductorRespuesta = null
             archivo.delete()
+            if (archivoRespuestaVoz === archivo) archivoRespuestaVoz = null
             _uiState.update { it.copy(reproduciendo = false) }
         }
 
@@ -374,5 +612,21 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
         }
         grabador = null
         archivoGrabacion?.delete()
+        liberarReconocimientoLocal()
+        ttsLocal?.stop()
+        ttsLocal?.shutdown()
+        ttsLocal = null
+        reproductorRespuesta?.let { player ->
+            player.setOnCompletionListener(null)
+            player.setOnErrorListener(null)
+            runCatching { player.stop() }
+            player.release()
+        }
+        reproductorRespuesta = null
+        archivoRespuestaVoz?.delete()
+        archivoRespuestaVoz = null
+        conversationId = null
+        yaVerificoVoz = false
+        _uiState.value = VozUiState()
     }
 }

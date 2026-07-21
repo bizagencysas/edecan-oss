@@ -24,6 +24,44 @@ import kotlin.test.assertTrue
 
 class ApiSessionTest {
     @Test
+    fun obtieneConversacionCompletaConBearer() = runTest {
+        val store = FakeTokenStore(access = "access-chat", refresh = "refresh-chat")
+        val api = apiConMock(store) { request ->
+            assertEquals("/v1/conversations/c1", request.url.encodedPath)
+            assertEquals("Bearer access-chat", request.headers[HttpHeaders.Authorization])
+            respond(
+                """{"id":"c1","title":"Viaje","messages":[{"id":"m1","role":"user","content":{"text":"Hola"}}]}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+
+        val conversation = api.conversation("c1")
+
+        assertEquals("Viaje", conversation.title)
+        assertEquals("Hola", conversation.messages.single().texto)
+    }
+
+    @Test
+    fun subidaPrivadaUsaMultipartBearerYDecodificaMetadata() = runTest {
+        val store = FakeTokenStore(access = "access-upload", refresh = "refresh-upload")
+        val api = apiConMock(store) { request ->
+            assertEquals("/v1/files", request.url.encodedPath)
+            assertEquals("Bearer access-upload", request.headers[HttpHeaders.Authorization])
+            assertTrue(request.body::class.simpleName?.contains("MultiPartFormDataContent") == true)
+            respond(
+                """{"id":"f1","filename":"brief.pdf","mime":"application/pdf","size_bytes":4,"status":"uploaded"}""",
+                HttpStatusCode.Created,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+
+        val uploaded = api.uploadFile(byteArrayOf(1, 2, 3, 4), "brief.pdf", "application/pdf")
+
+        assertEquals(UploadedFile("f1", "brief.pdf", "application/pdf", 4, "uploaded"), uploaded)
+    }
+
+    @Test
     fun descargaArtefactoUsaRutaPrivadaYBearerSinRedReal() = runTest {
         val store = FakeTokenStore(access = "access-privado", refresh = "refresh-privado")
         val bytes = "contenido-pdf-sintetico".encodeToByteArray()
@@ -45,6 +83,66 @@ class ApiSessionTest {
 
         assertEquals(artifact, download.artifact)
         assertTrue(download.bytes.contentEquals(bytes))
+    }
+
+    @Test
+    fun previewDeImagenUsaContentPrivadoYBearer() = runTest {
+        val store = FakeTokenStore(access = "access-preview", refresh = "refresh-preview")
+        val bytes = byteArrayOf(1, 2, 3, 4)
+        val api = apiConMock(store) { request ->
+            assertEquals("/v1/files/image-id/content", request.url.encodedPath)
+            assertEquals("Bearer access-preview", request.headers[HttpHeaders.Authorization])
+            respond(bytes, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png"))
+        }
+        val artifact = ArtifactRef("image-id", "preview.png", "image/png")
+
+        val preview = api.previewArtifact(artifact)
+
+        assertEquals(artifact, preview.artifact)
+        assertTrue(preview.bytes.contentEquals(bytes))
+    }
+
+    @Test
+    fun rangoMultimediaRepiteLaMismaVentanaConTokenRenovado() = runTest {
+        val store = FakeTokenStore(access = "access-viejo", refresh = "refresh-viejo")
+        var contentRequests = 0
+        val api = apiConMock(store) { request ->
+            when (request.url.encodedPath) {
+                "/v1/files/video-id/content" -> {
+                    contentRequests += 1
+                    assertEquals("bytes=1024-1027", request.headers[HttpHeaders.Range])
+                    if (contentRequests == 1) {
+                        assertEquals("Bearer access-viejo", request.headers[HttpHeaders.Authorization])
+                        respond("""{"detail":"expirado"}""", HttpStatusCode.Unauthorized)
+                    } else {
+                        assertEquals("Bearer access-renovado", request.headers[HttpHeaders.Authorization])
+                        respond(
+                            byteArrayOf(1, 2, 3, 4),
+                            HttpStatusCode.PartialContent,
+                            headersOf(
+                                HttpHeaders.ContentRange to listOf("bytes 1024-1027/4096"),
+                                HttpHeaders.ContentType to listOf("video/mp4"),
+                            ),
+                        )
+                    }
+                }
+                "/v1/auth/refresh" -> respond(
+                    """{"access_token":"access-renovado","refresh_token":"refresh-renovado"}""",
+                    HttpStatusCode.OK,
+                    headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Ruta inesperada: ${request.url.encodedPath}")
+            }
+        }
+
+        val window = api.privateMediaRange(ArtifactRef("video-id", "demo.mp4", "video/mp4"), 1024, 4)
+
+        assertEquals(2, contentRequests)
+        assertTrue(window.bytes.contentEquals(byteArrayOf(1, 2, 3, 4)))
+        assertEquals(1024L, window.offset)
+        assertEquals(4096L, window.totalSize)
+        assertEquals("access-renovado", store.access)
+        assertEquals("refresh-renovado", store.refresh)
     }
 
     @Test

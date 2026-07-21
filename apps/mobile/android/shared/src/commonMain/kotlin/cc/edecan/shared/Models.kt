@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -111,6 +112,24 @@ data class Message(
 val Message.texto: String
     get() = (content as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
 
+/** Metadata privada de un archivo adjunto persistida dentro de
+ * `Message.content.attachments`. Nunca contiene URL ni clave de S3. */
+@Serializable
+data class MessageAttachment(
+    @SerialName("file_id") val fileId: String,
+    val filename: String = "archivo",
+    val mime: String? = null,
+)
+
+val Message.adjuntos: List<MessageAttachment>
+    get() = runCatching {
+        val values = (content as? JsonObject)?.get("attachments") ?: return emptyList()
+        edecanJson.decodeFromJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(MessageAttachment.serializer()),
+            values,
+        )
+    }.getOrDefault(emptyList())
+
 /** Un elemento de `GET /v1/conversations`, la respuesta de
  * `POST /v1/conversations`, o (con `messages` poblado) `GET
  * /v1/conversations/{id}` — las tres comparten forma
@@ -126,12 +145,39 @@ data class Conversation(
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
     val messages: List<Message> = emptyList(),
+    @SerialName("pending_confirmation") val pendingConfirmation: PendingConfirmation? = null,
+)
+
+/** Parte pública y restaurable de una confirmación que sigue pendiente en
+ * el servidor. Nunca incluye el estado interno serializado del agente. */
+@Serializable
+data class PendingConfirmation(
+    @SerialName("tool_call_id") val toolCallId: String,
+    val name: String,
+    val args: JsonElement = JsonObject(emptyMap()),
 )
 
 /** Body de `POST /v1/conversations/{id}/messages` (`ChatMessageIn` en
  * `edecan_schemas`, mismo nombre a propósito). */
 @Serializable
-data class ChatMessageIn(val text: String)
+data class ChatMessageIn(
+    val text: String = "",
+    /** UUIDs ya subidos por `POST /v1/files`; máximo y pertenencia al tenant
+     * vuelven a validarse en el servidor. */
+    val attachments: List<String> = emptyList(),
+)
+
+/** Respuesta segura de `POST /v1/files`. La ubicación interna del objeto no
+ * forma parte del contrato móvil. */
+@Serializable
+data class UploadedFile(
+    val id: String,
+    val filename: String = "archivo",
+    val mime: String? = null,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    val status: String = "uploaded",
+    @SerialName("created_at") val createdAt: String = "",
+)
 
 /** Body de `POST /v1/conversations/{id}/confirm` (`ConfirmIn` en
  * `edecan_api.routers.conversations`, mismo nombre a propósito). */
@@ -162,6 +208,157 @@ data class ArtifactRef(
     val mime: String? = null,
 )
 
+/** Acción sugerida por un bloque rico. Son intenciones de UI, no permisos:
+ * `prefill_message` solo rellena el compositor y nunca envía por sí sola. */
+@Serializable(with = ChatActionSerializer::class)
+sealed interface ChatAction {
+    val id: String
+    val label: String
+
+    @Serializable
+    data class OpenUrl(
+        override val id: String,
+        override val label: String,
+        val url: String,
+        val action: String = "open_url",
+    ) : ChatAction
+
+    @Serializable
+    data class OpenScreen(
+        override val id: String,
+        override val label: String,
+        val screen: String,
+        val action: String = "open_screen",
+    ) : ChatAction
+
+    @Serializable
+    data class PrefillMessage(
+        override val id: String,
+        override val label: String,
+        val message: String,
+        val action: String = "prefill_message",
+    ) : ChatAction
+
+    /** Una acción futura no debe tumbar todo el `tool_end`; simplemente no se
+     * renderiza hasta que esta app la conozca. */
+    @Serializable
+    data class Unknown(
+        override val id: String = "unknown",
+        override val label: String = "",
+        val action: String = "unknown",
+    ) : ChatAction
+}
+
+object ChatActionSerializer : JsonContentPolymorphicSerializer<ChatAction>(ChatAction::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ChatAction> =
+        when ((element as? JsonObject)?.get("action")?.jsonPrimitive?.contentOrNull) {
+            "open_url" -> ChatAction.OpenUrl.serializer()
+            "open_screen" -> ChatAction.OpenScreen.serializer()
+            "prefill_message" -> ChatAction.PrefillMessage.serializer()
+            else -> ChatAction.Unknown.serializer()
+        }
+}
+
+/** Bloques visuales producidos por herramientas. Cada variante conserva
+ * `fallbackText`; los tipos futuros caen en [Unknown] sin romper el stream. */
+@Serializable(with = ChatBlockSerializer::class)
+sealed interface ChatBlock {
+    val schemaVersion: Int
+    val fallbackText: String?
+
+    @Serializable
+    data class Media(
+        @SerialName("media_kind") val mediaKind: String,
+        val artifact: ArtifactRef,
+        val alt: String = "",
+        val caption: String? = null,
+        @SerialName("schema_version") override val schemaVersion: Int = 1,
+        @SerialName("fallback_text") override val fallbackText: String? = null,
+        val type: String = "media",
+    ) : ChatBlock
+
+    @Serializable
+    data class LinkPreview(
+        val url: String,
+        val title: String,
+        val description: String? = null,
+        @SerialName("site_name") val siteName: String? = null,
+        @SerialName("observed_at") val observedAt: String? = null,
+        @SerialName("source_mode") val sourceMode: String = "unknown",
+        val actions: List<ChatAction> = emptyList(),
+        @SerialName("schema_version") override val schemaVersion: Int = 1,
+        @SerialName("fallback_text") override val fallbackText: String? = null,
+        val type: String = "link_preview",
+    ) : ChatBlock
+
+    @Serializable
+    data class Flight(
+        @SerialName("offer_id") val offerId: String,
+        val airline: String,
+        val origin: String,
+        val destination: String,
+        val departure: String? = null,
+        val arrival: String? = null,
+        val stops: Int = 0,
+        val price: String,
+        val currency: String,
+        @SerialName("source_mode") val sourceMode: String = "unknown",
+        val provider: String? = null,
+        @SerialName("observed_at") val observedAt: String? = null,
+        @SerialName("expires_at") val expiresAt: String? = null,
+        val taxes: String? = null,
+        val cancellation: String? = null,
+        val actions: List<ChatAction> = emptyList(),
+        @SerialName("schema_version") override val schemaVersion: Int = 1,
+        @SerialName("fallback_text") override val fallbackText: String? = null,
+        val type: String = "flight",
+    ) : ChatBlock
+
+    @Serializable
+    data class Hotel(
+        @SerialName("offer_id") val offerId: String,
+        val name: String,
+        val city: String,
+        val checkin: String? = null,
+        val checkout: String? = null,
+        val rating: String? = null,
+        val price: String,
+        val currency: String,
+        @SerialName("source_mode") val sourceMode: String = "unknown",
+        val provider: String? = null,
+        @SerialName("observed_at") val observedAt: String? = null,
+        @SerialName("expires_at") val expiresAt: String? = null,
+        val taxes: String? = null,
+        val cancellation: String? = null,
+        val actions: List<ChatAction> = emptyList(),
+        @SerialName("schema_version") override val schemaVersion: Int = 1,
+        @SerialName("fallback_text") override val fallbackText: String? = null,
+        val type: String = "hotel",
+    ) : ChatBlock
+
+    @Serializable
+    data class Unknown(
+        val type: String = "unknown",
+        @SerialName("schema_version") override val schemaVersion: Int = 1,
+        @SerialName("fallback_text") override val fallbackText: String? = null,
+    ) : ChatBlock
+}
+
+object ChatBlockSerializer : JsonContentPolymorphicSerializer<ChatBlock>(ChatBlock::class) {
+    override fun selectDeserializer(element: JsonElement): DeserializationStrategy<ChatBlock> {
+        val objectValue = element as? JsonObject
+        val version = objectValue?.get("schema_version")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
+        if (version != 1) return ChatBlock.Unknown.serializer()
+        return when (objectValue?.get("type")?.jsonPrimitive?.contentOrNull) {
+            "media" -> ChatBlock.Media.serializer()
+            "link_preview" -> ChatBlock.LinkPreview.serializer()
+            "flight" -> ChatBlock.Flight.serializer()
+            "hotel" -> ChatBlock.Hotel.serializer()
+            else -> ChatBlock.Unknown.serializer()
+        }
+    }
+}
+
 /**
  * Un evento del stream SSE de `POST /v1/conversations/{id}/messages` (y de
  * `POST .../confirm`), decodificado por el campo `"type"` de cada bloque
@@ -180,6 +377,7 @@ sealed interface ChatEvent {
     data class ToolStart(
         val name: String,
         val args: JsonElement = JsonObject(emptyMap()),
+        @SerialName("tool_call_id") val toolCallId: String? = null,
     ) : ChatEvent
 
     @Serializable
@@ -187,6 +385,9 @@ sealed interface ChatEvent {
         val name: String,
         @SerialName("result_preview") val resultPreview: String = "",
         val artifacts: List<ArtifactRef> = emptyList(),
+        @SerialName("blocks_version") val blocksVersion: Int = 1,
+        val blocks: List<ChatBlock> = emptyList(),
+        @SerialName("tool_call_id") val toolCallId: String? = null,
     ) : ChatEvent
 
     @Serializable

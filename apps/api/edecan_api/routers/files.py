@@ -18,7 +18,7 @@ import aioboto3
 from edecan_core.queue import enqueue
 from edecan_schemas import UNLIMITED
 from edecan_schemas.plans import LIMIT_STORAGE_MB
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from edecan_api.config import Settings, get_settings
@@ -29,6 +29,25 @@ router = APIRouter(prefix="/v1/files", tags=["files"], dependencies=[Depends(rat
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _UPLOAD_SIZE_PROBE_BYTES = 64 * 1024
+_INLINE_MEDIA_MIMES = frozenset(
+    {
+        "image/avif",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "audio/flac",
+        "audio/m4a",
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/wav",
+        "audio/webm",
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+    }
+)
 
 
 def _safe_filename(raw_filename: str | None) -> str:
@@ -81,7 +100,6 @@ def _file_out(row: dict[str, Any]) -> dict[str, Any]:
         "mime": row.get("mime"),
         "size_bytes": row.get("size_bytes"),
         "status": row.get("status"),
-        "s3_key": row.get("s3_key"),
         "created_at": row.get("created_at"),
     }
 
@@ -143,9 +161,7 @@ async def upload_file(
     ) as s3:
         # `UploadFile.file` ya es un SpooledTemporaryFile: botocore lo transmite
         # desde memoria o disco sin crear una segunda copia de hasta N MiB.
-        await s3.put_object(
-            Bucket=settings.S3_BUCKET, Key=s3_key, Body=file.file, ContentType=mime
-        )
+        await s3.put_object(Bucket=settings.S3_BUCKET, Key=s3_key, Body=file.file, ContentType=mime)
 
     row = await repo.create_file(
         tenant_id=tenant.tenant_id,
@@ -190,14 +206,19 @@ async def get_file(
     return _file_out(row)
 
 
-async def _stream_s3_object(settings: Settings, s3_key: str) -> Any:
+async def _stream_s3_object(
+    settings: Settings, s3_key: str, *, byte_range: str | None = None
+) -> Any:
     """Transmite el objeto manteniendo vivo el cliente S3 hasta el último chunk."""
 
     session = aioboto3.Session()
     async with session.client(
         "s3", region_name=settings.AWS_REGION, endpoint_url=settings.AWS_ENDPOINT_URL
     ) as s3:
-        response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+        request = {"Bucket": settings.S3_BUCKET, "Key": s3_key}
+        if byte_range is not None:
+            request["Range"] = byte_range
+        response = await s3.get_object(**request)
         body = response["Body"]
         while chunk := await body.read(64 * 1024):
             yield chunk
@@ -257,4 +278,102 @@ async def download_file(
         _stream_s3_object(settings, s3_key),
         media_type=mime,
         headers=response_headers,
+    )
+
+
+def _parse_single_range(value: str, total: int) -> tuple[int, int]:
+    """Parsea un único byte range RFC 7233; rechaza rangos múltiples/ambiguos."""
+
+    raw = value.strip()
+    if total <= 0 or not raw.lower().startswith("bytes=") or "," in raw:
+        raise ValueError("range inválido")
+    spec = raw[6:].strip()
+    if "-" not in spec:
+        raise ValueError("range inválido")
+    start_raw, end_raw = (part.strip() for part in spec.split("-", 1))
+    if not start_raw:
+        suffix = int(end_raw)
+        if suffix <= 0:
+            raise ValueError("range inválido")
+        start = max(total - suffix, 0)
+        return start, total - 1
+    start = int(start_raw)
+    if start < 0 or start >= total:
+        raise ValueError("range fuera del archivo")
+    end = total - 1 if not end_raw else int(end_raw)
+    if end < start:
+        raise ValueError("range inválido")
+    return start, min(end, total - 1)
+
+
+@router.get("/{file_id}/content")
+async def stream_file_content(
+    file_id: uuid.UUID,
+    range_header: str | None = Header(default=None, alias="Range"),
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Sirve media privada inline y soporta ``Range`` para audio/video.
+
+    Solo una allowlist de formatos pasivos puede mostrarse inline. SVG, HTML y
+    cualquier tipo desconocido conservan la ruta de descarga como attachment.
+    """
+
+    row = await repo.get_file(tenant_id=current_user.tenant_id, file_id=file_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archivo no encontrado.")
+
+    mime = str(row.get("mime") or "application/octet-stream").split(";", 1)[0].lower().strip()
+    if mime not in _INLINE_MEDIA_MIMES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Este tipo de archivo no admite vista previa inline segura.",
+        )
+    s3_key = str(row.get("s3_key") or "")
+    if not s3_key:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Archivo sin contenido.")
+
+    session = aioboto3.Session()
+    try:
+        async with session.client(
+            "s3", region_name=settings.AWS_REGION, endpoint_url=settings.AWS_ENDPOINT_URL
+        ) as s3:
+            metadata = await s3.head_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El almacenamiento no pudo entregar la vista previa.",
+        ) from exc
+
+    total = int(metadata.get("ContentLength") or 0)
+    start, end = 0, max(total - 1, 0)
+    response_status = status.HTTP_200_OK
+    s3_range: str | None = None
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": "inline",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if range_header is not None:
+        try:
+            start, end = _parse_single_range(range_header, total)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="Rango de bytes inválido.",
+                headers={"Content-Range": f"bytes */{total}"},
+            ) from None
+        response_status = status.HTTP_206_PARTIAL_CONTENT
+        s3_range = f"bytes={start}-{end}"
+        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+    headers["Content-Length"] = str(max(end - start + 1, 0))
+
+    return StreamingResponse(
+        _stream_s3_object(settings, s3_key, byte_range=s3_range),
+        status_code=response_status,
+        media_type=mime,
+        headers=headers,
     )

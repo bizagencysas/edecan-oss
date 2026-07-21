@@ -322,7 +322,12 @@ class GenerarBorradorLegalTool(Tool):
         )
         return ToolResult(
             content=contenido,
-            data={"file_id": str(file_id), "filename": filename, "tipo": tipo},
+            data={
+                "file_id": str(file_id),
+                "filename": filename,
+                "mime": "text/markdown",
+                "tipo": tipo,
+            },
         )
 
 

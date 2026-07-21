@@ -277,7 +277,12 @@ async def test_sintetizar_voz_usa_proveedor_inyectado_y_sube_el_archivo(make_ctx
     assert subida["data"] == b"AUDIO-MP3-FALSO"
     assert subida["mime"] == "audio/mpeg"
     assert subida["filename"].endswith(".mp3")
-    assert resultado.data == {"file_id": str(uploader.file_id), "filename": subida["filename"]}
+    assert resultado.data == {
+        "file_id": str(uploader.file_id),
+        "filename": subida["filename"],
+        "mime": "audio/mpeg",
+        "caption": "Hola mundo",
+    }
     assert "Hola mundo" in resultado.content
 
 
@@ -461,9 +466,7 @@ async def test_subir_archivo_sube_a_s3_e_inserta_fila_files(make_ctx, monkeypatc
     import edecan_voice.tools as tools_module
 
     s3_calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        tools_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls)
-    )
+    monkeypatch.setattr(tools_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls))
     session = FakeSession()
     ctx = make_ctx(session=session, settings=SimpleNamespace(S3_BUCKET="mi-bucket"))
 
@@ -487,9 +490,7 @@ async def test_subir_archivo_usa_bucket_por_defecto_sin_settings(make_ctx, monke
     import edecan_voice.tools as tools_module
 
     s3_calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        tools_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls)
-    )
+    monkeypatch.setattr(tools_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls))
     ctx = make_ctx(session=FakeSession(), settings=SimpleNamespace())
 
     await _subir_archivo(ctx, data=b"x", filename="f.mp3", mime="audio/mpeg")
@@ -503,9 +504,7 @@ async def test_subir_archivo_usa_bucket_por_defecto_sin_settings(make_ctx, monke
 # ---------------------------------------------------------------------------
 
 
-async def test_listar_voces_error_real_de_voicecloningerror_no_filtra_la_key(
-    make_ctx, monkeypatch
-):
+async def test_listar_voces_error_real_de_voicecloningerror_no_filtra_la_key(make_ctx, monkeypatch):
     import edecan_voice.tools as tools_module
 
     async def _listar_voces_que_falla(api_key: str) -> list[VozDisponible]:

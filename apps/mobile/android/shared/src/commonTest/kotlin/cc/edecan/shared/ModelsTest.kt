@@ -102,6 +102,34 @@ class ModelsTest {
         assertEquals("whatsapp", conversacion.channel)
     }
 
+    @Test
+    fun conversation_restaura_confirmacion_publica_pendiente() {
+        val conversacion = edecanJson.decodeFromString(
+            Conversation.serializer(),
+            """{"id":"c1","pending_confirmation":{"tool_call_id":"mail-1","name":"enviar_correo","args":{"to":"ana@example.com","subject":"Hola"}}}""",
+        )
+
+        assertEquals("mail-1", conversacion.pendingConfirmation?.toolCallId)
+        assertEquals("enviar_correo", conversacion.pendingConfirmation?.name)
+        assertEquals(
+            "ana@example.com",
+            (conversacion.pendingConfirmation?.args as? JsonObject)?.get("to")?.let { it as JsonPrimitive }?.content,
+        )
+    }
+
+    @Test
+    fun mensajePersistidoRecuperaAdjuntosPrivadosYElEnvioUsaSoloIds() {
+        val message = edecanJson.decodeFromString(
+            Message.serializer(),
+            """{"id":"m1","role":"user","content":{"text":"Revisa esto","attachments":[{"file_id":"f1","filename":"brief.pdf","mime":"application/pdf"}]}}""",
+        )
+        assertEquals(listOf(MessageAttachment("f1", "brief.pdf", "application/pdf")), message.adjuntos)
+        assertEquals(
+            """{"text":"Revisa esto","attachments":["f1"]}""",
+            edecanJson.encodeToString(ChatMessageIn("Revisa esto", listOf("f1"))),
+        )
+    }
+
     // -------------------------------------------------------------------
     // ChatEvent (SSE) — docs/api.md §"Conversaciones y chat (SSE)"
     // -------------------------------------------------------------------
@@ -173,6 +201,65 @@ class ModelsTest {
             ),
             evento,
         )
+    }
+
+    @Test
+    fun toolEnd_v06_decodifica_ids_bloques_y_acciones_sin_ejecutarlas() {
+        val evento = edecanJson.decodeFromString(
+            ChatEvent.serializer(),
+            """{
+              "type":"tool_end","tool_call_id":"call-v06","name":"buscar_vuelos",
+              "result_preview":"Opciones listas","blocks_version":1,"blocks":[
+                {"type":"media","schema_version":1,"media_kind":"image",
+                 "artifact":{"file_id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"mapa.png","mime":"image/png"},
+                 "alt":"Mapa de la ruta"},
+                {"type":"link_preview","schema_version":1,"url":"https://example.com/oferta",
+                 "title":"Oferta oficial","site_name":"Example","source_mode":"live","actions":[
+                   {"id":"open","label":"Abrir","action":"open_url","url":"https://example.com/oferta"},
+                   {"id":"prefill","label":"Preguntar","action":"prefill_message","message":"Compara esta oferta"},
+                   {"id":"future","label":"Futuro","action":"accion_futura","payload":"ignorado"}
+                 ]},
+                {"type":"flight","schema_version":1,"offer_id":"f1","airline":"AV","origin":"BOG",
+                 "destination":"MIA","stops":0,"price":"199.00","currency":"USD","source_mode":"demo",
+                 "actions":[{"id":"travel","label":"Viajes","action":"open_screen","screen":"travel"}]},
+                {"type":"hotel","schema_version":1,"offer_id":"h1","name":"Hotel Uno","city":"MIA",
+                 "price":"89.00","currency":"USD","source_mode":"unknown"},
+                {"type":"future_card","schema_version":2,"fallback_text":"Resultado disponible"},
+                {"type":"link_preview","schema_version":2,"fallback_text":"Enlace de una versión futura",
+                 "url":"https://example.com/future","title":"Futuro"}
+              ]
+            }""".trimIndent(),
+        )
+
+        check(evento is ChatEvent.ToolEnd)
+        assertEquals("call-v06", evento.toolCallId)
+        assertEquals(1, evento.blocksVersion)
+        assertEquals(6, evento.blocks.size)
+        val media = evento.blocks[0] as ChatBlock.Media
+        assertEquals("image", media.mediaKind)
+        val link = evento.blocks[1] as ChatBlock.LinkPreview
+        assertTrue(link.actions[0] is ChatAction.OpenUrl)
+        assertEquals("Compara esta oferta", (link.actions[1] as ChatAction.PrefillMessage).message)
+        assertTrue(link.actions[2] is ChatAction.Unknown)
+        assertEquals("demo", (evento.blocks[2] as ChatBlock.Flight).sourceMode)
+        assertEquals("MIA", (evento.blocks[3] as ChatBlock.Hotel).city)
+        assertEquals("Resultado disponible", (evento.blocks[4] as ChatBlock.Unknown).fallbackText)
+        assertTrue(evento.blocks[5] is ChatBlock.Unknown)
+    }
+
+    @Test
+    fun toolStart_v06_conserva_toolCallId_y_sigue_tolerando_su_ausencia() {
+        val nuevo = edecanJson.decodeFromString(
+            ChatEvent.serializer(),
+            """{"type":"tool_start","tool_call_id":"call-1","name":"buscar_web","args":{}}""",
+        ) as ChatEvent.ToolStart
+        val anterior = edecanJson.decodeFromString(
+            ChatEvent.serializer(),
+            """{"type":"tool_start","name":"buscar_web","args":{}}""",
+        ) as ChatEvent.ToolStart
+
+        assertEquals("call-1", nuevo.toolCallId)
+        assertNull(anterior.toolCallId)
     }
 
     @Test

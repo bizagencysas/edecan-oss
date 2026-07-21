@@ -49,6 +49,10 @@ function mensajeError(err: unknown): string {
   return "No se pudo conectar.";
 }
 
+function versionDetectada(version: string | null): string {
+  return version ? ` (detectado: ${version})` : " (detectado)";
+}
+
 export function SelectorLLM({
   detect,
   detectLoading = false,
@@ -125,7 +129,7 @@ export function SelectorLLM({
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
                 <span className="text-sm text-slate-700 dark:text-slate-200">
-                  Usar mi Claude CLI{detect.claude_cli.version ? ` (detectado v${detect.claude_cli.version})` : " (detectado)"}
+                  Usar mi Claude CLI{versionDetectada(detect.claude_cli.version)}
                 </span>
                 <Button
                   size="sm"
@@ -144,7 +148,7 @@ export function SelectorLLM({
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
                 <span className="text-sm text-slate-700 dark:text-slate-200">
-                  Usar mi Codex CLI{detect.codex_cli.version ? ` (detectado v${detect.codex_cli.version})` : " (detectado)"}
+                  Usar mi Codex CLI{versionDetectada(detect.codex_cli.version)}
                 </span>
                 <Button
                   size="sm"

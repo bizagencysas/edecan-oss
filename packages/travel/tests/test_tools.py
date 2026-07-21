@@ -158,6 +158,9 @@ async def test_buscar_vuelos_ok_lista_la_oferta_y_normaliza_codigos(make_ctx):
     assert "AV" in resultado.content
     assert "199.00" in resultado.content
     assert resultado.data["ofertas"][0]["id"] == "off-1"
+    assert resultado.presentation[0]["type"] == "flight"
+    assert resultado.presentation[0]["source_mode"] == "unknown"
+    assert resultado.presentation[0]["actions"][0]["action"] == "prefill_message"
     assert provider.llamadas_vuelos == [("BOG", "MIA", "2026-08-01", 1, 10)]
 
 

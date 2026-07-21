@@ -6,6 +6,7 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.delete
 import io.ktor.client.request.forms.formData
+import io.ktor.client.request.forms.InputProvider
 import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -14,6 +15,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
@@ -21,9 +23,12 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLParameter
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.io.Buffer
+import kotlinx.io.Source
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -104,6 +109,27 @@ private data class LogoutCredentials(val accessToken: String?, val refreshToken:
  * La capa shared no escribe archivos ni conoce `Context`. */
 data class DownloadedArtifact(val artifact: ArtifactRef, val bytes: ByteArray)
 
+/** Contenido reabrible para un multipart. La fuente se abre de nuevo si un
+ * `401` obliga a reconstruir la petición después de renovar el token; nunca
+ * exige materializar el archivo completo en un `ByteArray`. */
+class UploadContent(
+    val sizeBytes: Long,
+    val openSource: () -> Source,
+) {
+    init {
+        require(sizeBytes >= 0) { "El tamaño del archivo no puede ser negativo" }
+    }
+}
+
+/** Ventana privada de audio/video obtenida mediante HTTP Range. [offset]
+ * indica el primer byte real incluido y [totalSize] permite al extractor
+ * nativo conocer el largo sin una URL pública ni un token congelado. */
+data class PrivateMediaRange(
+    val bytes: ByteArray,
+    val offset: Long,
+    val totalSize: Long?,
+)
+
 // --- Misiones (`/v1/missions/*`, WP-V5-07) ---------------------------------
 
 @Serializable
@@ -177,6 +203,17 @@ private data class RemoteKeyInputBody(
  * propio `ktor-client-core` ya declarado) es la codificación de porcentaje
  * multiplataforma real que ya usa Ktor puertas adentro para construir URLs. */
 private fun urlEncode(value: String): String = value.encodeURLParameter()
+
+/** Extrae el total de `Content-Range` tanto en respuestas 206 como 416. */
+private fun totalDesdeContentRange(raw: String?): Long? =
+    raw?.substringAfterLast('/', missingDelimiterValue = "")
+        ?.takeUnless { it.isBlank() || it == "*" }
+        ?.toLongOrNull()
+
+private fun inicioDesdeContentRange(raw: String?): Long? =
+    raw?.substringAfter(' ', missingDelimiterValue = "")
+        ?.substringBefore('-')
+        ?.toLongOrNull()
 
 /** Corre `bloque`; ante cualquier error (de red, `404` porque el endpoint
  * todavía no aterrizó del lado del servidor, etc.) devuelve `null` en vez de
@@ -408,12 +445,103 @@ class EdecanApi private constructor(
     suspend fun createConversation(titulo: String? = null): Conversation =
         conAutoRefresh { enviar("/v1/conversations", CrearConversacionBody(titulo)) }
 
+    /** `GET /v1/conversations/{id}` con mensajes persistidos. */
+    suspend fun conversation(id: String): Conversation =
+        conAutoRefresh { obtener("/v1/conversations/$id") }
+
+    /** `POST /v1/files` autenticado y transmitido por streaming. [contenido]
+     * debe poder abrir una fuente nueva: `conAutoRefresh` reconstruye el
+     * multipart una sola vez cuando el primer intento recibe `401`. */
+    suspend fun uploadFile(contenido: UploadContent, filename: String, mime: String): UploadedFile =
+        conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val safeFilename = filename.replace('"', '_').replace('\r', '_').replace('\n', '_')
+                .take(255).ifBlank { "archivo" }
+            val safeMime = mime.takeIf { it.contains('/') && '\r' !in it && '\n' !in it }
+                ?: "application/octet-stream"
+            val response = ejecutar {
+                http.submitFormWithBinaryData(
+                    url = urlCompleta("/v1/files"),
+                    formData = formData {
+                        append(
+                            "file",
+                            InputProvider(contenido.sizeBytes, contenido.openSource),
+                            Headers.build {
+                                append(HttpHeaders.ContentType, safeMime)
+                                append(HttpHeaders.ContentDisposition, "filename=\"$safeFilename\"")
+                            },
+                        )
+                    },
+                ) { header(HttpHeaders.Authorization, "Bearer $token") }
+            }
+            manejarRespuestaAutenticada(response)
+        }
+
+    /** Compatibilidad para payloads pequeños y tests. El flujo de archivos de
+     * Android usa siempre la sobrecarga streaming de [UploadContent]. */
+    suspend fun uploadFile(bytes: ByteArray, filename: String, mime: String): UploadedFile =
+        uploadFile(
+            UploadContent(bytes.size.toLong()) {
+                Buffer().apply { write(bytes) }
+            },
+            filename,
+            mime,
+        )
+
     /** `GET /v1/files/{id}/download` autenticado. Conserva los bytes en
      * memoria; `androidApp` decide cuando escribirlos en su cache privado y
      * abrir el share intent. */
     suspend fun downloadArtifact(artifact: ArtifactRef): DownloadedArtifact {
         val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/download") }
         return DownloadedArtifact(artifact, bytes)
+    }
+
+    /** Imagen privada para preview inline. Usa el endpoint MIME-allowlisted
+     * `/content`; audio/video no pasan por aquí porque Android los transmite
+     * directamente con Bearer + Range desde `ChatScreen`. */
+    suspend fun previewArtifact(artifact: ArtifactRef): DownloadedArtifact {
+        val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/content") }
+        return DownloadedArtifact(artifact, bytes)
+    }
+
+    /** Lee una ventana de audio/video con un token vigente en CADA petición.
+     * Si una solicitud Range recibe `401`, [conAutoRefresh] rota el token y
+     * repite esa misma ventana; así una reproducción larga no depende del
+     * access token que existía cuando se abrió la tarjeta. */
+    suspend fun privateMediaRange(
+        artifact: ArtifactRef,
+        offset: Long,
+        length: Int,
+    ): PrivateMediaRange {
+        require(offset >= 0) { "El offset no puede ser negativo" }
+        require(length > 0) { "La ventana debe contener al menos un byte" }
+        require(length <= MAX_PRIVATE_MEDIA_RANGE_BYTES) { "La ventana multimedia es demasiado grande" }
+        val endInclusive = (offset + length.toLong() - 1).coerceAtLeast(offset)
+        return conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val response = ejecutar {
+                http.get(urlCompleta("/v1/files/${artifact.fileId}/content")) {
+                    header(HttpHeaders.Authorization, "Bearer $token")
+                    header(HttpHeaders.Range, "bytes=$offset-$endInclusive")
+                }
+            }
+            if (response.status.value == 401) throw ApiException.SesionExpirada()
+            if (response.status.value == 416) {
+                return@conAutoRefresh PrivateMediaRange(
+                    bytes = ByteArray(0),
+                    offset = offset,
+                    totalSize = totalDesdeContentRange(response.headers[HttpHeaders.ContentRange]),
+                )
+            }
+            validarStatus(response)
+            val contentRange = response.headers[HttpHeaders.ContentRange]
+            val responseOffset = inicioDesdeContentRange(contentRange)
+                ?: if (response.status.value == 200) 0L else offset
+            val total = totalDesdeContentRange(contentRange)
+                ?: response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                    ?.takeIf { response.status.value == 200 }
+            PrivateMediaRange(leerBytesAcotados(response, length), responseOffset, total)
+        }
     }
 
     // -------------------------------------------------------------------
@@ -864,6 +992,22 @@ class EdecanApi private constructor(
         return response.body()
     }
 
+    /** Lee como máximo [maxBytes] incluso si un proxy ignora `Range` y
+     * devuelve el archivo completo con 200 o transferencia chunked. */
+    private suspend fun leerBytesAcotados(response: HttpResponse, maxBytes: Int): ByteArray {
+        val channel = response.bodyAsChannel()
+        val buffer = ByteArray(maxBytes + 1)
+        var total = 0
+        while (total < buffer.size) {
+            val read = channel.readAvailable(buffer, total, buffer.size - total)
+            if (read < 0) break
+            if (read == 0) continue
+            total += read
+        }
+        if (total > maxBytes) throw ApiException.RespuestaInvalida()
+        return buffer.copyOf(total)
+    }
+
     private suspend inline fun <reified B, reified R> enviar(path: String, body: B): R {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
@@ -1003,3 +1147,5 @@ class EdecanApi private constructor(
             "sin detalle"
         }
 }
+
+private const val MAX_PRIVATE_MEDIA_RANGE_BYTES = 1024 * 1024

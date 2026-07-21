@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # --- Base de datos y caché -------------------------------------------------
     DATABASE_URL: str = "postgresql+asyncpg://edecan:edecan@localhost:5432/edecan"
     REDIS_URL: str = "redis://localhost:6379/0"
+    # Ventana durante la cual un reintento de chat con la misma clave puede
+    # recuperar exactamente el flujo SSE ya completado sin ejecutar otro turno.
+    CHAT_IDEMPOTENCY_TTL_SECONDS: int = 24 * 60 * 60
 
     # --- AWS (SQS, S3, KMS) ------------------------------------------------------
     AWS_REGION: str = "us-east-1"

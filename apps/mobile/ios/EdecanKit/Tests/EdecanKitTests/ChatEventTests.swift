@@ -22,6 +22,11 @@ struct ChatEventTests {
         #expect(evento == .toolStart(name: "agenda_eventos", args: ["dia": .string("2026-07-08")]))
     }
 
+    @Test func toolStartConservaToolCallId() throws {
+        let evento = try decodificar(#"{"type":"tool_start","tool_call_id":"call-vuelo-1","name":"buscar_vuelos","args":{}}"#)
+        #expect(evento == .toolStart(toolCallId: "call-vuelo-1", name: "buscar_vuelos", args: [:]))
+    }
+
     @Test func toolStartSinArgsUsaDiccionarioVacio() throws {
         let evento = try decodificar(#"{"type":"tool_start","name":"hora_actual"}"#)
         #expect(evento == .toolStart(name: "hora_actual", args: [:]))
@@ -71,10 +76,9 @@ struct ChatEventTests {
         #expect(evento == .error(message: "El proveedor LLM no respondió a tiempo"))
     }
 
-    @Test func tipoDesconocidoLanzaError() {
-        #expect(throws: (any Error).self) {
-            try decodificar(#"{"type":"algo_que_no_existe"}"#)
-        }
+    @Test func tipoDesconocidoNoRompeElStream() throws {
+        let evento = try decodificar(#"{"type":"algo_que_no_existe","payload":{"futuro":true}}"#)
+        #expect(evento == .unknown(type: "algo_que_no_existe"))
     }
 
     @Test func argsConClavesSnakeCaseNoSeTransforman() throws {
@@ -82,12 +86,132 @@ struct ChatEventTests {
         // herramienta (p. ej. de `crear_factura`) — deben llegar tal cual,
         // nunca convertidas a camelCase por accidente.
         let evento = try decodificar(#"{"type":"tool_start","name":"crear_factura","args":{"cliente_nombre":"Acme"}}"#)
-        guard case .toolStart(_, let args) = evento else {
+        guard case .toolStart(_, _, let args) = evento else {
             Issue.record("se esperaba .toolStart")
             return
         }
         #expect(args["cliente_nombre"] == .string("Acme"))
         #expect(args["clienteNombre"] == nil)
+    }
+
+    @Test func toolEndDecodificaBloquesV1YToolCallId() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_end","tool_call_id":"call-42","name":"buscar_viaje","result_preview":"Opciones listas","blocks_version":1,"blocks":[{"type":"link_preview","schema_version":1,"url":"https://example.com/oferta","title":"Guia del destino","site_name":"Example","source_mode":"live","actions":[{"id":"link.open","label":"Abrir","action":"open_url","url":"https://example.com/oferta"}]},{"type":"flight","offer_id":"F1","airline":"Avianca","origin":"BOG","destination":"MAD","departure":"2026-08-01T10:00:00Z","arrival":"2026-08-02T05:00:00Z","stops":0,"price":"650.00","currency":"USD","source_mode":"live","provider":"Amadeus","actions":[{"id":"flight.draft","label":"Preparar","action":"prefill_message","message":"Prepara el borrador sin reservar."}]},{"type":"hotel","offer_id":"H1","name":"Hotel Central","city":"Madrid","checkin":"2026-08-02","checkout":"2026-08-05","rating":"4.7","price":"420.00","currency":"USD","source_mode":"demo","actions":[{"id":"hotel.activity","label":"Ver actividad","action":"open_screen","screen":"activity"}]},{"type":"media","media_kind":"image","artifact":{"file_id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"mapa.png","mime":"image/png"},"alt":"Mapa de Madrid"}]}"#
+        )
+
+        guard case .toolEnd(let toolCallId, _, _, _, let version, let blocks) = evento else {
+            Issue.record("se esperaba .toolEnd")
+            return
+        }
+        #expect(toolCallId == "call-42")
+        #expect(version == 1)
+        #expect(blocks.count == 4)
+
+        guard case .linkPreview(let link) = blocks[0],
+              case .openURL(_, let label, let url) = link.actions[0]
+        else {
+            Issue.record("link/action no decodificado")
+            return
+        }
+        #expect(label == "Abrir")
+        #expect(url.absoluteString == "https://example.com/oferta")
+
+        guard case .flight(let flight) = blocks[1],
+              case .prefillMessage(_, _, let message) = flight.actions[0]
+        else {
+            Issue.record("vuelo/prefill no decodificado")
+            return
+        }
+        #expect(flight.origin == "BOG")
+        #expect(message == "Prepara el borrador sin reservar.")
+
+        guard case .hotel(let hotel) = blocks[2],
+              case .openScreen(_, _, let screen) = hotel.actions[0]
+        else {
+            Issue.record("hotel/pantalla no decodificado")
+            return
+        }
+        #expect(hotel.sourceMode == .demo)
+        #expect(screen == .activity)
+
+        guard case .media(let media) = blocks[3] else {
+            Issue.record("media no decodificada")
+            return
+        }
+        #expect(media.mediaKind == .image)
+        #expect(media.artifact.filename == "mapa.png")
+    }
+
+    @Test func bloqueDesconocidoConservaFallbackSinRomperToolEnd() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_end","name":"tool_futura","result_preview":"ok","blocks":[{"type":"timeline_3d","schema_version":2,"fallback_text":"Resultado disponible en texto."}]}"#
+        )
+        guard case .toolEnd(_, _, _, _, _, let blocks) = evento,
+              case .unsupported(let type, let fallback) = blocks.first
+        else {
+            Issue.record("se esperaba bloque unsupported")
+            return
+        }
+        #expect(type == "timeline_3d")
+        #expect(fallback == "Resultado disponible en texto.")
+    }
+
+    @Test func accionDesconocidaNoDescartaLaTarjeta() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_end","name":"enlace","result_preview":"ok","blocks":[{"type":"link_preview","url":"https://example.com","title":"Example","actions":[{"id":"future","label":"Teleportar","action":"teleport","destination":"moon"}]}]}"#
+        )
+        guard case .toolEnd(_, _, _, _, _, let blocks) = evento,
+              case .linkPreview(let link) = blocks.first,
+              case .unsupported(let id, let label, let action) = link.actions.first
+        else {
+            Issue.record("se esperaba accion unsupported dentro del link")
+            return
+        }
+        #expect(id == "future")
+        #expect(label == "Teleportar")
+        #expect(action == "teleport")
+    }
+
+    @Test func prefillLegacyNuncaSeConvierteEnAutoenvio() throws {
+        let canonical = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"one","label":"Usar","action":"prefill_message","message":"Reserva esto"}"#.utf8)
+        )
+        let legacy = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"two","label":"Usar","action":"send_message","message":"Reserva esto"}"#.utf8)
+        )
+        #expect(canonical == .prefillMessage(id: "one", label: "Usar", message: "Reserva esto"))
+        #expect(legacy == .prefillMessage(id: "two", label: "Usar", message: "Reserva esto"))
+    }
+
+    @Test func openURLRechazaEsquemasYCredencialesNoSeguros() throws {
+        let ftp = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"ftp","label":"Abrir","action":"open_url","url":"ftp://example.com/a"}"#.utf8)
+        )
+        let credentials = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"credentials","label":"Abrir","action":"open_url","url":"https://user:pass@example.com/a"}"#.utf8)
+        )
+        #expect(!ftp.isSupported)
+        #expect(!credentials.isSupported)
+        #expect(ChatAction.httpURLSegura("http://localhost/admin") == nil)
+        #expect(ChatAction.httpURLSegura("http://192.168.1.1/admin") == nil)
+        #expect(ChatAction.httpURLSegura("https://example.com/a")?.scheme == "https")
+    }
+
+    @Test func openScreenSoloAceptaAllowlistCompartida() throws {
+        let settings = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"settings","label":"Ajustes","action":"open_screen","screen":"settings"}"#.utf8)
+        )
+        let arbitrary = try JSONDecoder().decode(
+            ChatAction.self,
+            from: Data(#"{"id":"admin","label":"Admin","action":"open_screen","screen":"internal_admin"}"#.utf8)
+        )
+        #expect(settings == .openScreen(id: "settings", label: "Ajustes", screen: .settings))
+        #expect(!arbitrary.isSupported)
     }
 }
 

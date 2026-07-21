@@ -19,6 +19,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,14 +30,24 @@ import androidx.compose.ui.unit.dp
 
 /** Convierte unas pocas decisiones humanas en una solicitud completa al chat. */
 @Composable
-fun ContentStudioScreen(onCrear: (String) -> Unit) {
+fun ContentStudioScreen(
+    onVolver: () -> Unit = {},
+    onCrear: (String) -> Unit,
+) {
     var plataforma by remember { mutableStateOf("LinkedIn") }
     var objetivo by remember { mutableStateOf("Enseñar algo útil") }
     var tono by remember { mutableStateOf("Claro y humano") }
     var tema by remember { mutableStateOf("") }
     var incluirImagen by remember { mutableStateOf(true) }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Crear") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Crear") },
+                navigationIcon = { IconButton(onClick = onVolver) { Text("←") } },
+            )
+        },
+    ) { padding ->
         Column(
             verticalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),

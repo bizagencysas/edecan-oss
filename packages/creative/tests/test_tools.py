@@ -44,9 +44,7 @@ async def test_generar_imagen_usa_el_stub_por_defecto_y_sube_el_png(make_ctx, ma
     uploader = make_uploader()
     tool = GenerarImagenTool(uploader=uploader)
 
-    resultado = await tool.run(
-        make_ctx(), {"prompt": "un gato programador", "tamano": "256x256"}
-    )
+    resultado = await tool.run(make_ctx(), {"prompt": "un gato programador", "tamano": "256x256"})
 
     assert len(uploader.llamadas) == 1
     llamada = uploader.llamadas[0]
@@ -54,7 +52,13 @@ async def test_generar_imagen_usa_el_stub_por_defecto_y_sube_el_png(make_ctx, ma
     assert llamada["mime"] == "image/png"
     assert llamada["filename"].endswith(".png")
     assert "gato programador" in resultado.content
-    assert resultado.data == {"file_id": str(uploader.file_id), "filename": llamada["filename"]}
+    assert resultado.data == {
+        "file_id": str(uploader.file_id),
+        "filename": llamada["filename"],
+        "mime": "image/png",
+        "alt_text": "un gato programador",
+        "caption": "un gato programador",
+    }
 
 
 async def test_generar_imagen_usa_el_image_provider_inyectado(make_ctx, make_uploader):
@@ -274,9 +278,7 @@ async def test_crear_presentacion_sin_titulo_no_sube_nada(make_ctx, make_uploade
     uploader = make_uploader()
     tool = CrearPresentacionTool(uploader=uploader)
 
-    resultado = await tool.run(
-        make_ctx(), {"titulo": "", "diapositivas": [{"titulo": "x"}]}
-    )
+    resultado = await tool.run(make_ctx(), {"titulo": "", "diapositivas": [{"titulo": "x"}]})
 
     assert uploader.llamadas == []
     assert "título" in resultado.content.lower()
@@ -469,9 +471,7 @@ async def test_crear_podcast_se_acota_a_30_segmentos_y_reporta_el_error(make_ctx
     llamadas = _install_fake_enqueue(monkeypatch)
     segmentos = [{"texto": f"segmento {i}"} for i in range(31)]
 
-    resultado = await CrearPodcastTool().run(
-        make_ctx(), {"titulo": "T", "segmentos": segmentos}
-    )
+    resultado = await CrearPodcastTool().run(make_ctx(), {"titulo": "T", "segmentos": segmentos})
 
     assert "30" in resultado.content
     assert llamadas == []
@@ -521,6 +521,8 @@ async def test_generar_efecto_sonido_stub_sube_wav_y_lo_avisa(make_ctx, make_upl
     assert resultado.data == {
         "file_id": str(uploader.file_id),
         "filename": llamada["filename"],
+        "mime": "audio/wav",
+        "caption": "aplausos entusiastas",
         "es_stub": True,
     }
 
@@ -553,9 +555,7 @@ async def test_generar_efecto_sonido_resuelve_config_del_tenant_con_ctx(
         return None
 
     monkeypatch.setattr(tools_module, "resolver_config_tts_tenant", fake_resolver)
-    _install_fake_generar_efecto(
-        monkeypatch, AudioGenerado(data=b"x", formato="wav", es_stub=True)
-    )
+    _install_fake_generar_efecto(monkeypatch, AudioGenerado(data=b"x", formato="wav", es_stub=True))
 
     session = make_session()
     vault = make_vault()

@@ -49,6 +49,11 @@ export default function BienvenidaPage() {
       try {
         const det = await getSetupDetect();
         if (!cancelado) setDetect(det);
+      } catch {
+        // Una detección local es conveniencia, no un gate del producto. Si
+        // la red cambia durante el primer arranque se conserva el selector
+        // manual sin lanzar una promesa rechazada ni romper el onboarding.
+        if (!cancelado) setDetect(null);
       } finally {
         if (!cancelado) setDetectLoading(false);
       }

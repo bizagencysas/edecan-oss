@@ -5,14 +5,12 @@ import kotlin.test.assertEquals
 
 class AssistantDestinationTest {
     @Test
-    fun `la navegacion primaria solo expone Edecan Actividad y Ajustes`() {
+    fun `la navegacion primaria solo expone tres espacios humanos`() {
         assertEquals(
             listOf(
                 AssistantDestination.EDECAN,
-                AssistantDestination.STUDIO,
-                AssistantDestination.REMOTE,
                 AssistantDestination.ACTIVITY,
-                AssistantDestination.SETTINGS,
+                AssistantDestination.YOU,
             ),
             AssistantDestination.entries,
         )

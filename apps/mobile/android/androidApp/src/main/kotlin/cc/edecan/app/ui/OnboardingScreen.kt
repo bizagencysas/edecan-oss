@@ -119,7 +119,7 @@ private fun Encabezado(paso: PasoOnboarding) {
         Text("✨", style = MaterialTheme.typography.displayMedium)
         Text("Edecán", style = MaterialTheme.typography.headlineLarge)
         Text(
-            if (paso == PasoOnboarding.SERVIDOR) "¿Dónde vive tu servidor?" else "Inicia sesión",
+            if (paso == PasoOnboarding.SERVIDOR) "Conecta tu Edecán" else "Inicia sesión",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -147,8 +147,8 @@ private fun PasoServidor(
 ) {
     TarjetaOnboarding {
         Text(
-            "Pega la URL de TU instalación de Edecán — self-host o la app de escritorio de tu " +
-                "tenant. No hay un servidor por defecto: cada cliente trae el suyo.",
+            "Abre Edecán en tu computador y copia la dirección que aparece en " +
+                "Ajustes > Conectar teléfono. Solo tendrás que hacerlo una vez.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -197,11 +197,10 @@ private fun PasoSesion(
     TarjetaOnboarding {
         Text(
             if (esRegistro) {
-                "Crear una cuenta crea tu tenant y te deja de owner — este teléfono queda " +
-                    "emparejado de una vez, sin tener que iniciar sesión aparte."
+                "Crea tu espacio. Edecán quedará listo para conversar, organizar y trabajar contigo."
             } else {
-                "Iniciar sesión empareja este teléfono con tu cuenta: mientras la sesión siga " +
-                    "activa, este dispositivo queda emparejado con tu tenant."
+                "Entra con la misma cuenta que usas en tu computador. Tus chats y tareas " +
+                    "aparecerán aquí."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -230,7 +229,7 @@ private fun PasoSesion(
             OutlinedTextField(
                 value = tenantName,
                 onValueChange = onTenantNameCambia,
-                placeholder = { Text("Nombre de tu negocio/tenant") },
+                placeholder = { Text("Nombre de tu negocio o equipo") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -250,7 +249,7 @@ private fun PasoSesion(
         }
         Spacer(modifier = Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onCambiarServidor) { Text("Cambiar servidor") }
+            OutlinedButton(onClick = onCambiarServidor) { Text("Cambiar conexión") }
             Spacer(modifier = Modifier.weight(1f))
             Button(
                 onClick = onEntrar,

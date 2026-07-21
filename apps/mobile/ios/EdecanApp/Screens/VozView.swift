@@ -1,25 +1,26 @@
-import SwiftUI
 import EdecanKit
+import SwiftUI
 
-/// Voz accesible desde el micrófono de Chat: *push-to-talk* nativo con
-/// `AVAudioEngine` — mantén presionado para hablar, Edecán
-/// transcribe (`POST /v1/voice/transcribe`), corre el turno de chat completo
-/// y responde en voz (`POST /v1/voice/speak`). El historial de llamadas de
-/// telefonía premium por tenant sigue pendiente (`docs/voz-telefonia.md`) —
-/// ver `docs/movil-ios.md`.
+/// Push-to-talk dentro del mismo hilo que el chat. Proveedor conectado cuando
+/// existe; voz privada del dispositivo cuando no hay credenciales.
 struct VozView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SessionStore.self) private var session
-    @Environment(TabRouter.self) private var tabRouter
-    @State private var viewModel = VozViewModel()
+    @State private var viewModel: VozViewModel
     @State private var presionando = false
+
+    init(chat: ChatViewModel) {
+        _viewModel = State(initialValue: VozViewModel(chat: chat))
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    if viewModel.usandoVozDePrueba {
-                        avisoVozDePrueba
+                    if viewModel.usandoVozDelDispositivo {
+                        Label("Voz privada del dispositivo", systemImage: "iphone.gen3")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
                     }
 
                     if let transcripcion = viewModel.ultimaTranscripcion {
@@ -39,7 +40,6 @@ struct VozView: View {
                     }
 
                     Spacer(minLength: 40)
-
                     textoDeEstado
                     botonMicrofono
                     Text("Mantén presionado para hablar")
@@ -53,31 +53,13 @@ struct VozView: View {
             .navigationTitle("Voz")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cerrar") { dismiss() }
-                }
+                ToolbarItem(placement: .topBarLeading) { Button("Cerrar") { dismiss() } }
+            }
+            .onDisappear {
+                presionando = false
+                viewModel.cancelarGrabacion()
             }
         }
-    }
-
-    private var avisoVozDePrueba: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle.fill").foregroundStyle(EdecanTheme.azul)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Estás escuchando una voz de prueba")
-                    .font(.subheadline.weight(.semibold))
-                Text("Tu tenant no tiene una credencial de voz conectada — conecta ElevenLabs o Polly en Perfil para una voz real.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Button("Ir a Ajustes") {
-                    tabRouter.seleccion = .settings
-                    dismiss()
-                }
-                    .font(.footnote.weight(.semibold))
-            }
-        }
-        .padding(14)
-        .tarjetaVidrio(esquina: 16)
     }
 
     private func burbujaTexto(titulo: String, texto: String, alineacionDerecha: Bool) -> some View {
@@ -98,8 +80,10 @@ struct VozView: View {
         switch viewModel.estado {
         case .inactivo:
             Text(viewModel.ultimaTranscripcion == nil ? "Toca y mantén para empezar" : "Listo para otra pregunta")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
+        case .preparando:
+            HStack(spacing: 8) { ProgressView(); Text("Preparando micrófono…") }
+                .font(.subheadline).foregroundStyle(.secondary)
         case .grabando:
             Text("Escuchando…").font(.subheadline.weight(.semibold)).foregroundStyle(.red)
         case .transcribiendo:
@@ -108,7 +92,7 @@ struct VozView: View {
         case .procesando:
             HStack(spacing: 8) {
                 ProgressView()
-                Text(viewModel.chat.herramientaActiva.map { "Usando \($0)…" } ?? "Edecán está pensando…")
+                Text(viewModel.chat.herramientaActiva.map { "Usando \($0.nombre)…" } ?? "Edecán está pensando…")
             }
             .font(.subheadline).foregroundStyle(.secondary)
         case .reproduciendo:
@@ -123,7 +107,7 @@ struct VozView: View {
                 .fill(colorBoton)
                 .frame(width: 96, height: 96)
                 .shadow(color: colorBoton.opacity(0.5), radius: viewModel.estado == .grabando ? 18 : 6)
-            if viewModel.estado == .transcribiendo || viewModel.estado == .procesando {
+            if viewModel.estado == .preparando || viewModel.estado == .transcribiendo || viewModel.estado == .procesando {
                 ProgressView().tint(.white)
             } else {
                 Image(systemName: viewModel.estado == .reproduciendo ? "speaker.wave.2.fill" : "mic.fill")
@@ -137,6 +121,9 @@ struct VozView: View {
         .gesture(gestoDePresionar)
         .disabled(botonDeshabilitado)
         .opacity(botonDeshabilitado ? 0.5 : 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(viewModel.estado == .grabando ? "Suelta para enviar" : "Mantén presionado para hablar")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var gestoDePresionar: some Gesture {
@@ -144,34 +131,31 @@ struct VozView: View {
             .onChanged { _ in
                 guard !presionando else { return }
                 presionando = true
-                Task { await viewModel.alPresionar() }
+                viewModel.alPresionar()
             }
             .onEnded { valor in
                 guard presionando else { return }
                 presionando = false
-                // Si el dedo se deslizó lejos del botón antes de soltar, se
-                // interpreta como "cancelar" (mismo gesto que WhatsApp/iMessage
-                // para cancelar un audio) en vez de enviar la grabación.
                 if abs(valor.translation.height) > 80 || abs(valor.translation.width) > 80 {
                     viewModel.cancelarGrabacion()
                 } else {
-                    Task { await viewModel.alSoltar(client: session.client) }
+                    viewModel.alSoltar(client: session.client)
                 }
             }
     }
 
     private var botonDeshabilitado: Bool {
         switch viewModel.estado {
-        case .inactivo, .grabando: return false
-        case .transcribiendo, .procesando, .reproduciendo: return true
+        case .inactivo, .preparando, .grabando: false
+        case .transcribiendo, .procesando, .reproduciendo: true
         }
     }
 
     private var colorBoton: Color {
         switch viewModel.estado {
-        case .grabando: return .red
-        case .reproduciendo: return EdecanTheme.morado
-        default: return EdecanTheme.azul
+        case .grabando: .red
+        case .reproduciendo: EdecanTheme.morado
+        default: EdecanTheme.azul
         }
     }
 

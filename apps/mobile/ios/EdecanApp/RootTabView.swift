@@ -11,6 +11,12 @@ import EdecanKit
 final class TabRouter {
     var seleccion: AssistantDestination = .edecan
     var solicitudPendiente: SolicitudRapida?
+    var presentacion: Presentacion?
+
+    enum Presentacion: String, Identifiable {
+        case remote
+        var id: String { rawValue }
+    }
 
     struct SolicitudRapida: Identifiable, Equatable {
         let id = UUID()
@@ -25,6 +31,10 @@ final class TabRouter {
     func consumirSolicitud() -> SolicitudRapida? {
         defer { solicitudPendiente = nil }
         return solicitudPendiente
+    }
+
+    func mostrarRemoto() {
+        presentacion = .remote
     }
 }
 
@@ -52,23 +62,22 @@ struct RootTabView: View {
                 .tabItem { Label("Edecan", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag(AssistantDestination.edecan)
 
-            ContentStudioView()
-                .tabItem { Label("Crear", systemImage: "wand.and.stars") }
-                .tag(AssistantDestination.studio)
-
-            NavigationStack { RemotoView() }
-                .tabItem { Label("Remoto", systemImage: "display.and.arrow.down") }
-                .tag(AssistantDestination.remote)
-
             InicioView()
                 .tabItem { Label("Actividad", systemImage: "clock.arrow.circlepath") }
                 .tag(AssistantDestination.activity)
 
             PerfilView()
-                .tabItem { Label("Ajustes", systemImage: "gearshape.fill") }
+                .tabItem { Label("Tú", systemImage: "person.crop.circle.fill") }
                 .tag(AssistantDestination.settings)
         }
         .tint(EdecanTheme.morado)
         .environment(router)
+        .sheet(item: $router.presentacion) { presentacion in
+            switch presentacion {
+            case .remote:
+                NavigationStack { RemotoView() }
+                    .environment(router)
+            }
+        }
     }
 }

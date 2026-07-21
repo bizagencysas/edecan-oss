@@ -32,7 +32,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 import httpx
 from edecan_core import Tool, ToolContext, ToolResult
@@ -77,6 +77,7 @@ class BraveSearch:
     """
 
     _URL = "https://api.search.brave.com/res/v1/web/search"
+    name = "brave"
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
@@ -103,6 +104,7 @@ class TavilySearch:
     """Tavily Search API — `POST https://api.tavily.com/search`."""
 
     _URL = "https://api.tavily.com/search"
+    name = "tavily"
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
@@ -126,6 +128,8 @@ class StubSearch:
     """Proveedor determinista y offline — usado por defecto (`SEARCH_PROVIDER=stub`)
     en dev/self-host cuando no hay ninguna API key de búsqueda configurada.
     """
+
+    name = "stub"
 
     async def search(self, query: str, k: int = 5) -> list[SearchHit]:
         limite = max(1, min(k, _K_MAXIMO))
@@ -204,14 +208,18 @@ async def get_tenant_search_provider(ctx: Any) -> SearchProvider:
 
     try:
         row = (
-            await session.execute(
-                sql_text(
-                    "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
-                    "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"tenant_id": tenant_id, "connector_key": SEARCH_CONNECTOR_KEY},
+            (
+                await session.execute(
+                    sql_text(
+                        "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
+                        "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"tenant_id": tenant_id, "connector_key": SEARCH_CONNECTOR_KEY},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is None:
             return _stub_con_aviso(tenant_id)
 
@@ -238,9 +246,7 @@ async def get_tenant_search_provider(ctx: Any) -> SearchProvider:
 
 class BuscarWebTool(Tool):
     name = "buscar_web"
-    description = (
-        "Busca en la web y devuelve los resultados más relevantes (título, url, resumen)."
-    )
+    description = "Busca en la web y devuelve los resultados más relevantes (título, url, resumen)."
     input_schema = {
         "type": "object",
         "properties": {
@@ -268,8 +274,38 @@ class BuscarWebTool(Tool):
                 content=f"No encontré resultados para «{consulta}».", data={"resultados": []}
             )
 
-        lineas = [
-            f"{i}. {h.title} — {h.url}\n   {h.snippet}" for i, h in enumerate(hits, start=1)
-        ]
+        lineas = [f"{i}. {h.title} — {h.url}\n   {h.snippet}" for i, h in enumerate(hits, start=1)]
         resultados = [{"title": h.title, "url": h.url, "snippet": h.snippet} for h in hits]
-        return ToolResult(content="\n".join(lineas), data={"resultados": resultados})
+        provider_name = str(getattr(proveedor, "name", "") or "").lower()
+        source_mode = (
+            "demo"
+            if provider_name == "stub"
+            else "live"
+            if provider_name in {"brave", "tavily"}
+            else "unknown"
+        )
+        presentation = [
+            {
+                "type": "link_preview",
+                "fallback_text": h.title or h.url,
+                "url": h.url,
+                "title": h.title or urlsplit(h.url).hostname or "Resultado web",
+                "description": h.snippet or None,
+                "site_name": urlsplit(h.url).hostname,
+                "source_mode": source_mode,
+                "actions": [
+                    {
+                        "id": f"search.open.{index}",
+                        "label": "Abrir fuente",
+                        "action": "open_url",
+                        "url": h.url,
+                    }
+                ],
+            }
+            for index, h in enumerate(hits[:10])
+        ]
+        return ToolResult(
+            content="\n".join(lineas),
+            data={"resultados": resultados},
+            presentation=presentation,
+        )

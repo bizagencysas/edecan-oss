@@ -24,6 +24,8 @@
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Edecan usa el reconocimiento de voz del dispositivo para convertir tus solicitudes en texto sin exigir una clave externa.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

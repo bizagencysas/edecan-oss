@@ -71,6 +71,12 @@ struct InicioView: View {
             }
             .buttonStyle(.plain)
             NavigationLink {
+                LlamadasView()
+            } label: {
+                AccesoDirecto(icono: "phone.badge.waveform", titulo: "Llamadas", subtitulo: "Entrantes, salientes y estado")
+            }
+            .buttonStyle(.plain)
+            NavigationLink {
                 RemotoView()
             } label: {
                 AccesoDirecto(icono: "display", titulo: "Remoto", subtitulo: "Ver y controlar tu Mac/PC")

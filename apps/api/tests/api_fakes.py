@@ -912,7 +912,7 @@ class FakeRepo:
 
 class FakeRedis:
     """Réplica mínima, en memoria, de los comandos de `redis.asyncio.Redis` que
-    usa `edecan_api`: `incr`, `expire`, `set` (con `ex=`), `get`, `getdel`,
+    usa `edecan_api`: `incr`, `expire`, `set` (con `ex=`/`nx=`), `get`, `getdel`,
     `delete`."""
 
     def __init__(self) -> None:
@@ -938,7 +938,16 @@ class FakeRedis:
         self._expiry[key] = time.time() + seconds
         return True
 
-    async def set(self, key: str, value: Any, ex: int | None = None) -> bool:
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        ex: int | None = None,
+        nx: bool = False,
+    ) -> bool:
+        self._expire_if_needed(key)
+        if nx and key in self._store:
+            return False
         self._store[key] = str(value)
         if ex is not None:
             self._expiry[key] = time.time() + ex

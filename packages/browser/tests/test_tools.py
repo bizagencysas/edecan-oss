@@ -57,6 +57,8 @@ async def test_navegar_web_happy_path(make_ctx, fake_settings):
     assert resultado.data["url_final"] == "https://tienda.ejemplo.com/producto/1"
     assert "https://tienda.ejemplo.com/otro" in resultado.data["enlaces"]
     assert "Producto 1" in resultado.content
+    assert resultado.presentation[0]["type"] == "link_preview"
+    assert resultado.presentation[0]["url"] == "https://tienda.ejemplo.com/producto/1"
 
 
 async def test_navegar_web_sin_url(make_ctx):

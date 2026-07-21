@@ -2,11 +2,13 @@
 
 import { PlayIcon, SquareIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
+import { messageBlocks } from "@/lib/chat-blocks";
 import type { MessageOut } from "@/lib/types";
 
 import { ArtifactLinks } from "./ArtifactLinks";
 import { MarkdownText } from "./markdown";
-import { messageArtifacts, messageText } from "./utils";
+import { RichMessageBlocks } from "./RichMessageBlocks";
+import { messageArtifacts, messageAttachments, messageText } from "./utils";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -17,16 +19,26 @@ export function MessageBubble({
   canSpeak,
   speaking,
   onToggleSpeak,
+  onPrefillMessage,
 }: {
   message: MessageOut;
   canSpeak?: boolean;
   speaking?: "loading" | "playing" | null;
   onToggleSpeak?: () => void;
+  onPrefillMessage?: (message: string) => void;
 }) {
   const isUser = message.role === "user";
   const text = messageText(message.content);
-  const artifacts = messageArtifacts(message.tool_calls);
-  if (!text && message.role !== "assistant") return null;
+  const blocks = messageBlocks(message.tool_calls);
+  const mediaFileIds = new Set(
+    blocks.flatMap((block) => (block.type === "media" ? [block.artifact.file_id] : [])),
+  );
+  const artifacts = [...messageAttachments(message.content), ...messageArtifacts(message.tool_calls)].filter(
+    (artifact, index, all) =>
+      !mediaFileIds.has(artifact.file_id) &&
+      all.findIndex((candidate) => candidate.file_id === artifact.file_id) === index,
+  );
+  if (!text && message.role !== "assistant" && artifacts.length === 0) return null;
 
   return (
     <div className={cx("flex", isUser ? "justify-end" : "justify-start")}>
@@ -38,10 +50,13 @@ export function MessageBubble({
             : "border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
         )}
       >
-        <div className="whitespace-pre-wrap break-words [&_hr]:my-2 [&_ul]:my-1">
-          {text ? <MarkdownText text={text} /> : "…"}
-        </div>
-        {!isUser && <ArtifactLinks artifacts={artifacts} />}
+        {(text || (message.role === "assistant" && blocks.length === 0)) && (
+          <div className="whitespace-pre-wrap break-words [&_hr]:my-2 [&_ul]:my-1">
+            {text ? <MarkdownText text={text} /> : "…"}
+          </div>
+        )}
+        {!isUser && <RichMessageBlocks blocks={blocks} onPrefillMessage={onPrefillMessage} />}
+        <ArtifactLinks artifacts={artifacts} />
         {!isUser && canSpeak && text && (
           <button
             onClick={onToggleSpeak}

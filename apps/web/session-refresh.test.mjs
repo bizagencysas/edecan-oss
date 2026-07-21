@@ -213,6 +213,67 @@ test("el flujo completo conserva éxito después de avanzar la generación", asy
   assert.equal(getRefreshToken(), "next-refresh");
 });
 
+test("desktop recupera su dueño local si fakeredis perdió el refresh", async () => {
+  window.location = {
+    hash: "#edecan_capability=process-capability",
+    pathname: "/",
+    search: "?edecan_desktop=1",
+  };
+  window.history = { replaceState: () => {} };
+  window.navigator = { userAgent: "Mozilla/5.0" };
+  setTokens("expired-access", "forgotten-refresh");
+  const requested = [];
+  globalThis.fetch = async (url, init) => {
+    requested.push({ url: String(url), init });
+    if (String(url).endsWith("/v1/auth/refresh")) {
+      return Response.json({ detail: "Token inválido" }, { status: 401 });
+    }
+    return Response.json({ access_token: "local-access", refresh_token: "local-refresh" });
+  };
+
+  const result = await recoverSessionAfterUnauthorized("http://127.0.0.1:8765");
+
+  assert.equal(result.ok, true);
+  assert.equal(getAccessToken(), "local-access");
+  assert.equal(getRefreshToken(), "local-refresh");
+  assert.equal(requested.length, 2);
+  assert.equal(requested[1].url, "http://127.0.0.1:8765/v1/auth/local");
+  assert.equal(
+    requested[1].init.headers["X-Edecan-Desktop-Capability"],
+    "process-capability",
+  );
+});
+
+test("desktop con TOTP reabre por capacidad local sin mostrar prompt", async () => {
+  window.location = {
+    hash: "#edecan_capability=totp-process-capability",
+    pathname: "/",
+    search: "?edecan_desktop=1",
+  };
+  window.history = { replaceState: () => {} };
+  let prompts = 0;
+  window.prompt = () => {
+    prompts += 1;
+    return "123456";
+  };
+  setTokens("expired-access", "totp-refresh");
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/auth/refresh")) {
+      return Response.json(
+        { detail: "Se requiere un código TOTP válido para esta cuenta." },
+        { status: 401 },
+      );
+    }
+    return Response.json({ access_token: "local-access", refresh_token: "local-refresh" });
+  };
+
+  const result = await recoverSessionAfterUnauthorized("http://127.0.0.1:8765");
+
+  assert.equal(result.ok, true);
+  assert.equal(prompts, 0);
+  assert.equal(getAccessToken(), "local-access");
+});
+
 test("un éxito de refresh no autoriza replay si otro login ocurre después", async () => {
   setTokens("access", "refresh");
   globalThis.fetch = async () =>

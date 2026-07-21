@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = JWT_SECRET_PLACEHOLDER
     AUTH_RATE_LIMIT_REQUESTS: int = 10
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    # Capacidad aleatoria por proceso que Tauri entrega al sidecar y a su
+    # WebView. Nunca se persiste ni se publica en el QR/túnel.
+    LOCAL_DESKTOP_CAPABILITY: str | None = None
     # QR móvil de un solo uso. La sesión durable posterior vive en `devices`
     # y se puede revocar; este TTL solo limita la ventana del QR visible.
     MOBILE_PAIRING_TTL_SECONDS: int = 10 * 60

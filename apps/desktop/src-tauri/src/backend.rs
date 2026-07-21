@@ -10,6 +10,7 @@
 //! hace un GET a `/healthz` — deliberadamente lee
 //! stdout en vez de sumar un cliente HTTP (`reqwest`) solo para esto.
 
+use std::fmt::Write as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,10 @@ pub struct BackendState(pub Mutex<Option<CommandChild>>);
 /// valor de antemano — así sigue siendo correcto después de un reintento
 /// que haya elegido un puerto distinto.
 pub struct PortState(pub Mutex<u16>);
+
+/// Capacidad aleatoria del arranque actual. El sidecar la recibe por entorno
+/// y la UI por fragmento URL (que nunca llega a logs/proxies HTTP).
+pub struct DesktopCapabilityState(pub Mutex<Option<String>>);
 
 const READY_MARKER: &str = "EDECAN_LOCAL_READY";
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -68,6 +73,32 @@ pub fn current_port(app: &AppHandle) -> u16 {
     *app.state::<PortState>().0.lock().unwrap()
 }
 
+pub fn current_local_ui_url(app: &AppHandle) -> Option<String> {
+    let port = current_port(app);
+    let capability = app
+        .state::<DesktopCapabilityState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone()?;
+    Some(local_ui_url(port, &capability))
+}
+
+fn generate_desktop_capability() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|err| format!("No se pudo generar la capacidad segura del escritorio: {err}"))?;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("escribir en String no puede fallar");
+    }
+    Ok(encoded)
+}
+
+fn local_ui_url(port: u16, capability: &str) -> String {
+    format!("http://127.0.0.1:{port}/?edecan_desktop=1#edecan_capability={capability}")
+}
+
 /// Punto de entrada único para (re)lanzar el backend local. Lo llama tanto
 /// `setup()` en el arranque como el comando `retry_backend` — mismo camino,
 /// sin duplicar lógica. Nunca hace panic: cualquier fallo termina emitiendo
@@ -79,6 +110,14 @@ pub async fn start_backend(app: AppHandle) {
 
     let port = pick_port(PREFERRED_PORT);
     *app.state::<PortState>().0.lock().unwrap() = port;
+    let capability = match generate_desktop_capability() {
+        Ok(value) => value,
+        Err(message) => {
+            emit_error(&app, message, Vec::new());
+            return;
+        }
+    };
+    *app.state::<DesktopCapabilityState>().0.lock().unwrap() = Some(capability.clone());
 
     let target_data_dir = data_dir(&app);
     if let Err(err) = std::fs::create_dir_all(&target_data_dir) {
@@ -95,7 +134,7 @@ pub async fn start_backend(app: AppHandle) {
 
     let _ = app.emit("edecan://backend-status", "Arrancando tu asistente…");
 
-    let command = match build_command(&app, port, &target_data_dir) {
+    let command = match build_command(&app, port, &target_data_dir, &capability) {
         Ok(cmd) => cmd,
         Err(message) => {
             emit_error(&app, message, Vec::new());
@@ -198,6 +237,7 @@ fn build_command(
     app: &AppHandle,
     port: u16,
     target_data_dir: &Path,
+    desktop_capability: &str,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     let port_arg = port.to_string();
     let data_dir_arg = target_data_dir.to_string_lossy().to_string();
@@ -232,7 +272,10 @@ fn build_command(
             .args(backend_args)
     };
 
-    Ok(with_expanded_path(with_ollama_env(cmd)))
+    Ok(
+        with_expanded_path(with_ollama_env(cmd))
+            .env("LOCAL_DESKTOP_CAPABILITY", desktop_capability),
+    )
 }
 
 /// Directorios donde suelen vivir CLIs bring-your-own que este backend
@@ -497,7 +540,17 @@ fn diagnostics_enabled() -> bool {
 /// propio backend en `/` (Next.js exportado, ver scripts/build-backend.sh)
 /// — Tauri no empaqueta ni sirve el frontend, solo navega a esa URL.
 fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
-    let url = tauri::Url::parse(&format!("http://127.0.0.1:{port}/")).map_err(|e| e.to_string())?;
+    let capability = app
+        .state::<DesktopCapabilityState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Falta la capacidad segura del escritorio.".to_string())?;
+    // El query solo identifica el runtime. La capacidad secreta viaja en el
+    // fragmento: el navegador la entrega a JavaScript, pero nunca al servidor
+    // HTTP, sus access logs ni Cloudflare.
+    let url = tauri::Url::parse(&local_ui_url(port, &capability)).map_err(|e| e.to_string())?;
 
     if let Some(existing) = app.get_webview_window("main") {
         // No debería pasar en el flujo normal (retry_backend solo se llama
@@ -512,7 +565,7 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
                 // La UI vive en un origen HTTP local. En páginas externas,
                 // `window.__TAURI__` no es una señal fiable aunque la ventana
                 // sí sea nativa. Este marcador permite que el frontend guarde
-                // solo el refresh token de forma persistente en desktop.
+                // la capacidad efímera del proceso en sessionStorage.
                 .user_agent(DESKTOP_USER_AGENT)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 600.0)

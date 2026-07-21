@@ -29,6 +29,7 @@ class FakeRepo:
         self.tenants: dict[uuid.UUID, Row] = {}
         self.users: dict[uuid.UUID, Row] = {}
         self.memberships: list[Row] = []
+        self.local_owner: tuple[uuid.UUID, uuid.UUID] | None = None
         self.personas: dict[tuple[uuid.UUID, uuid.UUID], Row] = {}
         self.conversations: dict[uuid.UUID, Row] = {}
         self.messages: dict[uuid.UUID, list[Row]] = {}
@@ -155,6 +156,61 @@ class FakeRepo:
             key=lambda row: row["created_at"],
         )
         return matches[0]["user_id"] if matches else None
+
+    async def get_first_active_owner(self) -> Row | None:
+        matches = sorted(
+            (
+                membership
+                for membership in self.memberships
+                if membership["role"] == "owner"
+                and self.tenants.get(membership["tenant_id"], {}).get("status") == "active"
+            ),
+            key=lambda row: row["created_at"],
+        )
+        if not matches:
+            return None
+        membership = matches[0]
+        user = self.users[membership["user_id"]]
+        tenant = self.tenants[membership["tenant_id"]]
+        return {
+            "user_id": user["id"],
+            "email": user["email"],
+            "tenant_id": tenant["id"],
+            "plan_key": tenant["plan_key"],
+            "owner_count": len(matches),
+        }
+
+    async def get_local_owner(self) -> Row | None:
+        if self.local_owner is None:
+            return None
+        user_id, tenant_id = self.local_owner
+        user = self.users.get(user_id)
+        tenant = self.tenants.get(tenant_id)
+        membership = next(
+            (
+                row
+                for row in self.memberships
+                if row["user_id"] == user_id
+                and row["tenant_id"] == tenant_id
+                and row["role"] == "owner"
+            ),
+            None,
+        )
+        if user is None or tenant is None or membership is None or tenant["status"] != "active":
+            return None
+        return {
+            "user_id": user_id,
+            "email": user["email"],
+            "tenant_id": tenant_id,
+            "plan_key": tenant["plan_key"],
+        }
+
+    async def set_local_owner(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row:
+        if self.local_owner is None:
+            self.local_owner = (user_id, tenant_id)
+        owner = await self.get_local_owner()
+        assert owner is not None
+        return owner
 
     # -- personas -----------------------------------------------------------
 

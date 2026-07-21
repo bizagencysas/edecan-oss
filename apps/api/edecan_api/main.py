@@ -226,6 +226,7 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 # body. Se bloquean antes de aplicar la regla general de sesión autenticada.
 _TUNNEL_LOCAL_ONLY_PATHS = frozenset(
     {
+        "/v1/auth/local",
         "/v1/auth/login",
         "/v1/auth/register",
     }

@@ -62,8 +62,9 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             let id: &str = event.id().as_ref();
             match id {
                 "open_browser" => {
-                    let port = backend::current_port(&app_for_events);
-                    util::open_in_default_browser(&format!("http://127.0.0.1:{port}/"));
+                    if let Some(url) = backend::current_local_ui_url(&app_for_events) {
+                        util::open_in_default_browser(&url);
+                    }
                 }
                 "open_data" => {
                     let dir = backend::data_dir(&app_for_events);

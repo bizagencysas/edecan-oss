@@ -1,4 +1,9 @@
-"""Seed de datos de desarrollo: tenant `demo`, usuario demo y persona default.
+"""Seed opcional de desarrollo: tenant `demo`, usuario demo y persona default.
+
+La app local de producción no usa estas credenciales ni requiere ejecutar este
+módulo: crea o recupera su único dueño mediante el flujo loopback de
+`POST /v1/auth/local`. Este seed existe solo para pruebas manuales del modo
+hosted/desarrollo.
 
 Uso: `uv run python -m edecan_db.seed` (usa `DATABASE_URL` del entorno/`.env`,
 requiere que la migración `0001_initial` ya esté aplicada — `make db-migrate`).

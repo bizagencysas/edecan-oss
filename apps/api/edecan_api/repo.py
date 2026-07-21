@@ -127,6 +127,9 @@ class Repo(Protocol):
     async def get_membership(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row | None: ...
     async def get_first_membership_for_user(self, user_id: uuid.UUID) -> Row | None: ...
     async def get_first_user_id_for_tenant(self, tenant_id: uuid.UUID) -> uuid.UUID | None: ...
+    async def get_local_owner(self) -> Row | None: ...
+    async def set_local_owner(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row: ...
+    async def get_first_active_owner(self) -> Row | None: ...
 
     # -- personas -----------------------------------------------------------
     async def create_persona_default(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row: ...
@@ -510,6 +513,60 @@ class SqlRepo:
             {"tenant_id": tenant_id},
         )
         return row["user_id"] if row is not None else None
+
+    async def get_first_active_owner(self) -> Row | None:
+        """Candidato legacy para una base anterior al marcador singleton.
+
+        Hosted nunca usa este método para autenticar. `0014` fija el candidato
+        más antiguo en `local_installation`; este fallback solo permite reparar
+        automáticamente una base sin marcador cuando hay exactamente uno.
+        """
+        return await self._first(
+            """
+            SELECT u.id AS user_id, u.email, m.tenant_id, t.plan_key,
+                   COUNT(*) OVER () AS owner_count
+            FROM memberships m
+            JOIN users u ON u.id = m.user_id
+            JOIN tenants t ON t.id = m.tenant_id
+            WHERE m.role = 'owner' AND t.status = 'active'
+            ORDER BY m.created_at ASC, m.id ASC
+            LIMIT 1
+            """,
+            {},
+        )
+
+    async def get_local_owner(self) -> Row | None:
+        """Dueño fijado de esta instalación autohospedada."""
+        return await self._first(
+            """
+            SELECT u.id AS user_id, u.email, t.id AS tenant_id, t.plan_key
+            FROM local_installation li
+            JOIN users u ON u.id = li.owner_user_id
+            JOIN tenants t ON t.id = li.owner_tenant_id
+            JOIN memberships m
+              ON m.user_id = li.owner_user_id
+             AND m.tenant_id = li.owner_tenant_id
+             AND m.role = 'owner'
+            WHERE li.installation_key = 'local' AND t.status = 'active'
+            """,
+            {},
+        )
+
+    async def set_local_owner(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row:
+        """Fija el singleton una vez; nunca cambia un dueño ya seleccionado."""
+        await self._exec(
+            """
+            INSERT INTO local_installation (
+                installation_key, owner_user_id, owner_tenant_id, created_at, updated_at
+            )
+            VALUES ('local', :user_id, :tenant_id, :now, :now)
+            ON CONFLICT (installation_key) DO NOTHING
+            """,
+            {"user_id": user_id, "tenant_id": tenant_id, "now": _now()},
+        )
+        owner = await self.get_local_owner()
+        assert owner is not None
+        return owner
 
     # -- personas -------------------------------------------------------------
 

@@ -44,7 +44,22 @@ Este documento cubre la arquitectura interna. Para instalar/compilar la app de e
                                       data_dir/pg/
 ```
 
-Todo bindea **solo en `127.0.0.1`** — nunca `0.0.0.0` (`ARCHITECTURE.md` §12.f): esto no es una plataforma multi-tenant expuesta, es un proceso local de un solo usuario en su propia máquina (ver §6 más abajo).
+Postgres y el object store bindean **solo en `127.0.0.1`**. La API también lo
+hace por defecto; la app empaquetada activa `--mobile-access` para que iOS y
+Android emparejados puedan alcanzarla por LAN/relay. Incluso entonces,
+`POST /v1/auth/local` verifica que el cliente real sea loopback y el guard del
+túnel bloquea la UI y las superficies del dueño.
+
+La instalación local tampoco es una cuenta SaaS: hay un solo dueño en la base
+embebida y la app abre sin correo ni contraseña. La ventana nativa obtiene JWT
+temporales por `POST /v1/auth/local`; esa ruta solo acepta loopback, exige una
+capacidad aleatoria por arranque compartida únicamente entre Tauri, el sidecar
+y la WebView, y está bloqueada en Cloudflare Tunnel. La capacidad llega por
+fragmento URL —no entra en logs HTTP— y jamás se guarda. Al cerrar el proceso
+los JWT desaparecen y la siguiente apertura crea otros, sin perder identidad ni
+datos. Cada iPhone o Android se vincula una sola vez por QR y guarda su propia
+identidad revocable en Keychain/Keystore, por lo que puede reconectarse desde
+fuera de casa sin mostrar un formulario de login.
 
 ## 2. Por qué cada pieza se resolvió así
 
@@ -53,7 +68,7 @@ Todo bindea **solo en `127.0.0.1`** — nunca `0.0.0.0` (`ARCHITECTURE.md` §12.
 | Pieza de referencia | Resuelta acá con | Por qué |
 |---|---|---|
 | PostgreSQL (RDS/`postgres` en compose) | `pgserver` (dependencia directa donde existe wheel) | Trae binarios reales de Postgres 16 + pgvector en macOS x64/arm64, Linux x64 y Windows x64. `edecan_local.pg.ensure_postgres` lo arranca en `data_dir/pg`; Linux/Windows ARM64 deben definir `EDECAN_DATABASE_URL`. |
-| Redis (ElastiCache/`redis` en compose) | `fakeredis` (`REDIS_URL=memory://`) | Solo se usa para rate-limit, códigos de emparejamiento y confirmaciones pendientes (`ARCHITECTURE.md` §10.12) — todo de corta vida, de UN SOLO proceso. Levantar un Redis real para eso en la laptop de alguien es puro overhead. `edecan_api.deps` (fase v3) interpreta el esquema `memory://` — este WP solo lo fija como env var. |
+| Redis (ElastiCache/`redis` en compose) | `fakeredis` (`REDIS_URL=memory://`) | Solo se usa para rate-limit, sesiones JWT de proceso, códigos de emparejamiento y confirmaciones pendientes (`ARCHITECTURE.md` §10.12) — todo de corta vida, de UN SOLO proceso. La identidad durable del dueño y de los teléfonos vive en Postgres, no aquí. Levantar un Redis real para eso en la laptop de alguien es puro overhead. `edecan_api.deps` (fase v3) interpreta el esquema `memory://` — este WP solo lo fija como env var. |
 | SQS + DLQ (`edecan-jobs`) | Tabla `jobs` de Postgres como cola (`QUEUE_PROVIDER=db`) | Evita depender de LocalStack/SQS real en la máquina del cliente. `edecan_core.queue.enqueue` gana una rama `INSERT INTO jobs` (vía `asyncpg`, conexión efímera) cuando `QUEUE_PROVIDER="db"` — el comportamiento SQS de siempre queda intacto para dev/prod (`QUEUE_PROVIDER` default `"sqs"`). `edecan_local.worker_loop` consume esa misma tabla con `SELECT ... FOR UPDATE SKIP LOCKED`, en vez de que un `edecan_worker.main` aparte haga long-polling a SQS. |
 | S3 (`edecan-files` / LocalStack en dev) | `edecan_local.objectstore`, un mini servidor S3-compatible sobre filesystem | Ningún call site de `aioboto3` en el repo llama `create_bucket` — todos van directo a `put_object`/`get_object` (ver su docstring) con `Body=bytes`. Reimplementar SOLO ese subconjunto (PUT/GET/HEAD/DELETE de objeto, `ListObjectsV2` mínimo) alcanza para que `aiobotocore` hable con un `AWS_ENDPOINT_URL` local sin tocar ninguno de esos call sites. Firmas AWS (`Authorization`/`X-Amz-*`) se ignoran por completo — solo escucha loopback. |
 | EventBridge Scheduler | Scheduler local dentro de `worker_loop.run_forever` | Mismo rol que `edecan_worker.scheduler` en dev: cada 30s encola `send_reminder_scan` y `automation_scan` (`tenant_id=None`, jobs de sistema). |
@@ -126,9 +141,9 @@ que existe un Postgres embebido donde el proveedor no distribuye binarios.
 
 ## 7. Qué NO es este runner
 
-- **No es multi-tenant expuesto a la red.** Aunque el esquema de datos por debajo sigue siendo el mismo multi-tenant con Row-Level Security de siempre (`ARCHITECTURE.md` §2) — en la práctica, cada instalación de la app de escritorio es un tenant único, en la máquina de un único usuario, bindeado solo a loopback. No hay ningún escenario soportado de "varios usuarios remotos pegándole a este mismo proceso".
+- **No es un SaaS multi-tenant expuesto a la red.** Aunque el esquema de datos conserva el aislamiento multi-tenant con Row-Level Security (`ARCHITECTURE.md` §2), cada instalación representa a un único dueño. Postgres y el object store permanecen en loopback; cuando se activa `--mobile-access`, la API acepta únicamente a los teléfonos emparejados mediante su identidad de dispositivo y el relay autenticado. No existe un modo soportado donde varias cuentas humanas compartan el mismo proceso local.
 - **El object store no habla el protocolo S3 completo.** Solo el subconjunto que el propio repo usa (§2, tabla) — no sirve como reemplazo genérico de LocalStack/MinIO para otra cosa.
-- **No reemplaza `docker-compose.yml` para desarrollo del propio Edecán.** Seguís usando `make api`/`make worker`/`docker compose up` (`ARCHITECTURE.md` §8) si estás desarrollando el producto — `edecan_local` es el runtime del PRODUCTO EMPAQUETADO, para la máquina del cliente final.
+- **No reemplaza `docker-compose.yml` para desarrollo del propio Edecán.** Se siguen usando `make api`/`make worker`/`docker compose up` (`ARCHITECTURE.md` §8) al desarrollar el producto; `edecan_local` es el runtime del producto empaquetado para la computadora de la persona.
 
 ## 8. Apagado grácil del sidecar en macOS/Linux (resuelto 2026-07-08)
 

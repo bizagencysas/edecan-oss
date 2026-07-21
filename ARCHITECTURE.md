@@ -508,8 +508,10 @@ máquina del cliente (`docs/roadmap.md`: backend local de la app Tauri).
 Contrato pinned:
 
 - Se invoca `python -m edecan_local`.
-- Bind **SOLO** en `127.0.0.1` — nunca `0.0.0.0` (ningún puerto expuesto
-  fuera de la máquina del cliente).
+- Por defecto bindea en `127.0.0.1`. Con `--mobile-access`, únicamente la API
+  bindea en `0.0.0.0` para los clientes emparejados; Postgres, object store y
+  la sesión del dueño permanecen exclusivos de loopback. El guard del túnel
+  bloquea UI/login/setup y toda ruta no móvil no autenticada.
 - Puerto `settings.LOCAL_API_PORT` (default `8765`, §12.g).
 - Al quedar sano (API respondiendo, migraciones aplicadas), imprime por
   stdout la línea exacta `EDECAN_LOCAL_READY port=<p>` — el proceso Tauri
@@ -518,7 +520,8 @@ Contrato pinned:
 - Flags de CLI: `--port` (override de `LOCAL_API_PORT`), `--data-dir`
   (override de `DATA_DIR`), `--no-web` (no monta `SERVE_WEB_DIR` aunque esté
   configurado — útil para desarrollo, cuando `apps/web` corre aparte con
-  `npm run dev`).
+  `npm run dev`) y `--mobile-access` (habilita la API para teléfonos
+  emparejados sin exponer la sesión local del dueño).
 - Apagado limpio ante `SIGTERM`/`SIGINT`: cierra conexiones de base de
   datos/HTTP en curso antes de salir, nunca un `kill -9` como único camino.
 - `QUEUE_PROVIDER=db` (§12.g) es la opción recomendada para este runner
@@ -543,11 +546,27 @@ None`, default `None` = autodetectar en PATH), `LLM_CLI_TIMEOUT_SECONDS`
 (default `"https://skills.sh"`), `HOMEASSISTANT_TIMEOUT_SECONDS` (default
 `15`).
 
+`LOCAL_DESKTOP_CAPABILITY` (`str | None`, default `None`) es interna del
+launcher Tauri: se genera de nuevo en cada proceso y nunca la configura la
+persona ni se guarda en `.env`.
+
 `REDIS_URL` (ya pinned en §10.2) gana un esquema especial en v3:
 `memory://` selecciona un `fakeredis` en memoria en vez de un Redis real —
 pensado para `EDECAN_LOCAL_MODE=True` (single-user, sin infraestructura
 propia que levantar). Lo interpreta `edecan_api.deps` (responsable de la fase v3); el
 tipo/default de `REDIS_URL` en `Settings` no cambia.
+
+En ese modo local, la identidad durable no vive en fakeredis ni en un login:
+la base embebida conserva exactamente un dueño activo. La WebView nativa abre
+una sesión de proceso mediante `POST /v1/auth/local`; esa ruta exige loopback
+y una capacidad criptográfica aleatoria generada por Tauri en cada arranque,
+y el middleware del túnel la bloquea siempre. La capacidad viaja al frontend
+en el fragmento URL, no llega a logs HTTP y jamás se persiste. Los JWT
+del escritorio son efímeros y se regeneran en cada apertura. iOS y Android sí
+conservan una identidad de dispositivo independiente (`device_id` +
+`device_token`) tras escanear el QR, en Keychain/Keystore, y recuperan JWT por
+`POST /v1/devices/pairing/refresh`. Login/registro permanecen únicamente para
+un despliegue hosted explícito.
 
 ### 12.h Paquetes nuevos del workspace uv (responsable de la fase v3)
 

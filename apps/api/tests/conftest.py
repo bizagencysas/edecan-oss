@@ -43,6 +43,7 @@ def test_settings() -> Settings:
         JWT_SECRET=TEST_JWT_SECRET,
         WEB_BASE_URL="http://localhost:3000",
         PUBLIC_BASE_URL="http://localhost:8000",
+        LOCAL_DESKTOP_CAPABILITY="test-desktop-capability",
     )
 
 

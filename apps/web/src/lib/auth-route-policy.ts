@@ -4,6 +4,7 @@
  * comprobación por prefijo sería demasiado amplia y las rompería.
  */
 const PUBLIC_AUTH_ROUTES = new Set([
+  "/v1/auth/local",
   "/v1/auth/register",
   "/v1/auth/login",
   "/v1/auth/refresh",

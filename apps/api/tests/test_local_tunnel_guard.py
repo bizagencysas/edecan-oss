@@ -45,6 +45,7 @@ async def test_tunnel_never_exposes_login_register_or_desktop_ui() -> None:
     for path in (
         "/",
         "/app/ajustes/",
+        "/v1/auth/local",
         "/v1/auth/login",
         "/v1/auth/register",
         "/v1/setup/status",

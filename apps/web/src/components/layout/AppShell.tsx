@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth-context";
 import { BrandMark, NavList, Sidebar } from "./Sidebar";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { me, signOut } = useAuth();
+  const { me, signOut, isLocalDesktop } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
@@ -50,15 +50,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
           <div className="hidden text-sm text-slate-500 dark:text-slate-400 md:block">Tu asistente</div>
           <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-slate-600 dark:text-slate-300 sm:inline">{me?.user.email}</span>
+            <span className="hidden text-sm text-slate-600 dark:text-slate-300 sm:inline">
+              {isLocalDesktop ? "Tu Edecán" : me?.user.email}
+            </span>
             <ThemeToggle />
-            <button
-              onClick={signOut}
-              title="Cerrar sesión"
-              className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-white"
-            >
-              <LogOutIcon className="h-4 w-4" />
-            </button>
+            {!isLocalDesktop && (
+              <button
+                onClick={signOut}
+                title="Cerrar sesión"
+                className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <LogOutIcon className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </header>
         <main className="flex flex-1 flex-col overflow-y-auto p-4 md:p-6">{children}</main>

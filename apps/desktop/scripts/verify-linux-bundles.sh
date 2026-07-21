@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Verificación de release Linux x64. Inspecciona los tres paquetes y arranca
+# el AppImage en un X virtual, esperando al backend real y cerrando la ventana
+# por el protocolo normal del escritorio para comprobar el apagado del sidecar.
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "error: verify-linux-bundles.sh debe ejecutarse en Linux." >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUNDLE_DIR="${1:-$DESKTOP_DIR/src-tauri/target/release/bundle}"
+
+for bin in curl dpkg-deb pgrep rpm sed xdotool xvfb-run; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "error: falta '$bin' para verificar los bundles Linux." >&2
+    exit 1
+  fi
+done
+
+find_one() {
+  local directory="$1"
+  local pattern="$2"
+  local label="$3"
+  local matches=()
+  while IFS= read -r -d '' candidate; do
+    matches+=("$candidate")
+  done < <(find "$directory" -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null)
+  if (( ${#matches[@]} != 1 )); then
+    echo "error: se esperaba exactamente un $label en $directory; encontrados: ${#matches[@]}." >&2
+    return 1
+  fi
+  printf '%s\n' "${matches[0]}"
+}
+
+APPIMAGE="$(find_one "$BUNDLE_DIR/appimage" '*.AppImage' 'AppImage')"
+DEB="$(find_one "$BUNDLE_DIR/deb" '*.deb' 'paquete Debian')"
+RPM="$(find_one "$BUNDLE_DIR/rpm" '*.rpm' 'paquete RPM')"
+
+echo "==> Inspeccionando metadatos y sidecars…"
+dpkg-deb --info "$DEB" >/dev/null
+dpkg-deb --contents "$DEB" | grep '/edecan-desktop$' >/dev/null
+dpkg-deb --contents "$DEB" | grep '/edecan-local$' >/dev/null
+rpm -qip "$RPM" >/dev/null
+rpm -qlp "$RPM" | grep '/edecan-desktop$' >/dev/null
+rpm -qlp "$RPM" | grep '/edecan-local$' >/dev/null
+
+SMOKE_DIR="$(mktemp -d)"
+APP_LOG="$SMOKE_DIR/edecan-linux.log"
+DISPLAY_FILE="$SMOKE_DIR/display"
+LAUNCHER_PID=""
+
+cleanup() {
+  if [[ -n "$LAUNCHER_PID" ]] && kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+    kill -TERM "$LAUNCHER_PID" 2>/dev/null || true
+    wait "$LAUNCHER_PID" 2>/dev/null || true
+  fi
+  # Solo alcanza los sidecars de esta corrida: todos llevan el data-dir
+  # efímero y único creado arriba.
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+  done < <(pgrep -f "edecan-local.*$SMOKE_DIR" 2>/dev/null || true)
+  find "$SMOKE_DIR" -depth -delete 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+export XDG_CONFIG_HOME="$SMOKE_DIR/config"
+export XDG_DATA_HOME="$SMOKE_DIR/data"
+export XDG_CACHE_HOME="$SMOKE_DIR/cache"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+chmod u+x "$APPIMAGE"
+
+echo "==> Arrancando el AppImage y su backend real en Xvfb…"
+# `xvfb-run` elige una pantalla libre y solo exporta DISPLAY a su proceso
+# hijo. El wrapper escribe ese valor para que las comprobaciones posteriores
+# de xdotool se conecten al MISMO servidor X que la aplicación.
+APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a sh -c '
+  printf "%s\n" "$DISPLAY" > "$1"
+  exec "$2"
+' _ "$DISPLAY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
+LAUNCHER_PID="$!"
+
+for _attempt in $(seq 1 20); do
+  [[ -s "$DISPLAY_FILE" ]] && break
+  if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+    echo "error: no se pudo crear la pantalla virtual para Edecán." >&2
+    sed -n '1,240p' "$APP_LOG" >&2
+    exit 1
+  fi
+  sleep 1
+done
+if [[ ! -s "$DISPLAY_FILE" ]]; then
+  echo "error: Xvfb no informó una pantalla dentro de 20 segundos." >&2
+  sed -n '1,240p' "$APP_LOG" >&2
+  exit 1
+fi
+export DISPLAY
+DISPLAY="$(tr -d '\r\n' < "$DISPLAY_FILE")"
+
+PORT=""
+for _attempt in $(seq 1 120); do
+  if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+    echo "error: el AppImage terminó antes de dejar listo el backend." >&2
+    sed -n '1,240p' "$APP_LOG" >&2
+    exit 1
+  fi
+
+  BACKEND_LINE="$(
+    pgrep -af 'edecan-local.*--port' 2>/dev/null |
+      grep -F -- "$XDG_DATA_HOME/cc.edecan.desktop/data" |
+      head -1 || true
+  )"
+  PORT="$(printf '%s' "$BACKEND_LINE" | sed -nE 's/.*--port ([0-9]+).*/\1/p')"
+  if [[ -n "$PORT" ]] && curl --fail --silent "http://127.0.0.1:$PORT/healthz" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ -z "$PORT" ]] || ! curl --fail --silent "http://127.0.0.1:$PORT/healthz" >/dev/null; then
+  echo "error: el backend empaquetado no respondió /healthz dentro de 120 segundos." >&2
+  sed -n '1,240p' "$APP_LOG" >&2
+  exit 1
+fi
+
+WINDOW_ID=""
+for _attempt in $(seq 1 20); do
+  WINDOW_ID="$(xdotool search --name 'Edec' 2>/dev/null | tail -1 || true)"
+  [[ -n "$WINDOW_ID" ]] && break
+  sleep 1
+done
+if [[ -z "$WINDOW_ID" ]]; then
+  echo "error: el backend quedó sano, pero Edecán no creó una ventana visible." >&2
+  sed -n '1,240p' "$APP_LOG" >&2
+  exit 1
+fi
+
+echo "==> Cerrando la ventana y verificando apagado limpio…"
+xdotool windowclose "$WINDOW_ID"
+for _attempt in $(seq 1 30); do
+  if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+if kill -0 "$LAUNCHER_PID" 2>/dev/null; then
+  echo "error: Edecán no terminó dentro de 30 segundos después de cerrar su ventana." >&2
+  exit 1
+fi
+wait "$LAUNCHER_PID"
+LAUNCHER_PID=""
+
+for _attempt in $(seq 1 10); do
+  if ! pgrep -f "edecan-local.*$SMOKE_DIR" >/dev/null 2>&1; then
+    echo "==> Linux verificado: AppImage + deb + rpm, health real y cero sidecars huérfanos."
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "error: quedó un sidecar edecan-local huérfano después de cerrar la app." >&2
+pgrep -af "edecan-local.*$SMOKE_DIR" >&2 || true
+exit 1

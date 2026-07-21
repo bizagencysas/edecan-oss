@@ -116,6 +116,80 @@ jobs:
       - name: Test desktop crate without packaged sidecars
         run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
+  desktop-linux:
+    name: Linux desktop / packages and smoke test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop build and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            curl \
+            file \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            rpm \
+            wget \
+            xdotool \
+            xvfb
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+
+      - name: Build AppImage, Debian, and RPM packages
+        run: ./apps/desktop/scripts/build-app.sh
+
+      - name: Exercise the packaged Linux app and verify clean shutdown
+        run: ./apps/desktop/scripts/verify-linux-bundles.sh
+
+      - name: Upload Linux release packages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: edecan-linux-x86_64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm
+
   ios:
     name: iOS shared package / Swift tests
     runs-on: macos-26

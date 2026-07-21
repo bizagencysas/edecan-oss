@@ -82,7 +82,7 @@ siguientes describen las capacidades y limitaciones actuales de cada superficie.
 
 | Documento | Para qué sirve |
 |---|---|
-| [`desktop.md`](./desktop.md) | La app de escritorio (Tauri): instalación, wizard de primer arranque, empaquetado macOS/Windows. |
+| [`desktop.md`](./desktop.md) | La app de escritorio (Tauri): instalación, wizard de primer arranque y empaquetado macOS/Windows/Linux. |
 | [`desktop-local.md`](./desktop-local.md) | Cómo corre el backend empaquetado y local en la máquina del cliente (Postgres embebido, Redis simplificado) al abrir la app. |
 | [`primeros-pasos.md`](./primeros-pasos.md) | Guía corta "de cero a mayordomo funcionando": los 2–3 pasos del wizard, sin configuración completa por delante. |
 | [`credenciales.md`](./credenciales.md) | Pantalla de "Configuración": cómo conectar cada credencial (LLM, voz, conectores) con el flujo de pegar-y-validar, `/v1/credentials` (ver [`api.md`](./api.md)). |

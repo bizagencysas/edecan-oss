@@ -35,7 +35,7 @@ experiencia pública.
 - **SQS + DLQ** — trabajos asíncronos; **EventBridge Scheduler** — crons en prod.
 - **Frontend: Next.js 15 (App Router) + React 19 + TypeScript + Tailwind.**
 - **LLM: Anthropic primario** vía REST puro (httpx), con adaptadores OpenAI-compatible y Bedrock detrás de una interfaz común intercambiable.
-- **Distribución principal: aplicación local para macOS/Windows** con backend
+- **Distribución principal: aplicación local para macOS/Windows/Linux x64** con backend
   local. Un despliegue self-host/hosted es una opción operativa, no la identidad
   ni la interfaz principal del producto.
 

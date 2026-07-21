@@ -1,12 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
-import { Alert, Badge, Button, Card, CardBody, CardHeader, Field, Input, PageHeader } from "@/components/ui";
+import { Alert, Button, Card, CardBody, CardHeader, Field, Input, PageHeader } from "@/components/ui";
+import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
 import { API_BASE_URL, disableTotp, enableTotp, getCompanionPairCode, verifyTotp } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDateTime } from "@/lib/format";
-import { PLAN_LABELS } from "@/lib/types";
 
 export default function AjustesPage() {
   const { me, signOut } = useAuth();
@@ -101,15 +102,7 @@ export default function AjustesPage() {
           <CardHeader title="Cuenta" />
           <CardBody className="space-y-2 text-sm">
             <Row label="Correo" value={me?.user.email ?? "—"} />
-            <Row label="Espacio (tenant)" value={me?.tenant.name ?? "—"} />
-            <Row label="Slug" value={me?.tenant.slug ?? "—"} />
-            <Row
-              label="Plan"
-              value={<Badge variant="brand">{PLAN_LABELS[me?.tenant.plan_key ?? ""] ?? me?.tenant.plan_key}</Badge>}
-            />
-            <Row label="Estado" value={me?.tenant.status ?? "—"} />
             <Row label="Cuenta creada" value={formatDateTime(me?.tenant.created_at)} />
-            <Row label="API" value={<code className="text-xs">{API_BASE_URL}</code>} />
             <div className="pt-2">
               <Button variant="secondary" onClick={signOut}>
                 Cerrar sesión
@@ -119,11 +112,14 @@ export default function AjustesPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Verificación en dos pasos (TOTP)" description="Genera un secreto y confírmalo con tu app de autenticación." />
+          <CardHeader
+            title="Protege tu cuenta"
+            description="Añade un segundo código al iniciar sesión. Es opcional y puedes quitarlo cuando quieras."
+          />
           <CardBody className="space-y-3">
             {totpError && <Alert variant="error">{totpError}</Alert>}
             {totpEnabled ? (
-              <Alert variant="success">2FA activado para tu cuenta.</Alert>
+              <Alert variant="success">La verificación adicional está activa.</Alert>
             ) : totpSecret ? (
               <div className="space-y-3">
                 <div>
@@ -151,7 +147,7 @@ export default function AjustesPage() {
               </div>
             ) : (
               <Button onClick={handleEnableTotp} loading={totpBusy}>
-                Generar secreto TOTP
+                Configurar verificación
               </Button>
             )}
 
@@ -168,14 +164,14 @@ export default function AjustesPage() {
               className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
             >
               <div>
-                <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Desactivar 2FA</p>
+                <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Quitar verificación</p>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                   ¿Perdiste el dispositivo o la app de autenticación? Confirma tu contraseña para desactivar la
                   verificación en dos pasos.
                 </p>
               </div>
               {disableError && <Alert variant="error">{disableError}</Alert>}
-              {disableSuccess && <Alert variant="success">2FA desactivado para tu cuenta.</Alert>}
+              {disableSuccess && <Alert variant="success">La verificación adicional fue desactivada.</Alert>}
               <div className="flex items-end gap-2">
                 <Field label="Contraseña" htmlFor="totp_disable_password" className="flex-1">
                   <Input
@@ -189,7 +185,7 @@ export default function AjustesPage() {
                   />
                 </Field>
                 <Button type="submit" variant="danger" loading={disableBusy}>
-                  Desactivar 2FA
+                  Quitar verificación
                 </Button>
               </div>
             </form>
@@ -198,8 +194,8 @@ export default function AjustesPage() {
 
         <Card>
           <CardHeader
-            title="Companion de escritorio"
-            description="Empareja el agente local opt-in de tu computadora."
+            title="Edecan en tu computadora"
+            description="Conecta la aplicación local para que Edecan pueda ayudarte con archivos y apps de este equipo."
           />
           <CardBody className="space-y-3">
             {pairError && <Alert variant="error">{pairError}</Alert>}
@@ -212,13 +208,51 @@ export default function AjustesPage() {
               </div>
             ) : (
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Genera un código de un solo uso e ingrésalo en el companion instalado en tu equipo para
-                emparejarlo con este tenant.
+                Genera un código temporal e ingrésalo en la aplicación de Edecan instalada en tu computadora.
               </p>
             )}
             <Button variant="secondary" onClick={handlePairCode} loading={pairBusy}>
-              Generar código de emparejamiento
+              Conectar computadora
             </Button>
+          </CardBody>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="Capacidades"
+            description="Edecan las usa por ti desde el chat. Abre el modo avanzado solo si quieres configurarlas directamente."
+          />
+          <CardBody>
+            <details className="group">
+              <summary className="cursor-pointer select-none text-sm font-medium text-brand-700 dark:text-brand-300">
+                Mostrar modo avanzado
+              </summary>
+              <div className="mt-4 grid grid-cols-1 gap-5 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-4 dark:border-slate-800">
+                {ADVANCED_NAV_GROUPS.map((group) => (
+                  <div key={group.label}>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{group.label}</p>
+                    <ul className="space-y-1.5">
+                      {group.items.map((item) => (
+                        <li key={item.href}>
+                          <Link href={item.href} className="text-sm text-slate-600 hover:text-brand-700 dark:text-slate-300 dark:hover:text-brand-300">
+                            {item.label}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Información técnica</p>
+                <div className="max-w-xl text-sm">
+                  <Row label="Espacio" value={me?.tenant.name ?? "—"} />
+                  <Row label="Identificador" value={me?.tenant.slug ?? "—"} />
+                  <Row label="Estado" value={me?.tenant.status ?? "—"} />
+                  <Row label="API" value={<code className="text-xs">{API_BASE_URL}</code>} />
+                </div>
+              </div>
+            </details>
           </CardBody>
         </Card>
       </div>

@@ -50,6 +50,7 @@ import cc.edecan.app.vm.SessionViewModel
 fun IdeScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     ideViewModel: IdeViewModel = viewModel(),
+    onVolver: () -> Unit = {},
 ) {
     val uiState by ideViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
@@ -61,8 +62,8 @@ fun IdeScreen(
             TopAppBar(
                 title = { Text(uiState.archivoRuta ?: "IDE") },
                 navigationIcon = {
-                    if (uiState.archivoRuta != null) {
-                        IconButton(onClick = ideViewModel::cerrarArchivo) { Text("←") }
+                    IconButton(onClick = if (uiState.archivoRuta != null) ideViewModel::cerrarArchivo else onVolver) {
+                        Text("←")
                     }
                 },
             )

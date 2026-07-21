@@ -1,4 +1,4 @@
-"""Tests de las 5 herramientas de `edecan_skills.tools` — offline con `respx`
+"""Tests de las herramientas de `edecan_skills.tools` — offline con `respx`
 (índice de skills.sh + `raw.githubusercontent.com`) y `FakeSession`/`make_ctx`
 de `tests/conftest.py` para la capa de datos.
 
@@ -21,6 +21,7 @@ from edecan_skills.tools import (
     DesinstalarSkillTool,
     InstalarSkillTool,
     ListarSkillsTool,
+    RepararConSkillLocalTool,
     UsarSkillTool,
     get_all_tools,
 )
@@ -42,11 +43,11 @@ def _tarball_con_una_skill(*, owner: str, nombre: str, descripcion: str) -> byte
 
 
 # ---------------------------------------------------------------------------
-# get_all_tools() / metadatos de las 5 herramientas
+# get_all_tools() / metadatos de las herramientas
 # ---------------------------------------------------------------------------
 
 
-def test_get_all_tools_devuelve_las_5_con_nombres_exactos():
+def test_get_all_tools_devuelve_las_6_con_nombres_exactos():
     nombres = {t.name for t in get_all_tools()}
     assert nombres == {
         "buscar_skills",
@@ -54,14 +55,16 @@ def test_get_all_tools_devuelve_las_5_con_nombres_exactos():
         "listar_skills",
         "usar_skill",
         "desinstalar_skill",
+        "reparar_con_skill_local",
     }
 
 
 def test_instalar_skill_es_dangerous():
     assert InstalarSkillTool.dangerous is True
+    assert RepararConSkillLocalTool.dangerous is True
 
 
-def test_las_otras_cuatro_no_son_dangerous():
+def test_las_tools_de_lectura_y_desinstalacion_no_son_dangerous():
     for cls in (BuscarSkillsTool, ListarSkillsTool, UsarSkillTool, DesinstalarSkillTool):
         assert cls.dangerous is False
 
@@ -145,6 +148,156 @@ async def test_buscar_skills_sin_fuente_usa_skills_sh_por_defecto(make_ctx):
     resultado = await BuscarSkillsTool().run(ctx, {"consulta": "x"})
 
     assert resultado.data["fuente"] == "skills_sh"
+
+
+# ---------------------------------------------------------------------------
+# reparación con skill local (capacidad aislada y reversible)
+# ---------------------------------------------------------------------------
+
+
+async def test_reparar_con_skill_local_crea_recargable_y_da_reintento(make_ctx):
+    ctx = make_ctx()
+    tool = RepararConSkillLocalTool()
+
+    result = await tool.run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "organizar pendientes local",
+            "descripcion": "Organiza pendientes desde lenguaje natural.",
+            "contenido": "Convierte la solicitud en una lista priorizada y confirma fechas.",
+            "intencion_original": "organiza mis pendientes",
+            "fallo_reportado": "no pude organizarlo",
+            "casos_aceptacion": [
+                {
+                    "entrada": "organiza pagar luz mañana",
+                    "resultado_esperado": "un pendiente para mañana",
+                }
+            ],
+        },
+    )
+
+    assert result.data["status"] == "ready_to_retry"
+    assert result.data["retry_intent"] == "organiza mis pendientes"
+    assert result.data["enabled"] is True
+    stored = next(iter(ctx.session.filas.values()))
+    assert stored["source"] == "local:self-repair"
+    assert stored["recursos"]["self_repair"]["created_new"] is True
+
+    loaded = await UsarSkillTool().run(ctx, {"nombre": "organizar pendientes local"})
+    assert "lista priorizada" in loaded.content
+
+
+async def test_reparar_con_skill_local_exige_caso_de_aceptacion(make_ctx):
+    ctx = make_ctx()
+
+    result = await RepararConSkillLocalTool().run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "sin prueba",
+            "contenido": "Haz algo.",
+            "casos_aceptacion": [],
+        },
+    )
+
+    assert "casos de aceptación" in result.content
+    assert ctx.session.filas == {}
+
+
+async def test_reparar_con_skill_local_rechaza_modo_hosted(make_ctx, fake_settings):
+    ctx = make_ctx(settings=fake_settings(EDECAN_LOCAL_MODE=False))
+
+    result = await RepararConSkillLocalTool().run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "solo local",
+            "contenido": "contenido",
+            "casos_aceptacion": [{"entrada": "x", "resultado_esperado": "y"}],
+        },
+    )
+
+    assert "servidor compartido" in result.content
+    assert ctx.session.filas == {}
+
+
+async def test_reparar_con_skill_local_no_pisa_skill_de_tercero(make_ctx):
+    ctx = make_ctx()
+    existing = ctx.session.seed_skill(
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        nombre="pdf helper",
+        source="acme/pdf-helper",
+    )
+
+    result = await RepararConSkillLocalTool().run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "pdf helper",
+            "contenido": "reemplazo",
+            "casos_aceptacion": [{"entrada": "x", "resultado_esperado": "y"}],
+        },
+    )
+
+    assert "otra fuente" in result.content
+    assert ctx.session.filas[existing["id"]]["contenido"] == "cuerpo de la skill"
+
+
+async def test_revertir_skill_local_nueva_la_elimina(make_ctx):
+    ctx = make_ctx()
+    tool = RepararConSkillLocalTool()
+    await tool.run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "temporal",
+            "contenido": "Instrucciones locales.",
+            "casos_aceptacion": [{"entrada": "x", "resultado_esperado": "y"}],
+        },
+    )
+
+    result = await tool.run(ctx, {"accion": "revertir", "nombre": "temporal"})
+
+    assert "eliminada y revertida" in result.content
+    assert ctx.session.filas == {}
+
+
+async def test_actualizar_y_revertir_skill_local_restaura_version_previa(make_ctx):
+    ctx = make_ctx()
+    ctx.session.seed_skill(
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        nombre="local existente",
+        source="local:self-repair",
+        contenido="versión anterior",
+        version="local-1",
+        recursos={"origen": "manual"},
+        trust_tier="local_aprobada",
+    )
+    tool = RepararConSkillLocalTool()
+
+    updated = await tool.run(
+        ctx,
+        {
+            "accion": "crear_o_actualizar",
+            "nombre": "local existente",
+            "contenido": "versión reparada",
+            "version": "local-2",
+            "casos_aceptacion": [{"entrada": "x", "resultado_esperado": "y"}],
+        },
+    )
+    assert updated.data["status"] == "ready_to_retry"
+    assert next(iter(ctx.session.filas.values()))["contenido"] == "versión reparada"
+
+    reverted = await tool.run(ctx, {"accion": "revertir", "nombre": "local existente"})
+
+    assert reverted.data["status"] == "reverted"
+    restored = next(iter(ctx.session.filas.values()))
+    assert restored["contenido"] == "versión anterior"
+    assert restored["version"] == "local-1"
+    assert restored["recursos"] == {"origen": "manual"}
 
 
 @respx.mock

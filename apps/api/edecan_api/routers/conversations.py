@@ -2,27 +2,16 @@
 
 `POST /{id}/messages` arma el `ToolContext`, corre `Agent.run_turn` y re-emite
 cada `AgentEvent` como Server-Sent Event con los nombres pinned en §10.7. Si
-el turno se detiene en `confirmation_required`, la tool/args que quedaron
-pendientes se guardan en Redis (`_store_pending_confirmation`): el
-`tool_call_id` lo acuña el proveedor LLM en ESA respuesta puntual, así que no
-hay forma de pedirle al modelo que lo repita en una llamada nueva.
+el turno se detiene en `confirmation_required`, se guarda en Redis un
+`PendingAgentTurn`: mensajes, lote de tool calls, nombres ofrecidos, uso,
+iteración y salida acumulada. `POST /{id}/confirm` lo consume con GETDEL y
+llama a `Agent.resume_turn`, que re-resuelve registry + MCP, revalida flags,
+ejecuta el lote original y continúa el mismo loop LLM sin relanzar la orden.
 
-`POST /{id}/confirm` NUNCA vuelve a invocar al LLM para la rama aprobada:
-lee de Redis la tool/args pendientes para ese `tool_call_id`
-(`_pop_pending_confirmation`, de un solo uso) y la ejecuta directamente vía
-el `ToolRegistry` (`_stream_approved_confirmation`) — así el gate de
-confirmación sí ejecuta la acción real en vez de quedarse pidiendo
-confirmación en bucle (una llamada nueva al LLM acuñaría un `tool_call_id`
-distinto que jamás coincidiría con el aprobado). Si no hay confirmación
-pendiente (expiró o ya se procesó), responde 409 antes de abrir el stream.
-Como este camino nunca pasa por `Agent.run_turn`/`ToolRegistry.specs(flags)`
-(el único lugar que filtra por `requires_flags` para decidir qué se OFRECE
-al modelo), `confirm_tool_call` revalida `requires_flags` de la tool
-resuelta contra `tenant.flags` él mismo (`_tool_requires_flags_satisfechos`)
-antes de ejecutarla — sin este chequeo, `ToolRegistry.get(name)` (sin
-filtrar por flags) dejaría ejecutar una tool `dangerous` cuyo flag de plan
-está apagado con solo aprobar la tarjeta de confirmación. Ver
-`docs/seguridad-modelo-amenazas.md` y `HOTFIXES_PENDIENTES.md`.
+Los payloads históricos que solo contienen tool/args siguen soportados con
+el camino directo `_stream_approved_confirmation`. Ambas ramas fallan cerrado
+si la confirmación expiró, ya fue consumida, perdió un flag o la tool dejó de
+existir. Un rechazo también consume el pendiente y no ejecuta nada.
 
 Al cerrar el turno (evento `done`), tras persistir `messages` + `usage_events`,
 se encola el job `memory_consolidate` (ARCHITECTURE.md §9) — best-effort: un
@@ -47,7 +36,7 @@ from edecan_core.queue import enqueue
 from edecan_core.tools import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage
 from edecan_llm.router import LLMRouter
-from edecan_schemas import UNLIMITED, ChatMessageIn, PersonaConfig
+from edecan_schemas import UNLIMITED, ChatMessageIn, PendingAgentTurn, PersonaConfig
 from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -362,10 +351,9 @@ def _build_ctx(
 # El `tool_call_id` de una `ConfirmationRequiredEvent` lo acuña el proveedor
 # LLM en esa respuesta puntual (Anthropic/OpenAI-compatible generan un id
 # opaco nuevo por completion); no hay manera de pedirle al modelo que lo
-# reproduzca en una llamada posterior con el mismo prompt. Por eso el par
-# (tool, args) que quedó pendiente se guarda acá, keyed por
-# `(tenant_id, conversation_id, tool_call_id)`, y `POST /confirm` lo consume
-# para ejecutar la tool DIRECTO en vez de volver a preguntarle al LLM.
+# reproduzca en una llamada posterior con el mismo prompt. Por eso se guarda
+# un `PendingAgentTurn` keyed por `(tenant_id, conversation_id, tool_call_id)`;
+# el payload mínimo `{name,args}` se conserva para compatibilidad histórica.
 # ---------------------------------------------------------------------------
 
 
@@ -383,11 +371,15 @@ async def _store_pending_confirmation(
     tool_call_id: str,
     name: str,
     args: dict[str, Any],
+    pending_turn: PendingAgentTurn | dict[str, Any] | None = None,
 ) -> None:
     key = _pending_confirmation_key(
         tenant_id=tenant_id, conversation_id=conversation_id, tool_call_id=tool_call_id
     )
-    payload = json.dumps({"name": name, "args": args}, ensure_ascii=False, default=str)
+    payload_data: dict[str, Any] = {"name": name, "args": args}
+    if pending_turn is not None:
+        payload_data["pending_turn"] = PendingAgentTurn.model_validate(pending_turn).model_dump()
+    payload = json.dumps(payload_data, ensure_ascii=False, default=str)
     await redis_client.set(key, payload, ex=PENDING_CONFIRMATION_TTL_SECONDS)
 
 
@@ -398,14 +390,13 @@ async def _pop_pending_confirmation(
     conversation_id: uuid.UUID,
     tool_call_id: str,
 ) -> dict[str, Any] | None:
-    """Lee y borra (de un solo uso) la confirmación pendiente, si existe."""
+    """Consume atómicamente una confirmación pendiente mediante Redis GETDEL."""
     key = _pending_confirmation_key(
         tenant_id=tenant_id, conversation_id=conversation_id, tool_call_id=tool_call_id
     )
-    raw = await redis_client.get(key)
+    raw = await redis_client.getdel(key)
     if raw is None:
         return None
-    await redis_client.delete(key)
     return json.loads(raw)
 
 
@@ -437,15 +428,21 @@ async def _stream_agent_events(
     user_id: uuid.UUID,
     settings: Settings,
     redis_client: redis_asyncio.Redis,
+    initial_text: str = "",
+    initial_tool_log: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
-    text_parts: list[str] = []
-    tool_log: list[dict[str, Any]] = []
+    text_parts: list[str] = [initial_text] if initial_text else []
+    tool_log: list[dict[str, Any]] = list(initial_tool_log or [])
     try:
         async for raw_event in events:
             event = _event_to_dict(raw_event)
             event_type = event.get("type", "")
             sse_name = EVENT_NAME_MAP.get(event_type, event_type or "message")
-            yield _format_sse(sse_name, event)
+            # ``pending_turn`` contiene historial y estado operativo interno;
+            # se persiste en Redis pero nunca cruza el contrato SSE público.
+            public_event = dict(event)
+            public_event.pop("pending_turn", None)
+            yield _format_sse(sse_name, public_event)
 
             if event_type == "text_delta":
                 text_parts.append(str(event.get("text", "")))
@@ -500,9 +497,8 @@ async def _stream_agent_events(
                     )
             elif event_type == "confirmation_required":
                 # El agente detiene el turno aquí (ARCHITECTURE.md §10.7): se
-                # guarda en Redis qué tool/args quedaron pendientes para este
-                # `tool_call_id` — `POST /confirm` la ejecuta directo desde ahí
-                # (nunca vuelve a llamar al LLM, que acuñaría un id distinto).
+                # guarda en Redis el estado completo del loop para este
+                # `tool_call_id`; `POST /confirm` reanuda desde esa foto exacta.
                 tool_call_id = str(event.get("tool_call_id") or "")
                 if tool_call_id:
                     await _store_pending_confirmation(
@@ -512,6 +508,7 @@ async def _stream_agent_events(
                         tool_call_id=tool_call_id,
                         name=str(event.get("name") or ""),
                         args=event.get("args") or {},
+                        pending_turn=event.get("pending_turn"),
                     )
                 break
     except Exception as exc:  # pragma: no cover - defensivo, no debería ocurrir en flujo normal
@@ -644,6 +641,43 @@ def _tool_requires_flags_satisfechos(tool: Any, flags: dict[str, Any]) -> bool:
     return all(bool(flags.get(flag_name)) for flag_name in requires_flags)
 
 
+def _preflight_pending_turn(
+    *,
+    pending: PendingAgentTurn,
+    registry: Any,
+    extra_tools: list[Any],
+    flags: dict[str, Any],
+    plan_key: str,
+) -> None:
+    """Falla antes de abrir SSE si el lote ya no conserva sus permisos.
+
+    ``Agent.resume_turn`` repite esta validación justo antes de ejecutar; esta
+    capa HTTP mantiene además los códigos 409/403 del endpoint histórico.
+    """
+    operational_names = set(pending.operational_tool_names)
+    extra_by_name = {tool.name: tool for tool in extra_tools}
+    for call in pending.tool_calls:
+        if call.name not in operational_names:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"La herramienta «{call.name}» no fue ofrecida en el turno original.",
+            )
+        tool = registry.get(call.name) or extra_by_name.get(call.name)
+        if tool is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"La herramienta «{call.name}» ya no está disponible.",
+            )
+        if not _tool_requires_flags_satisfechos(tool, flags):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"La herramienta «{call.name}» no está disponible en tu plan "
+                    f"'{plan_key}'."
+                ),
+            )
+
+
 # ---------------------------------------------------------------------------
 # Rutas
 # ---------------------------------------------------------------------------
@@ -747,20 +781,9 @@ async def confirm_tool_call(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
 
-    if not body.approved:
-        return StreamingResponse(
-            _stream_declined_confirmation(
-                repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
-            ),
-            media_type="text/event-stream",
-        )
-
-    # NUNCA se vuelve a llamar al LLM acá (ver docstring del módulo): se
-    # recupera la tool/args que quedaron pendientes de ESTE `tool_call_id`
-    # exacto -guardadas por `_stream_agent_events` cuando el turno original
-    # se detuvo- y se ejecutan directo. `_pop_pending_confirmation` es de un
-    # solo uso, así que un doble `POST /confirm` con el mismo id no puede
-    # ejecutar la tool dos veces.
+    # Se consume tanto al aprobar como al rechazar. GETDEL garantiza que dos
+    # clientes concurrentes no puedan ejecutar el mismo lote y que un rechazo
+    # sea definitivo (no deja una aprobación reutilizable detrás).
     pending = await _pop_pending_confirmation(
         redis_client,
         tenant_id=tenant.tenant_id,
@@ -776,6 +799,85 @@ async def confirm_tool_call(
             ),
         )
 
+    if not body.approved:
+        return StreamingResponse(
+            _stream_declined_confirmation(
+                repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
+            ),
+            media_type="text/event-stream",
+        )
+
+    serialized_turn = pending.get("pending_turn")
+    if serialized_turn is not None:
+        try:
+            pending_turn = PendingAgentTurn.model_validate(serialized_turn)
+        except Exception as exc:  # noqa: BLE001 - payload Redis inválido, fail closed
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El turno pendiente está dañado y no puede reanudarse con seguridad.",
+            ) from exc
+        call_ids = {call.id for call in pending_turn.tool_calls}
+        if (
+            body.tool_call_id not in call_ids
+            or body.tool_call_id in pending_turn.approved_tool_call_ids
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La confirmación no corresponde a una acción pendiente de este lote.",
+            )
+
+        registry = get_tool_registry(request)
+        extra_tools = await _extra_mcp_tools_or_empty(request, current_user)
+        _preflight_pending_turn(
+            pending=pending_turn,
+            registry=registry,
+            extra_tools=extra_tools,
+            flags=tenant.flags,
+            plan_key=tenant.plan_key,
+        )
+
+        persona_row = await repo.get_persona(
+            tenant_id=tenant.tenant_id, user_id=current_user.user_id
+        )
+        persona = persona_from_row(persona_row)
+        ctx = _build_ctx(
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            session=session,
+            settings=settings,
+            llm_router=llm_router,
+            vault=vault,
+            persona=persona,
+            request=request,
+            approved_tool_calls={body.tool_call_id},
+            flags=tenant.flags,
+        )
+        agent = Agent(llm_router, registry)
+        events = agent.resume_turn(
+            ctx=ctx,
+            pending=pending_turn,
+            approved_tool_call_id=body.tool_call_id,
+            flags=tenant.flags,
+            extra_tools=extra_tools,
+        )
+        return StreamingResponse(
+            _stream_agent_events(
+                events=events,
+                repo=repo,
+                tenant_id=tenant.tenant_id,
+                conversation_id=conversation_id,
+                user_id=current_user.user_id,
+                settings=settings,
+                redis_client=redis_client,
+                initial_text=pending_turn.accumulated_text,
+                initial_tool_log=pending_turn.tool_log,
+            ),
+            media_type="text/event-stream",
+        )
+
+    # Compatibilidad con confirmaciones creadas antes de que existiera la
+    # continuación serializada (o por tests/dobles que solo emiten name/args):
+    # se conserva el camino directo histórico.
     tool = get_tool_registry(request).get(pending["name"])
     if tool is None:
         # No está en el registry compartido: puede ser una tool MCP

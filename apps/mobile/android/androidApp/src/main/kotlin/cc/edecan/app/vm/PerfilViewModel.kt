@@ -73,7 +73,7 @@ data class PerfilUiState(
 )
 
 /**
- * Estado y lógica de la sección "Conectar LLM" de la pestaña Perfil:
+ * Estado y lógica de la sección "Conectar LLM" de Ajustes:
  * `GET /v1/credentials` + `GET /v1/setup/status` para saber qué hay
  * conectado hoy y si el backend corre en modo local (habilita
  * `claude_cli`/`codex_cli`/`ollama`), y `PUT /v1/credentials/llm` para

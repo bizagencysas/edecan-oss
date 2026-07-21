@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -50,13 +51,21 @@ import java.util.Locale
 fun NegociosScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     negociosViewModel: NegociosViewModel = viewModel(),
+    onVolver: () -> Unit = {},
 ) {
     val uiState by negociosViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
 
     LaunchedEffect(api) { api?.let { negociosViewModel.cargar(it) } }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Negocios") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Negocios") },
+                navigationIcon = { IconButton(onClick = onVolver) { Text("←") } },
+            )
+        },
+    ) { padding ->
         if (uiState.cargando && uiState.kpis == null) {
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 CircularProgressIndicator(modifier = Modifier.padding(32.dp))

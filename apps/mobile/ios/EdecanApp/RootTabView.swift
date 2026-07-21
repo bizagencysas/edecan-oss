@@ -2,25 +2,20 @@ import SwiftUI
 import EdecanKit
 
 /// Selección de pestaña compartida vía `@Environment` — permite que una
-/// pantalla cambie la pestaña activa de otra (p. ej. ``VozView`` llevando al
-/// usuario a Perfil para conectar una credencial de voz real). Vive fuera de
+/// pantalla cambie la pestaña activa de otra (p. ej. ``VozView`` llevando a
+/// Ajustes para conectar una credencial de voz real). Vive fuera de
 /// ``RootTabView`` para que cualquier pantalla pueda leerla/escribirla sin
 /// pasar bindings a mano por cada nivel.
 @MainActor
 @Observable
 final class TabRouter {
-    enum Pestana: Hashable {
-        case inicio, chat, ide, negocios, voz, perfil
-    }
-
-    var seleccion: Pestana = .inicio
+    var seleccion: AssistantDestination = .edecan
 }
 
-/// Las 6 pestañas del mockup del panel web: Inicio, Chat, IDE, Negocios, Voz,
-/// Perfil (`DIRECCION_ACTUAL.md` "Apps móviles", `ROADMAP_V2.md` §6.1). La
-/// pestaña "Llamadas" del esqueleto original se renombró a "Voz" al aterrizar
-/// *push-to-talk* nativo (WP-V4-03) — el historial de llamadas de telefonía
-/// premium sigue pendiente, ver `docs/movil-ios.md`.
+/// Navegación assistant-first: Edecan es la conversación universal,
+/// Actividad concentra el trabajo delegado y Ajustes guarda configuración y
+/// herramientas avanzadas. IDE, Negocios y Voz siguen existiendo, pero ya no
+/// compiten con el asistente como pestañas independientes.
 ///
 /// Nota Liquid Glass: un `TabView` estándar en iOS 26 YA adopta
 /// automáticamente la barra flotante translúcida del sistema — no hace
@@ -37,29 +32,17 @@ struct RootTabView: View {
     var body: some View {
         @Bindable var router = router
         TabView(selection: $router.seleccion) {
-            InicioView()
-                .tabItem { Label("Inicio", systemImage: "house.fill") }
-                .tag(TabRouter.Pestana.inicio)
-
             ChatView()
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right.fill") }
-                .tag(TabRouter.Pestana.chat)
+                .tabItem { Label("Edecan", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(AssistantDestination.edecan)
 
-            IDEView()
-                .tabItem { Label("IDE", systemImage: "chevron.left.forwardslash.chevron.right") }
-                .tag(TabRouter.Pestana.ide)
-
-            NegociosView()
-                .tabItem { Label("Negocios", systemImage: "chart.pie.fill") }
-                .tag(TabRouter.Pestana.negocios)
-
-            VozView()
-                .tabItem { Label("Voz", systemImage: "waveform") }
-                .tag(TabRouter.Pestana.voz)
+            InicioView()
+                .tabItem { Label("Actividad", systemImage: "clock.arrow.circlepath") }
+                .tag(AssistantDestination.activity)
 
             PerfilView()
-                .tabItem { Label("Perfil", systemImage: "person.crop.circle.fill") }
-                .tag(TabRouter.Pestana.perfil)
+                .tabItem { Label("Ajustes", systemImage: "gearshape.fill") }
+                .tag(AssistantDestination.settings)
         }
         .tint(EdecanTheme.morado)
         .environment(router)

@@ -1,6 +1,6 @@
 [project]
 name = "edecan-smarthome"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bring-your-own Home Assistant integration for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

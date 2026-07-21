@@ -178,7 +178,14 @@ async def test_git_status_diff_commit_flujo_completo(make_ctx, repo_local):
     estado = await tool.run(ctx, {"accion": "git_status"})
     assert "archivo.txt" in estado.content or "??" in estado.content
 
-    commit = await tool.run(ctx, {"accion": "git_commit", "mensaje": "primer commit de prueba"})
+    commit = await tool.run(
+        ctx,
+        {
+            "accion": "git_commit",
+            "mensaje": "primer commit de prueba",
+            "rutas": ["archivo.txt", "subdir/otro.txt"],
+        },
+    )
     assert "commit local" in commit.content.lower()
     assert "push" in commit.content.lower()
 
@@ -192,6 +199,50 @@ async def test_git_commit_sin_mensaje(make_ctx, repo_local):
     ctx = make_ctx(settings=_settings_local(repo_local))
     resultado = await AccederCodigoLocalTool().run(ctx, {"accion": "git_commit"})
     assert "mensaje" in resultado.content.lower()
+
+
+async def test_git_commit_sin_rutas_no_prepara_nada(make_ctx, repo_local):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo_local, check=True)
+    ctx = make_ctx(settings=_settings_local(repo_local))
+
+    resultado = await AccederCodigoLocalTool().run(
+        ctx, {"accion": "git_commit", "mensaje": "no debe ocurrir"}
+    )
+
+    assert "rutas" in resultado.content.lower()
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo_local,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert staged == ""
+
+
+async def test_git_commit_no_mezcla_cambios_previamente_preparados(make_ctx, repo_local):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo_local, check=True)
+    subprocess.run(["git", "add", "archivo.txt"], cwd=repo_local, check=True)
+    ctx = make_ctx(settings=_settings_local(repo_local))
+
+    resultado = await AccederCodigoLocalTool().run(
+        ctx,
+        {"accion": "git_commit", "mensaje": "no debe ocurrir", "rutas": ["subdir/otro.txt"]},
+    )
+
+    assert "preparados por el usuario" in resultado.content.lower()
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo_local,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert staged == ["archivo.txt"]
 
 
 @pytest.mark.parametrize(
@@ -222,7 +273,7 @@ async def test_git_commit_trata_mensaje_como_dato_literal(
     ctx = make_ctx(settings=_settings_local(repo_local))
     resultado = await AccederCodigoLocalTool().run(
         ctx,
-        {"accion": "git_commit", "mensaje": mensaje},
+        {"accion": "git_commit", "mensaje": mensaje, "rutas": ["archivo.txt"]},
     )
 
     assert "commit local" in resultado.content.lower()

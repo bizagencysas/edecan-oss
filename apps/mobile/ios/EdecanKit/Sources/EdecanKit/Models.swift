@@ -62,7 +62,7 @@ public struct Me: Codable, Sendable, Equatable {
     public let tenant: TenantInfo
     public let flags: [String: FlagValue]
 
-    /// Nombre "de pila" para el saludo de Inicio (`"Hola, {nombre} 👋"`) —
+    /// Nombre "de pila" disponible para saludos personalizados —
     /// la API no manda un nombre propio (solo `email`), así que se toma lo
     /// que hay antes de la arroba, igual que hace hoy el frontend web.
     public var nombrePila: String {

@@ -1,6 +1,6 @@
 [project]
 name = "edecan-local"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local Edecan runtime bundling the API, worker, and data services for desktop use"
 requires-python = ">=3.12"
 readme = "README.md"

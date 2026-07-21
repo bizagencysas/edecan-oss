@@ -11,7 +11,7 @@ búsqueda best-effort contra la API de skills.sh — ver `docs/skills.md`.
 - `installer` — `parse_source`/`fetch_skill`/`parse_skill_md`/`install_from_source`:
   parseo de la fuente, descarga y parseo del `SKILL.md`, sin tocar la base de datos.
 - `store` — acceso a la tabla `skills` (SQL parametrizado, nunca `edecan_db.models`).
-- `tools` — las 5 herramientas del agente (`get_all_tools()`, entry point `edecan.tools`).
+- `tools` — marketplace y reparación mediante skill local (`get_all_tools()`).
 
 `get_all_tools()` es el entry point que consume
 `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")` (`ARCHITECTURE.md` §10.7),
@@ -39,6 +39,7 @@ from .tools import (
     DesinstalarSkillTool,
     InstalarSkillTool,
     ListarSkillsTool,
+    RepararConSkillLocalTool,
     UsarSkillTool,
 )
 
@@ -49,6 +50,7 @@ __all__ = [
     "InstalarSkillTool",
     "InstalledSkill",
     "ListarSkillsTool",
+    "RepararConSkillLocalTool",
     "SkillDemasiadoGrandeError",
     "SkillFile",
     "SkillHit",
@@ -64,11 +66,12 @@ __all__ = [
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las 5 herramientas del marketplace (nombres exactos, ver `tools.py`)."""
+    """Instancia marketplace y reparación aislada mediante skill local."""
     return [
         BuscarSkillsTool(),
         InstalarSkillTool(),
         ListarSkillsTool(),
         UsarSkillTool(),
         DesinstalarSkillTool(),
+        RepararConSkillLocalTool(),
     ]

@@ -2,7 +2,7 @@
 <!--
     Solo los permisos que la app realmente usa (ROADMAP_V2.md §6.1):
     `INTERNET` para hablar con `/v1/*`, `RECORD_AUDIO` para el push-to-talk
-    de la pestaña Voz (WP-V4-04, `POST /v1/voice/transcribe`) — pedido en
+    del botón de micrófono dentro de Chat (`POST /v1/voice/transcribe`) — pedido en
     tiempo de ejecución desde `VozScreen`, este `<uses-permission>` solo lo
     declara. Nada de contactos/ubicación/cámara/notificaciones todavía.
 -->

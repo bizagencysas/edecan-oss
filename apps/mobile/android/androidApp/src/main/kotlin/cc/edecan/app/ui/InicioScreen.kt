@@ -26,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.edecan.app.vm.SessionViewModel
-import cc.edecan.shared.nombrePila
 
 private data class AccesoDirecto(
     val emoji: String,
@@ -39,8 +38,7 @@ private data class AccesoDirecto(
 )
 
 /**
- * Pestaña "Inicio": saludo con el nombre de pila (`GET /v1/me`, mismo
- * criterio que usa el panel web) + accesos directos, como el mockup.
+ * Actividad: accesos simples al trabajo que Edecan ejecuta o vigila.
  * "Misiones"/"Automatizaciones"/"Recordatorios" (WP-V5-07) se navegan SOLO
  * desde acá, vía [onAbrirMisiones]/[onAbrirAutomatizaciones]/
  * [onAbrirRecordatorios] — `RootNav.kt` las muestra como una pantalla propia
@@ -60,16 +58,13 @@ fun InicioScreen(
     LaunchedEffect(Unit) { sessionViewModel.cargarMe() }
 
     val accesos = listOf(
-        AccesoDirecto("💬", "Chat", "Habla con Edecán"),
-        AccesoDirecto("🧭", "Misiones", "Un orquestador planifica y ejecuta tu objetivo", onAbrirMisiones),
-        AccesoDirecto("⚡", "Automatizaciones", "Reglas por agenda que corren solas", onAbrirAutomatizaciones),
+        AccesoDirecto("🧭", "Trabajo delegado", "Objetivos y aprobaciones", onAbrirMisiones),
+        AccesoDirecto("⚡", "Rutinas", "Acciones programadas", onAbrirAutomatizaciones),
         AccesoDirecto("🔔", "Recordatorios", "Pendientes y completados", onAbrirRecordatorios),
         AccesoDirecto("🖥️", "Remoto", "Ver y controlar tu Mac, con tu aprobación", onAbrirRemoto),
-        AccesoDirecto("💰", "Finanzas", "Próximamente en la app"),
-        AccesoDirecto("📄", "Archivos", "Próximamente en la app"),
     )
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Inicio") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Actividad") }) }) { padding ->
         Column(
             modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
         ) {
@@ -77,13 +72,11 @@ fun InicioScreen(
                 CircularProgressIndicator(modifier = Modifier.padding(bottom = 12.dp))
             } else {
                 Text(
-                    "Hola, ${uiState.me?.nombrePila ?: "de nuevo"} 👋",
+                    "Todo lo que Edecan está haciendo",
                     style = MaterialTheme.typography.headlineMedium,
                 )
-            }
-            uiState.me?.tenant?.let { tenant ->
                 Text(
-                    tenant.name,
+                    "Revisa avances, decisiones pendientes y rutinas desde un solo lugar.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

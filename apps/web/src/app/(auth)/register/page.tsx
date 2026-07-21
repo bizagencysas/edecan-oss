@@ -43,15 +43,14 @@ export default function RegisterPage() {
     <Card>
       <CardBody className="space-y-4">
         <div>
-          <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Crea tu tenant</h1>
+          <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Prepara Edecan</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Se crea tu espacio, tu usuario como propietario y una persona por defecto que
-            podrás personalizar después (&quot;nivel Dios&quot;).
+            Crea tu espacio privado y tu perfil. Podrás cambiarlo todo después desde Ajustes.
           </p>
         </div>
         {error && <Alert variant="error">{error}</Alert>}
         <form className="space-y-4" onSubmit={handleSubmit}>
-          <Field label="Nombre de tu empresa o espacio" htmlFor="tenant_name">
+          <Field label="Nombre de tu espacio" htmlFor="tenant_name">
             <Input
               id="tenant_name"
               required
@@ -59,7 +58,7 @@ export default function RegisterPage() {
               maxLength={200}
               value={tenantName}
               onChange={(e) => setTenantName(e.target.value)}
-              placeholder="Mi Empresa"
+              placeholder="Mi espacio"
             />
           </Field>
           <Field label="Correo electrónico" htmlFor="email">

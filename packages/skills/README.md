@@ -11,6 +11,11 @@ agente** — no código que se ejecute. Este paquete replica el mecanismo de ins
 `npx skills add <owner/repo>` (lectura directa de `raw.githubusercontent.com`) más una
 búsqueda best-effort contra la API de skills.sh.
 
+En modo local, `reparar_con_skill_local` crea o actualiza una capacidad
+recargable antes de considerar cambios en el núcleo. Exige confirmación, casos
+de aceptación y conserva una versión reversible. Consulta
+[`../../docs/autorreparacion-local.md`](../../docs/autorreparacion-local.md).
+
 ## Módulos
 
 | Módulo | Qué hace |
@@ -20,7 +25,7 @@ búsqueda best-effort contra la API de skills.sh.
 | `security.py` | (fase v5) Trust tiers (`TRUST_TIERS`, `clasificar_trust_tier`), capacidades (`CAPACIDADES_PELIGROSAS`, `capacidades_peligrosas`, `validar_capacidades`) y el escáner heurístico anti-inyección (`escanear_inyeccion`, `HallazgoInyeccion`) — ver `docs/skills.md` "Seguridad de skills de terceros". |
 | `sources.py` | (fase v5) `OpenClawSource`/`HermesSource` — búsqueda en esos dos índices vía tarball de `codeload.github.com` recorrido en memoria con `tarfile` (nunca `git`), ver `docs/skills.md` "Fuentes OpenClaw y Hermes". |
 | `store.py` | CRUD de la tabla `skills` con `sqlalchemy.text` — nunca importa `edecan_db.models` (mismo criterio que `edecan_toolkit`/`edecan_premium`/`edecan_business`). `insert_skill` corre `security.escanear_inyeccion` y decide `enabled` (fase v5). |
-| `tools.py` | Las 5 herramientas del agente: `buscar_skills` (con `fuente`), `instalar_skill` (`dangerous=True`, con `fuente`/`trust_tier`/aviso de hallazgos), `listar_skills`, `usar_skill` (banner de capacidades peligrosas + recordatorio anti-inyección), `desinstalar_skill`. |
+| `tools.py` | Marketplace (`buscar_skills`, `instalar_skill`, `listar_skills`, `usar_skill`, `desinstalar_skill`) y reparación aislada (`reparar_con_skill_local`). |
 
 `get_all_tools()` (en `edecan_skills/__init__.py`) es el entry point que consume
 `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`, declarado en

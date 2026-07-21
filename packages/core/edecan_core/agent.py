@@ -22,6 +22,9 @@ from edecan_schemas import (
     ConfirmationRequiredEvent,
     DoneEvent,
     ErrorEvent,
+    PendingAgentTurn,
+    PendingChatMessage,
+    PendingToolCall,
     PersonaConfig,
     TextDeltaEvent,
     ToolEndEvent,
@@ -29,6 +32,7 @@ from edecan_schemas import (
     ToolStartEvent,
 )
 
+from .capability_routing import build_capability_guidance, select_tool_specs
 from .llm_types import ChatMessage, CompletionRequest
 from .persona import build_system_prompt
 from .safety import redact
@@ -44,6 +48,10 @@ _LLM_ALIAS = "principal"
 _RESULT_PREVIEW_LEN = 400
 _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
+
+
+class PendingTurnValidationError(RuntimeError):
+    """El turno persistido ya no es ejecutable bajo las capacidades actuales."""
 
 
 class Agent:
@@ -108,17 +116,15 @@ class Agent:
         herramientas "de plataforma", nunca algo que una tool bring-your-own
         pueda sombrear.
 
-        Aplica también al camino de confirmación/reanudación de una tool
-        `dangerous` pendiente: si se vuelve a llamar `run_turn` con
+        Sigue aceptando el camino compatible de pre-aprobación de una tool
+        `dangerous`: si se llama `run_turn` con
         `ctx.extras["approved_tool_calls"]` conteniendo el `tool_call_id` de
         una `extra_tool` ya solicitada, esta la resuelve y ejecuta igual que
         cualquier tool del registry — no hace falta ningún camino especial.
-        (El endpoint HTTP `POST /v1/conversations/{id}/confirm` de
-        `edecan_api` en cambio NUNCA vuelve a invocar `Agent.run_turn` — ver
-        `edecan_api.routers.conversations`, que resuelve el nombre `mcp_*`
-        pendiente contra el registry y, si no está ahí, contra sus propias
-        `extra_tools` recién recalculadas, replicando este mismo criterio de
-        "el registry base gana" fuera de este método.)
+        El endpoint HTTP `POST /v1/conversations/{id}/confirm` usa
+        `resume_turn` para continuar exactamente el turno serializado; solo
+        confirmaciones antiguas sin estado de continuación usan el fallback
+        directo compatible.
         """
         try:
             async for event in self._run_turn(
@@ -149,142 +155,318 @@ class Agent:
         extra_tools: Sequence[Tool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         memories = await self._recall_memories(ctx, persona, user_text)
-        system_prompt = build_system_prompt(persona, memories)
-
         messages: list[ChatMessage] = [*history, ChatMessage(role="user", content=user_text)]
         # `extra_by_name`: solo las `extra_tools` que (a) tienen sus
         # `requires_flags` satisfechos por `flags` y (b) NO colisionan de
         # nombre con el registry base — ver el docstring de `run_turn`.
+        all_base_specs = self._registry.specs(flags)
+        recent_user_texts = [
+            message.content
+            for message in history[-6:]
+            if message.role == "user" and isinstance(message.content, str)
+        ][-2:]
+        all_extra_by_name = _extra_tools_disponibles(extra_tools, flags, all_base_specs)
+        all_extra_specs = _extra_specs(all_extra_by_name)
+        selected_specs = select_tool_specs(
+            [*all_base_specs, *all_extra_specs],
+            user_text,
+            recent_user_texts=recent_user_texts,
+        )
+        selected_names = {spec.name for spec in selected_specs}
+        base_specs = [spec for spec in all_base_specs if spec.name in selected_names]
+        extra_by_name = {
+            name: tool for name, tool in all_extra_by_name.items() if name in selected_names
+        }
+        extra_specs = [spec for spec in all_extra_specs if spec.name in selected_names]
+        tool_specs = [*base_specs, *extra_specs]
+        system_prompt = build_system_prompt(
+            persona,
+            memories,
+            extra_context=build_capability_guidance(
+                selected_specs=tool_specs,
+                all_specs=[*all_base_specs, *all_extra_specs],
+                language=persona.idioma,
+            ),
+        )
+        provider, model = self._llm_router.resolve(self._model_alias, flags)
+        approved_tool_calls = set(ctx.extras.get(_EXTRAS_APPROVED_TOOL_CALLS, set()))
+        async for event in self._continue_turn(
+            ctx=ctx,
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            tool_specs=tool_specs,
+            extra_by_name=extra_by_name,
+            flags=flags,
+            start_iteration=0,
+            approved_tool_calls=approved_tool_calls,
+            usage_totals={"input_tokens": 0, "output_tokens": 0},
+            accumulated_text="",
+            tool_log=[],
+        ):
+            yield event
+
+    async def resume_turn(
+        self,
+        *,
+        ctx: ToolContext,
+        pending: PendingAgentTurn,
+        approved_tool_call_id: str,
+        flags: dict[str, Any],
+        extra_tools: Sequence[Tool] | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """Continúa un turno suspendido sin volver a enviar la orden original.
+
+        El catálogo base y las tools MCP se resuelven de nuevo, y cada nombre
+        del lote se contrasta con la superficie que fue ofrecida originalmente
+        y con los flags actuales. Cualquier diferencia falla antes de ejecutar
+        una sola tool. Si apareció otra tool peligrosa en el mismo lote, vuelve
+        a suspender y solicita esa confirmación antes de iniciar el batch.
+        """
+        try:
+            async for event in self._resume_turn(
+                ctx=ctx,
+                pending=pending,
+                approved_tool_call_id=approved_tool_call_id,
+                flags=flags,
+                extra_tools=extra_tools,
+            ):
+                yield event
+        except Exception as exc:  # noqa: BLE001 - contrato público: errores como evento
+            logger.warning("No se pudo reanudar el turno pendiente", exc_info=True)
+            yield ErrorEvent(message=redact(str(exc)))
+
+    async def _resume_turn(
+        self,
+        *,
+        ctx: ToolContext,
+        pending: PendingAgentTurn,
+        approved_tool_call_id: str,
+        flags: dict[str, Any],
+        extra_tools: Sequence[Tool] | None,
+    ) -> AsyncIterator[AgentEvent]:
+        call_ids = {call.id for call in pending.tool_calls}
+        if approved_tool_call_id not in call_ids:
+            raise PendingTurnValidationError("La confirmación no pertenece al lote pendiente.")
+        if approved_tool_call_id in pending.approved_tool_call_ids:
+            raise PendingTurnValidationError("Esa acción ya había sido aprobada.")
+
         base_specs = self._registry.specs(flags)
         extra_by_name = _extra_tools_disponibles(extra_tools, flags, base_specs)
-        tool_specs = [*base_specs, *_extra_specs(extra_by_name)]
-        provider, model = self._llm_router.resolve(self._model_alias, flags)
-        approved_tool_calls = ctx.extras.get(_EXTRAS_APPROVED_TOOL_CALLS, set())
-        usage_totals: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        spec_by_name = {spec.name: spec for spec in _extra_specs(extra_by_name)}
+        spec_by_name.update({spec.name: spec for spec in base_specs})
+        tool_specs = [
+            spec_by_name[name]
+            for name in pending.operational_tool_names
+            if name in spec_by_name
+        ]
+        current_operational_names = {spec.name for spec in tool_specs}
+        resolved_calls = self._resolve_calls(
+            pending.tool_calls,
+            operational_names=(
+                set(pending.operational_tool_names) & current_operational_names
+            ),
+            extra_by_name=extra_by_name,
+            flags=flags,
+        )
+        unavailable = [call.name for call, tool in resolved_calls if tool is None]
+        if unavailable:
+            names = ", ".join(sorted(set(unavailable)))
+            raise PendingTurnValidationError(
+                f"La capacidad pendiente cambió o ya no está disponible: {names}."
+            )
 
-        for _ in range(MAX_TOOL_ITERATIONS):
-            # `messages=list(messages)`: copia superficial para que cada
-            # `CompletionRequest` sea una foto fija de ese momento — `messages`
-            # se sigue mutando (`append`) en las próximas vueltas, y un
-            # `provider`/observador real podría quedarse con la referencia al
-            # `req` (p. ej. para loguearlo) más allá de esta iteración.
+        approved = {*pending.approved_tool_call_ids, approved_tool_call_id}
+        for call, tool in resolved_calls:
+            if tool is not None and tool.dangerous and call.id not in approved:
+                next_pending = pending.model_copy(
+                    update={"approved_tool_call_ids": sorted(approved)}
+                )
+                yield ConfirmationRequiredEvent(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    args=call.arguments,
+                    pending_turn=next_pending,
+                )
+                return
+
+        # Resolver el proveedor antes de cualquier side effect: si el modelo
+        # actual ya no está configurado, el lote permanece sin ejecutar.
+        provider, model = self._llm_router.resolve(self._model_alias, flags)
+        messages = [_chat_message_from_pending(message) for message in pending.messages]
+        tool_log = list(pending.tool_log)
+        tool_result_blocks: list[dict[str, Any]] = []
+        async for event, result_block in self._execute_resolved_calls(
+            ctx=ctx, resolved_calls=resolved_calls, tool_log=tool_log
+        ):
+            if event is not None:
+                yield event
+            if result_block is not None:
+                tool_result_blocks.append(result_block)
+        messages.append(ChatMessage(role="tool", content=tool_result_blocks))
+
+        async for event in self._continue_turn(
+            ctx=ctx,
+            provider=provider,
+            model=model,
+            system_prompt=pending.system_prompt,
+            messages=messages,
+            tool_specs=tool_specs,
+            extra_by_name=extra_by_name,
+            flags=flags,
+            start_iteration=pending.iteration + 1,
+            approved_tool_calls=set(),
+            usage_totals=dict(pending.usage),
+            accumulated_text=pending.accumulated_text,
+            tool_log=tool_log,
+        ):
+            yield event
+
+    async def _continue_turn(
+        self,
+        *,
+        ctx: ToolContext,
+        provider: Any,
+        model: str,
+        system_prompt: str | None,
+        messages: list[ChatMessage],
+        tool_specs: list[ToolSpec],
+        extra_by_name: dict[str, Tool],
+        flags: dict[str, Any],
+        start_iteration: int,
+        approved_tool_calls: set[str],
+        usage_totals: dict[str, int],
+        accumulated_text: str,
+        tool_log: list[dict[str, Any]],
+    ) -> AsyncIterator[AgentEvent]:
+        usage_totals.setdefault("input_tokens", 0)
+        usage_totals.setdefault("output_tokens", 0)
+        for iteration in range(start_iteration, MAX_TOOL_ITERATIONS):
             request = CompletionRequest(
                 model=model, system=system_prompt, messages=list(messages), tools=tool_specs
             )
-
             text_parts: list[str] = []
-            tool_calls: list[Any] = []
+            raw_tool_calls: list[Any] = []
             async for chunk in provider.stream(request):
                 if chunk.type == "text" and chunk.text:
                     text_parts.append(chunk.text)
+                    accumulated_text += chunk.text
                     yield TextDeltaEvent(text=chunk.text)
                 elif chunk.type == "tool_call" and chunk.tool_call is not None:
-                    tool_calls.append(chunk.tool_call)
+                    raw_tool_calls.append(chunk.tool_call)
                 elif chunk.type == "usage" and chunk.usage is not None:
                     usage_totals["input_tokens"] += chunk.usage.input_tokens
                     usage_totals["output_tokens"] += chunk.usage.output_tokens
 
-            if not tool_calls:
-                # stop_reason distinto de "tool_use": el turno terminó en texto.
+            if not raw_tool_calls:
                 yield DoneEvent(usage=usage_totals)
                 return
 
+            tool_calls = [
+                PendingToolCall(id=call.id, name=call.name, arguments=call.arguments)
+                for call in raw_tool_calls
+            ]
             messages.append(
                 ChatMessage(role="assistant", content=_assistant_blocks(text_parts, tool_calls))
             )
+            operational_names = {spec.name for spec in tool_specs}
+            resolved_calls = self._resolve_calls(
+                tool_calls,
+                operational_names=operational_names,
+                extra_by_name=extra_by_name,
+                flags=flags,
+            )
 
-            # Resolvemos la tool de cada `call` una sola vez y reutilizamos el
-            # resultado en las dos pasadas de abajo. `self._registry` primero
-            # (siempre gana en colisión, ver docstring de `run_turn`),
-            # `extra_by_name` como respaldo — así una `mcp_*`/tool bring-your-
-            # own de este turno se resuelve igual que cualquier otra.
-            # `_con_flags_satisfechos`: `self._registry.get(name)` (a
-            # diferencia de `self._registry.specs(flags)`, usado arriba solo
-            # para calcular `tool_specs`) resuelve por NOMBRE contra el
-            # registro COMPLETO sin filtrar por `flags` — sin este paso, una
-            # tool con `requires_flags` no satisfecho por el plan del tenant
-            # se ejecutaría igual (sin fricción si además no es `dangerous`)
-            # apenas el modelo pidiera su nombre, así nunca se le hubiera
-            # ofrecido en `tools=` este turno (docs/seguridad-modelo-amenazas.md,
-            # Hallazgo 1 — el vector real es inyección de prompt indirecta vía
-            # `navegar_web`/`consultar_documentos`/una skill de terceros
-            # convenciendo al modelo de invocar un nombre de tool que nunca
-            # vio ofrecido). Tratarla como no resuelta (`None`) reutiliza tal
-            # cual el camino de "herramienta desconocida" que ya arman la 1ª y
-            # 2ª pasada de abajo. Se aplica sin importar si `tool` vino de
-            # `self._registry` o de `extra_by_name` — para esta última es
-            # redundante con el filtro que ya aplica `_extra_tools_disponibles`
-            # más arriba, pero inofensivo. Cubre también a `Orchestrator`
-            # (`edecan_agents.registry_view.RestrictedRegistry`, que se
-            # inyecta como `self._registry` para un paso de misión): esa clase
-            # filtra por `allowed_tools`/`dangerous` pero nunca por `flags`, y
-            # este es el único punto donde algo llama a `.get()` sobre ella.
-            resolved_calls = [
-                (
-                    call,
-                    _con_flags_satisfechos(
-                        self._registry.get(call.name) or extra_by_name.get(call.name), flags
-                    ),
-                )
-                for call in tool_calls
-            ]
-
-            # 1ª pasada — SOLO chequea, no ejecuta nada todavía. Anthropic
-            # permite (y no lo desactivamos en ningún lado, ver
-            # `edecan_llm.anthropic._build_body`) que el modelo pida varias
-            # `tool_use` en un mismo turno. Si NO chequeáramos la tanda
-            # entera antes de ejecutar, una tool NO peligrosa que viniera
-            # antes en la lista ya habría corrido de verdad (side effect
-            # real, p. ej. crear un recordatorio) para cuando el loop
-            # llegara a una `dangerous` sin aprobar más adelante — y como
-            # ese caso corta el turno (`return`) antes de llegar al
-            # `messages.append(...)` de abajo, el resultado ya ejecutado se
-            # perdería sin dejar rastro: no queda en `messages` (el LLM no
-            # se entera en el próximo turno de que ya corrió, riesgo de
-            # repetirla) ni se persiste en `edecan_api` (que solo guarda
-            # mensajes en el evento `done`, nunca en
-            # `confirmation_required`). Chequear todo el lote primero evita
-            # ejecutar cualquier cosa hasta que no quede ninguna `dangerous`
-            # pendiente de aprobar en esta tanda.
             for call, tool in resolved_calls:
                 if tool is not None and tool.dangerous and call.id not in approved_tool_calls:
+                    approvals_for_batch = sorted(
+                        call_id
+                        for call_id in approved_tool_calls
+                        if call_id in {item.id for item in tool_calls}
+                    )
+                    pending = PendingAgentTurn(
+                        messages=[_pending_message(message) for message in messages],
+                        tool_calls=tool_calls,
+                        operational_tool_names=sorted(operational_names),
+                        usage=dict(usage_totals),
+                        iteration=iteration,
+                        accumulated_text=accumulated_text,
+                        tool_log=list(tool_log),
+                        system_prompt=system_prompt,
+                        approved_tool_call_ids=approvals_for_batch,
+                    )
                     yield ConfirmationRequiredEvent(
-                        tool_call_id=call.id, name=call.name, args=call.arguments
+                        tool_call_id=call.id,
+                        name=call.name,
+                        args=call.arguments,
+                        pending_turn=pending,
                     )
                     return
 
-            # 2ª pasada — ya sabemos que ninguna tool de esta tanda queda
-            # pendiente de confirmación: recién ahora es seguro ejecutarlas.
             tool_result_blocks: list[dict[str, Any]] = []
-            for call, tool in resolved_calls:
-                if tool is None:
-                    logger.warning("El modelo pidió una herramienta desconocida: %r", call.name)
-                    tool_result_blocks.append(
-                        _tool_result_block(call.id, f"Error: herramienta desconocida '{call.name}'")
-                    )
-                    continue
-
-                yield ToolStartEvent(name=call.name, args=call.arguments)
-                try:
-                    result = await tool.run(ctx, call.arguments)
-                except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
-                    logger.warning(
-                        "La herramienta %r lanzó una excepción", call.name, exc_info=True
-                    )
-                    # `redact`: este texto termina tanto en `ToolEndEvent.result_preview`
-                    # (SSE al usuario) como en el historial de mensajes reenviado al LLM,
-                    # así que no debe llevar credenciales en claro (SECURITY.md).
-                    result = ToolResult(content=f"Error: {redact(str(exc))}")
-                yield ToolEndEvent(
-                    name=call.name, result_preview=result.content[:_RESULT_PREVIEW_LEN]
-                )
-                tool_result_blocks.append(_tool_result_block(call.id, result.content))
-
+            async for event, result_block in self._execute_resolved_calls(
+                ctx=ctx, resolved_calls=resolved_calls, tool_log=tool_log
+            ):
+                if event is not None:
+                    yield event
+                if result_block is not None:
+                    tool_result_blocks.append(result_block)
             messages.append(ChatMessage(role="tool", content=tool_result_blocks))
 
-        # Se agotaron las MAX_TOOL_ITERATIONS vueltas sin llegar a un final en
-        # texto plano: se cierra el turno igual, con el uso acumulado hasta acá.
         yield DoneEvent(usage=usage_totals)
+
+    def _resolve_calls(
+        self,
+        tool_calls: Sequence[Any],
+        *,
+        operational_names: set[str],
+        extra_by_name: dict[str, Tool],
+        flags: dict[str, Any],
+    ) -> list[tuple[Any, Tool | None]]:
+        return [
+            (
+                call,
+                _con_flags_satisfechos(
+                    (
+                        self._registry.get(call.name) or extra_by_name.get(call.name)
+                        if call.name in operational_names
+                        else None
+                    ),
+                    flags,
+                ),
+            )
+            for call in tool_calls
+        ]
+
+    async def _execute_resolved_calls(
+        self,
+        *,
+        ctx: ToolContext,
+        resolved_calls: Sequence[tuple[Any, Tool | None]],
+        tool_log: list[dict[str, Any]],
+    ) -> AsyncIterator[tuple[AgentEvent | None, dict[str, Any] | None]]:
+        for call, tool in resolved_calls:
+            if tool is None:
+                logger.warning("El modelo pidió una herramienta desconocida: %r", call.name)
+                yield None, _tool_result_block(
+                    call.id, f"Error: herramienta desconocida '{call.name}'"
+                )
+                continue
+
+            start = ToolStartEvent(name=call.name, args=call.arguments)
+            tool_log.append(start.model_dump())
+            yield start, None
+            try:
+                result = await tool.run(ctx, call.arguments)
+            except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
+                logger.warning("La herramienta %r lanzó una excepción", call.name, exc_info=True)
+                result = ToolResult(content=f"Error: {redact(str(exc))}")
+            end = ToolEndEvent(
+                name=call.name, result_preview=result.content[:_RESULT_PREVIEW_LEN]
+            )
+            tool_log.append(end.model_dump())
+            yield end, _tool_result_block(call.id, result.content)
 
     async def _recall_memories(
         self, ctx: ToolContext, persona: PersonaConfig, user_text: str
@@ -308,6 +490,14 @@ def _assistant_blocks(text_parts: list[str], tool_calls: list[Any]) -> list[dict
             {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
         )
     return blocks
+
+
+def _pending_message(message: ChatMessage) -> PendingChatMessage:
+    return PendingChatMessage(role=message.role, content=message.content)
+
+
+def _chat_message_from_pending(message: PendingChatMessage) -> ChatMessage:
+    return ChatMessage(role=message.role, content=message.content)
 
 
 def _tool_result_block(tool_call_id: str, content: str) -> dict[str, Any]:

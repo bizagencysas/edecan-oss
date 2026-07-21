@@ -13,6 +13,10 @@ from edecan_core import Tool
 
 from .agenda import AgendaEventosTool, CrearEventoTool
 from .autoconfiguracion import ConfigurarCredencialTool
+from .autorreparacion import (
+    DiagnosticarAutorreparacionLocalTool,
+    GestionarAutorreparacionLocalTool,
+)
 from .codigo_local import AccederCodigoLocalTool
 from .computadora import UsarComputadoraTool
 from .contactos import BuscarContactosTool, GestionarContactoTool
@@ -35,6 +39,7 @@ __all__ = [
     "SEARCH_CONNECTOR_KEY",
     "AccederCodigoLocalTool",
     "AgendaEventosTool",
+    "DiagnosticarAutorreparacionLocalTool",
     "BuscarContactosTool",
     "BuscarCorreoTool",
     "BuscarWebTool",
@@ -46,6 +51,7 @@ __all__ = [
     "EnviarCorreoTool",
     "GenerarContenidoTool",
     "GestionarContactoTool",
+    "GestionarAutorreparacionLocalTool",
     "HoraActualTool",
     "ListarRecordatoriosTool",
     "PublicarSocialTool",
@@ -61,7 +67,7 @@ __all__ = [
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las 19 herramientas del toolkit (nombres exactos: `ARCHITECTURE.md` §10.14)."""
+    """Instancia las herramientas del toolkit registradas para el agente."""
     return [
         CrearRecordatorioTool(),
         ListarRecordatoriosTool(),
@@ -82,4 +88,6 @@ def get_all_tools() -> list[Tool]:
         CalculadoraTool(),
         ConfigurarCredencialTool(),
         AccederCodigoLocalTool(),
+        DiagnosticarAutorreparacionLocalTool(),
+        GestionarAutorreparacionLocalTool(),
     ]

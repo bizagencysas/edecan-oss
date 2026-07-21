@@ -1,6 +1,6 @@
 [project]
 name = "edecan-workspace"
-version = "0.2.0"
+version = "0.3.0"
 description = "Edecan local-first AI operator monorepo"
 requires-python = ">=3.12"
 readme = "README.md"

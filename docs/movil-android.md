@@ -135,7 +135,7 @@ clicks" que la app de escritorio, `docs/roadmap.md`):
 mientras el refresh token (30 días de vida, `ARCHITECTURE.md` §10.12) siga
 guardado y cifrado en el teléfono (`EncryptedSharedPreferences`, respaldado
 por el Android Keystore), el dispositivo cuenta como emparejado. Cerrar
-sesión desde la pestaña Perfil borra los tokens y vuelve a mostrar el
+sesión desde Ajustes borra los tokens y vuelve a mostrar el
 onboarding — la URL del servidor SÍ se conserva, para no tener que volver a
 escribirla.
 
@@ -167,15 +167,15 @@ en la sesión) sigue diseñado en [`control-remoto.md`](./control-remoto.md)
   implementaciones nativas por ahora, con la puerta abierta a converger en
   este módulo compartido el día que se decida.
 - **`androidApp/`**: el APK — Compose Multiplatform puro (sin
-  `androidx.navigation`, sin Material Icons Extended: 6 pestañas planas
-  conmutadas con estado local simple, iconos con emoji — cero dependencias
-  de más para lo que esta app necesita). Encima de esas 6 pestañas,
+  `androidx.navigation`, sin Material Icons Extended): tres destinos
+  assistant-first — **Edecan**, **Actividad** y **Ajustes** — conmutados con
+  estado local simple e iconos emoji. Encima de esos tres destinos,
   `nav/RootNav.kt` agrega un segundo nivel de navegación de un solo paso
   (mismo `remember { mutableStateOf(...) }` local, sin `androidx.navigation`
   tampoco) para "Misiones"/"Automatizaciones"/"Recordatorios" (`Pantallas
   v5`, fase v5) y "Remoto" (fase v6, ver ["Pantalla Remoto"](#pantalla-remoto)
-  más abajo) — se llega a esas cuatro SOLO desde los accesos directos de
-  Inicio, no son pestañas nuevas. `ViewModel`s con `StateFlow`, uno por
+  más abajo), Voz desde el micrófono de Chat e IDE/Negocios desde el modo
+  avanzado de Ajustes; no son pestañas nuevas. `ViewModel`s con `StateFlow`, uno por
   pantalla con lógica real: `SessionViewModel` (emparejamiento/sesión,
   registro, `POST`/`DELETE /v1/devices`), `ChatViewModel` (chat SSE +
   confirmaciones), `NegociosViewModel` (KPIs + facturas), `VozViewModel`
@@ -229,19 +229,18 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   botón, `ChatViewModel.confirmar` llama `POST
   /v1/conversations/{id}/confirm` y sigue el mismo stream SSE que un turno
   normal. Ya no hace falta ir al panel web para desatascar una conversación.
-- **Voz push-to-talk**: pestaña "Voz" (antes "Llamadas" en el mockup —
-  renombrada porque esto es push-to-talk contra el propio asistente, no
-  telefonía). Mantén presionado → graba con `MediaRecorder` (permiso
+- **Voz push-to-talk**: botón de micrófono dentro de Chat. Al abrirlo,
+  mantén presionado → graba con `MediaRecorder` (permiso
   `RECORD_AUDIO` en tiempo de ejecución) → `POST /v1/voice/transcribe`
   (multipart) → el texto transcrito entra al turno normal del agente (`POST
-  /v1/conversations/{id}/messages`, misma conversación dedicada de la
-  pestaña) → la respuesta completa se sintetiza (`POST /v1/voice/speak`) y
+  /v1/conversations/{id}/messages`, en una conversación dedicada) → la
+  respuesta completa se sintetiza (`POST /v1/voice/speak`) y
   se reproduce con `MediaPlayer`. Si el tenant no conectó su propio
   proveedor de voz (`GET /v1/credentials`, `voice_stt`/`voice_tts` ambos
   `null`), la pantalla avisa que va a usar la transcripción/voz de prueba
   del `StubSTT`/`StubTTS` offline (texto fijo, silencio) en vez de dejar
   que parezca un reconocimiento real fallando.
-- **Conectar LLM desde el teléfono**: pestaña Perfil — "pegar y validar"
+- **Conectar LLM desde el teléfono**: Ajustes — "pegar y validar"
   (`docs/roadmap.md`) contra `PUT /v1/credentials/llm`: selector de
   `kind` (`anthropic`/`openai_compat`/`vertex` siempre;
   `claude_cli`/`codex_cli`/`ollama` solo si `GET /v1/setup/status` dice
@@ -255,7 +254,7 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   `DELETE /v1/devices` en login/logout (contrato de fase v4, "mejor
   esfuerzo" — nunca bloquea el flujo si el endpoint no está listo del lado
   del servidor todavía).
-- **IDE de solo lectura**: pestaña IDE — árbol del sandbox del companion de
+- **IDE de solo lectura**: Modo avanzado en Ajustes — árbol del sandbox del companion de
   escritorio emparejado (`GET /v1/ide/tree`, aplanado con sangría por
   profundidad) y contenido de un archivo (`GET /v1/ide/file`, con aviso si
   es binario). `EmptyState` si no hay companion conectado (`GET
@@ -263,11 +262,11 @@ UI ni renunciar a APIs nativas cuando hagan falta.
 
 ### Pantallas v5 (fase v5): Misiones, Automatizaciones, Recordatorios
 
-Tres pantallas nuevas, conectadas a la API real. Las tres se llegan **solo**
-desde los accesos directos de "Inicio" (`InicioScreen`, tarjetas "Misiones"/
-"Automatizaciones"/"Recordatorios") — no son pestañas nuevas de la barra
+Tres pantallas conectadas a la API real. Las tres se llegan desde
+**Actividad** (`InicioScreen`, tarjetas "Trabajo delegado"/"Rutinas"/
+"Recordatorios") — no son pestañas nuevas de la barra
 inferior: `RootNav.kt` las cubre como una pantalla propia (con su propio
-botón "atrás" que vuelve a Inicio) encima de las 6 pestañas existentes, sin
+botón "atrás" que vuelve a Actividad) encima de los 3 destinos existentes, sin
 tocarlas. Mismo criterio de "push" de un solo nivel que usaría
 `NavigationStack` desde `InicioView.swift` en iOS (que todavía no las
 construye).
@@ -338,7 +337,7 @@ Control remoto del Mac/PC del tenant desde el teléfono — aplica el guardrail
 de [`control-remoto.md`](./control-remoto.md): consentimiento explícito en
 el teléfono MÁS una segunda aprobación
 LOCAL en el companion antes de que salga un solo *frame* o se mueva un solo
-píxel. Se llega **solo** desde el acceso directo "Remoto" de Inicio
+píxel. Se llega **solo** desde el acceso directo "Remoto" de Actividad
 (`InicioScreen.kt`), mismo criterio de pantalla secundaria de `RootNav.kt`
 (`PantallaSecundaria.REMOTO`) que Misiones/Automatizaciones/Recordatorios de
 arriba — espejo Android de fase v6 en iOS.
@@ -364,7 +363,7 @@ arriba — espejo Android de fase v6 en iOS.
   /v1/ide/file`, `POST /v1/ide/edit`, `POST /v1/ide/run`, `POST
   /v1/ide/search`) — hoy `IdeScreen` es solo lectura (árbol + ver un
   archivo).
-- **Telefonía real / voz avanzada**: la pestaña Voz de hoy es push-to-talk
+- **Telefonía real / voz avanzada**: el micrófono de Chat hoy es push-to-talk
   simple (una grabación, una respuesta) contra el mismo asistente — la
   telefonía Twilio bring-your-own (`docs/voz-telefonia.md`) y un modo
   conversación continua con barge-in (`docs/roadmap.md`) siguen

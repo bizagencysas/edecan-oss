@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-20
+
+### Added
+
+- An assistant-first product contract built around one text or voice request and
+  three primary spaces: Edecan, Activity and Settings
+- Deterministic capability routing for compound natural-language requests,
+  including short conversational follow-ups and contextual MCP tools
+- A local recovery ladder that diagnoses a failed intent, can create a
+  reversible local skill and can prepare an isolated, tested source repair
+- An Activity overview that combines ongoing work, reminders and automations
+  without making internal modules the primary navigation
+
+### Changed
+
+- Web, iOS and Android navigation now present Edecan as the front door; the
+  previous specialist surfaces remain available under advanced settings
+- Voice and typed requests share the chat execution and confirmation path
+- Dangerous actions pause the original compound turn and resume it after a
+  one-time confirmation, preserving the remaining safe work without replay
+
+### Fixed
+
+- Database transactions used by the primary repositories now commit before a
+  successful HTTP response reaches the client, preventing new-account races
+- Activity ignores superseded concurrent refreshes instead of displaying a
+  stale partial-failure warning after newer requests have succeeded
+
+### Security
+
+- Source self-repair is opt-in and local-only, rejects dirty repositories,
+  applies hash-guarded edits in an isolated Git worktree, runs only exact
+  allowlisted argument vectors, requires passing tests before integration and
+  never pushes code
+- Local code commits stage only explicit paths and reject unrelated staged work
+
 ## [0.2.0] - 2026-07-20
 
 ### Added
@@ -52,6 +88,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial public release of the Apache-2.0-licensed Edecan core
 
-[Unreleased]: https://github.com/bizagencysas/edecan-oss/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/bizagencysas/edecan-oss/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bizagencysas/edecan-oss/releases/tag/v0.1.0

@@ -327,6 +327,444 @@ async def test_confirm_approved_executes_the_pending_dangerous_tool(
     assert len(tool_calls) == 1
 
 
+async def test_confirm_continua_lote_compuesto_sin_perder_ni_duplicar_acciones(
+    client, fake_repo, monkeypatch
+) -> None:
+    from edecan_core.tools import ToolResult
+    from edecan_schemas import PendingAgentTurn
+
+    import edecan_api.routers.conversations as conversations_module
+
+    executions: dict[str, list[dict]] = {
+        "enviar_correo": [],
+        "revisar_documento": [],
+        "crear_recordatorio": [],
+    }
+
+    class FakeTool:
+        dangerous = False
+        requires_flags = frozenset()
+
+        def __init__(self, name: str, *, dangerous: bool = False) -> None:
+            self.name = name
+            self.dangerous = dangerous
+
+        async def run(self, ctx, args):
+            executions[self.name].append(args)
+            return ToolResult(content=f"{self.name}: ok")
+
+    tools = {
+        "enviar_correo": FakeTool("enviar_correo", dangerous=True),
+        "revisar_documento": FakeTool("revisar_documento"),
+        "crear_recordatorio": FakeTool("crear_recordatorio"),
+    }
+
+    class FakeRegistry:
+        def get(self, name: str):
+            return tools.get(name)
+
+    monkeypatch.setattr(conversations_module, "get_tool_registry", lambda request: FakeRegistry())
+
+    pending = PendingAgentTurn(
+        messages=[
+            {"role": "user", "content": "Envía, revisa y recuérdame."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "mail_1",
+                        "name": "enviar_correo",
+                        "input": {"to": "ana@example.com"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "doc_1",
+                        "name": "revisar_documento",
+                        "input": {"id": "doc-7"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "rem_1",
+                        "name": "crear_recordatorio",
+                        "input": {"texto": "Pagar mañana"},
+                    },
+                ],
+            },
+        ],
+        tool_calls=[
+            {"id": "mail_1", "name": "enviar_correo", "arguments": {"to": "ana@example.com"}},
+            {"id": "doc_1", "name": "revisar_documento", "arguments": {"id": "doc-7"}},
+            {
+                "id": "rem_1",
+                "name": "crear_recordatorio",
+                "arguments": {"texto": "Pagar mañana"},
+            },
+        ],
+        operational_tool_names=list(tools),
+        usage={"input_tokens": 5, "output_tokens": 2},
+        iteration=0,
+        accumulated_text="Voy a hacerlo. ",
+        system_prompt="Sistema original",
+    )
+
+    class ScriptedAgent:
+        def __init__(self, llm_router, registry) -> None:
+            self.registry = registry
+
+        async def run_turn(self, **kwargs):
+            yield {
+                "type": "confirmation_required",
+                "tool_call_id": "mail_1",
+                "name": "enviar_correo",
+                "args": {"to": "ana@example.com"},
+                "pending_turn": pending.model_dump(),
+            }
+
+        async def resume_turn(
+            self, *, ctx, pending, approved_tool_call_id, flags, extra_tools=None
+        ):
+            assert approved_tool_call_id == "mail_1"
+            assert pending.system_prompt == "Sistema original"
+            for call in pending.tool_calls:
+                tool = self.registry.get(call.name)
+                yield {"type": "tool_start", "name": call.name, "args": call.arguments}
+                result = await tool.run(ctx, call.arguments)
+                yield {
+                    "type": "tool_end",
+                    "name": call.name,
+                    "result_preview": result.content,
+                }
+            yield {"type": "text_delta", "text": "Todo listo."}
+            yield {"type": "done", "usage": {"input_tokens": 7, "output_tokens": 4}}
+
+    monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
+
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+    first = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "Envía, revisa y recuérdame."},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert "pending_turn" not in first.text
+    assert all(not calls for calls in executions.values())
+
+    approve = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "mail_1", "approved": True},
+        headers=headers,
+    )
+    assert approve.status_code == 200
+    assert executions == {
+        "enviar_correo": [{"to": "ana@example.com"}],
+        "revisar_documento": [{"id": "doc-7"}],
+        "crear_recordatorio": [{"texto": "Pagar mañana"}],
+    }
+    saved = fake_repo.messages[uuid.UUID(conversation_id)][-1]
+    assert saved["content"] == {"text": "Voy a hacerlo. Todo listo."}
+    assert len(saved["tool_calls"]) == 6
+
+    replay = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "mail_1", "approved": True},
+        headers=headers,
+    )
+    assert replay.status_code == 409
+    assert sum(len(calls) for calls in executions.values()) == 3
+
+
+async def test_pending_confirmation_uses_atomic_getdel(fake_redis, monkeypatch) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    await conversations_module._store_pending_confirmation(
+        fake_redis,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        tool_call_id="atomic_1",
+        name="enviar_correo",
+        args={},
+    )
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("La confirmación debe consumirse con GETDEL, no GET + DELETE.")
+
+    monkeypatch.setattr(fake_redis, "get", forbidden)
+    monkeypatch.setattr(fake_redis, "delete", forbidden)
+    popped = await conversations_module._pop_pending_confirmation(
+        fake_redis,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        tool_call_id="atomic_1",
+    )
+    assert popped == {"name": "enviar_correo", "args": {}}
+    assert (
+        await conversations_module._pop_pending_confirmation(
+            fake_redis,
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            tool_call_id="atomic_1",
+        )
+        is None
+    )
+
+
+async def test_continuation_can_request_a_future_dangerous_confirmation(
+    client, fake_redis, monkeypatch
+) -> None:
+    from edecan_core.tools import ToolResult
+    from edecan_schemas import PendingAgentTurn
+
+    import edecan_api.routers.conversations as conversations_module
+
+    executions = {"enviar_correo": 0, "preparar_pago": 0}
+
+    class FakeDangerousTool:
+        dangerous = True
+        requires_flags = frozenset()
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def run(self, ctx, args):
+            executions[self.name] += 1
+            return ToolResult(content=f"{self.name}: ok")
+
+    tools = {
+        "enviar_correo": FakeDangerousTool("enviar_correo"),
+        "preparar_pago": FakeDangerousTool("preparar_pago"),
+    }
+
+    class FakeRegistry:
+        def get(self, name: str):
+            return tools.get(name)
+
+    class ScriptedAgent:
+        def __init__(self, llm_router, registry) -> None:
+            self.registry = registry
+
+        async def resume_turn(
+            self, *, ctx, pending, approved_tool_call_id, flags, extra_tools=None
+        ):
+            call = next(call for call in pending.tool_calls if call.id == approved_tool_call_id)
+            tool = self.registry.get(call.name)
+            yield {"type": "tool_start", "name": call.name, "args": call.arguments}
+            result = await tool.run(ctx, call.arguments)
+            yield {
+                "type": "tool_end",
+                "name": call.name,
+                "result_preview": result.content,
+            }
+            if approved_tool_call_id == "mail_first":
+                next_pending = PendingAgentTurn(
+                    messages=[
+                        *pending.messages,
+                        {
+                            "role": "tool",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "mail_first",
+                                    "content": result.content,
+                                }
+                            ],
+                        },
+                        {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "pay_future",
+                                    "name": "preparar_pago",
+                                    "input": {"monto": 20},
+                                }
+                            ],
+                        },
+                    ],
+                    tool_calls=[
+                        {
+                            "id": "pay_future",
+                            "name": "preparar_pago",
+                            "arguments": {"monto": 20},
+                        }
+                    ],
+                    operational_tool_names=list(tools),
+                    iteration=1,
+                    tool_log=[
+                        {"type": "tool_start", "name": "enviar_correo", "args": {}},
+                        {
+                            "type": "tool_end",
+                            "name": "enviar_correo",
+                            "result_preview": result.content,
+                        },
+                    ],
+                )
+                yield {
+                    "type": "confirmation_required",
+                    "tool_call_id": "pay_future",
+                    "name": "preparar_pago",
+                    "args": {"monto": 20},
+                    "pending_turn": next_pending.model_dump(),
+                }
+                return
+            yield {"type": "text_delta", "text": "Ambas acciones completadas."}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "get_tool_registry", lambda request: FakeRegistry())
+    monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+    first_pending = PendingAgentTurn(
+        messages=[
+            {"role": "user", "content": "Envía el correo y luego prepara el pago."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "mail_first",
+                        "name": "enviar_correo",
+                        "input": {},
+                    }
+                ],
+            },
+        ],
+        tool_calls=[{"id": "mail_first", "name": "enviar_correo", "arguments": {}}],
+        operational_tool_names=list(tools),
+        iteration=0,
+    )
+    await conversations_module._store_pending_confirmation(
+        fake_redis,
+        tenant_id=tenant_id,
+        conversation_id=uuid.UUID(conversation_id),
+        tool_call_id="mail_first",
+        name="enviar_correo",
+        args={},
+        pending_turn=first_pending,
+    )
+
+    first_approval = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "mail_first", "approved": True},
+        headers=headers,
+    )
+    assert first_approval.status_code == 200
+    assert "pay_future" in first_approval.text
+    assert executions == {"enviar_correo": 1, "preparar_pago": 0}
+
+    second_approval = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "pay_future", "approved": True},
+        headers=headers,
+    )
+    assert second_approval.status_code == 200
+    assert "event: message.done" in second_approval.text
+    assert executions == {"enviar_correo": 1, "preparar_pago": 1}
+
+
+async def test_confirm_continuation_fails_closed_on_flag_downgrade(
+    client, fake_redis, monkeypatch
+) -> None:
+    from edecan_schemas import PendingAgentTurn
+
+    import edecan_api.routers.conversations as conversations_module
+
+    executions: list[dict] = []
+
+    class FlaggedTool:
+        name = "enviar_correo"
+        dangerous = True
+        requires_flags = frozenset({"capability.disabled_after_request"})
+
+        async def run(self, ctx, args):
+            executions.append(args)
+            raise AssertionError("No debe ejecutarse tras perder su flag.")
+
+    class FakeRegistry:
+        def get(self, name: str):
+            return FlaggedTool() if name == "enviar_correo" else None
+
+    monkeypatch.setattr(conversations_module, "get_tool_registry", lambda request: FakeRegistry())
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+    pending = PendingAgentTurn(
+        messages=[{"role": "user", "content": "envíalo"}],
+        tool_calls=[{"id": "mail_flag", "name": "enviar_correo", "arguments": {}}],
+        operational_tool_names=["enviar_correo"],
+        iteration=0,
+    )
+    await conversations_module._store_pending_confirmation(
+        fake_redis,
+        tenant_id=tenant_id,
+        conversation_id=uuid.UUID(conversation_id),
+        tool_call_id="mail_flag",
+        name="enviar_correo",
+        args={},
+        pending_turn=pending,
+    )
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "mail_flag", "approved": True},
+        headers=headers,
+    )
+    assert response.status_code == 403
+    assert executions == []
+
+
+async def test_confirm_continuation_fails_closed_if_tool_was_removed(
+    client, fake_redis, monkeypatch
+) -> None:
+    from edecan_schemas import PendingAgentTurn
+
+    import edecan_api.routers.conversations as conversations_module
+
+    class EmptyRegistry:
+        def get(self, name: str):
+            return None
+
+    monkeypatch.setattr(conversations_module, "get_tool_registry", lambda request: EmptyRegistry())
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+    pending = PendingAgentTurn(
+        messages=[{"role": "user", "content": "envíalo"}],
+        tool_calls=[{"id": "mail_removed", "name": "enviar_correo", "arguments": {}}],
+        operational_tool_names=["enviar_correo"],
+        iteration=0,
+    )
+    await conversations_module._store_pending_confirmation(
+        fake_redis,
+        tenant_id=tenant_id,
+        conversation_id=uuid.UUID(conversation_id),
+        tool_call_id="mail_removed",
+        name="enviar_correo",
+        args={},
+        pending_turn=pending,
+    )
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "mail_removed", "approved": True},
+        headers=headers,
+    )
+    assert response.status_code == 409
+
+
 async def test_confirm_ctx_lleva_los_flags_del_plan_del_tenant(client, monkeypatch) -> None:
     """Mismo `_build_ctx` que arma `POST /messages` arma también el `ctx` de
     `POST /confirm` -ver regresión en `test_post_message_ctx_lleva_los_flags_del_plan_del_tenant`-,
@@ -517,4 +955,12 @@ async def test_confirm_declined_does_not_execute_tool(client, fake_repo, monkeyp
 
     assert decline.status_code == 200
     assert "no realizo esa acción" in decline.text
+    assert tool_calls == []
+
+    approve_after_rejection = await client.post(
+        f"/v1/conversations/{conversation_id}/confirm",
+        json={"tool_call_id": "toolu_original_002", "approved": True},
+        headers=headers,
+    )
+    assert approve_after_rejection.status_code == 409
     assert tool_calls == []

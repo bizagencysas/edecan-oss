@@ -21,7 +21,9 @@ propio. Por eso el gate es doble y explícito, ambos en `ctx.settings`
    "pegar y validar" para esto, es una ruta de filesystem, no un secreto).
 
 Edecán edita SU PROPIO clon local — nunca hace `git push` ni toca ningún
-remoto por su cuenta: `git_commit` deja el commit LOCAL nada más. Empujar a
+remoto por su cuenta: `git_commit` deja el commit LOCAL nada más y exige una
+lista explícita de rutas; nunca hace ``git add --all`` ni captura cambios
+previos del usuario por accidente. Empujar a
 GitHub/un remoto compartido es una decisión que solo un humano toma
 explícitamente desde su propia terminal. `ejecutar_comando` SÍ podría, en
 teoría, correr `git push` igual que cualquier otro comando (no hay un
@@ -159,6 +161,14 @@ class AccederCodigoLocalTool(Tool):
                 "type": "string",
                 "description": "Mensaje del commit (solo para git_commit).",
             },
+            "rutas": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Rutas exactas a preparar en git_commit. Obligatorio: nunca se hace "
+                    "git add --all ni se incorporan otros cambios del usuario."
+                ),
+            },
         },
         "required": ["accion"],
     }
@@ -290,13 +300,49 @@ class AccederCodigoLocalTool(Tool):
         mensaje = str(args.get("mensaje", "")).strip()
         if not mensaje:
             return ToolResult(content="Falta 'mensaje' para git_commit.")
-        codigo_add, salida_add = await _correr("git", "add", "--all", cwd=raiz)
+        rutas_raw = args.get("rutas")
+        if (
+            not isinstance(rutas_raw, list)
+            or not rutas_raw
+            or not all(isinstance(ruta, str) and ruta.strip() for ruta in rutas_raw)
+        ):
+            return ToolResult(
+                content=(
+                    "Falta 'rutas': git_commit exige una lista explícita y nunca prepara "
+                    "todos los cambios del repositorio."
+                )
+            )
+        rutas: list[str] = []
+        for raw in rutas_raw:
+            ruta = str(raw).strip()
+            resuelta = _resolver_dentro_de_raiz(raiz, ruta)
+            if resuelta is None or ".git" in resuelta.relative_to(raiz).parts:
+                return ToolResult(content=f"Ruta inválida o fuera del repo: {ruta!r}.")
+            rutas.append(ruta)
+
+        codigo_staged, staged_previo = await _correr(
+            "git", "diff", "--cached", "--name-only", cwd=raiz
+        )
+        if codigo_staged != 0:
+            return ToolResult(content=f"No se pudo revisar el índice de Git:\n{staged_previo}")
+        if staged_previo.strip():
+            return ToolResult(
+                content=(
+                    "Ya hay cambios preparados por el usuario; no crearé un commit que los "
+                    f"mezcle. Índice actual:\n{staged_previo}"
+                )
+            )
+
+        codigo_add, salida_add = await _correr("git", "add", "--", *rutas, cwd=raiz)
         if codigo_add != 0:
             return ToolResult(content=f"No se pudieron preparar los cambios:\n{salida_add}")
         codigo, salida = await _correr("git", "commit", "--message", mensaje, cwd=raiz)
         if codigo != 0:
+            # Solo des-prepara las rutas que esta llamada acaba de agregar; no
+            # toca su contenido en el worktree.
+            await _correr("git", "reset", "--", *rutas, cwd=raiz)
             return ToolResult(content=f"No se pudo hacer el commit:\n{salida}")
         return ToolResult(
             content=f"Commit local hecho (no se hizo push a ningún remoto):\n{salida}",
-            data={"mensaje": mensaje},
+            data={"mensaje": mensaje, "rutas": rutas},
         )

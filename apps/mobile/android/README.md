@@ -42,7 +42,7 @@ apps/mobile/android/
         │   ├── res/                # iconos, tema Material 3 (claro/oscuro), network security config
         │   └── kotlin/cc/edecan/app/
         │       ├── MainActivity.kt, App.kt
-        │       ├── nav/RootNav.kt  # Scaffold + NavigationBar de 6 destinos + Remoto como pantalla secundaria
+        │       ├── nav/RootNav.kt  # 3 destinos: Edecan, Actividad y Ajustes; capacidades secundarias
         │       ├── ui/             # Onboarding, Inicio, Chat, IDE, Negocios, Voz, Perfil, Remoto
         │       │   └── components/ # EmptyState, DonutChart (Canvas puro)
         │       └── vm/             # Session/Chat/Negocios/Voz/Perfil/Ide/Remoto ViewModel (StateFlow)
@@ -96,7 +96,7 @@ para cómo volver a verificarla si algo cambia más adelante.
 
 Corre, todo en verde (verificado real, `BUILD SUCCESSFUL`):
 
-- **`:shared:testAndroidHostTest`** (parte de `:shared:check`): 62 tests —
+- **`:shared:testAndroidHostTest`** (parte de `:shared:check`): 77 tests —
   `ModelsTest` (serialización contra ejemplos reales de `docs/api.md`/
   `ARCHITECTURE.md` §10.5, incluyendo `ChatEvent`/`Invoice`/`NegociosKpis`/
   `CredentialsOut`), `SseFrameParserTest` (framing SSE línea por línea,
@@ -108,6 +108,8 @@ Corre, todo en verde (verificado real, `BUILD SUCCESSFUL`):
   (serialización de `RemoteModels.kt` contra ejemplos reales de
   `apps/api/edecan_api/routers/remote.py`/`SqlRepo._REMOTE_SESSION_COLUMNS`,
   más `remoteFramePollDelayMillis` — función pura del intervalo de *polling*)
+  y `AssistantDestinationTest` (la barra primaria queda limitada por contrato
+  a Edecan, Actividad y Ajustes).
   y `RemoteCoordsTest` (mapeo de coordenadas toque→frame con letterbox,
   puerto de `apps/web/src/components/remoto/coords.ts`, sin Compose/Android).
 - **`:androidApp:testDebugUnitTest`**: `LlmKindTest` (vocabulario/campos del

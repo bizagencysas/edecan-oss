@@ -1,6 +1,15 @@
 # Documentación de Edecán — mapa
 
-Esta carpeta es la documentación extendida del proyecto. Para el contrato técnico vinculante entre paquetes usa siempre [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para la evolución pública del producto, [`roadmap.md`](./roadmap.md). Esta página es solo el índice — cada documento enlazado abajo es la fuente completa de su tema.
+Esta carpeta es la documentación extendida del proyecto. La experiencia visible la gobierna primero el [`contrato assistant-first`](./producto-assistant-first.md): una conversación por texto o voz, tres espacios y las capacidades técnicas detrás del asistente. Para el contrato vinculante entre paquetes usa [`../ARCHITECTURE.md`](../ARCHITECTURE.md); para la evolución pública, [`roadmap.md`](./roadmap.md).
+
+## Producto
+
+| Documento | Para qué sirve |
+|---|---|
+| [`producto-assistant-first.md`](./producto-assistant-first.md) | Contrato de producto: Edecan, Actividad y Ajustes; órdenes compuestas; recuperación conversacional; skills locales y autorreparación reversible. |
+| [`autorreparacion-local.md`](./autorreparacion-local.md) | Cómo Edecan diagnostica un límite, crea una skill local o prepara una reparación Git aislada, probada y reversible. |
+| [`primeros-pasos.md`](./primeros-pasos.md) | Guía corta para pasar de cero a una primera tarea real. |
+| [`roadmap.md`](./roadmap.md) | Estado público actual, prioridades, criterios de salida y límites deliberados. |
 
 ## Empezar
 
@@ -118,12 +127,6 @@ metodología y tabla de veredicto archivo-por-archivo, en `docs/cumplimiento/`:
 | [`cumplimiento/barrido-v7-ux.md`](./cumplimiento/barrido-v7-ux.md) | UX/navegación de `apps/web` — página de Ads construida. |
 | [`cumplimiento/barrido-v7-apimd.md`](./cumplimiento/barrido-v7-apimd.md) | `docs/api.md` re-sincronizado programáticamente contra el código real. |
 | [`cumplimiento/barrido-v7-desktop.md`](./cumplimiento/barrido-v7-desktop.md) | E2E real de `apps/local` — bug de `pgserver.get_uri()` corregido, flujo completo verificado de punta a punta. |
-
-## Producto
-
-| Documento | Para qué sirve |
-|---|---|
-| [`roadmap.md`](./roadmap.md) | Estado público actual, prioridades, criterios de salida y capacidades deliberadamente fuera de alcance. |
 
 ## Proyecto abierto
 

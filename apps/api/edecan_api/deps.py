@@ -170,7 +170,15 @@ async def get_platform_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def get_platform_repo(session: AsyncSession = Depends(get_platform_session)) -> Repo:
+async def get_platform_repo(
+    session: AsyncSession = Depends(get_platform_session, scope="function"),
+) -> Repo:
+    """Repo global cuya transacción termina antes de enviar la respuesta.
+
+    Es especialmente importante en registro: el access token nunca debe
+    llegar al cliente antes de que tenant, usuario y membresía sean visibles
+    para la siguiente petición.
+    """
     return SqlRepo(session)
 
 
@@ -182,7 +190,15 @@ async def get_tenant_session(
         yield session
 
 
-async def get_repo(session: AsyncSession = Depends(get_tenant_session)) -> Repo:
+async def get_repo(
+    session: AsyncSession = Depends(get_tenant_session, scope="function"),
+) -> Repo:
+    """Repo del tenant con commit/rollback antes de responder al cliente.
+
+    Así un 2xx confirma una escritura ya persistida y cualquier fallo del
+    commit se convierte en error HTTP en lugar de aparecer después de haber
+    entregado una respuesta exitosa.
+    """
     return SqlRepo(session)
 
 

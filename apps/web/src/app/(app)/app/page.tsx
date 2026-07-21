@@ -29,6 +29,12 @@ import { FLAG_VOICE_WEB, type AgentEvent, type ConversationOut, type MessageOut 
 
 type SpeakState = "loading" | "playing" | null;
 
+const STARTER_REQUESTS = [
+  "Organiza mis pendientes para hoy",
+  "Revisa este documento y dime lo importante",
+  "Recuérdame pagar mañana",
+];
+
 /** Payload de `edecan://wake-detected` (evento nativo, Tauri): el listener
  * en segundo plano ya detectó la wake word entrenada Y ya grabó -- con corte
  * por silencio -- el comando de voz que siguió, ver
@@ -100,9 +106,14 @@ export default function ChatPage() {
   const speakSessionRef = useRef(0);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
-    void loadConversations();
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    // La primera vez Edecan queda listo para recibir una frase sin obligar a
+    // entender ni crear manualmente el concepto de "conversación".
+    void loadConversations(undefined, false, true);
     getPersona()
       .then((p) => setVoiceId(p.voice_id))
       .catch(() => undefined);
@@ -181,10 +192,14 @@ export default function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, streamingText, toolEvents, pendingConfirmation]);
 
-  async function loadConversations(preferId?: string, silent = false) {
+  async function loadConversations(preferId?: string, silent = false, createIfEmpty = false) {
     if (!silent) setConvLoading(true);
     try {
-      const list = await listConversations();
+      let list = await listConversations();
+      if (createIfEmpty && list.length === 0) {
+        const firstConversation = await createConversation();
+        list = [firstConversation];
+      }
       setConversations(list);
       setActiveId((current) => preferId ?? current ?? list[0]?.id ?? null);
     } catch (err) {
@@ -532,6 +547,26 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <>
+                  {messages.length === 0 && !sending && (
+                    <div className="mx-auto flex max-w-xl flex-col items-center px-4 py-10 text-center">
+                      <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">¿Qué necesitas?</p>
+                      <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                        Escríbelo como se lo dirías a una persona. Edecan decidirá cómo hacerlo.
+                      </p>
+                      <div className="mt-5 flex flex-wrap justify-center gap-2">
+                        {STARTER_REQUESTS.map((request) => (
+                          <button
+                            key={request}
+                            type="button"
+                            onClick={() => setInput(request)}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition-colors hover:border-brand-300 hover:text-brand-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                          >
+                            {request}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {messages.map((m) => (
                     <MessageBubble
                       key={m.id}

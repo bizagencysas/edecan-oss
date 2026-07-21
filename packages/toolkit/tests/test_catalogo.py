@@ -1,4 +1,4 @@
-"""Nombres y schemas de las 19 herramientas del toolkit (`ARCHITECTURE.md` §10.14)."""
+"""Nombres y schemas de las herramientas del toolkit (`ARCHITECTURE.md` §10.14)."""
 
 from __future__ import annotations
 
@@ -24,14 +24,16 @@ NOMBRES_PINNED = [
     "calculadora",
     "configurar_credencial",
     "acceder_codigo_local",
+    "diagnosticar_autorreparacion_local",
+    "gestionar_autorreparacion_local",
 ]
 
 
-def test_get_all_tools_devuelve_las_19_herramientas_con_los_nombres_pinned():
+def test_get_all_tools_devuelve_las_herramientas_con_los_nombres_pinned():
     nombres = [tool.name for tool in get_all_tools()]
     assert nombres == NOMBRES_PINNED
-    assert len(nombres) == 19
-    assert len(set(nombres)) == 19  # sin duplicados
+    assert len(nombres) == 21
+    assert len(set(nombres)) == 21  # sin duplicados
 
 
 def test_cada_tool_tiene_name_description_e_input_schema_validos():
@@ -53,6 +55,7 @@ def test_solo_las_tools_dangerous_esperadas_lo_son():
         "usar_computadora",
         "configurar_credencial",
         "acceder_codigo_local",
+        "gestionar_autorreparacion_local",
     }
 
 

@@ -28,5 +28,5 @@ rootProject.name = "edecan-android"
 // hoy y por iOS más adelante — ver ROADMAP_V2.md §6.1 y shared/build.gradle.kts.
 include(":shared")
 
-// `androidApp`: el APK real (login + chat SSE básico + 6 pestañas).
+// `androidApp`: el APK real (login + chat SSE + 3 destinos assistant-first).
 include(":androidApp")

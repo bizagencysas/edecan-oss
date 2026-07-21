@@ -47,7 +47,7 @@ export default function LoginPage() {
         <div>
           <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-50">Inicia sesión</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Entra a la consola de tu asistente.
+            Continúa donde quedaste con tu asistente.
           </p>
         </div>
         {error && <Alert variant="error">{error}</Alert>}
@@ -94,7 +94,7 @@ export default function LoginPage() {
         <p className="text-center text-sm text-slate-500 dark:text-slate-400">
           ¿No tienes cuenta?{" "}
           <Link href="/register" className="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400">
-            Crea tu tenant
+            Prepara Edecan
           </Link>
         </p>
       </CardBody>

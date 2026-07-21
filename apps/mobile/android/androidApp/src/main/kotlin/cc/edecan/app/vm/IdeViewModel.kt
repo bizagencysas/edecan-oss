@@ -35,7 +35,7 @@ data class IdeUiState(
 )
 
 /**
- * Estado y lógica de la pestaña IDE, solo lectura: `GET /v1/ide/status`
+ * Estado y lógica del IDE en Modo avanzado, solo lectura: `GET /v1/ide/status`
  * (¿hay companion conectado?), `GET /v1/ide/tree` (árbol del sandbox) y
  * `GET /v1/ide/file` (contenido de un archivo) — `ARCHITECTURE.md` §11,
  * `ROADMAP_V2.md` §7.6/§7.8, `docs/ide.md`. Sin editar/correr comandos/

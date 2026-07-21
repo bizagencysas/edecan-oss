@@ -1,4 +1,4 @@
-"""Las 5 herramientas del marketplace de Agent Skills (`ARCHITECTURE.md` §10.7,
+"""Herramientas del marketplace y skills locales (`ARCHITECTURE.md` §10.7,
 `DIRECCION_ACTUAL.md` "Confirmado: ... integrar el marketplace de skills.sh"): nombres
 EXACTOS en español — `buscar_skills`, `instalar_skill`, `listar_skills`, `usar_skill`,
 `desinstalar_skill`.
@@ -50,6 +50,9 @@ _INDEX_URL_DEFECTO = "https://skills.sh"
 _K_BUSQUEDA = 10
 _FUENTE_DEFECTO_BUSQUEDA = "skills_sh"
 _FUENTE_DEFECTO_INSTALACION = "directo"
+_LOCAL_REPAIR_SOURCE = "local:self-repair"
+_MAX_LOCAL_SKILL_CHARS = 100_000
+_MAX_ACCEPTANCE_CASES = 12
 
 _AVISO_INSTALACION = (
     "Esto son instrucciones escritas por un tercero, no por Edecán — revísalas (en la app, "
@@ -328,6 +331,190 @@ class UsarSkillTool(Tool):
         )
 
 
+class RepararConSkillLocalTool(Tool):
+    """Crea/actualiza una capacidad aislada antes de tocar el núcleo.
+
+    La fila ``skills`` es recargada por ``usar_skill`` en cada invocación;
+    no exige recompilar ni reiniciar. Cada actualización guarda la versión
+    previa en ``recursos.self_repair`` para una reversión posterior.
+    """
+
+    name = "reparar_con_skill_local"
+    description = (
+        "Crea, actualiza o revierte una skill local para cubrir una capacidad que faltó, "
+        "sin editar el núcleo de Edecán. Es recargable inmediatamente y cada cambio exige "
+        "aprobación; conserva la versión anterior para rollback y la intención para reintento."
+    )
+    dangerous = True
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "accion": {"type": "string", "enum": ["crear_o_actualizar", "revertir"]},
+            "nombre": {"type": "string"},
+            "descripcion": {"type": "string"},
+            "contenido": {
+                "type": "string",
+                "description": "Instrucciones completas de la skill local propuesta.",
+            },
+            "version": {"type": "string"},
+            "intencion_original": {"type": "string"},
+            "fallo_reportado": {"type": "string"},
+            "casos_aceptacion": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "entrada": {"type": "string"},
+                        "resultado_esperado": {"type": "string"},
+                    },
+                    "required": ["entrada", "resultado_esperado"],
+                },
+            },
+        },
+        "required": ["accion", "nombre"],
+    }
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        if not bool(getattr(ctx.settings, "EDECAN_LOCAL_MODE", False)):
+            return ToolResult(
+                content=(
+                    "La reparación con skill local solo está disponible en la instancia "
+                    "local del dueño; no modificaré skills desde un servidor compartido."
+                )
+            )
+        action = str(args.get("accion") or "").strip()
+        name = str(args.get("nombre") or "").strip()
+        if not name:
+            return ToolResult(content="Falta el nombre de la skill local.")
+        existing = await _buscar_instalada(ctx, name)
+        if action == "revertir":
+            return await self._rollback(ctx, existing)
+        if action != "crear_o_actualizar":
+            return ToolResult(content=f"Acción de skill local desconocida: {action!r}.")
+        if existing is not None and existing.get("source") != _LOCAL_REPAIR_SOURCE:
+            return ToolResult(
+                content=(
+                    "Ya existe una skill de otra fuente con ese nombre. No la reemplazaré; "
+                    "usa un nombre local distinto."
+                )
+            )
+        content = args.get("contenido")
+        if not isinstance(content, str) or not content.strip():
+            return ToolResult(content="Falta el contenido de la skill local.")
+        if len(content) > _MAX_LOCAL_SKILL_CHARS:
+            return ToolResult(content="La skill local propuesta es demasiado grande.")
+        cases = args.get("casos_aceptacion")
+        if not isinstance(cases, list) or not 0 < len(cases) <= _MAX_ACCEPTANCE_CASES:
+            return ToolResult(
+                content=(
+                    f"Incluye entre 1 y {_MAX_ACCEPTANCE_CASES} casos de aceptación para "
+                    "poder reintentar y evaluar la intención original."
+                )
+            )
+        normalized_cases: list[dict[str, str]] = []
+        for case in cases:
+            if not isinstance(case, dict):
+                return ToolResult(content="Cada caso de aceptación debe ser un objeto.")
+            entry = str(case.get("entrada") or "").strip()
+            expected = str(case.get("resultado_esperado") or "").strip()
+            if not entry or not expected:
+                return ToolResult(content="Cada caso necesita entrada y resultado esperado.")
+            normalized_cases.append(
+                {"entrada": entry[:2000], "resultado_esperado": expected[:2000]}
+            )
+
+        previous = None
+        if existing is not None:
+            previous = {
+                key: existing.get(key)
+                for key in (
+                    "nombre",
+                    "source",
+                    "descripcion",
+                    "version",
+                    "contenido",
+                    "recursos",
+                    "capabilities",
+                    "trust_tier",
+                )
+            }
+        resources = {
+            "self_repair": {
+                "created_new": existing is None,
+                "previous": previous,
+                "original_intent": str(args.get("intencion_original") or "")[:4000],
+                "failure": str(args.get("fallo_reportado") or "")[:4000],
+                "acceptance_cases": normalized_cases,
+                "status": "ready_to_retry",
+            }
+        }
+        row = await insert_skill(
+            ctx.session,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            nombre=name,
+            source=_LOCAL_REPAIR_SOURCE,
+            contenido=content,
+            descripcion=str(args.get("descripcion") or "")[:2000],
+            version=str(args.get("version") or "local-1")[:100],
+            recursos=resources,
+            capabilities=[],
+            trust_tier="local_aprobada",
+        )
+        if not row.get("enabled"):
+            return ToolResult(
+                content=(
+                    "La skill local se guardó pero quedó desactivada por el escáner de "
+                    "instrucciones. No reintentes la intención hasta revisarla."
+                ),
+                data={"id": str(row["id"]), "enabled": False, "status": "needs_review"},
+            )
+        original_intent = resources["self_repair"]["original_intent"]
+        return ToolResult(
+            content=(
+                f"Skill local «{row['nombre']}» lista y recargable. Reintenta ahora: "
+                f"«{original_intent}». Si falla, vuelve con estos casos de aceptación antes "
+                "de escalar a una reparación del núcleo."
+            ),
+            data={
+                "id": str(row["id"]),
+                "slug": row["slug"],
+                "enabled": True,
+                "status": "ready_to_retry",
+                "retry_intent": original_intent,
+                "acceptance_cases": normalized_cases,
+            },
+        )
+
+    async def _rollback(self, ctx: ToolContext, existing: dict[str, Any] | None) -> ToolResult:
+        if existing is None or existing.get("source") != _LOCAL_REPAIR_SOURCE:
+            return ToolResult(content="No existe una reparación de skill local con ese nombre.")
+        repair = (existing.get("recursos") or {}).get("self_repair") or {}
+        if repair.get("created_new"):
+            await delete_skill(ctx.session, ctx.tenant_id, existing["id"])
+            return ToolResult(content=f"Skill local «{existing['nombre']}» eliminada y revertida.")
+        previous = repair.get("previous")
+        if not isinstance(previous, dict) or not previous.get("contenido"):
+            return ToolResult(content="La skill local no conserva una versión previa reversible.")
+        row = await insert_skill(
+            ctx.session,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            nombre=str(previous.get("nombre") or existing["nombre"]),
+            source=str(previous.get("source") or _LOCAL_REPAIR_SOURCE),
+            contenido=str(previous["contenido"]),
+            descripcion=str(previous.get("descripcion") or ""),
+            version=previous.get("version"),
+            recursos=previous.get("recursos") or {},
+            capabilities=previous.get("capabilities") or [],
+            trust_tier=str(previous.get("trust_tier") or "local_aprobada"),
+        )
+        return ToolResult(
+            content=f"Skill local «{row['nombre']}» restaurada a su versión anterior.",
+            data={"id": str(row["id"]), "status": "reverted"},
+        )
+
+
 class DesinstalarSkillTool(Tool):
     name = "desinstalar_skill"
     description = "Desinstala (borra) una skill que ya no quieres tener disponible."
@@ -363,4 +550,5 @@ def get_all_tools() -> list[Tool]:
         ListarSkillsTool(),
         UsarSkillTool(),
         DesinstalarSkillTool(),
+        RepararConSkillLocalTool(),
     ]

@@ -71,6 +71,36 @@ struct ChatEventTests {
         #expect(evento == .done(usage: nil))
     }
 
+    @Test func messageDoneConUsageVacioNoRompe() throws {
+        let evento = try decodificar(#"{"type":"done","usage":{}}"#)
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func messageDoneCapturadoDelRelayPublico() throws {
+        let evento = try SSEClient.decodificarEvento(
+            nombre: "message.done",
+            payload: #"{"type": "done", "usage": {"input_tokens": 10243, "output_tokens": 6}}"#
+        )
+        #expect(evento == .done(usage: Usage(inputTokens: 10243, outputTokens: 6)))
+    }
+
+    @Test func marcadorDoneAlternativoNoInvalidaLaRespuestaRecibida() throws {
+        let evento = try SSEClient.decodificarEvento(
+            nombre: "message.done\r",
+            payload: "[DONE]"
+        )
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func eventoDeContenidoMalformadoSigueFallando() {
+        #expect(throws: SSEClient.SSEError.self) {
+            try SSEClient.decodificarEvento(
+                nombre: "message.delta",
+                payload: "{json roto"
+            )
+        }
+    }
+
     @Test func error() throws {
         let evento = try decodificar(#"{"type":"error","message":"El proveedor LLM no respondió a tiempo"}"#)
         #expect(evento == .error(message: "El proveedor LLM no respondió a tiempo"))

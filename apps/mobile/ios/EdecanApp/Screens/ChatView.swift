@@ -265,12 +265,19 @@ struct ChatView: View {
         let texto = textoActual
         let adjuntos = adjuntosListos
         Task {
-            let enviado = await viewModel.enviar(texto: texto, adjuntos: adjuntos, client: client)
-            if enviado {
-                textoActual = ""
-                adjuntosPendientes = []
-                guardarBorrador("", conversationId: viewModel.conversacionId)
-            }
+            _ = await viewModel.enviar(
+                texto: texto,
+                adjuntos: adjuntos,
+                alAceptar: {
+                    // Se limpia al crear la burbuja optimista, no al terminar
+                    // el stream. Un fallo posterior queda en esa burbuja con
+                    // Reintentar y no duplica la orden en el composer.
+                    textoActual = ""
+                    adjuntosPendientes = []
+                    guardarBorrador("", conversationId: viewModel.conversacionId)
+                },
+                client: client
+            )
         }
     }
 

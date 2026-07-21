@@ -138,6 +138,7 @@ final class ChatViewModel {
     func enviar(
         texto: String,
         adjuntos: [ChatAttachment] = [],
+        alAceptar: (() -> Void)? = nil,
         client: APIClient
     ) async -> Bool {
         let textoLimpio = texto.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -158,6 +159,10 @@ final class ChatViewModel {
             logicalAttempt: LogicalChatAttempt()
         )
         mensajes.append(mensaje)
+        // La orden ya tiene una burbuja optimista y un intento lógico estable.
+        // La vista puede vaciar su composer ahora; si el transporte falla, la
+        // misma burbuja ofrece Reintentar sin duplicar el texto en el input.
+        alAceptar?()
         return await ejecutarEnvio(mensajeId: mensaje.id, client: client)
     }
 

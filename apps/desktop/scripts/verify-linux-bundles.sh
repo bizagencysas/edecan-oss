@@ -50,6 +50,7 @@ rpm -qlp "$RPM" | grep '/edecan-local$' >/dev/null
 SMOKE_DIR="$(mktemp -d)"
 APP_LOG="$SMOKE_DIR/edecan-linux.log"
 DISPLAY_FILE="$SMOKE_DIR/display"
+XAUTHORITY_FILE="$SMOKE_DIR/xauthority"
 LAUNCHER_PID=""
 
 cleanup() {
@@ -85,17 +86,19 @@ chmod 0700 "$XDG_RUNTIME_DIR"
 chmod u+x "$APPIMAGE"
 
 echo "==> Arrancando el AppImage y su backend real en Xvfb…"
-# `xvfb-run` elige una pantalla libre y solo exporta DISPLAY a su proceso
-# hijo. El wrapper escribe ese valor para que las comprobaciones posteriores
-# de xdotool se conecten al MISMO servidor X que la aplicación.
+# `xvfb-run` elige una pantalla libre y solo exporta DISPLAY/XAUTHORITY a su
+# proceso hijo. El wrapper escribe ambos valores: compartir solo DISPLAY no
+# basta, porque Xvfb rechaza a xdotool si no presenta la cookie del archivo
+# de autoridad efímero creado por xvfb-run.
 APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a sh -c '
   printf "%s\n" "$DISPLAY" > "$1"
-  exec "$2"
-' _ "$DISPLAY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
+  printf "%s\n" "$XAUTHORITY" > "$2"
+  exec "$3"
+' _ "$DISPLAY_FILE" "$XAUTHORITY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
 LAUNCHER_PID="$!"
 
 for _attempt in $(seq 1 20); do
-  [[ -s "$DISPLAY_FILE" ]] && break
+  [[ -s "$DISPLAY_FILE" && -s "$XAUTHORITY_FILE" ]] && break
   if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
     echo "error: no se pudo crear la pantalla virtual para Edecán." >&2
     sed -n '1,240p' "$APP_LOG" >&2
@@ -103,13 +106,31 @@ for _attempt in $(seq 1 20); do
   fi
   sleep 1
 done
-if [[ ! -s "$DISPLAY_FILE" ]]; then
-  echo "error: Xvfb no informó una pantalla dentro de 20 segundos." >&2
+if [[ ! -s "$DISPLAY_FILE" || ! -s "$XAUTHORITY_FILE" ]]; then
+  echo "error: Xvfb no informó DISPLAY/XAUTHORITY dentro de 20 segundos." >&2
   sed -n '1,240p' "$APP_LOG" >&2
   exit 1
 fi
 export DISPLAY
 DISPLAY="$(tr -d '\r\n' < "$DISPLAY_FILE")"
+export XAUTHORITY
+XAUTHORITY="$(tr -d '\r\n' < "$XAUTHORITY_FILE")"
+
+# La splash debe existir desde el inicio y es una ventana distinta de la
+# principal. Guardar su ID permite comprobar más abajo que Edecán realmente
+# completó la transición de arranque, no solo que quedó mostrando "cargando".
+SPLASH_WINDOW_ID=""
+for _attempt in $(seq 1 20); do
+  SPLASH_WINDOW_ID="$(xdotool search --name 'Edec' 2>/dev/null | head -1 || true)"
+  [[ -n "$SPLASH_WINDOW_ID" ]] && break
+  sleep 1
+done
+if [[ -z "$SPLASH_WINDOW_ID" ]]; then
+  echo "error: Edecán no creó su ventana splash dentro de 20 segundos." >&2
+  xdotool search --name '.' getwindowname %@ >&2 || true
+  sed -n '1,240p' "$APP_LOG" >&2
+  exit 1
+fi
 
 PORT=""
 for _attempt in $(seq 1 120); do
@@ -138,13 +159,19 @@ if [[ -z "$PORT" ]] || ! curl --fail --silent "http://127.0.0.1:$PORT/healthz" >
 fi
 
 WINDOW_ID=""
-for _attempt in $(seq 1 20); do
-  WINDOW_ID="$(xdotool search --name 'Edec' 2>/dev/null | tail -1 || true)"
+for _attempt in $(seq 1 60); do
+  while IFS= read -r candidate; do
+    if [[ -n "$candidate" && "$candidate" != "$SPLASH_WINDOW_ID" ]]; then
+      WINDOW_ID="$candidate"
+      break
+    fi
+  done < <(xdotool search --name 'Edec' 2>/dev/null || true)
   [[ -n "$WINDOW_ID" ]] && break
   sleep 1
 done
 if [[ -z "$WINDOW_ID" ]]; then
-  echo "error: el backend quedó sano, pero Edecán no creó una ventana visible." >&2
+  echo "error: el backend quedó sano, pero Edecán no reemplazó la splash por su ventana principal." >&2
+  xdotool search --name '.' getwindowname %@ >&2 || true
   sed -n '1,240p' "$APP_LOG" >&2
   exit 1
 fi

@@ -57,6 +57,17 @@ def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:
         assert f"pgserver/pginstall/lib/postgresql/{module}" in build_script
 
 
+def test_linux_smoke_shares_xauthority_and_waits_for_main_window() -> None:
+    verify_script = (
+        REPO_ROOT / "apps" / "desktop" / "scripts" / "verify-linux-bundles.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'printf "%s\\n" "$XAUTHORITY"' in verify_script
+    assert 'export XAUTHORITY' in verify_script
+    assert 'SPLASH_WINDOW_ID=""' in verify_script
+    assert '"$candidate" != "$SPLASH_WINDOW_ID"' in verify_script
+
+
 def test_linux_is_documented_as_a_first_class_desktop_target() -> None:
     desktop_guide = (REPO_ROOT / "docs" / "desktop.md").read_text(encoding="utf-8")
     desktop_readme = (REPO_ROOT / "apps" / "desktop" / "README.md").read_text(

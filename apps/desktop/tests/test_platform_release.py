@@ -66,6 +66,8 @@ def test_linux_smoke_shares_xauthority_and_waits_for_main_window() -> None:
     assert 'export XAUTHORITY' in verify_script
     assert 'SPLASH_WINDOW_ID=""' in verify_script
     assert '"$candidate" != "$SPLASH_WINDOW_ID"' in verify_script
+    assert '(edecan-local|postgres).*$SMOKE_DIR' in verify_script
+    assert 'LAUNCHER_STATUS="$?"' in verify_script
 
 
 def test_linux_is_documented_as_a_first_class_desktop_target() -> None:

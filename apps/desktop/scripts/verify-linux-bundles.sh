@@ -58,11 +58,20 @@ cleanup() {
     kill -TERM "$LAUNCHER_PID" 2>/dev/null || true
     wait "$LAUNCHER_PID" 2>/dev/null || true
   fi
-  # Solo alcanza los sidecars de esta corrida: todos llevan el data-dir
-  # efímero y único creado arriba.
+  # Solo alcanza procesos de esta corrida: tanto el sidecar como su Postgres
+  # llevan el data-dir efímero y único creado arriba en su línea de comando.
   while IFS= read -r pid; do
     [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
-  done < <(pgrep -f "edecan-local.*$SMOKE_DIR" 2>/dev/null || true)
+  done < <(pgrep -f "(edecan-local|postgres).*$SMOKE_DIR" 2>/dev/null || true)
+  for _cleanup_attempt in $(seq 1 50); do
+    if ! pgrep -f "(edecan-local|postgres).*$SMOKE_DIR" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+  done < <(pgrep -f "(edecan-local|postgres).*$SMOKE_DIR" 2>/dev/null || true)
   find "$SMOKE_DIR" -depth -delete 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -188,17 +197,26 @@ if kill -0 "$LAUNCHER_PID" 2>/dev/null; then
   echo "error: Edecán no terminó dentro de 30 segundos después de cerrar su ventana." >&2
   exit 1
 fi
+set +e
 wait "$LAUNCHER_PID"
+LAUNCHER_STATUS="$?"
+set -e
 LAUNCHER_PID=""
+if (( LAUNCHER_STATUS != 0 )); then
+  echo "error: el AppImage terminó con código $LAUNCHER_STATUS después del cierre." >&2
+  sed -n '1,240p' "$APP_LOG" >&2
+  pgrep -af "(edecan-local|postgres).*$SMOKE_DIR" >&2 || true
+  exit 1
+fi
 
 for _attempt in $(seq 1 10); do
-  if ! pgrep -f "edecan-local.*$SMOKE_DIR" >/dev/null 2>&1; then
-    echo "==> Linux verificado: AppImage + deb + rpm, health real y cero sidecars huérfanos."
+  if ! pgrep -f "(edecan-local|postgres).*$SMOKE_DIR" >/dev/null 2>&1; then
+    echo "==> Linux verificado: AppImage + deb + rpm, health real y cero procesos huérfanos."
     exit 0
   fi
   sleep 1
 done
 
-echo "error: quedó un sidecar edecan-local huérfano después de cerrar la app." >&2
-pgrep -af "edecan-local.*$SMOKE_DIR" >&2 || true
+echo "error: quedó un sidecar/Postgres huérfano después de cerrar la app." >&2
+pgrep -af "(edecan-local|postgres).*$SMOKE_DIR" >&2 || true
 exit 1

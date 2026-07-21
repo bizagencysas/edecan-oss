@@ -588,7 +588,10 @@ pub fn kill_backend(app: &AppHandle) {
 /// se pudo mandar la señal / el binario `kill` no está disponible), y el
 /// caller debe escalar al kill duro de siempre como red de seguridad.
 /// Bloqueante a propósito (`kill_backend` no es async): el margen máximo es
-/// corto (3s) y este camino solo corre al cerrar la app.
+/// acotado (15s) y este camino solo corre al cerrar la app. El margen debe
+/// cubrir el shutdown real de Postgres en equipos modestos: con 3s el
+/// bootloader onefile de PyInstaller podía seguir esperando a su proceso
+/// Python cuando escalábamos a SIGKILL, dejando a Postgres huérfano.
 #[cfg(not(target_os = "windows"))]
 fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
     let sent = std::process::Command::new("kill")
@@ -601,7 +604,7 @@ fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
     }
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
-    const MAX_WAIT: Duration = Duration::from_secs(3);
+    const MAX_WAIT: Duration = Duration::from_secs(15);
     let mut waited = Duration::ZERO;
     while waited < MAX_WAIT {
         std::thread::sleep(POLL_INTERVAL);

@@ -2,12 +2,13 @@
 
 import { PlayIcon, SquareIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
-import { messageBlocks } from "@/lib/chat-blocks";
+import { messageBlocks, toolTimelineFromCalls } from "@/lib/chat-blocks";
 import type { MessageOut } from "@/lib/types";
 
 import { ArtifactLinks } from "./ArtifactLinks";
 import { MarkdownText } from "./markdown";
 import { RichMessageBlocks } from "./RichMessageBlocks";
+import { ToolTimeline } from "./ToolTimeline";
 import { messageArtifacts, messageAttachments, messageText } from "./utils";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
@@ -30,6 +31,7 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const text = messageText(message.content);
   const blocks = messageBlocks(message.tool_calls);
+  const toolTimeline = toolTimelineFromCalls(message.tool_calls);
   const mediaFileIds = new Set(
     blocks.flatMap((block) => (block.type === "media" ? [block.artifact.file_id] : [])),
   );
@@ -56,6 +58,7 @@ export function MessageBubble({
           </div>
         )}
         {!isUser && <RichMessageBlocks blocks={blocks} onPrefillMessage={onPrefillMessage} />}
+        {!isUser && toolTimeline.length > 0 && <ToolTimeline events={toolTimeline} />}
         <ArtifactLinks artifacts={artifacts} />
         {!isUser && canSpeak && text && (
           <button

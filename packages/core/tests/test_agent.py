@@ -9,10 +9,12 @@ sin tocar red ni importar `edecan_llm` (`edecan_core` no depende de él, ver
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+import edecan_core.agent as agent_module
 import pytest
 from edecan_core.agent import MAX_TOOL_ITERATIONS, Agent
 from edecan_core.tools.base import Tool, ToolContext, ToolResult
@@ -24,6 +26,7 @@ from edecan_schemas import (
     PersonaConfig,
     TextDeltaEvent,
     ToolEndEvent,
+    ToolProgressEvent,
     ToolStartEvent,
 )
 
@@ -116,6 +119,13 @@ class FakeTool(Tool):
         return self._result
 
 
+class SlowFakeTool(FakeTool):
+    async def run(self, ctx: ToolContext, args: dict) -> ToolResult:
+        self.calls.append(args)
+        await asyncio.sleep(0.04)
+        return self._result
+
+
 class _RaisingLLMRouter:
     def resolve(self, alias: str, tenant_flags: dict) -> tuple[Any, str]:
         raise RuntimeError("boom: no hay proveedor configurado")
@@ -167,6 +177,33 @@ async def test_turno_sin_tools_emite_text_delta_y_done_en_orden():
     assert events[2].usage == {"input_tokens": 3, "output_tokens": 5}
     # Se resolvió el LLM una sola vez para todo el turno.
     assert router.resolve_calls == [("principal", {})]
+
+
+@pytest.mark.asyncio
+async def test_cambiar_modelo_no_cambia_las_capacidades_ofrecidas():
+    """Las herramientas pertenecen a Edecán, no al proveedor/modelo."""
+
+    registry = ToolRegistry()
+    registry.register(FakeTool(name="buscar_web"))
+    registry.register(FakeTool(name="crear_documento"))
+    provider_a = FakeProvider([[text_chunk("A")]])
+    provider_b = FakeProvider([[text_chunk("B")]])
+
+    for provider, model in ((provider_a, "modelo-local"), (provider_b, "modelo-nube")):
+        await _collect(
+            Agent(FakeLLMRouter(provider, model=model), registry),
+            ctx=_ctx(),
+            persona=_persona(),
+            history=[],
+            user_text="Busca información y crea un documento.",
+            flags={},
+        )
+
+    tools_a = {tool.name for tool in provider_a.received_requests[0].tools}
+    tools_b = {tool.name for tool in provider_b.received_requests[0].tools}
+    assert tools_a == tools_b == {"buscar_web", "crear_documento"}
+    assert provider_a.received_requests[0].model == "modelo-local"
+    assert provider_b.received_requests[0].model == "modelo-nube"
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +418,70 @@ async def test_tool_con_flag_satisfecho_se_ejecuta():
 
     assert [type(e) for e in events] == [ToolStartEvent, ToolEndEvent, TextDeltaEvent, DoneEvent]
     assert tool.calls == [{"x": 1}]
+
+
+@pytest.mark.asyncio
+async def test_tool_lenta_emite_progreso_publico_hasta_terminar(monkeypatch):
+    monkeypatch.setattr(agent_module, "TOOL_PROGRESS_INTERVAL_SECONDS", 0.01)
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("call_larga", "construir_app", {})],
+            [text_chunk("Aplicación lista"), usage_chunk()],
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(SlowFakeTool(name="construir_app"))
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Construye la app",
+        flags={},
+    )
+
+    progress = [event for event in events if isinstance(event, ToolProgressEvent)]
+    assert progress
+    assert all(event.tool_call_id == "call_larga" for event in progress)
+    assert all(event.name == "construir_app" for event in progress)
+    assert isinstance(events[0], ToolStartEvent)
+    assert any(isinstance(event, ToolEndEvent) for event in events)
+    assert isinstance(events[-1], DoneEvent)
+
+
+@pytest.mark.asyncio
+async def test_tool_end_expone_solo_mission_id_valido_para_continuidad_del_chat():
+    mission_id = uuid4()
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("mission-call", "delegar_mision", {"objetivo": "Crear la app"})],
+            [text_chunk("La misión quedó en curso."), usage_chunk()],
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(
+        FakeTool(
+            name="delegar_mision",
+            result=ToolResult(
+                content="Misión creada",
+                data={"mission_id": str(mission_id), "internal": "no se expone"},
+            ),
+        )
+    )
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Delega una misión para crear la app",
+        flags={},
+    )
+
+    end = next(event for event in events if isinstance(event, ToolEndEvent))
+    assert end.mission_id == mission_id
+    assert not hasattr(end, "internal")
 
 
 @pytest.mark.asyncio

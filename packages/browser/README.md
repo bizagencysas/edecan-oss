@@ -35,9 +35,10 @@ Las tres requieren el flag de plan `tools.browser` y ninguna es `dangerous`
   lista original de dependencias del work package, se añadió por el mismo
   motivo (y con el mismo patrón) que documenta el README de
   `edecan_toolkit` para `generar_contenido`.
-- **`comparar_precios` reutiliza `edecan_toolkit.research.get_search_provider`**
-  (mismo `SearchProvider`/`StubSearch`/`BraveSearch`/`TavilySearch` que usa
-  `buscar_web`, pinned en `ARCHITECTURE.md` §10.14) — importarlo en `tools.py`
+- **`comparar_precios` reutiliza la búsqueda por tenant de `edecan_toolkit.research`**
+  (mismo `SearchProvider`/`DuckDuckGoSearch`/`BraveSearch`/`TavilySearch` que usa
+  `buscar_web`) — sin credencial propia consulta internet con DuckDuckGo;
+  importarlo en `tools.py`
   es código de producción, permitido explícitamente aunque los *tests* de
   este paquete no importen paquetes hermanos (§10.1).
 - **`policy.py` es el único guardián**: toda URL pasa por

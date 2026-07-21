@@ -61,9 +61,11 @@ class MCPClient:
         except Exception as exc:  # noqa: BLE001 - cualquier fallo de transporte se traduce
             raise MCPTransportError(f"Fallo de transporte MCP: {exc}") from exc
         if response.error is not None:
-            mensaje = response.error.get("message", "error desconocido") if isinstance(
-                response.error, dict
-            ) else str(response.error)
+            mensaje = (
+                response.error.get("message", "error desconocido")
+                if isinstance(response.error, dict)
+                else str(response.error)
+            )
             raise MCPClientError(f"El servidor MCP respondió un error en «{method}»: {mensaje}")
         return response
 
@@ -109,9 +111,19 @@ class MCPClient:
             if isinstance(t, dict) and t.get("name")
         ]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        max_chars: int | None = MAX_RESULT_CHARS,
+    ) -> str:
         """Ejecuta la tool remota `name` y devuelve su resultado como texto
-        (bloques `type=text` concatenados, truncado a `MAX_RESULT_CHARS`).
+        (bloques `type=text` concatenados). Por defecto se trunca a
+        `MAX_RESULT_CHARS` para no inundar el contexto de un modelo. Los
+        consumidores internos que necesitan parsear una respuesta estructurada
+        completa pueden pasar `max_chars=None`; esto no cambia el contrato de
+        las tools MCP que se presentan directamente al modelo.
 
         Si el servidor marca `isError=True`, el texto se devuelve igual (con
         un prefijo "Error MCP:") en vez de lanzar — es el resultado de
@@ -124,7 +136,7 @@ class MCPClient:
         texto = _concatenar_contenido(resultado.get("content") or [])
         if resultado.get("isError"):
             return f"Error MCP: {texto or 'la herramienta remota reportó un error sin detalle.'}"
-        return _truncar(texto)
+        return _truncar(texto, max_chars=max_chars)
 
     async def close(self) -> None:
         await self._transport.close()
@@ -145,10 +157,11 @@ def _concatenar_contenido(bloques: list[Any]) -> str:
     return "\n".join(partes)
 
 
-def _truncar(texto: str) -> str:
-    if len(texto) <= MAX_RESULT_CHARS:
+def _truncar(texto: str, *, max_chars: int | None = MAX_RESULT_CHARS) -> str:
+    if max_chars is None or len(texto) <= max_chars:
         return texto
-    return texto[:MAX_RESULT_CHARS] + _TRUNCATION_SUFFIX
+    limite = max(0, max_chars)
+    return texto[:limite] + _TRUNCATION_SUFFIX
 
 
 __all__ = ["MCPClient", "MCPClientError", "MAX_RESULT_CHARS"]

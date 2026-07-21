@@ -134,6 +134,97 @@ public enum FlagValue: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Perfil personal (`GET/PUT /v1/perfil`)
+
+public struct ProfileIdentity: Codable, Sendable, Equatable {
+    public var nombrePreferido: String
+    public var nombreCompleto: String
+    public var pronombres: String
+    public var fechaNacimiento: String
+    public var pais: String
+    public var ciudad: String
+    public var zonaHoraria: String
+    public var ocupacion: String
+    public var idiomaPreferido: String
+    public var formaDeTrato: String
+    public var biografia: String
+
+    enum CodingKeys: String, CodingKey {
+        case nombrePreferido = "nombre_preferido"
+        case nombreCompleto = "nombre_completo"
+        case pronombres
+        case fechaNacimiento = "fecha_nacimiento"
+        case pais, ciudad
+        case zonaHoraria = "zona_horaria"
+        case ocupacion
+        case idiomaPreferido = "idioma_preferido"
+        case formaDeTrato = "forma_de_trato"
+        case biografia
+    }
+
+    public init(
+        nombrePreferido: String = "", nombreCompleto: String = "", pronombres: String = "",
+        fechaNacimiento: String = "", pais: String = "", ciudad: String = "",
+        zonaHoraria: String = "", ocupacion: String = "", idiomaPreferido: String = "",
+        formaDeTrato: String = "", biografia: String = ""
+    ) {
+        self.nombrePreferido = nombrePreferido
+        self.nombreCompleto = nombreCompleto
+        self.pronombres = pronombres
+        self.fechaNacimiento = fechaNacimiento
+        self.pais = pais
+        self.ciudad = ciudad
+        self.zonaHoraria = zonaHoraria
+        self.ocupacion = ocupacion
+        self.idiomaPreferido = idiomaPreferido
+        self.formaDeTrato = formaDeTrato
+        self.biografia = biografia
+    }
+}
+
+public struct ProfileData: Codable, Sendable, Equatable {
+    public var identidad: ProfileIdentity
+    public var gustos: [String]
+    public var proyectos: [String]
+    public var metas: [String]
+    public var relaciones: [String]
+    public var empresas: [String]
+    public var habitos: [String]
+
+    public init(
+        identidad: ProfileIdentity = .init(), gustos: [String] = [], proyectos: [String] = [],
+        metas: [String] = [], relaciones: [String] = [], empresas: [String] = [],
+        habitos: [String] = []
+    ) {
+        self.identidad = identidad
+        self.gustos = gustos
+        self.proyectos = proyectos
+        self.metas = metas
+        self.relaciones = relaciones
+        self.empresas = empresas
+        self.habitos = habitos
+    }
+}
+
+public struct LiveProfile: Codable, Sendable, Equatable {
+    public var resumen: String
+    public var datos: ProfileData
+    public var version: Int
+    public var updatedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case resumen, datos, version
+        case updatedAt = "updated_at"
+    }
+
+    public init(resumen: String = "", datos: ProfileData = .init(), version: Int = 0, updatedAt: Date? = nil) {
+        self.resumen = resumen
+        self.datos = datos
+        self.version = version
+        self.updatedAt = updatedAt
+    }
+}
+
 // MARK: - Conversaciones
 
 /// Un elemento de `GET /v1/conversations` o la respuesta de
@@ -736,13 +827,20 @@ public enum ChatBlock: Decodable, Sendable, Equatable {
 public enum ChatEvent: Decodable, Sendable, Equatable {
     case textDelta(text: String)
     case toolStart(toolCallId: String? = nil, name: String, args: [String: JSONValue])
+    case toolProgress(
+        toolCallId: String? = nil,
+        name: String,
+        elapsedSeconds: Int,
+        message: String
+    )
     case toolEnd(
         toolCallId: String? = nil,
         name: String,
         resultPreview: String,
         artifacts: [ArtifactRef],
         blocksVersion: Int = 1,
-        blocks: [ChatBlock] = []
+        blocks: [ChatBlock] = [],
+        missionId: String? = nil
     )
     case confirmationRequired(toolCallId: String, name: String, args: [String: JSONValue])
     case done(usage: Usage?)
@@ -751,9 +849,11 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case type, text, name, args, usage, message, artifacts, blocks
+        case elapsedSeconds = "elapsed_seconds"
         case resultPreview = "result_preview"
         case toolCallId = "tool_call_id"
         case blocksVersion = "blocks_version"
+        case missionId = "mission_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -779,6 +879,17 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
                 name: name,
                 args: (try? container.decode([String: JSONValue].self, forKey: .args)) ?? [:]
             )
+        case "tool_progress":
+            guard let name = try? container.decode(String.self, forKey: .name) else {
+                self = .unknown(type: type)
+                return
+            }
+            self = .toolProgress(
+                toolCallId: try? container.decode(String.self, forKey: .toolCallId),
+                name: name,
+                elapsedSeconds: (try? container.decode(Int.self, forKey: .elapsedSeconds)) ?? 0,
+                message: (try? container.decode(String.self, forKey: .message)) ?? "Trabajando"
+            )
         case "tool_end":
             guard let name = try? container.decode(String.self, forKey: .name) else {
                 self = .unknown(type: type)
@@ -790,7 +901,8 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
                 resultPreview: (try? container.decode(String.self, forKey: .resultPreview)) ?? "",
                 artifacts: (try? container.decode([ArtifactRef].self, forKey: .artifacts)) ?? [],
                 blocksVersion: (try? container.decode(Int.self, forKey: .blocksVersion)) ?? 1,
-                blocks: (try? container.decode([ChatBlock].self, forKey: .blocks)) ?? []
+                blocks: (try? container.decode([ChatBlock].self, forKey: .blocks)) ?? [],
+                missionId: try? container.decode(String.self, forKey: .missionId)
             )
         case "confirmation_required":
             guard let toolCallId = try? container.decode(String.self, forKey: .toolCallId),

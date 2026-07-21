@@ -1,5 +1,8 @@
-"""`edecan_travel` — viajes: búsqueda de vuelos/hoteles vía Amadeus Self-Service
-(bring-your-own) + rastreo de paquetes vía AfterShip (`ARCHITECTURE.md` §14, WP-V5-09).
+"""`edecan_travel` — vuelos/hoteles reales mediante la capacidad nativa de Edecán,
+compatibilidad Amadeus heredada y rastreo vía AfterShip (`ARCHITECTURE.md` §14).
+
+La búsqueda nativa usa el cliente MCP del propio producto; no depende de Claude,
+Codex, Ollama ni de ningún otro proveedor LLM.
 
 Este paquete debe estar en `[tool.uv.workspace].members` del `pyproject.toml` raíz
 (dueño WP-V5-01, mismo criterio que dejaron WP-V2-01/WP-V3-01/WP-V4-01 para sus propios

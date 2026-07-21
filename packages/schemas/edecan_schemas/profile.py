@@ -14,11 +14,34 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class ProfileIdentity(BaseModel):
+    """Identidad declarada por la persona.
+
+    A diferencia de las listas aprendidas de :class:`ProfileData`, estos
+    campos solo cambian cuando la propia persona los edita. De esa forma una
+    consolidación automática nunca puede renombrarla ni inventar datos
+    personales.
+    """
+
+    nombre_preferido: str = ""
+    nombre_completo: str = ""
+    pronombres: str = ""
+    fecha_nacimiento: str = ""
+    pais: str = ""
+    ciudad: str = ""
+    zona_horaria: str = ""
+    ocupacion: str = ""
+    idioma_preferido: str = ""
+    forma_de_trato: str = ""
+    biografia: str = ""
+
+
 class ProfileData(BaseModel):
     """`datos` de `user_profiles` — listas libres de texto, cada una
     acumulada/depurada por la consolidación de memoria. Ninguna lista tiene
     un tamaño máximo pinned aquí; WP-V2-13 decide cómo podar."""
 
+    identidad: ProfileIdentity = Field(default_factory=ProfileIdentity)
     gustos: list[str] = Field(default_factory=list)
     proyectos: list[str] = Field(default_factory=list)
     metas: list[str] = Field(default_factory=list)

@@ -82,6 +82,16 @@ export interface LlmCredentialStatus {
   masked: string | null;
 }
 
+export interface LlmModelsOut {
+  kind: LlmKind;
+  model_principal: string | null;
+  model_rapido: string | null;
+  models: string[];
+  manual_allowed: boolean;
+  capabilities_managed_by_edecan: boolean;
+  discovery_error: string | null;
+}
+
 export interface VoiceSttStatus {
   provider: string;
   masked: string | null;
@@ -379,6 +389,17 @@ export async function putLlmCredential(input: PutLlmCredentialInput): Promise<vo
 
 export async function deleteLlmCredential(): Promise<void> {
   await apiJson<void>("/v1/credentials/llm", { method: "DELETE" });
+}
+
+export async function getLlmModels(): Promise<LlmModelsOut> {
+  return apiJson<LlmModelsOut>("/v1/credentials/llm/models");
+}
+
+export async function updateLlmModels(input: {
+  model_principal: string;
+  model_rapido?: string;
+}): Promise<void> {
+  await apiJson<void>("/v1/credentials/llm/models", { method: "PATCH", body: input });
 }
 
 // --- Escrituras: Voz ------------------------------------------------------------

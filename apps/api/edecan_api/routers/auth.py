@@ -253,6 +253,12 @@ async def local_desktop_session(
         identity="local-desktop",
     )
     owner = await _get_or_create_local_owner(repo)
+    ensure_local_companion = getattr(request.app.state, "ensure_local_companion", None)
+    if ensure_local_companion is not None:
+        # La app instalada contiene el controlador de ESTA computadora. Al
+        # vincular el dueño local queda disponible para el teléfono que ya
+        # se autenticó con el QR, sin un segundo emparejamiento.
+        await ensure_local_companion(owner["tenant_id"])
     return await _issue_token_pair(
         user_id=owner["user_id"],
         tenant_id=owner["tenant_id"],

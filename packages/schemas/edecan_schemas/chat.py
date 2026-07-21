@@ -56,6 +56,21 @@ class ToolStartEvent(BaseModel):
     args: dict
 
 
+class ToolProgressEvent(BaseModel):
+    """Latido público mientras una herramienta continúa trabajando.
+
+    No contiene razonamiento interno ni argumentos potencialmente sensibles:
+    solo identidad de la ejecución, segundos transcurridos y un estado humano
+    que los clientes pueden mostrar sin inventar progreso.
+    """
+
+    type: Literal["tool_progress"] = "tool_progress"
+    tool_call_id: str | None = Field(default=None, min_length=1, max_length=255)
+    name: str
+    elapsed_seconds: int = Field(default=0, ge=0)
+    message: str = Field(default="Trabajando", max_length=255)
+
+
 class ArtifactRef(BaseModel):
     """Archivo privado creado por una tool y descargable por su dueño."""
 
@@ -217,6 +232,12 @@ class ToolEndEvent(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list, max_length=20)
     blocks_version: Literal[1] = 1
     blocks: list[ChatBlock] = Field(default_factory=list, max_length=30)
+    mission_id: UUID | None = None
+    """Misión asíncrona creada por la herramienta, si existe.
+
+    Permite que el mismo chat siga mostrando un trabajo delegado después de
+    cerrar el stream HTTP, sin exponer datos internos de ``ToolResult.data``.
+    """
 
 
 class PendingToolCall(BaseModel):
@@ -290,13 +311,14 @@ class ErrorEvent(BaseModel):
 AgentEvent = Annotated[
     TextDeltaEvent
     | ToolStartEvent
+    | ToolProgressEvent
     | ToolEndEvent
     | ConfirmationRequiredEvent
     | DoneEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]
-"""Unión discriminada por `type` con las 6 variantes pinned en ARCHITECTURE.md §10.7."""
+"""Unión discriminada por `type` del contrato público de ejecución."""
 
 AgentEventAdapter: TypeAdapter[AgentEvent] = TypeAdapter(AgentEvent)
 """`TypeAdapter` listo para validar/parsear un `dict` (p. ej. JSON de un evento SSE)

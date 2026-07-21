@@ -217,6 +217,20 @@ async def test_extraer_datos_web_sin_campos(make_ctx):
 # --- comparar_precios -----------------------------------------------------
 
 
+def _mock_busqueda_publica(cantidad: int = 10) -> None:
+    enlaces = "".join(
+        (
+            f'<a class="result__a" href="https://example.com/search?r={indice}">'
+            f"Resultado {indice}</a>"
+            '<div class="result__snippet">Oferta disponible</div>'
+        )
+        for indice in range(1, cantidad + 1)
+    )
+    respx.get("https://html.duckduckgo.com/html/").mock(
+        return_value=httpx.Response(200, text=enlaces)
+    )
+
+
 async def test_comparar_precios_sin_producto(make_ctx):
     resultado = await CompararPreciosTool().run(make_ctx(), {"producto": "   "})
     assert "producto" in resultado.content.lower()
@@ -224,6 +238,7 @@ async def test_comparar_precios_sin_producto(make_ctx):
 
 @respx.mock
 async def test_comparar_precios_arma_tabla_ordenada_por_precio(make_ctx, make_llm, fake_settings):
+    _mock_busqueda_publica()
     respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
     respx.get(url__regex=r"^https://example\.com/search\?.*$").mock(
         return_value=httpx.Response(
@@ -279,6 +294,7 @@ async def test_comparar_precios_arma_tabla_ordenada_por_precio(make_ctx, make_ll
 
 @respx.mock
 async def test_comparar_precios_respeta_tope_de_max_fuentes(make_ctx, make_llm, fake_settings):
+    _mock_busqueda_publica()
     respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
     respx.get(url__regex=r"^https://example\.com/search\?.*$").mock(
         return_value=httpx.Response(
@@ -311,6 +327,7 @@ async def test_comparar_precios_respeta_tope_de_max_fuentes(make_ctx, make_llm, 
 async def test_comparar_precios_sin_resultados_utiles_avisa_igual(
     make_ctx, make_llm, fake_settings
 ):
+    _mock_busqueda_publica()
     respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
     respx.get(url__regex=r"^https://example\.com/search\?.*$").mock(
         return_value=httpx.Response(
@@ -497,11 +514,12 @@ async def test_comparar_precios_sin_credencial_de_tenant_nunca_usa_la_config_de_
     compartida de plataforma"): el tenant NO conectó `PUT
     /v1/credentials/search`, y `settings` trae `SEARCH_PROVIDER=brave` +
     `BRAVE_API_KEY` completos y válidos — `comparar_precios` debe caer al
-    `StubSearch` (`StubSearch` pega a `https://example.com/...`, nunca a la
-    API real de Brave). La API de Brave NO se mockea a propósito: si
+    búsqueda pública sin clave (que devuelve enlaces `example.com` en este
+    fixture, nunca a la API real de Brave). La API de Brave NO se mockea a propósito: si
     `comparar_precios` volviera a caer a la config de plataforma (el
     comportamiento viejo), este test fallaría con un error de `respx` en vez
     de pasar de casualidad."""
+    _mock_busqueda_publica()
     respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
     respx.get(url__regex=r"^https://example\.com/search\?.*$").mock(
         return_value=httpx.Response(
@@ -526,7 +544,7 @@ async def test_comparar_precios_sin_credencial_de_tenant_nunca_usa_la_config_de_
 
     resultado = await CompararPreciosTool().run(ctx, {"producto": "P", "max_fuentes": 3})
 
-    # StubSearch (offline) devuelve URLs `example.com` repetidas hasta llenar
+    # El fixture de búsqueda pública devuelve URLs `example.com` hasta llenar
     # `max_fuentes`; lo importante no es la cantidad sino que llegó hasta acá
     # sin pegarle jamás a `https://api.search.brave.com` (sin mock -> respx
     # habría hecho fallar el test antes de esta línea).

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from edecan_schemas import PersonaConfig
 
+from .cognitive_architecture import CognitiveContext, render_cognitive_architecture
+
 _FORMALIDAD_ES: dict[int, str] = {
     0: "Tutéalo de forma muy relajada e informal, como con un amigo de toda la vida.",
     1: "Tutéalo de forma cercana, cálida y con buena educación.",
@@ -312,24 +314,25 @@ def _build_es(persona: PersonaConfig, memories: list[str], extra_context: str | 
         persona.instrucciones.strip() or "(el usuario no definió instrucciones adicionales)"
     )
 
+    architecture = render_cognitive_architecture(
+        CognitiveContext(
+            assistant_name=persona.nombre_asistente,
+            identity_lines=(
+                f"- Nombre: {persona.nombre_asistente}",
+                f"- Tono: {persona.tono}",
+                f"- Trato: {trato}",
+                f"- Emojis: {emojis}",
+                f"- Rasgos de personalidad: {rasgos}",
+            ),
+            relationship_lines=tuple(_relationship_block_es(persona)),
+            memories=tuple(memories),
+            operating_context=extra_context,
+        ),
+        language="es",
+    )
+
     partes = [
-        f"Eres {persona.nombre_asistente}, el sistema operativo personal de IA de esta persona: "
-        "mayordomo digital, creador y agente de ejecución. Tu trabajo no es limitarte a responder; "
-        "es convertir su intención en un resultado real, útil y verificado.",
-        "",
-        "## Identidad y tono",
-        f"- Nombre: {persona.nombre_asistente}",
-        f"- Tono: {persona.tono}",
-        f"- Trato: {trato}",
-        f"- Emojis: {emojis}",
-        f"- Rasgos de personalidad: {rasgos}",
-        "",
-        *_MISION_ES,
-        "",
-        *_relationship_block_es(persona),
-        "",
-        "## Memorias relevantes",
-        _bullets(memories, vacio="No hay memorias relevantes para esta conversación."),
+        *architecture,
         "",
         "## Instrucciones del usuario",
         "Estas son las directrices personalizadas de la persona sobre comportamiento, formato, "
@@ -340,9 +343,6 @@ def _build_es(persona: PersonaConfig, memories: list[str], extra_context: str | 
         instrucciones,
         "</instrucciones_usuario>",
     ]
-
-    if extra_context:
-        partes.extend(["", "## Contexto adicional", extra_context])
 
     partes.extend(["", *_REGLAS_SEGURIDAD_ES])
 
@@ -365,24 +365,25 @@ def _build_en(persona: PersonaConfig, memories: list[str], extra_context: str | 
         persona.instrucciones.strip() or "(the user did not set any additional instructions)"
     )
 
+    architecture = render_cognitive_architecture(
+        CognitiveContext(
+            assistant_name=persona.nombre_asistente,
+            identity_lines=(
+                f"- Name: {persona.nombre_asistente}",
+                f"- Tone: {persona.tono}",
+                f"- Register: {trato}",
+                f"- Emojis: {emojis}",
+                f"- Personality traits: {rasgos}",
+            ),
+            relationship_lines=tuple(_relationship_block_en(persona)),
+            memories=tuple(memories),
+            operating_context=extra_context,
+        ),
+        language="en",
+    )
+
     partes = [
-        f"You are {persona.nombre_asistente}, this person's personal AI operating system: a "
-        "digital butler, creator, and execution agent. Your job is not merely to answer; it is to "
-        "turn intent into a real, useful, and verified outcome.",
-        "",
-        "## Identity and tone",
-        f"- Name: {persona.nombre_asistente}",
-        f"- Tone: {persona.tono}",
-        f"- Register: {trato}",
-        f"- Emojis: {emojis}",
-        f"- Personality traits: {rasgos}",
-        "",
-        *_MISSION_EN,
-        "",
-        *_relationship_block_en(persona),
-        "",
-        "## Relevant memories",
-        _bullets(memories, vacio="There are no relevant memories for this conversation."),
+        *architecture,
         "",
         "## User instructions",
         "These are the person's custom directives for behavior, format, priorities, and working "
@@ -392,9 +393,6 @@ def _build_en(persona: PersonaConfig, memories: list[str], extra_context: str | 
         instrucciones,
         "</user_instructions>",
     ]
-
-    if extra_context:
-        partes.extend(["", "## Additional context", extra_context])
 
     partes.extend(["", *_SAFETY_RULES_EN])
 

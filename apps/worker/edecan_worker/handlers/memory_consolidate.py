@@ -86,7 +86,7 @@ from typing import Any
 
 from edecan_core.memory import build_profile
 from edecan_llm.base import ChatMessage, CompletionRequest
-from edecan_schemas import PLANES, JobEnvelope
+from edecan_schemas import PLANES, JobEnvelope, ProfileIdentity
 from sqlalchemy import text
 
 from edecan_worker.deps import Deps
@@ -444,7 +444,7 @@ async def _upsert_perfil_vivo(
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,
     resumen: str,
-    datos: dict[str, list[str]],
+    datos: dict[str, Any],
     version: int,
 ) -> None:
     """`INSERT ... ON CONFLICT (tenant_id, user_id) DO UPDATE` — la fila es
@@ -568,6 +568,17 @@ async def _actualizar_perfil_vivo(
             return response.text
 
         nuevo_perfil = await build_profile(memorias_texto, perfil_previo, _llm_complete)
+        # La identidad es declarativa: una reconstrucción con IA puede
+        # enriquecer gustos/proyectos/metas, pero jamás cambiar el nombre o
+        # la forma de trato elegida por la propia persona.
+        identidad_previa = _from_jsonb(fila_previa.get("datos") if fila_previa else None).get(
+            "identidad"
+        )
+        try:
+            identidad = ProfileIdentity.model_validate(identidad_previa or {}).model_dump()
+        except Exception:  # datos históricos inesperados: se normalizan a vacío
+            identidad = ProfileIdentity().model_dump()
+        nuevo_perfil["datos"] = {"identidad": identidad, **nuevo_perfil["datos"]}
 
         nueva_version = (fila_previa["version"] + 1) if fila_previa is not None else 1
         await _upsert_perfil_vivo(

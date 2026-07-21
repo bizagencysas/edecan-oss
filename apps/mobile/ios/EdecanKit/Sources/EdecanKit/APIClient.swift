@@ -384,6 +384,27 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtener("/v1/me") }
     }
 
+    /// Perfil personal compartido por computador, iOS, Android y el agente.
+    public func perfilVivo() async throws -> LiveProfile {
+        try await conAutoRefresh { try await self.obtener("/v1/perfil") }
+    }
+
+    /// Guarda de forma atómica la identidad declarada y el resumen editable.
+    public func actualizarPerfilVivo(
+        identidad: ProfileIdentity,
+        resumen: String
+    ) async throws -> LiveProfile {
+        struct Datos: Encodable { let identidad: ProfileIdentity }
+        struct Body: Encodable { let resumen: String; let datos: Datos }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/perfil",
+                method: "PUT",
+                body: Body(resumen: resumen, datos: Datos(identidad: identidad))
+            )
+        }
+    }
+
     /// `GET /v1/conversations` — más recientes primero (orden que ya
     /// aplica el backend).
     public func listarConversaciones() async throws -> [Conversation] {
@@ -490,6 +511,21 @@ public actor APIClient {
     /// nada conectado.
     public func desconectarLLM() async throws {
         try await conAutoRefresh { try await self.enviarSinCuerpo("/v1/credentials/llm", method: "DELETE") }
+    }
+
+    /// Catálogo detectado. Los CLI sin listado estable devuelven al menos la
+    /// selección actual y permiten escribir un ID manual.
+    public func modelosLLM() async throws -> LLMModelsOut {
+        try await conAutoRefresh { try await self.obtener("/v1/credentials/llm/models") }
+    }
+
+    /// Cambia el modelo sin volver a pedir ni reemplazar la credencial.
+    public func actualizarModelosLLM(_ payload: LLMModelsIn) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/credentials/llm/models", method: "PATCH", body: payload
+            )
+        }
     }
 
     // MARK: - Setup / wizard de primer arranque (`ARCHITECTURE.md` §12.a/§12.d)
@@ -1142,6 +1178,13 @@ public actor APIClient {
     private func realizar(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             return try await urlSession.data(for: request)
+        } catch is CancellationError {
+            // SwiftUI cancela las tareas de una pantalla cuando cambia su
+            // identidad o deja de estar visible. Eso no es una caída de red
+            // y nunca debe terminar convertido en un aviso rojo al usuario.
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch let error as APIError {
             throw error
         } catch {

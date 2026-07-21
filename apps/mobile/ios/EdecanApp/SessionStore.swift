@@ -77,6 +77,11 @@ public final class SessionStore {
             sesionValida = true
             errorMensaje = nil
             return me
+        } catch is CancellationError {
+            // Una navegación o reconstrucción de SwiftUI puede cancelar el
+            // request anterior. Conservamos el último estado sin presentar
+            // esa cancelación interna como un error de conexión.
+            return nil
         } catch APIClient.APIError.sesionExpirada {
             guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
                 return nil

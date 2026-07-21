@@ -84,6 +84,50 @@ data class Me(
 val Me.nombrePila: String
     get() = user.email.substringBefore('@').ifBlank { user.email }
 
+// ---------------------------------------------------------------------------
+// Perfil personal (`GET/PUT /v1/perfil`)
+// ---------------------------------------------------------------------------
+
+@Serializable
+data class ProfileIdentity(
+    @SerialName("nombre_preferido") val nombrePreferido: String = "",
+    @SerialName("nombre_completo") val nombreCompleto: String = "",
+    val pronombres: String = "",
+    @SerialName("fecha_nacimiento") val fechaNacimiento: String = "",
+    val pais: String = "",
+    val ciudad: String = "",
+    @SerialName("zona_horaria") val zonaHoraria: String = "",
+    val ocupacion: String = "",
+    @SerialName("idioma_preferido") val idiomaPreferido: String = "",
+    @SerialName("forma_de_trato") val formaDeTrato: String = "",
+    val biografia: String = "",
+)
+
+@Serializable
+data class ProfileData(
+    val identidad: ProfileIdentity = ProfileIdentity(),
+    val gustos: List<String> = emptyList(),
+    val proyectos: List<String> = emptyList(),
+    val metas: List<String> = emptyList(),
+    val relaciones: List<String> = emptyList(),
+    val empresas: List<String> = emptyList(),
+    val habitos: List<String> = emptyList(),
+)
+
+@Serializable
+data class LiveProfile(
+    val resumen: String = "",
+    val datos: ProfileData = ProfileData(),
+    val version: Int = 0,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class ProfileDataPatch(val identidad: ProfileIdentity)
+
+@Serializable
+data class LiveProfilePatch(val resumen: String, val datos: ProfileDataPatch)
+
 fun Map<String, JsonElement>.boolFlag(key: String, default: Boolean = false): Boolean =
     this[key]?.jsonPrimitive?.let { runCatching { it.boolean }.getOrNull() } ?: default
 
@@ -381,6 +425,14 @@ sealed interface ChatEvent {
     ) : ChatEvent
 
     @Serializable
+    data class ToolProgress(
+        val name: String,
+        @SerialName("elapsed_seconds") val elapsedSeconds: Int = 0,
+        val message: String = "Trabajando",
+        @SerialName("tool_call_id") val toolCallId: String? = null,
+    ) : ChatEvent
+
+    @Serializable
     data class ToolEnd(
         val name: String,
         @SerialName("result_preview") val resultPreview: String = "",
@@ -388,6 +440,7 @@ sealed interface ChatEvent {
         @SerialName("blocks_version") val blocksVersion: Int = 1,
         val blocks: List<ChatBlock> = emptyList(),
         @SerialName("tool_call_id") val toolCallId: String? = null,
+        @SerialName("mission_id") val missionId: String? = null,
     ) : ChatEvent
 
     @Serializable
@@ -423,6 +476,7 @@ object ChatEventSerializer : JsonContentPolymorphicSerializer<ChatEvent>(ChatEve
         when ((element as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull) {
             "text_delta" -> ChatEvent.TextDelta.serializer()
             "tool_start" -> ChatEvent.ToolStart.serializer()
+            "tool_progress" -> ChatEvent.ToolProgress.serializer()
             "tool_end" -> ChatEvent.ToolEnd.serializer()
             "confirmation_required" -> ChatEvent.ConfirmationRequired.serializer()
             "done" -> ChatEvent.Done.serializer()
@@ -541,6 +595,24 @@ data class LlmCredentialsIn(
     @SerialName("model_rapido") val modelRapido: String? = null,
     val extra: Map<String, String> = emptyMap(),
     val validate: Boolean = true,
+)
+
+@Serializable
+data class LlmModelsOut(
+    val kind: String,
+    @SerialName("model_principal") val modelPrincipal: String? = null,
+    @SerialName("model_rapido") val modelRapido: String? = null,
+    val models: List<String> = emptyList(),
+    @SerialName("manual_allowed") val manualAllowed: Boolean = true,
+    @SerialName("capabilities_managed_by_edecan")
+    val capabilitiesManagedByEdecan: Boolean = true,
+    @SerialName("discovery_error") val discoveryError: String? = null,
+)
+
+@Serializable
+data class LlmModelsIn(
+    @SerialName("model_principal") val modelPrincipal: String,
+    @SerialName("model_rapido") val modelRapido: String? = null,
 )
 
 /** `GET /v1/setup/status` (`edecan_api.routers.setup`). */

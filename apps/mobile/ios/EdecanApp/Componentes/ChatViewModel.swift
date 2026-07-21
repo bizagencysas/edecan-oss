@@ -7,6 +7,120 @@ import Observation
 @MainActor
 @Observable
 final class ChatViewModel {
+    struct Trabajo: Equatable {
+        struct Paso: Identifiable, Equatable {
+            enum Estado: Equatable { case ejecutando, completado, error }
+
+            let id: String
+            let nombre: String
+            var estado: Estado
+            var detalle: String?
+            var segundos: Int
+        }
+
+        let iniciadoEn: Date
+        var terminadoEn: Date?
+        var pasos: [Paso]
+        var missionId: String? = nil
+        var estadoMision: String? = nil
+        var errorMision: String? = nil
+
+        var estaActivo: Bool {
+            if let estadoMision { return estadoMision == "planning" || estadoMision == "running" }
+            return terminadoEn == nil
+        }
+        var tituloEstado: String {
+            switch estadoMision {
+            case "waiting_confirmation": return "Necesita tu aprobación"
+            case "error": return "El trabajo encontró un error"
+            case "cancelled": return "Trabajo cancelado"
+            case "done": return "Trabajo completado"
+            default: return estaActivo ? "Edecán está trabajando" : "Trabajo completado"
+            }
+        }
+        var segundosTranscurridos: Int {
+            if let reportado = pasos.last?.segundos, reportado > 0 { return reportado }
+            return max(0, Int((terminadoEn ?? Date()).timeIntervalSince(iniciadoEn)))
+        }
+
+        mutating func iniciar(toolCallId: String?, nombre: String) {
+            let id = toolCallId ?? "\(nombre)-\(pasos.count)"
+            if pasos.contains(where: { $0.id == id }) { return }
+            pasos.append(Paso(id: id, nombre: nombre, estado: .ejecutando, segundos: 0))
+        }
+
+        mutating func actualizar(
+            toolCallId: String?, nombre: String, segundos: Int, detalle: String
+        ) {
+            guard let index = indice(toolCallId: toolCallId, nombre: nombre) else {
+                iniciar(toolCallId: toolCallId, nombre: nombre)
+                actualizar(
+                    toolCallId: toolCallId,
+                    nombre: nombre,
+                    segundos: segundos,
+                    detalle: detalle
+                )
+                return
+            }
+            pasos[index].segundos = max(pasos[index].segundos, segundos)
+            pasos[index].detalle = detalle
+        }
+
+        mutating func completar(
+            toolCallId: String?, nombre: String, resultado: String
+        ) {
+            guard let index = indice(toolCallId: toolCallId, nombre: nombre) else { return }
+            let fallo = resultado.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased().hasPrefix("error:")
+            pasos[index].estado = fallo ? .error : .completado
+            let limpio = resultado.trimmingCharacters(in: .whitespacesAndNewlines)
+            pasos[index].detalle = limpio.isEmpty ? nil : limpio
+        }
+
+        mutating func finalizar() {
+            guard missionId == nil else { return }
+            terminadoEn = Date()
+        }
+
+        mutating func vincularMision(_ missionId: String) {
+            self.missionId = missionId
+            estadoMision = "planning"
+            terminadoEn = nil
+        }
+
+        mutating func actualizarMision(_ detail: MissionDetailOut) {
+            missionId = detail.mission.id
+            estadoMision = detail.mission.status
+            errorMision = detail.mission.error
+            for step in detail.steps {
+                let id = "mission:\(step.seq)"
+                let state: Paso.Estado
+                switch step.status {
+                case "done", "skipped": state = .completado
+                case "error": state = .error
+                default: state = .ejecutando
+                }
+                let item = Paso(
+                    id: id,
+                    nombre: step.instruccion,
+                    estado: state,
+                    detalle: step.resultado,
+                    segundos: 0
+                )
+                if let index = pasos.firstIndex(where: { $0.id == id }) { pasos[index] = item }
+                else { pasos.append(item) }
+            }
+            if !detail.mission.estaActiva { terminadoEn = Date() }
+        }
+
+        private func indice(toolCallId: String?, nombre: String) -> Int? {
+            if let toolCallId, let exacto = pasos.lastIndex(where: { $0.id == toolCallId }) {
+                return exacto
+            }
+            return pasos.lastIndex(where: { $0.nombre == nombre && $0.estado == .ejecutando })
+        }
+    }
+
     struct Mensaje: Identifiable, Equatable {
         enum Rol: Equatable { case usuario, asistente }
 
@@ -17,6 +131,7 @@ final class ChatViewModel {
         var artefactos: [ArtifactRef] = []
         var bloques: [ChatBlock] = []
         var adjuntos: [ChatAttachment] = []
+        var trabajo: Trabajo?
         /// UUID estable del intento lógico. Solo sobrevive mientras el envío
         /// puede reintentarse; nunca se reconstruye para mensajes históricos.
         var logicalAttempt: LogicalChatAttempt?
@@ -31,6 +146,7 @@ final class ChatViewModel {
             artefactos: [ArtifactRef] = [],
             bloques: [ChatBlock] = [],
             adjuntos: [ChatAttachment] = [],
+            trabajo: Trabajo? = nil,
             logicalAttempt: LogicalChatAttempt? = nil,
             falloEnvio: Bool = false
         ) {
@@ -41,6 +157,7 @@ final class ChatViewModel {
             self.artefactos = artefactos
             self.bloques = bloques
             self.adjuntos = adjuntos
+            self.trabajo = trabajo
             self.logicalAttempt = logicalAttempt
             self.falloEnvio = falloEnvio
         }
@@ -71,6 +188,7 @@ final class ChatViewModel {
 
     private let sseClient = SSEClient()
     private var inicializado = false
+    private var seguimientoMisiones: [String: Task<Void, Never>] = [:]
 
     var tituloConversacionActual: String {
         guard let conversacionId,
@@ -121,6 +239,7 @@ final class ChatViewModel {
             mensajes = Self.mensajesDesdeHistorial(detail.messages)
             herramientaActiva = nil
             restaurarConfirmacion(detail.pendingConfirmation)
+            iniciarSeguimientosPersistidos(client: client)
         } catch {
             errorMensaje = error.localizedDescription
         }
@@ -342,7 +461,13 @@ final class ChatViewModel {
             )
             do {
                 for try await evento in sseClient.stream(request) {
-                    aplicar(evento, indiceRespuesta: indiceRespuesta)
+                    if let missionId = aplicar(evento, indiceRespuesta: indiceRespuesta) {
+                        iniciarSeguimientoMision(
+                            missionId: missionId,
+                            mensajeId: mensajes[indiceRespuesta].id,
+                            client: client
+                        )
+                    }
                 }
                 return
             } catch SSEClient.SSEError.servidor(let status) where status == 401 && !yaRefresco {
@@ -389,19 +514,47 @@ final class ChatViewModel {
         }
     }
 
-    private func aplicar(_ evento: ChatEvent, indiceRespuesta: Int) {
-        guard mensajes.indices.contains(indiceRespuesta) else { return }
+    @discardableResult
+    private func aplicar(_ evento: ChatEvent, indiceRespuesta: Int) -> String? {
+        guard mensajes.indices.contains(indiceRespuesta) else { return nil }
         switch evento {
         case .textDelta(let texto):
             mensajes[indiceRespuesta].texto += texto
         case .toolStart(let toolCallId, let nombre, _):
             herramientaActiva = HerramientaActiva(toolCallId: toolCallId, nombre: nombre)
-        case .toolEnd(let toolCallId, _, _, let artefactos, let blocksVersion, let bloques):
+            if mensajes[indiceRespuesta].trabajo == nil {
+                mensajes[indiceRespuesta].trabajo = Trabajo(iniciadoEn: Date(), pasos: [])
+            }
+            mensajes[indiceRespuesta].trabajo?.iniciar(toolCallId: toolCallId, nombre: nombre)
+        case .toolProgress(let toolCallId, let nombre, let segundos, let detalle):
+            if mensajes[indiceRespuesta].trabajo == nil {
+                mensajes[indiceRespuesta].trabajo = Trabajo(iniciadoEn: Date(), pasos: [])
+            }
+            mensajes[indiceRespuesta].trabajo?.actualizar(
+                toolCallId: toolCallId,
+                nombre: nombre,
+                segundos: segundos,
+                detalle: detalle
+            )
+        case .toolEnd(
+            let toolCallId,
+            let nombre,
+            let resultado,
+            let artefactos,
+            let blocksVersion,
+            let bloques,
+            let missionId
+        ):
             if herramientaActiva?.toolCallId == nil
                 || toolCallId == nil
                 || herramientaActiva?.toolCallId == toolCallId {
                 herramientaActiva = nil
             }
+            mensajes[indiceRespuesta].trabajo?.completar(
+                toolCallId: toolCallId,
+                nombre: nombre,
+                resultado: resultado
+            )
             for artefacto in artefactos
             where !mensajes[indiceRespuesta].artefactos.contains(where: { $0.fileId == artefacto.fileId }) {
                 mensajes[indiceRespuesta].artefactos.append(artefacto)
@@ -410,6 +563,13 @@ final class ChatViewModel {
                 for bloque in bloques where !mensajes[indiceRespuesta].bloques.contains(bloque) {
                     mensajes[indiceRespuesta].bloques.append(bloque)
                 }
+            }
+            if let missionId {
+                if mensajes[indiceRespuesta].trabajo == nil {
+                    mensajes[indiceRespuesta].trabajo = Trabajo(iniciadoEn: Date(), pasos: [])
+                }
+                mensajes[indiceRespuesta].trabajo?.vincularMision(missionId)
+                return missionId
             }
         case .confirmationRequired(let toolCallId, let nombre, let args):
             herramientaActiva = nil
@@ -420,11 +580,55 @@ final class ChatViewModel {
                 indiceMensaje: indiceRespuesta
             )
         case .done:
-            break
+            mensajes[indiceRespuesta].trabajo?.finalizar()
         case .error(let mensaje):
             errorMensaje = mensaje
         case .unknown:
             break
+        }
+        return nil
+    }
+
+    private func iniciarSeguimientosPersistidos(client: APIClient) {
+        for mensaje in mensajes {
+            guard let missionId = mensaje.trabajo?.missionId else { continue }
+            iniciarSeguimientoMision(missionId: missionId, mensajeId: mensaje.id, client: client)
+        }
+    }
+
+    private func iniciarSeguimientoMision(
+        missionId: String,
+        mensajeId: String,
+        client: APIClient
+    ) {
+        guard seguimientoMisiones[missionId] == nil else { return }
+        seguimientoMisiones[missionId] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.seguimientoMisiones[missionId] = nil }
+            var fallosConsecutivos = 0
+            while !Task.isCancelled {
+                do {
+                    let detail = try await client.getMission(id: missionId)
+                    fallosConsecutivos = 0
+                    if let index = self.mensajes.firstIndex(where: { $0.id == mensajeId }) {
+                        if self.mensajes[index].trabajo == nil {
+                            self.mensajes[index].trabajo = Trabajo(iniciadoEn: Date(), pasos: [])
+                        }
+                        self.mensajes[index].trabajo?.actualizarMision(detail)
+                    }
+                    if !detail.mission.estaActiva { break }
+                } catch {
+                    fallosConsecutivos += 1
+                    if fallosConsecutivos >= 3 {
+                        if let index = self.mensajes.firstIndex(where: { $0.id == mensajeId }) {
+                            self.mensajes[index].trabajo?.errorMision =
+                                "No pude actualizar el progreso. Sigue disponible en Actividad."
+                        }
+                        break
+                    }
+                }
+                try? await Task.sleep(for: .seconds(3))
+            }
         }
     }
 
@@ -439,24 +643,58 @@ final class ChatViewModel {
 
             var artifacts: [ArtifactRef] = []
             var blocks: [ChatBlock] = []
+            var trabajo: Trabajo?
             for event in row.toolCalls {
-                guard case .toolEnd(_, _, _, let eventArtifacts, let version, let eventBlocks) = event
-                else { continue }
-                for artifact in eventArtifacts
-                where !artifacts.contains(where: { $0.fileId == artifact.fileId }) {
-                    artifacts.append(artifact)
-                }
-                if version == 1 {
-                    for block in eventBlocks where !blocks.contains(block) { blocks.append(block) }
+                switch event {
+                case .toolStart(let toolCallId, let nombre, _):
+                    if trabajo == nil { trabajo = Trabajo(iniciadoEn: row.createdAt, pasos: []) }
+                    trabajo?.iniciar(toolCallId: toolCallId, nombre: nombre)
+                case .toolProgress(let toolCallId, let nombre, let segundos, let detalle):
+                    if trabajo == nil { trabajo = Trabajo(iniciadoEn: row.createdAt, pasos: []) }
+                    trabajo?.actualizar(
+                        toolCallId: toolCallId,
+                        nombre: nombre,
+                        segundos: segundos,
+                        detalle: detalle
+                    )
+                case .toolEnd(
+                    let toolCallId,
+                    let nombre,
+                    let resultado,
+                    let eventArtifacts,
+                    let version,
+                    let eventBlocks,
+                    let missionId
+                ):
+                    trabajo?.completar(
+                        toolCallId: toolCallId,
+                        nombre: nombre,
+                        resultado: resultado
+                    )
+                    for artifact in eventArtifacts
+                    where !artifacts.contains(where: { $0.fileId == artifact.fileId }) {
+                        artifacts.append(artifact)
+                    }
+                    if version == 1 {
+                        for block in eventBlocks where !blocks.contains(block) { blocks.append(block) }
+                    }
+                    if let missionId {
+                        if trabajo == nil { trabajo = Trabajo(iniciadoEn: row.createdAt, pasos: []) }
+                        trabajo?.vincularMision(missionId)
+                    }
+                default:
+                    continue
                 }
             }
+            trabajo?.finalizar()
             return Mensaje(
                 id: row.id,
                 rol: role,
                 texto: row.text,
                 artefactos: artifacts,
                 bloques: blocks,
-                adjuntos: row.attachments
+                adjuntos: row.attachments,
+                trabajo: trabajo
             )
         }
     }

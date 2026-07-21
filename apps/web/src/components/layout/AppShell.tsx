@@ -13,7 +13,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div className="flex min-h-screen min-w-0 max-w-full overflow-x-hidden bg-slate-50 dark:bg-slate-950">
       <Sidebar />
 
       {drawerOpen && (
@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       )}
 
-      <div className="flex min-h-screen flex-1 flex-col">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900 md:px-6">
           <button
             aria-label="Abrir menú"
@@ -65,7 +65,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
           </div>
         </header>
-        <main className="flex flex-1 flex-col overflow-y-auto p-4 md:p-6">{children}</main>
+        <main className="flex min-w-0 max-w-full flex-1 flex-col overflow-x-hidden overflow-y-auto p-4 md:p-6">
+          <div className="min-w-0 max-w-full">{children}</div>
+        </main>
       </div>
     </div>
   );

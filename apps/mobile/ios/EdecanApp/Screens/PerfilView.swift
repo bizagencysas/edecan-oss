@@ -1,36 +1,32 @@
 import SwiftUI
 import EdecanKit
 
-/// Ajustes. Encabezado de cuenta, estado de conexión
-/// de LLM/voz/imágenes/búsqueda (`GET /v1/credentials`) con un selector
-/// "Conectar LLM" ("pegar y validar"), y "Cerrar sesión" — editar persona,
-/// tema y notificaciones sigue siendo placeholder.
+/// El espacio personal de la app móvil.
+///
+/// Las credenciales, proveedores y demás infraestructura se configuran en la
+/// computadora donde vive Edecán. El iPhone muestra a la persona, su asistente
+/// y accesos útiles; nunca intenta editar secretos ni convierte el perfil en un
+/// panel técnico.
 struct PerfilView: View {
     @Environment(PairingStore.self) private var pairingStore
     @Environment(SessionStore.self) private var session
-    @State private var credencialesVM = CredencialesViewModel()
+    @Environment(TabRouter.self) private var router
     @State private var mostrarConfirmacionSalir = false
-    @State private var mostrarHojaLLM = false
+    @State private var mostrarEstudioDeContenido = false
+    @State private var perfilVivo: LiveProfile?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    encabezado
-
-                    seccionConexiones
-
+                    tarjetaDePersona
+                    perfilPersonal
+                    tarjetaDeEdecan
+                    herramientas
                     modoAvanzado
+                    version
 
-                    EmptyStateView(
-                        icono: "person.text.rectangle.fill",
-                        titulo: "Más ajustes en camino",
-                        descripcion: "Editar tu persona (tono, formalidad, instrucciones), tema de la app y notificaciones push van a vivir aquí — hoy se editan desde el panel web.",
-                        etiquetaRoadmap: "Próximamente"
-                    )
-                    .frame(minHeight: 160)
-
-                    Button("Cerrar sesión", role: .destructive) {
+                    Button("Desvincular este iPhone", role: .destructive) {
                         mostrarConfirmacionSalir = true
                     }
                     .buttonStyle(.bordered)
@@ -38,50 +34,160 @@ struct PerfilView: View {
                 .padding()
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-            .navigationTitle("Ajustes")
-            .task {
-                await session.cargarMe()
-                await credencialesVM.cargar(client: session.client)
-            }
-            .refreshable {
-                await session.cargarMe()
-                await credencialesVM.cargar(client: session.client)
-            }
-            .sheet(isPresented: $mostrarHojaLLM, onDismiss: {
-                Task { await credencialesVM.cargar(client: session.client) }
-            }) {
-                ConectarLLMSheet(viewModel: credencialesVM, deteccion: credencialesVM.deteccion)
-                    .environment(session)
+            .navigationTitle("Tú")
+            .task { await cargarPerfilCompleto() }
+            .refreshable { await cargarPerfilCompleto() }
+            .sheet(isPresented: $mostrarEstudioDeContenido) {
+                ContentStudioView()
+                    .environment(router)
             }
             .confirmationDialog(
-                "¿Cerrar sesión en este dispositivo?",
+                "¿Desvincular este iPhone?",
                 isPresented: $mostrarConfirmacionSalir,
                 titleVisibility: .visible
             ) {
-                Button("Cerrar sesión", role: .destructive, action: cerrarSesion)
+                Button("Desvincular", role: .destructive, action: cerrarSesion)
                 Button("Cancelar", role: .cancel) {}
+            } message: {
+                Text("Para volver a usar Edecán tendrás que escanear nuevamente el QR de tu computadora.")
             }
         }
     }
 
-    private var encabezado: some View {
+    private var tarjetaDePersona: some View {
         VStack(spacing: 10) {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(EdecanTheme.degradado)
+            ZStack {
+                Circle()
+                    .fill(EdecanTheme.degradado)
+                    .frame(width: 68, height: 68)
+                Text(inicialDePersona)
+                    .font(.title.bold())
+                    .foregroundStyle(.white)
+            }
+
             if let me = session.me {
+                Text(nombreMostrado)
+                    .font(.title3.bold())
                 Text(me.user.email)
-                    .font(.headline)
-                Text(me.tenant.name)
-                    .font(.footnote)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-            } else {
+                Text(me.tenant.name)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else if session.cargandoMe {
                 ProgressView()
+            } else {
+                Text("Tu perfil")
+                    .font(.headline)
             }
         }
         .frame(maxWidth: .infinity)
         .padding(24)
         .tarjetaVidrio(esquina: 22)
+    }
+
+    private var perfilPersonal: some View {
+        NavigationLink {
+            PerfilEditorView { actualizado in
+                perfilVivo = actualizado
+            }
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(EdecanTheme.morado.opacity(0.13))
+                        .frame(width: 48, height: 48)
+                    Image(systemName: "person.text.rectangle.fill")
+                        .foregroundStyle(EdecanTheme.morado)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Perfil")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("Tu nombre, contexto y cómo quieres que Edecán te hable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .tarjetaVidrio(esquina: 20)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tarjetaDeEdecan: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(EdecanTheme.degradado)
+                    .frame(width: 64, height: 64)
+                Image(systemName: "headphones")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text("Edecán")
+                        .font(.headline)
+                    Circle()
+                        .fill(session.me == nil ? Color.orange : Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(session.me == nil ? "Conectando" : "Listo")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text("Tu asistente personal para pensar, crear, organizar y hacer.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .tarjetaVidrio(esquina: 20)
+    }
+
+    private var herramientas: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("TU EDECÁN")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 12)
+
+            Button {
+                mostrarEstudioDeContenido = true
+            } label: {
+                fila(icono: "wand.and.stars", titulo: "Crear contenido", subtitulo: "Posts, imágenes e ideas completas")
+            }
+            .buttonStyle(.plain)
+
+            separador
+
+            NavigationLink {
+                RemotoView()
+            } label: {
+                fila(icono: "display", titulo: "Control remoto", subtitulo: "Usa tu computadora desde el iPhone")
+            }
+            .buttonStyle(.plain)
+
+            separador
+
+            NavigationLink {
+                CapabilitiesView()
+            } label: {
+                fila(icono: "sparkles.rectangle.stack.fill", titulo: "Capacidades", subtitulo: "Descubre todo lo que puede hacer")
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .tarjetaVidrio(esquina: 20)
     }
 
     private var modoAvanzado: some View {
@@ -90,99 +196,90 @@ struct PerfilView: View {
                 NavigationLink {
                     IDEView()
                 } label: {
-                    filaAvanzada(icono: "chevron.left.forwardslash.chevron.right", titulo: "IDE")
+                    fila(icono: "chevron.left.forwardslash.chevron.right", titulo: "Construir con Edecán", subtitulo: "Código, sitios y aplicaciones")
                 }
-                Divider().padding(.vertical, 8)
-                NavigationLink {
-                    CapabilitiesView()
-                } label: {
-                    filaAvanzada(icono: "sparkles.rectangle.stack.fill", titulo: "Capacidades")
-                }
-                Divider().padding(.vertical, 8)
+                .buttonStyle(.plain)
+
+                separador
+
                 NavigationLink {
                     NegociosView()
                 } label: {
-                    filaAvanzada(icono: "chart.pie.fill", titulo: "Negocios")
+                    fila(icono: "chart.pie.fill", titulo: "Negocios", subtitulo: "Decisiones, métricas y estrategia")
                 }
+                .buttonStyle(.plain)
             }
             .padding(.top, 12)
         }
+        .tint(EdecanTheme.morado)
         .padding(16)
         .tarjetaVidrio(esquina: 18)
     }
 
-    private func filaAvanzada(icono: String, titulo: String) -> some View {
-        HStack {
-            Image(systemName: icono).frame(width: 24).foregroundStyle(EdecanTheme.morado)
-            Text(titulo).foregroundStyle(.primary)
-            Spacer()
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+    private func fila(icono: String, titulo: String, subtitulo: String) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(EdecanTheme.morado.opacity(0.12))
+                    .frame(width: 42, height: 42)
+                Image(systemName: icono)
+                    .foregroundStyle(EdecanTheme.morado)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(titulo)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(subtitulo)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
+        .contentShape(Rectangle())
+        .padding(.vertical, 4)
     }
 
-    private var seccionConexiones: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Conexiones").font(.headline)
-                Spacer()
-                if credencialesVM.cargando { ProgressView().controlSize(.small) }
-            }
-
-            if let error = credencialesVM.errorMensaje {
-                Text(error).font(.footnote).foregroundStyle(.red)
-            }
-
-            VStack(spacing: 0) {
-                FilaConexion(
-                    titulo: "LLM (cerebro del asistente)",
-                    subtitulo: descripcionLLM,
-                    conectado: credencialesVM.credenciales?.llm != nil
-                ) {
-                    mostrarHojaLLM = true
-                }
-                Divider().padding(.vertical, 10)
-                FilaConexion(
-                    titulo: "Voz — transcripción (STT)",
-                    subtitulo: credencialesVM.credenciales?.voiceStt?.provider ?? "No conectado — la voz cae a un stub sin sonido real",
-                    conectado: credencialesVM.credenciales?.voiceStt != nil,
-                    accion: nil
-                )
-                Divider().padding(.vertical, 10)
-                FilaConexion(
-                    titulo: "Voz — síntesis (TTS)",
-                    subtitulo: credencialesVM.credenciales?.voiceTts?.provider ?? "No conectado — la voz cae a un stub sin sonido real",
-                    conectado: credencialesVM.credenciales?.voiceTts != nil,
-                    accion: nil
-                )
-                Divider().padding(.vertical, 10)
-                FilaConexion(
-                    titulo: "Generación de imágenes",
-                    subtitulo: credencialesVM.credenciales?.images.map { "\($0.model ?? "modelo desconocido")" } ?? "No conectado",
-                    conectado: credencialesVM.credenciales?.images != nil,
-                    accion: nil
-                )
-                Divider().padding(.vertical, 10)
-                FilaConexion(
-                    titulo: "Búsqueda web",
-                    subtitulo: credencialesVM.credenciales?.search?.provider ?? "No conectado",
-                    conectado: credencialesVM.credenciales?.search != nil,
-                    accion: nil
-                )
-            }
-        }
-        .padding(16)
-        .tarjetaVidrio(esquina: 18)
+    private var separador: some View {
+        Divider().padding(.vertical, 10)
     }
 
-    private var descripcionLLM: String {
-        guard let llm = credencialesVM.credenciales?.llm, let kind = llm.kind else {
-            return "No conectado — toca para elegir un proveedor"
+    private var version: some View {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        return Text("Edecán \(version) (\(build))")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("Versión \(version), compilación \(build)")
+    }
+
+    private var inicialDePersona: String {
+        let nombre = nombreMostrado.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(nombre.first ?? "T").uppercased()
+    }
+
+    private var nombreMostrado: String {
+        let elegido = perfilVivo?.datos.identidad.nombrePreferido
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !elegido.isEmpty { return elegido }
+        return session.me?.nombrePila.capitalized ?? "Tu perfil"
+    }
+
+    private func cargarPerfilCompleto() async {
+        await session.cargarMe()
+        guard let client = session.client else { return }
+        do {
+            perfilVivo = try await client.perfilVivo()
+        } catch is CancellationError {
+            return
+        } catch {
+            // El encabezado sigue funcionando con /v1/me. El editor mostrará
+            // el error concreto si la persona decide abrirlo.
         }
-        let nombre = LLMProviderKind(rawValue: kind)?.nombreVisible ?? kind
-        if let masked = llm.masked {
-            return "\(nombre) · \(masked)"
-        }
-        return nombre
     }
 
     private func cerrarSesion() {
@@ -191,34 +288,5 @@ struct PerfilView: View {
         Task {
             await session.cerrarSesion(deviceId: deviceId)
         }
-    }
-}
-
-private struct FilaConexion: View {
-    let titulo: String
-    let subtitulo: String
-    let conectado: Bool
-    var accion: (() -> Void)? = nil
-
-    var body: some View {
-        Button {
-            accion?()
-        } label: {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(conectado ? Color.green : Color.secondary.opacity(0.35))
-                    .frame(width: 9, height: 9)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(titulo).font(.subheadline).foregroundStyle(.primary)
-                    Text(subtitulo).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                if accion != nil {
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(accion == nil)
     }
 }

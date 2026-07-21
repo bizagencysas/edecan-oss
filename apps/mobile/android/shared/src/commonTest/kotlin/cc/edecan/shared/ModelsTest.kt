@@ -71,6 +71,23 @@ class ModelsTest {
         assertEquals(0, me.flags.intFlag("limits.storage_mb")) // ausente -> default 0.
     }
 
+    @Test
+    fun liveProfile_decodifica_identidad_compartida() {
+        val json = """
+            {"resumen":"Construye productos con IA.","datos":{
+              "identidad":{"nombre_preferido":"Isacc","nombre_completo":"Isacc Lara","pronombres":"él","fecha_nacimiento":"8 de enero de 1996","pais":"Venezuela","ciudad":"Medellín","zona_horaria":"America/Bogota","ocupacion":"Fundador","idioma_preferido":"Español de Venezuela","forma_de_trato":"Cercano y directo","biografia":"Construye startups."},
+              "gustos":[],"proyectos":["Edecán"],"metas":[],"relaciones":[],"empresas":[],"habitos":[]},
+              "version":4,"updated_at":"2026-07-21T18:00:00Z"}
+        """.trimIndent()
+
+        val perfil = edecanJson.decodeFromString(LiveProfile.serializer(), json)
+
+        assertEquals("Isacc", perfil.datos.identidad.nombrePreferido)
+        assertEquals("Cercano y directo", perfil.datos.identidad.formaDeTrato)
+        assertEquals(listOf("Edecán"), perfil.datos.proyectos)
+        assertEquals(4, perfil.version)
+    }
+
     // -------------------------------------------------------------------
     // Conversaciones y mensajes
     // -------------------------------------------------------------------
@@ -168,6 +185,14 @@ class ModelsTest {
         )
         check(toolStart is ChatEvent.ToolStart)
         assertEquals("agenda_eventos", toolStart.name)
+
+        assertEquals(
+            ChatEvent.ToolProgress("construir_app", 12, "Edecán sigue trabajando", "call-1"),
+            edecanJson.decodeFromString(
+                ChatEvent.serializer(),
+                """{"type":"tool_progress","tool_call_id":"call-1","name":"construir_app","elapsed_seconds":12,"message":"Edecán sigue trabajando"}""",
+            ),
+        )
         val dia = (toolStart.args as? JsonObject)?.get("dia") as? JsonPrimitive
         assertEquals("2026-07-08", dia?.content)
 
@@ -201,6 +226,16 @@ class ModelsTest {
             ),
             evento,
         )
+    }
+
+    @Test
+    fun toolEnd_vincula_mision_asincrona_al_mismo_chat() {
+        val evento = edecanJson.decodeFromString(
+            ChatEvent.serializer(),
+            """{"type":"tool_end","name":"delegar_mision","result_preview":"Misión creada","mission_id":"22222222-2222-4222-a222-222222222222"}""",
+        )
+        check(evento is ChatEvent.ToolEnd)
+        assertEquals("22222222-2222-4222-a222-222222222222", evento.missionId)
     }
 
     @Test
@@ -385,6 +420,22 @@ class ModelsTest {
         assertTrue(json.contains("\"validate\":true"))
         assertTrue(json.contains("\"kind\":\"anthropic\""))
         assertTrue(json.contains("\"api_key\":\"sk-ant-x\""))
+    }
+
+    @Test
+    fun llmModels_catalogo_y_seleccion_manual_respetan_el_contrato() {
+        val catalogo = edecanJson.decodeFromString(
+            LlmModelsOut.serializer(),
+            """{"kind":"ollama","model_principal":"qwen3:32b","model_rapido":"qwen3:8b","models":["qwen3:32b","qwen3:8b"],"manual_allowed":true,"capabilities_managed_by_edecan":true,"discovery_error":null}""",
+        )
+        assertEquals(listOf("qwen3:32b", "qwen3:8b"), catalogo.models)
+        assertTrue(catalogo.capabilitiesManagedByEdecan)
+
+        val payload = edecanJson.encodeToString(
+            LlmModelsIn(modelPrincipal = "modelo-futuro", modelRapido = "modelo-rapido"),
+        )
+        assertTrue(payload.contains("\"model_principal\":\"modelo-futuro\""))
+        assertTrue(payload.contains("\"model_rapido\":\"modelo-rapido\""))
     }
 
     // -------------------------------------------------------------------

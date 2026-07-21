@@ -364,7 +364,6 @@ class RemotoViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        super.onCleared()
         pausarPolling()
     }
 }

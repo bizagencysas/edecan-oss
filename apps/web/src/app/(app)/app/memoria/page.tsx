@@ -213,7 +213,7 @@ export default function MemoriaPage() {
       <Card className="mb-6">
         <CardHeader
           title="Importar desde otra IA"
-          description="¿Ya le contaste todo a ChatGPT, Gemini u otra IA? Copiá el prompt, pegá su respuesta acá, y Edecán saca los recuerdos de ahí."
+          description="¿Ya le contaste todo a ChatGPT, Gemini u otra IA? Copia el prompt, pega aquí su respuesta y Edecán extraerá los recuerdos útiles."
         />
         <CardBody className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -221,7 +221,7 @@ export default function MemoriaPage() {
               {copiado ? "Copiado ✓" : "Copiar prompt"}
             </Button>
             <span className="text-xs text-slate-400">
-              Pegalo en tu IA preferida, copiá toda su respuesta, y pegala abajo.
+              Pégalo en tu IA preferida, copia toda su respuesta y colócala abajo.
             </span>
           </div>
 
@@ -231,7 +231,7 @@ export default function MemoriaPage() {
               rows={5}
               value={textoImportar}
               onChange={(e) => setTextoImportar(e.target.value)}
-              placeholder="Pegá acá la respuesta completa de tu IA…"
+              placeholder="Pega aquí la respuesta completa de tu IA…"
             />
           </Field>
 

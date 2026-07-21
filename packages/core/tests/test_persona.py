@@ -184,3 +184,46 @@ def test_prompt_oculta_razonamiento_y_usa_espanol_neutral_sin_inventar_ubicacion
     assert "show only the final response" in prompt_en_lower
     assert "never expose internal reasoning" in prompt_en_lower
     assert "never invent the person's country" in prompt_en_lower
+
+
+def test_prompt_compone_core_identity_y_motores_cognitivos_separados():
+    prompt = build_system_prompt(PersonaConfig(), ["Construye productos escalables"])
+
+    for section in (
+        "# Edecán Core Identity",
+        "## Persona Engine",
+        "## Memory Engine",
+        "## Planning Engine",
+        "## Execution Engine",
+        "## Tool Orchestrator",
+        "## Computer Control",
+        "## Learning Engine",
+        "## Proactive Engine",
+        "## Companion Layer",
+    ):
+        assert section in prompt
+
+    assert "No eres un chatbot" in prompt
+    assert "optimizas su trayectoria" in prompt
+    assert "- Construye productos escalables" in prompt
+
+
+def test_arquitectura_cognitiva_separa_nucleo_de_modulos_versionables():
+    from edecan_core.cognitive_architecture import DEFAULT_COGNITIVE_ARCHITECTURE
+
+    assert DEFAULT_COGNITIVE_ARCHITECTURE.version == "1.0"
+    assert DEFAULT_COGNITIVE_ARCHITECTURE.core.key == "core_identity"
+    assert [module.key for module in DEFAULT_COGNITIVE_ARCHITECTURE.modules] == [
+        "persona",
+        "memory",
+        "planning",
+        "execution",
+        "tool_orchestrator",
+        "computer_control",
+        "learning",
+        "proactive",
+        "companion_layer",
+    ]
+    assert len({engine.key for engine in DEFAULT_COGNITIVE_ARCHITECTURE.engines}) == len(
+        DEFAULT_COGNITIVE_ARCHITECTURE.engines
+    )

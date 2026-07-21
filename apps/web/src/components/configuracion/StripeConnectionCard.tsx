@@ -106,7 +106,7 @@ export function StripeConnectionCard({ onSynced }: { onSynced?: () => void | Pro
           </div>
         ) : (
           <form onSubmit={connect} className="flex flex-wrap items-end gap-2">
-            <Field label="Restricted key de Stripe" htmlFor="stripe_connection_key" className="min-w-[260px] flex-1">
+            <Field label="Restricted key de Stripe" htmlFor="stripe_connection_key" className="min-w-0 basis-full sm:min-w-[260px] sm:flex-1">
               <Input id="stripe_connection_key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="rk_live_…" autoComplete="off" />
             </Field>
             <Button type="submit" loading={connecting} disabled={!apiKey.trim()}>Conectar Stripe</Button>

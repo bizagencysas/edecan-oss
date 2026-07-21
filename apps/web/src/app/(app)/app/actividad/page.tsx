@@ -193,7 +193,7 @@ function ActivitySection({
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
             {items.map((item) => (
               <li key={item.id}>
-                <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                <div className="flex min-w-0 items-center gap-3 py-3 first:pt-0 last:pb-0">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                     {item.tone === "complete" ? <CheckIcon className="h-4 w-4" /> : item.kind === "phone" ? <PhoneIcon className="h-4 w-4" /> : item.kind === "reminder" ? <BellIcon className="h-4 w-4" /> : item.kind === "automation" ? <ZapIcon className="h-4 w-4" /> : <RocketIcon className="h-4 w-4" />}
                   </span>
@@ -222,7 +222,9 @@ function ActivitySection({
                       </span>
                     )}
                   </span>
-                  <Badge variant={TONE_VARIANT[item.tone]}>{item.statusLabel}</Badge>
+                  <span className="hidden shrink-0 sm:inline-flex">
+                    <Badge variant={TONE_VARIANT[item.tone]}>{item.statusLabel}</Badge>
+                  </span>
                 </div>
               </li>
             ))}

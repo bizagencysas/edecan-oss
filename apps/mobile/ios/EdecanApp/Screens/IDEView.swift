@@ -59,8 +59,8 @@ struct IDEView: View {
         VStack(spacing: 16) {
             EmptyStateView(
                 icono: "chevron.left.forwardslash.chevron.right",
-                titulo: "Sin companion conectado",
-                descripcion: "Empareja tu Mac/PC desde el panel web (o la app de escritorio) para navegar tu proyecto aquí — el IDE embebido corre sobre ESE equipo, nunca sobre este teléfono.",
+                titulo: "Computadora no disponible",
+                descripcion: "Abre Edecán en tu computadora para navegar aquí el proyecto de ese equipo.",
                 etiquetaRoadmap: nil
             )
             Button("Ir a Ajustes") { tabRouter.seleccion = .settings }

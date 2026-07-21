@@ -6,6 +6,7 @@ punto 6 — este paquete de tests NO instala `edecan-llm[vertex]`).
 
 from __future__ import annotations
 
+import builtins
 import json
 
 import httpx
@@ -86,10 +87,21 @@ def test_service_account_sin_json_lanza_llm_error_sin_requerir_google_auth() -> 
         VertexAIProvider(config)
 
 
-def test_service_account_sin_extra_google_auth_da_mensaje_claro() -> None:
-    # Este paquete de tests deliberadamente NO instala `edecan-llm[vertex]`
-    # (ver docstring del módulo) — así que este camino ejercita el import
-    # guardeado de verdad, sin mocks.
+def test_service_account_sin_extra_google_auth_da_mensaje_claro(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # El entorno completo del monorepo puede traer google-auth de forma
+    # transitiva aunque no se instale `edecan-llm[vertex]`. Simular el import
+    # ausente mantiene esta prueba determinista en el paquete y en la suite
+    # completa.
+    real_import = builtins.__import__
+
+    def import_sin_google_auth(name: str, *args: object, **kwargs: object) -> object:
+        if name == "google.oauth2" or name.startswith("google.oauth2."):
+            raise ImportError("google-auth no instalado")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_sin_google_auth)
     config = LLMProviderConfig(
         kind="vertex",
         extra={
@@ -99,6 +111,20 @@ def test_service_account_sin_extra_google_auth_da_mensaje_claro() -> None:
         },
     )
     with pytest.raises(LLMError, match="google-auth"):
+        VertexAIProvider(config)
+
+
+def test_service_account_json_malformado_no_filtra_excepcion_de_google_auth() -> None:
+    pytest.importorskip("google.oauth2.service_account")
+    config = LLMProviderConfig(
+        kind="vertex",
+        extra={
+            "mode": "service_account",
+            "project_id": "mi-proyecto",
+            "service_account_json": "{}",
+        },
+    )
+    with pytest.raises(LLMError, match="credencial de cuenta de servicio válida"):
         VertexAIProvider(config)
 
 

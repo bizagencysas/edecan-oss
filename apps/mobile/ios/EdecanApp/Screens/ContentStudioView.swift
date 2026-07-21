@@ -3,6 +3,7 @@ import SwiftUI
 /// Estudio simple: no es otro producto, solo convierte opciones humanas en
 /// una petición precisa para el mismo chat universal.
 struct ContentStudioView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(TabRouter.self) private var router
     @State private var plataforma = "LinkedIn"
     @State private var tema = ""
@@ -47,6 +48,12 @@ struct ContentStudioView: View {
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
             .navigationTitle("Crear")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cerrar") { dismiss() }
+                }
+            }
         }
     }
 
@@ -97,5 +104,6 @@ struct ContentStudioView: View {
             "No publiques nada sin mi confirmación."
         )
         tema = ""
+        dismiss()
     }
 }

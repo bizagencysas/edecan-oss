@@ -50,6 +50,11 @@ interface TokenStore {
     suspend fun getDeviceId(): String?
     suspend fun saveDeviceId(deviceId: String)
 
+    /** Identificador aleatorio, app-scoped y estable de esta instalación.
+     * Sirve para deduplicar el registro visible del dispositivo sin usar
+     * ANDROID_ID, seriales ni identificadores publicitarios. */
+    suspend fun getInstallationId(): String? = null
+
     /** Secreto durable emitido únicamente por el claim QR. Nunca debe
      * guardarse en DataStore plano, logs, SavedStateHandle ni UI. */
     suspend fun getDeviceToken(): String? = null

@@ -113,6 +113,7 @@ EDECAN_CORE_PACKAGES = [
     "edecan_core",
     "edecan_api",
     "edecan_worker",
+    "edecan_companion",
     # Paquetes intermedios de los que dependen edecan_api/edecan_worker
     # (ARCHITECTURE.md §10.1) — import estático, PyInstaller los seguiría
     # solo, pero se recolectan igual por si alguno hace despacho dinámico

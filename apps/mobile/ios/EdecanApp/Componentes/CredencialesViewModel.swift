@@ -12,6 +12,7 @@ final class CredencialesViewModel {
     private(set) var credenciales: CredentialsOut?
     private(set) var setup: SetupStatus?
     private(set) var deteccion: DetectLocalProviders?
+    private(set) var catalogoModelos: LLMModelsOut?
     private(set) var cargando = false
     var errorMensaje: String?
 
@@ -22,9 +23,14 @@ final class CredencialesViewModel {
     var apiKey: String = ""
     var baseURL: String = ""
     var modeloPrincipal: String = ""
+    var modeloActivoPrincipal: String = ""
+    var modeloActivoRapido: String = ""
     private(set) var guardando = false
+    private(set) var guardandoModelo = false
     var errorGuardado: String?
     var guardadoExitoso = false
+    var modeloGuardadoExitoso = false
+    var errorModelo: String?
 
     /// `true` si el servidor corre local (`EDECAN_LOCAL_MODE=true`) — solo
     /// entonces tiene sentido ofrecer `claude_cli`/`codex_cli`/`ollama`
@@ -46,6 +52,8 @@ final class CredencialesViewModel {
             let (credencialesResultado, setupResultado) = try await (credencialesTarea, setupTarea)
             credenciales = credencialesResultado
             setup = setupResultado
+        } catch is CancellationError {
+            return
         } catch {
             errorMensaje = error.localizedDescription
             return
@@ -54,6 +62,42 @@ final class CredencialesViewModel {
         // si falla o el router de setup no monta `/detect` todavía, no debe
         // tapar el resto de la pantalla (que ya cargó bien arriba).
         deteccion = try? await client.setupDetect()
+    }
+
+    func cargarModelos(client: APIClient?) async {
+        guard let client, credenciales?.llm != nil else { return }
+        do {
+            let catalogo = try await client.modelosLLM()
+            catalogoModelos = catalogo
+            modeloActivoPrincipal = catalogo.modelPrincipal ?? catalogo.models.first ?? ""
+            modeloActivoRapido = catalogo.modelRapido ?? modeloActivoPrincipal
+        } catch {
+            errorModelo = error.localizedDescription
+        }
+    }
+
+    func guardarModelos(client: APIClient?) async {
+        guard let client else { return }
+        let principal = modeloActivoPrincipal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rapido = modeloActivoRapido.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !principal.isEmpty else {
+            errorModelo = "Escribe o elige un modelo principal."
+            return
+        }
+        guardandoModelo = true
+        modeloGuardadoExitoso = false
+        errorModelo = nil
+        defer { guardandoModelo = false }
+        do {
+            try await client.actualizarModelosLLM(
+                LLMModelsIn(modelPrincipal: principal, modelRapido: rapido.isEmpty ? principal : rapido)
+            )
+            modeloGuardadoExitoso = true
+            credenciales = try await client.credenciales()
+            await cargarModelos(client: client)
+        } catch {
+            errorModelo = error.localizedDescription
+        }
     }
 
     /// Atajo de un clic: usa un proveedor ya detectado (`claude_cli`/`codex_cli`/`ollama`)
@@ -92,6 +136,7 @@ final class CredencialesViewModel {
             guardadoExitoso = true
             apiKey = ""
             credenciales = try await client.credenciales()
+            await cargarModelos(client: client)
         } catch {
             errorGuardado = error.localizedDescription
         }

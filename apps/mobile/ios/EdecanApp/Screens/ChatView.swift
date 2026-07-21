@@ -39,7 +39,7 @@ struct ChatView: View {
                 barraDeEntrada
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-            .navigationTitle(viewModel.tituloConversacionActual)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $mostrandoVoz) {
                 VozView(chat: viewModel)
@@ -65,8 +65,14 @@ struct ChatView: View {
                 onCompletion: recibirArchivos
             )
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    cabeceraDeConversacion
+                }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { mostrandoHistorial = true } label: {
+                    Button {
+                        campoEnfocado = false
+                        mostrandoHistorial = true
+                    } label: {
                         Image(systemName: "text.bubble.fill")
                     }
                     .accessibilityLabel("Conversaciones")
@@ -77,6 +83,14 @@ struct ChatView: View {
                     }
                     .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
                     .accessibilityLabel("Nuevo chat")
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Listo") {
+                        campoEnfocado = false
+                    }
+                    .fontWeight(.semibold)
+                    .accessibilityHint("Cierra el teclado y vuelve a mostrar toda la conversación")
                 }
             }
             .task {
@@ -141,9 +155,6 @@ struct ChatView: View {
                         )
                         .id(mensaje.id)
                     }
-                    if let herramienta = viewModel.herramientaActiva {
-                        IndicadorHerramienta(nombre: herramienta.nombre)
-                    }
                     if let confirmacion = viewModel.confirmacionPendiente {
                         TarjetaConfirmacion(confirmacion: confirmacion, deshabilitada: viewModel.enviando) { aprobado in
                             resolverConfirmacion(aprobado: aprobado)
@@ -152,12 +163,42 @@ struct ChatView: View {
                 }
                 .padding()
             }
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                campoEnfocado = false
+            }
             .onChange(of: viewModel.mensajes.count) { _, _ in
                 desplazarAlFinal(proxy)
             }
             .onChange(of: viewModel.mensajes.last?.texto) { _, _ in
                 desplazarAlFinal(proxy)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var cabeceraDeConversacion: some View {
+        if let conversationId = viewModel.conversacionId {
+            Button {
+                UIPasteboard.general.string = conversationId
+            } label: {
+                VStack(spacing: 1) {
+                    Text(viewModel.tituloConversacionActual)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Chat \(conversationId.prefix(8).uppercased())")
+                        .font(.caption2.monospaced().weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(viewModel.tituloConversacionActual), ID de chat \(conversationId)")
+            .accessibilityHint("Toca para copiar el ID completo")
+        } else {
+            Text("Nuevo chat")
+                .font(.headline)
         }
     }
 
@@ -274,6 +315,7 @@ struct ChatView: View {
                     // Reintentar y no duplica la orden en el composer.
                     textoActual = ""
                     adjuntosPendientes = []
+                    campoEnfocado = false
                     guardarBorrador("", conversationId: viewModel.conversacionId)
                 },
                 client: client

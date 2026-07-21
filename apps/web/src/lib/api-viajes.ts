@@ -1,7 +1,8 @@
 /**
  * Cliente HTTP de `apps/api/edecan_api/routers/viajes.py` (`/v1/viajes/*` — vuelos y
- * hoteles vía Amadeus Self-Service bring-your-own + rastreo de paquetes vía AfterShip,
- * `ARCHITECTURE.md` §14, WP-V5-09).
+ * hoteles mediante la capacidad nativa de Edecán (Kiwi/Trivago/Skiplagged,
+ * sin API key) + rastreo de paquetes vía AfterShip. Las rutas históricas de
+ * Amadeus se conservan únicamente por compatibilidad.
  *
  * Mismo motivo de duplicación que `lib/api-negocios.ts`/`lib/api-remoto.ts`/
  * `lib/api-ide.ts` (ver su docstring): `lib/api.ts` está fuera de la lista de archivos
@@ -48,6 +49,7 @@ export interface VueloOferta {
   escalas: number;
   precio_total: string;
   moneda: string;
+  booking_url?: string | null;
 }
 
 export interface HotelOferta {
@@ -58,6 +60,7 @@ export interface HotelOferta {
   moneda: string;
   checkin: string | null;
   checkout: string | null;
+  booking_url?: string | null;
 }
 
 export interface CheckpointRastreo {
@@ -160,7 +163,8 @@ function queryString(params: Record<string, string | number | undefined>): strin
 }
 
 // ---------------------------------------------------------------------------
-// Credenciales (Amadeus / AfterShip) — pegar y validar.
+// Credenciales heredadas de Amadeus + AfterShip. Vuelos/hoteles ya no
+// requieren credenciales; estas rutas permanecen para instalaciones viejas.
 // ---------------------------------------------------------------------------
 
 export async function putViajesCredentials(input: ViajesCredentialsInput): Promise<void> {

@@ -6,6 +6,10 @@ import cc.edecan.shared.ApiException
 import cc.edecan.shared.CredentialsOut
 import cc.edecan.shared.EdecanApi
 import cc.edecan.shared.LlmCredentialsIn
+import cc.edecan.shared.LlmModelsIn
+import cc.edecan.shared.LlmModelsOut
+import cc.edecan.shared.LiveProfile
+import cc.edecan.shared.ProfileIdentity
 import cc.edecan.shared.SetupStatusOut
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -62,6 +66,11 @@ enum class LlmKind(
 }
 
 data class PerfilUiState(
+    val perfilVivo: LiveProfile? = null,
+    val cargandoPerfil: Boolean = false,
+    val guardandoPerfil: Boolean = false,
+    val perfilGuardado: Boolean = false,
+    val errorPerfil: String? = null,
     val cargando: Boolean = false,
     val credenciales: CredentialsOut? = null,
     val setupStatus: SetupStatusOut? = null,
@@ -69,6 +78,12 @@ data class PerfilUiState(
     val conectando: Boolean = false,
     val errorConexion: String? = null,
     val conectadoOk: Boolean = false,
+    val catalogoModelos: LlmModelsOut? = null,
+    val modeloActivoPrincipal: String = "",
+    val modeloActivoRapido: String = "",
+    val actualizandoModelo: Boolean = false,
+    val modeloActualizado: Boolean = false,
+    val errorModelo: String? = null,
     val errorCarga: String? = null,
 )
 
@@ -86,6 +101,46 @@ class PerfilViewModel : ViewModel() {
 
     private var yaCargado = false
 
+    fun cargarPerfil(api: EdecanApi, forzar: Boolean = false) {
+        if (_uiState.value.perfilVivo != null && !forzar) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(cargandoPerfil = true, errorPerfil = null) }
+            try {
+                val perfil = api.liveProfile()
+                _uiState.update { it.copy(cargandoPerfil = false, perfilVivo = perfil) }
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(cargandoPerfil = false, errorPerfil = e.message) }
+            }
+        }
+    }
+
+    fun guardarPerfil(
+        api: EdecanApi,
+        identidad: ProfileIdentity,
+        resumen: String,
+        onSaved: () -> Unit = {},
+    ) {
+        if (_uiState.value.guardandoPerfil) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(guardandoPerfil = true, perfilGuardado = false, errorPerfil = null)
+            }
+            try {
+                val actualizado = api.updateLiveProfile(identidad, resumen.trim())
+                _uiState.update {
+                    it.copy(
+                        guardandoPerfil = false,
+                        perfilGuardado = true,
+                        perfilVivo = actualizado,
+                    )
+                }
+                onSaved()
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(guardandoPerfil = false, errorPerfil = e.message) }
+            }
+        }
+    }
+
     fun cargar(api: EdecanApi, forzar: Boolean = false) {
         if (yaCargado && !forzar) return
         yaCargado = true
@@ -101,12 +156,26 @@ class PerfilViewModel : ViewModel() {
                 val kindYaConectado = credenciales.llm?.kind?.let { valorKind ->
                     LlmKind.entries.find { candidato -> candidato.valor == valorKind }
                 }
+                val catalogo = if (credenciales.llm != null) {
+                    try {
+                        api.modelosLlm()
+                    } catch (_: ApiException) {
+                        null
+                    }
+                } else {
+                    null
+                }
                 _uiState.update { estado ->
                     estado.copy(
                         cargando = false,
                         credenciales = credenciales,
                         setupStatus = configuracionSetup,
                         kindSeleccionado = kindYaConectado ?: estado.kindSeleccionado,
+                        catalogoModelos = catalogo,
+                        modeloActivoPrincipal = catalogo?.modelPrincipal
+                            ?: credenciales.llm?.modelPrincipal.orEmpty(),
+                        modeloActivoRapido = catalogo?.modelRapido
+                            ?: credenciales.llm?.modelRapido.orEmpty(),
                     )
                 }
             } catch (e: ApiException) {
@@ -117,6 +186,52 @@ class PerfilViewModel : ViewModel() {
 
     fun elegirKind(kind: LlmKind) {
         _uiState.update { it.copy(kindSeleccionado = kind, errorConexion = null, conectadoOk = false) }
+    }
+
+    fun elegirModeloPrincipal(modelo: String) {
+        _uiState.update {
+            it.copy(modeloActivoPrincipal = modelo, errorModelo = null, modeloActualizado = false)
+        }
+    }
+
+    fun elegirModeloRapido(modelo: String) {
+        _uiState.update {
+            it.copy(modeloActivoRapido = modelo, errorModelo = null, modeloActualizado = false)
+        }
+    }
+
+    fun actualizarModelos(api: EdecanApi) {
+        if (_uiState.value.actualizandoModelo) return
+        val principal = _uiState.value.modeloActivoPrincipal.trim()
+        val rapido = _uiState.value.modeloActivoRapido.trim().ifBlank { principal }
+        if (principal.isBlank()) {
+            _uiState.update { it.copy(errorModelo = "Escribe o elige un modelo principal.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(actualizandoModelo = true, errorModelo = null, modeloActualizado = false)
+            }
+            try {
+                api.actualizarModelosLlm(LlmModelsIn(principal, rapido))
+                val catalogo = api.modelosLlm()
+                val credenciales = api.credentials()
+                _uiState.update {
+                    it.copy(
+                        actualizandoModelo = false,
+                        modeloActualizado = true,
+                        catalogoModelos = catalogo,
+                        credenciales = credenciales,
+                        modeloActivoPrincipal = catalogo.modelPrincipal.orEmpty(),
+                        modeloActivoRapido = catalogo.modelRapido.orEmpty(),
+                    )
+                }
+            } catch (e: ApiException) {
+                _uiState.update {
+                    it.copy(actualizandoModelo = false, errorModelo = e.message)
+                }
+            }
+        }
     }
 
     /** `modelRapido` no tiene campo propio en el formulario a propósito
@@ -141,7 +256,21 @@ class PerfilViewModel : ViewModel() {
                     ),
                 )
                 val credenciales = api.credentials()
-                _uiState.update { it.copy(conectando = false, conectadoOk = true, credenciales = credenciales) }
+                val catalogo = try {
+                    api.modelosLlm()
+                } catch (_: ApiException) {
+                    null
+                }
+                _uiState.update {
+                    it.copy(
+                        conectando = false,
+                        conectadoOk = true,
+                        credenciales = credenciales,
+                        catalogoModelos = catalogo,
+                        modeloActivoPrincipal = catalogo?.modelPrincipal.orEmpty(),
+                        modeloActivoRapido = catalogo?.modelRapido.orEmpty(),
+                    )
+                }
             } catch (e: ApiException) {
                 _uiState.update { it.copy(conectando = false, errorConexion = e.message) }
             }

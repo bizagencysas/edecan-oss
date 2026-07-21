@@ -180,7 +180,7 @@ export function SelectorLLM({
                 </span>
                 {detect.ollama.models.length > 0 ? (
                   <div className="flex flex-1 flex-wrap items-center gap-2">
-                    <div className="min-w-[9rem] flex-1">
+                    <div className="min-w-0 basis-full sm:min-w-[9rem] sm:flex-1">
                       <Select
                         aria-label="Modelo de Ollama"
                         value={ollamaModel}

@@ -29,6 +29,7 @@ from .recordatorios import CrearRecordatorioTool, ListarRecordatoriosTool
 from .research import (
     SEARCH_CONNECTOR_KEY,
     BuscarWebTool,
+    DuckDuckGoSearch,
     SearchHit,
     SearchProvider,
     get_search_provider,
@@ -41,6 +42,7 @@ __all__ = [
     "AccederCodigoLocalTool",
     "AgendaEventosTool",
     "DiagnosticarAutorreparacionLocalTool",
+    "DuckDuckGoSearch",
     "BuscarContactosTool",
     "BuscarCorreoTool",
     "BuscarWebTool",

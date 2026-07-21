@@ -13,7 +13,9 @@ silenciosamente hacia quien consume `run_turn`, típicamente el endpoint SSE de
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Sequence
 from pathlib import PurePosixPath
 from typing import Any
@@ -34,6 +36,7 @@ from edecan_schemas import (
     PersonaConfig,
     TextDeltaEvent,
     ToolEndEvent,
+    ToolProgressEvent,
     ToolSpec,
     ToolStartEvent,
 )
@@ -54,6 +57,23 @@ _LLM_ALIAS = "principal"
 _RESULT_PREVIEW_LEN = 400
 _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
+TOOL_PROGRESS_INTERVAL_SECONDS = 3.0
+"""Frecuencia de latidos públicos durante herramientas de larga duración."""
+
+
+def mission_ref_from_tool_data(data: Any) -> UUID | None:
+    """Extrae una referencia pública de misión de una salida de herramienta.
+
+    ``ToolResult.data`` es deliberadamente libre y privado. Solo se permite
+    cruzar el contrato de chat cuando ``mission_id`` es una UUID válida.
+    """
+
+    if not isinstance(data, dict) or not data.get("mission_id"):
+        return None
+    try:
+        return UUID(str(data["mission_id"]))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def artifact_refs_from_tool_data(data: Any) -> list[ArtifactRef]:
@@ -600,11 +620,31 @@ class Agent:
             )
             tool_log.append(start.model_dump())
             yield start, None
+            task = asyncio.create_task(tool.run(ctx, call.arguments))
             try:
-                result = await tool.run(ctx, call.arguments)
+                started_at = time.monotonic()
+                while True:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.shield(task), timeout=TOOL_PROGRESS_INTERVAL_SECONDS
+                        )
+                        break
+                    except TimeoutError:
+                        yield (
+                            ToolProgressEvent(
+                                tool_call_id=call.id,
+                                name=call.name,
+                                elapsed_seconds=max(0, int(time.monotonic() - started_at)),
+                                message="Edecán sigue trabajando",
+                            ),
+                            None,
+                        )
             except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
                 logger.warning("La herramienta %r lanzó una excepción", call.name, exc_info=True)
                 result = ToolResult(content=f"Error: {redact(str(exc))}")
+            finally:
+                if not task.done():
+                    task.cancel()
             artifacts = artifact_refs_from_tool_data(result.data)
             end = ToolEndEvent(
                 tool_call_id=call.id,
@@ -616,6 +656,7 @@ class Agent:
                     presentation=result.presentation,
                     artifacts=artifacts,
                 ),
+                mission_id=mission_ref_from_tool_data(result.data),
             )
             tool_log.append(end.model_dump())
             yield end, _tool_result_block(call.id, result.content)
@@ -623,13 +664,15 @@ class Agent:
     async def _recall_memories(
         self, ctx: ToolContext, persona: PersonaConfig, user_text: str
     ) -> list[str]:
+        profile_context = str(ctx.extras.get("profile_context") or "").strip()
+        stable_context = [profile_context] if profile_context else []
         if not persona.memoria_activada:
-            return []
+            return stable_context
         store = ctx.extras.get(_EXTRAS_MEMORY_STORE)
         if store is None:
-            return []
+            return stable_context
         hits = await store.search(ctx.tenant_id, ctx.user_id, user_text)
-        return [hit.content for hit in hits]
+        return [*stable_context, *[hit.content for hit in hits]]
 
 
 def _assistant_blocks(text_parts: list[str], tool_calls: list[Any]) -> list[dict[str, Any]]:

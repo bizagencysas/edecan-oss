@@ -4,10 +4,14 @@
 
 html {
   color-scheme: light dark;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
   @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-50;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 ::selection {

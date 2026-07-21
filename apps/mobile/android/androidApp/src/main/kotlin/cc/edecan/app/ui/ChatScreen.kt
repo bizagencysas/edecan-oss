@@ -56,9 +56,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import cc.edecan.app.ui.components.EmptyState
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.ChatViewModel
@@ -68,6 +70,7 @@ import cc.edecan.app.vm.EstadoAdjunto
 import cc.edecan.app.vm.EstadoEntrega
 import cc.edecan.app.vm.MensajeUi
 import cc.edecan.app.vm.SessionViewModel
+import cc.edecan.app.vm.tituloEstado
 import cc.edecan.shared.ArtifactRef
 import cc.edecan.shared.ChatAction
 import cc.edecan.shared.ChatBlock
@@ -143,8 +146,13 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text("Edecán")
-                        chatState.tituloConversacion?.takeIf { it.isNotBlank() }?.let {
-                            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        chatState.conversationId?.let { id ->
+                            val titulo = chatState.tituloConversacion?.takeIf { it.isNotBlank() } ?: "Conversación"
+                            Text(
+                                "$titulo · Chat ${id.take(8).uppercase()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
                         }
                     }
                 },
@@ -299,9 +307,6 @@ fun ChatScreen(
                                     sessionViewModel.api?.let { chatViewModel.reintentarMensaje(mensaje.id, it) }
                                 },
                             )
-                        }
-                        chatState.herramientaActiva?.let { nombre ->
-                            item(key = "herramienta-activa") { IndicadorHerramienta(nombre) }
                         }
                     }
                 }
@@ -515,6 +520,7 @@ private fun BurbujaMensaje(
                 }
             }
             if (!esUsuario) {
+                mensaje.trabajo?.let { ProgresoTrabajo(it) }
                 BloquesRicosMensaje(
                     bloques = mensaje.bloques,
                     previews = previews,
@@ -541,6 +547,71 @@ private fun BurbujaMensaje(
             }
         }
     }
+}
+
+@Composable
+private fun ProgresoTrabajo(trabajo: cc.edecan.app.vm.TrabajoUi) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Text(
+                trabajo.tituloEstado,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            if (trabajo.segundos > 0) {
+                Text(
+                    duracionTrabajo(trabajo.segundos),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            trabajo.pasos.forEach { paso ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        when (paso.estado) {
+                            cc.edecan.app.vm.PasoTrabajoUi.Estado.EJECUTANDO -> "◌"
+                            cc.edecan.app.vm.PasoTrabajoUi.Estado.COMPLETADO -> "✓"
+                            cc.edecan.app.vm.PasoTrabajoUi.Estado.ERROR -> "!"
+                        },
+                        color = if (paso.estado == cc.edecan.app.vm.PasoTrabajoUi.Estado.ERROR) {
+                            MaterialTheme.colorScheme.error
+                        } else MaterialTheme.colorScheme.primary,
+                    )
+                    Column(modifier = Modifier.padding(start = 8.dp)) {
+                        Text(
+                            accionEnLenguajeClaro(paso.nombre).replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        paso.detalle?.takeIf { it.isNotBlank() }?.let { detalle ->
+                            Text(
+                                detalle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 3,
+                            )
+                        }
+                    }
+                }
+            }
+            trabajo.missionError?.takeIf { it.isNotBlank() }?.let { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+private fun duracionTrabajo(segundos: Int): String {
+    val minutos = segundos / 60
+    val resto = segundos % 60
+    return if (minutos > 0) "${minutos}m ${resto}s" else "${resto}s"
 }
 
 @Composable
@@ -596,7 +667,7 @@ private fun AdjuntosComposer(
  * agente ejecuta una tool (evento SSE `tool_start` sin su `tool_end`
  * todavía — `docs/api.md` §"Conversaciones y chat (SSE)"). */
 @Composable
-private fun IndicadorHerramienta(nombre: String) {
+private fun IndicadorHerramienta(nombre: String, segundos: Int, mensaje: String?) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -608,7 +679,14 @@ private fun IndicadorHerramienta(nombre: String) {
         CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
         Spacer(modifier = Modifier.padding(start = 8.dp))
         Text(
-            "${accionEnLenguajeClaro(nombre).replaceFirstChar { it.uppercase() }}…",
+            buildString {
+                append(mensaje ?: accionEnLenguajeClaro(nombre).replaceFirstChar { it.uppercase() })
+                if (segundos > 0) {
+                    val minutos = segundos / 60
+                    val resto = segundos % 60
+                    append(if (minutos > 0) " · ${minutos}m ${resto}s" else " · ${resto}s")
+                } else append("…")
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -818,7 +896,7 @@ private fun abrirUrlPublica(context: Context, url: String): Boolean {
     if (!esUrlPublicaSegura(url)) return false
     return runCatching {
         context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            Intent(Intent.ACTION_VIEW, url.toUri()).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)
             },
         )

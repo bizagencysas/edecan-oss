@@ -34,14 +34,30 @@ import {
   getPerfilVivo,
   rebuildPerfilVivo,
   updatePerfilVivo,
-  type DatosPerfil,
+  type CategoriaPerfil,
+  type IdentidadPerfil,
   type PerfilVivo,
 } from "@/lib/api-perfil";
 import { formatDateTime } from "@/lib/format";
 
 const PERFIL_VACIO: PerfilVivo = {
   resumen: "",
-  datos: { gustos: [], proyectos: [], metas: [], relaciones: [], empresas: [], habitos: [] },
+  datos: {
+    identidad: {
+      nombre_preferido: "",
+      nombre_completo: "",
+      pronombres: "",
+      fecha_nacimiento: "",
+      pais: "",
+      ciudad: "",
+      zona_horaria: "",
+      ocupacion: "",
+      idioma_preferido: "",
+      forma_de_trato: "",
+      biografia: "",
+    },
+    gustos: [], proyectos: [], metas: [], relaciones: [], empresas: [], habitos: [],
+  },
   version: 0,
   updated_at: null,
 };
@@ -151,8 +167,12 @@ export default function PerfilVivoPage() {
   const [info, setInfo] = useState<string | null>(null);
 
   const [resumenDraft, setResumenDraft] = useState("");
+  const [identidadDraft, setIdentidadDraft] = useState<IdentidadPerfil>(
+    PERFIL_VACIO.datos.identidad,
+  );
+  const [savingIdentidad, setSavingIdentidad] = useState(false);
   const [savingResumen, setSavingResumen] = useState(false);
-  const [categoriaOcupada, setCategoriaOcupada] = useState<keyof DatosPerfil | null>(null);
+  const [categoriaOcupada, setCategoriaOcupada] = useState<CategoriaPerfil | null>(null);
 
   const [rebuilding, setRebuilding] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -169,10 +189,27 @@ export default function PerfilVivoPage() {
       const result = await getPerfilVivo();
       setPerfil(result);
       setResumenDraft(result.resumen);
+      setIdentidadDraft(result.datos.identidad);
     } catch (err) {
       setError(describeError(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleGuardarIdentidad(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingIdentidad(true);
+    setError(null);
+    try {
+      const actualizado = await updatePerfilVivo({ datos: { identidad: identidadDraft } });
+      setPerfil(actualizado);
+      setIdentidadDraft(actualizado.datos.identidad);
+      setInfo("Perfil personal guardado. Edecán lo usará desde tu próximo mensaje.");
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setSavingIdentidad(false);
     }
   }
 
@@ -193,7 +230,7 @@ export default function PerfilVivoPage() {
   }
 
   async function handleCategoriaChange(
-    campo: keyof DatosPerfil,
+    campo: CategoriaPerfil,
     nuevaLista: string[],
   ): Promise<boolean> {
     setCategoriaOcupada(campo);
@@ -231,6 +268,7 @@ export default function PerfilVivoPage() {
       await deletePerfilVivo();
       setPerfil(PERFIL_VACIO);
       setResumenDraft("");
+      setIdentidadDraft(PERFIL_VACIO.datos.identidad);
       setInfo("Tu perfil fue borrado. Se irá reconstruyendo a medida que converses de nuevo.");
     } catch (err) {
       setError(describeError(err));
@@ -252,7 +290,7 @@ export default function PerfilVivoPage() {
     <div>
       <PageHeader
         title="Perfil vivo"
-        description="Lo que tu asistente sabe de ti — gustos, proyectos, metas, relaciones, empresas y hábitos — construido solo, a partir de tus conversaciones, e inyectado en cada respuesta."
+        description="Quién eres, cómo quieres que te hable y lo que Edecán aprende contigo. Tu perfil personal se usa siempre, en computador, iOS y Android."
         actions={
           <Button
             variant="secondary"
@@ -275,6 +313,56 @@ export default function PerfilVivoPage() {
           <Alert variant="success">{info}</Alert>
         </div>
       )}
+
+      <Card className="mb-6">
+        <CardHeader
+          title="Quién eres"
+          description="Tú controlas estos datos. Edecán no los cambia ni los inventa automáticamente."
+        />
+        <CardBody>
+          <form onSubmit={handleGuardarIdentidad} className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {([
+                ["nombre_preferido", "Nombre preferido", "Como quieres que Edecán te llame"],
+                ["nombre_completo", "Nombre completo", "Tu nombre completo"],
+                ["pronombres", "Pronombres", "Ej. él, ella, elle"],
+                ["fecha_nacimiento", "Fecha de nacimiento", "Ej. 8 de enero de 1996"],
+                ["pais", "País", "Ej. Venezuela"],
+                ["ciudad", "Ciudad", "Ej. Medellín"],
+                ["zona_horaria", "Zona horaria", "Ej. America/Bogota"],
+                ["ocupacion", "A qué te dedicas", "Ej. Fundador de productos"],
+                ["idioma_preferido", "Idioma preferido", "Ej. Español de Venezuela"],
+                ["forma_de_trato", "Cómo quieres que te hable", "Ej. Cercano, directo y de tú"],
+              ] as Array<[keyof IdentidadPerfil, string, string]>).map(([campo, label, placeholder]) => (
+                <label key={campo} className="space-y-1.5 text-sm font-medium text-slate-700 dark:text-slate-200">
+                  <span>{label}</span>
+                  <Input
+                    value={identidadDraft[campo]}
+                    onChange={(e) => setIdentidadDraft((actual) => ({ ...actual, [campo]: e.target.value }))}
+                    placeholder={placeholder}
+                    maxLength={160}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="block space-y-1.5 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <span>Sobre ti</span>
+              <Textarea
+                value={identidadDraft.biografia}
+                onChange={(e) => setIdentidadDraft((actual) => ({ ...actual, biografia: e.target.value }))}
+                rows={4}
+                maxLength={1000}
+                placeholder="Cuéntale a Edecán lo que debería saber para ayudarte mejor."
+              />
+            </label>
+            <div className="flex justify-end">
+              <Button type="submit" loading={savingIdentidad}>
+                Guardar mi perfil
+              </Button>
+            </div>
+          </form>
+        </CardBody>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader

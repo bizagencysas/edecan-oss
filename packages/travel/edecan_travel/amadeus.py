@@ -46,9 +46,7 @@ Environment = Literal["test", "production"]
 
 
 class TravelError(RuntimeError):
-    """Error al hablar con Amadeus — mensaje ya legible (extraído de `errors[0].detail`
-    de la respuesta cuando está disponible, en vez de una excepción cruda de `httpx`).
-    Nunca incluye `api_key`/`api_secret`/el access token en el mensaje."""
+    """Error legible del dominio viajes, sin secretos ni traceback crudo."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +62,7 @@ class VueloOferta:
     escalas: int
     precio_total: str
     moneda: str
+    booking_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +76,7 @@ class HotelOferta:
     moneda: str
     checkin: str | None = None
     checkout: str | None = None
+    booking_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,8 +131,10 @@ def _parse_vuelo_oferta(item: dict[str, Any]) -> VueloOferta:
     llegada = ultimo_segmento.get("arrival") or {}
     precio = item.get("price") or {}
     aerolineas_validadoras = item.get("validatingAirlineCodes") or []
-    aerolinea = aerolineas_validadoras[0] if aerolineas_validadoras else primer_segmento.get(
-        "carrierCode", "?"
+    aerolinea = (
+        aerolineas_validadoras[0]
+        if aerolineas_validadoras
+        else primer_segmento.get("carrierCode", "?")
     )
     return VueloOferta(
         id=str(item.get("id", "")),
@@ -208,9 +210,7 @@ class AmadeusClient:
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
-        self.environment: Environment = (
-            "production" if environment == "production" else "test"
-        )
+        self.environment: Environment = "production" if environment == "production" else "test"
         self._base_url = (
             AMADEUS_PRODUCTION_BASE_URL
             if self.environment == "production"

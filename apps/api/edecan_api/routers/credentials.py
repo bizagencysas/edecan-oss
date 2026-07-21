@@ -30,7 +30,7 @@ router deja que CADA tenant conecte su propia credencial, cifrada en el
 get_search_provider` SOLO leían `IMAGES_API_KEY`/`BRAVE_API_KEY`/
 `TAVILY_API_KEY` de la config de PLATAFORMA — sin excepción ni mecanismo
 alguno para que un tenant trajera la propia, a diferencia de LLM/voz/Twilio/
-conectores OAuth) siguen el mismo criterio "tenant → stub, SIN paso de
+conectores OAuth) siguen el mismo criterio "tenant → capacidad propia, SIN paso de
 plataforma" que ya sigue voz (`apps/api/edecan_api/routers/voice.py::
 _stt_para_tenant`/`_tts_para_tenant`): `edecan_creative.providers.
 get_tenant_image_provider(ctx)` y `edecan_toolkit.research.
@@ -40,9 +40,10 @@ get_tenant_search_provider(ctx)` leen el `TokenVault` directo desde la propia
 hay una "resolución por request" equivalente a `get_llm_router` para tools
 individuales, así que se resuelve perezosamente en el momento en que la tool
 corre; si el tenant no conectó nada (o falla cualquier paso), esas dos
-funciones caen DIRECTO a `StubImageProvider`/`StubSearch`, nunca a
+funciones caen DIRECTO a `StubImageProvider`/`DuckDuckGoSearch`, nunca a
 `IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de plataforma — ver
-`docs/credenciales.md`. Body de cada uno:
+`docs/credenciales.md`. Imágenes conservan un generador local de demostración;
+búsqueda web sí usa internet real sin API key. Body de cada uno:
 
 Cada una de estas tres claves es SINGLETON por tenant (a diferencia de un
 conector OAuth, donde un tenant puede tener varias cuentas del mismo
@@ -133,7 +134,7 @@ from typing import Any
 
 import httpx
 from edecan_db.vault import TokenVault
-from edecan_llm import choose_discovered_models
+from edecan_llm import choose_discovered_models, discovered_model_ids
 from edecan_schemas import TokenBundle
 from edecan_toolkit.research import BraveSearch, TavilySearch
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -215,6 +216,15 @@ class LLMCredentialsIn(BaseModel):
     model_rapido: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
     validate_: bool = Field(default=True, alias="validate")
+
+
+class LLMModelsIn(BaseModel):
+    """Cambio de modelo sin volver a pedir ni reemplazar la credencial."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    model_principal: str = Field(min_length=1, max_length=240)
+    model_rapido: str | None = Field(default=None, max_length=240)
 
 
 class VoiceSTTCredentialsIn(BaseModel):
@@ -331,7 +341,10 @@ def _masked(secret: str | None) -> str | None:
 
 
 async def _get_with_error_handling(
-    url: str, *, headers: dict[str, str] | None = None, params: dict[str, str] | None = None,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
     proveedor: str,
 ) -> httpx.Response:
     try:
@@ -443,6 +456,32 @@ async def _ping_vertex_service_account(service_account_json: str) -> None:
 async def _ping_ollama(base_url: str) -> None:
     url = f"{base_url.rstrip('/')}/api/tags"
     await _get_with_error_handling(url, proveedor="Ollama")
+
+
+async def _modelos_disponibles(cfg: dict[str, Any]) -> list[str]:
+    """Catálogo actual del proveedor conectado, sin exponer su credencial."""
+
+    kind = str(cfg.get("kind") or "")
+    payload: dict[str, Any] | None = None
+    if kind == "anthropic" and cfg.get("api_key"):
+        payload = await _ping_anthropic(str(cfg["api_key"]))
+    elif kind == "openai_compat" and cfg.get("base_url"):
+        payload = await _ping_openai_compat(str(cfg["base_url"]), cfg.get("api_key"))
+    elif kind == "vertex" and cfg.get("api_key"):
+        payload = await _ping_vertex_api_key(str(cfg["api_key"]))
+    elif kind == "ollama":
+        base_url = str(cfg.get("base_url") or _OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+        response = await _get_with_error_handling(f"{base_url}/api/tags", proveedor="Ollama")
+        data = _json_object(response, "Ollama")
+        raw_models = data.get("models") or []
+        return [
+            str(item.get("name")).strip()
+            for item in raw_models
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+    if payload is None or kind not in {"anthropic", "openai_compat", "vertex"}:
+        return []
+    return discovered_model_ids(kind, payload)
 
 
 async def _ping_deepgram(api_key: str) -> None:
@@ -622,6 +661,90 @@ async def get_credentials(
 # ---------------------------------------------------------------------------
 # PUT/DELETE /v1/credentials/llm
 # ---------------------------------------------------------------------------
+
+
+@router.get("/llm/models")
+async def get_llm_models(
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
+) -> dict[str, Any]:
+    """Modelos detectados y selección actual, sin devolver la API key.
+
+    Los CLI que no publican un catálogo estable siguen admitiendo un ID
+    manual. Si el proveedor está temporalmente caído, Ajustes continúa siendo
+    utilizable y devuelve la selección guardada junto con ``discovery_error``.
+    """
+
+    cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conecta primero un proveedor de inteligencia.",
+        )
+    error: str | None = None
+    try:
+        discovered = await _modelos_disponibles(cfg)
+    except HTTPException as exc:
+        discovered = []
+        error = str(exc.detail)
+
+    actuales = [cfg.get("model_principal"), cfg.get("model_rapido")]
+    modelos: list[str] = []
+    for modelo in [*actuales, *discovered]:
+        limpio = str(modelo or "").strip()
+        if limpio and limpio not in modelos:
+            modelos.append(limpio)
+    return {
+        "kind": cfg.get("kind"),
+        "model_principal": cfg.get("model_principal"),
+        "model_rapido": cfg.get("model_rapido"),
+        "models": modelos,
+        "manual_allowed": True,
+        "capabilities_managed_by_edecan": True,
+        "discovery_error": error,
+    }
+
+
+@router.patch("/llm/models", status_code=status.HTTP_204_NO_CONTENT)
+async def update_llm_models(
+    payload: LLMModelsIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
+) -> None:
+    """Cambia el modelo activo sin pedir de nuevo la credencial guardada."""
+
+    account = await _find_account(repo, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    if account is None or cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conecta primero un proveedor de inteligencia.",
+        )
+
+    principal = payload.model_principal.strip()
+    rapido = (payload.model_rapido or "").strip() or principal
+    if not principal or any(ord(char) < 32 for char in principal + rapido):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El nombre del modelo no es válido.",
+        )
+
+    cfg["model_principal"] = principal
+    cfg["model_rapido"] = rapido
+    kind = str(cfg.get("kind") or "unknown")
+    await vault.put(
+        current_user.tenant_id,
+        account["id"],
+        TokenBundle(access_token=json.dumps(cfg), token_type="config", scopes=[kind]),
+    )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="credentials.llm.models_updated",
+        target=f"{kind}:{principal}",
+    )
 
 
 @router.put("/llm", status_code=status.HTTP_204_NO_CONTENT)

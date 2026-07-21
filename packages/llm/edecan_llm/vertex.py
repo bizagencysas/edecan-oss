@@ -207,7 +207,18 @@ def _build_credentials(service_account_json: str | None) -> object:
         raise LLMError(
             "extra.service_account_json de Vertex AI no es JSON válido.", provider="vertex"
         ) from exc
-    return service_account.Credentials.from_service_account_info(info, scopes=_VERTEX_SCOPES)
+    try:
+        return service_account.Credentials.from_service_account_info(info, scopes=_VERTEX_SCOPES)
+    except (TypeError, ValueError) as exc:
+        # `google-auth` usa `MalformedError(ValueError)` cuando el JSON existe
+        # pero no es una credencial de cuenta de servicio completa. Exponer esa
+        # excepción interna rompe el contrato común de proveedores y termina
+        # mostrando un traceback técnico en Ajustes.
+        raise LLMError(
+            "extra.service_account_json de Vertex AI no contiene una credencial "
+            "de cuenta de servicio válida.",
+            provider="vertex",
+        ) from exc
 
 
 class _HttpxAuthRequest:

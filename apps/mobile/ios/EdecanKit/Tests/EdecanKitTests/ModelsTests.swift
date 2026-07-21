@@ -65,6 +65,24 @@ struct ModelsTests {
         #expect(me.nombrePila == "sinarroba")
     }
 
+    @Test func perfilPersonalDecodificaIdentidadCompartida() throws {
+        let json = """
+        {
+          "resumen":"Construye productos con IA.",
+          "datos":{
+            "identidad":{"nombre_preferido":"Isacc","nombre_completo":"Isacc Lara","pronombres":"él","fecha_nacimiento":"8 de enero de 1996","pais":"Venezuela","ciudad":"Medellín","zona_horaria":"America/Bogota","ocupacion":"Fundador","idioma_preferido":"Español de Venezuela","forma_de_trato":"Cercano y directo","biografia":"Construye startups."},
+            "gustos":[],"proyectos":["Edecán"],"metas":[],"relaciones":[],"empresas":[],"habitos":[]
+          },
+          "version":4,"updated_at":"2026-07-21T18:00:00Z"
+        }
+        """
+        let perfil = try APIClient.crearDecoder().decode(LiveProfile.self, from: Data(json.utf8))
+        #expect(perfil.datos.identidad.nombrePreferido == "Isacc")
+        #expect(perfil.datos.identidad.formaDeTrato == "Cercano y directo")
+        #expect(perfil.datos.proyectos == ["Edecán"])
+        #expect(perfil.version == 4)
+    }
+
     // MARK: - Conversation
 
     @Test func decodificaListaDeConversaciones() throws {
@@ -113,7 +131,7 @@ struct ModelsTests {
         #expect(detail.messages.count == 2)
         #expect(detail.messages[0].text == "Revísalo")
         #expect(detail.messages[0].attachments == [ChatAttachment(fileId: "f1", filename: "brief.pdf", mime: "application/pdf")])
-        guard case .toolEnd(let callId, _, _, _, let version, let blocks) = detail.messages[1].toolCalls.first else {
+        guard case .toolEnd(let callId, _, _, _, let version, let blocks, _) = detail.messages[1].toolCalls.first else {
             Issue.record("El historial debía conservar tool_end")
             return
         }

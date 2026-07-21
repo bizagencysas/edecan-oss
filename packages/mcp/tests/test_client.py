@@ -107,6 +107,20 @@ async def test_call_tool_trunca_resultados_largos(fake_server) -> None:
     await client.close()
 
 
+async def test_call_tool_permite_resultado_completo_para_consumidor_interno(fake_server) -> None:
+    contenido = "x" * (MAX_RESULT_CHARS + 500)
+    fake_server.tools["largo"] = {
+        "description": "",
+        "input_schema": {},
+        "result": contenido,
+    }
+    client = MCPClient(InProcessTransport(fake_server))
+    await client.initialize()
+    resultado = await client.call_tool("largo", {}, max_chars=None)
+    assert resultado == contenido
+    await client.close()
+
+
 class _ServidorQueSiempreFalla:
     async def handle(self, request: MCPRequest) -> MCPResponse:
         return MCPResponse.error_response(request.id, -32603, "boom interno")

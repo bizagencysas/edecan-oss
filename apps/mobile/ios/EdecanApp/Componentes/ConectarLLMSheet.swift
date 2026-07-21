@@ -14,6 +14,10 @@ struct ConectarLLMSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if viewModel.credenciales?.llm != nil {
+                    seccionModeloActivo
+                }
+
                 if let deteccion, deteccion.localMode {
                     seccionDetectados(deteccion)
                 }
@@ -67,7 +71,7 @@ struct ConectarLLMSheet: View {
                     }
                 }
             }
-            .navigationTitle("Conectar LLM")
+            .navigationTitle("Inteligencia")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -85,6 +89,9 @@ struct ConectarLLMSheet: View {
                     }
                     .disabled(viewModel.guardando || !formularioValido)
                 }
+            }
+            .task {
+                await viewModel.cargarModelos(client: client)
             }
         }
     }
@@ -120,6 +127,57 @@ struct ConectarLLMSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var seccionModeloActivo: some View {
+        Section("Modelo activo") {
+            Text("El modelo cambia la inteligencia, no los poderes. Internet, archivos y herramientas pertenecen a Edecán.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if let catalogo = viewModel.catalogoModelos, !catalogo.models.isEmpty {
+                Picker("Principal", selection: $viewModel.modeloActivoPrincipal) {
+                    ForEach(catalogo.models, id: \.self) { modelo in
+                        Text(modelo).tag(modelo)
+                    }
+                }
+                Picker("Rápido", selection: $viewModel.modeloActivoRapido) {
+                    ForEach(catalogo.models, id: \.self) { modelo in
+                        Text(modelo).tag(modelo)
+                    }
+                }
+            }
+
+            DisclosureGroup("Escribir un modelo nuevo") {
+                TextField("Modelo principal", text: $viewModel.modeloActivoPrincipal)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("Modelo rápido", text: $viewModel.modeloActivoRapido)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+
+            if let error = viewModel.errorModelo {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
+            if viewModel.modeloGuardadoExitoso {
+                Label("Modelo actualizado", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            Button {
+                Task { await viewModel.guardarModelos(client: client) }
+            } label: {
+                if viewModel.guardandoModelo {
+                    ProgressView()
+                } else {
+                    Text("Usar este modelo")
+                }
+            }
+            .disabled(
+                viewModel.guardandoModelo
+                    || viewModel.modeloActivoPrincipal.trimmingCharacters(in: .whitespaces).isEmpty
+            )
         }
     }
 

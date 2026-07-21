@@ -8,11 +8,11 @@
 # (`cargo tauri build` — app+dmg en macOS, AppImage+deb+rpm en Linux): punto de
 # entrada reproducible para armar un release real.
 #
-# Este script NO firma código ni notariza en macOS — eso es responsabilidad
-# de quien empaqueta, con SU PROPIO Developer ID (bring-your-own, ver
-# docs/desktop.md "Firma de código"). Sin firmar, el .dmg/.app resultante
-# dispara Gatekeeper en Macs distintas a la que lo compiló (clic derecho →
-# Abrir la primera vez) — también documentado ahí.
+# En macOS, si no se aporta un Developer ID, Tauri aplica una firma ad-hoc.
+# No identifica a un desarrollador ni elimina el aviso de Gatekeeper, pero sí
+# deja el bundle internamente íntegro (incluido el sidecar) y evita distribuir
+# una app con un sello de recursos inválido. Firma Developer ID y notarización
+# siguen siendo bring-your-own; ver docs/desktop.md "Firma de código".
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,16 @@ PLATFORM="$(uname -s)"
 ARCH="$(uname -m)"
 
 case "$PLATFORM" in
-  Darwin) PLATFORM_LABEL="macOS" ;;
+  Darwin)
+    PLATFORM_LABEL="macOS"
+    # Un bundle sin firma exterior hereda la firma del ejecutable y falla
+    # `codesign --verify --deep --strict`. `-` es la identidad ad-hoc nativa
+    # de codesign. Una identidad real definida por el empaquetador siempre
+    # tiene prioridad.
+    if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+      export APPLE_SIGNING_IDENTITY="-"
+    fi
+    ;;
   Linux)
     if [[ "$ARCH" != "x86_64" && "$ARCH" != "amd64" ]]; then
       echo "error: el instalador Linux local-first requiere x86_64 (detectado: $ARCH)." >&2
@@ -97,11 +106,28 @@ cd "$DESKTOP_DIR/src-tauri"
 # corre por defecto) no lo exija. El override se pasa explícitamente al CLI
 # con `cargo tauri build --config <json>`.
 TAURI_BUILD_ARGS=()
+TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local"]'
 if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
   echo "    (EDECAN_BUNDLE_OLLAMA=1: sumando binaries/ollama a externalBin para esta build)"
+  TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/ollama"]'
+fi
+
+# Hardened Runtime exige que todas las librerías cargadas compartan el Team ID
+# del proceso. El sidecar PyInstaller onefile autoextrae libpython y extensiones
+# firmadas ad-hoc (sin Team ID), por lo que activar runtime con identidad `-`
+# produce una app que pasa `codesign --verify` pero muere al arrancar. Una firma
+# Developer ID real conserva el default endurecido de Tauri y puede notarizarse;
+# solo el build local ad-hoc recibe este override explícito y verificable.
+if [[ "$PLATFORM" == "Darwin" && "${APPLE_SIGNING_IDENTITY:-}" == "-" ]]; then
+  echo "    (firma ad-hoc: Hardened Runtime desactivado para el sidecar PyInstaller local)"
   TAURI_BUILD_ARGS+=(
     --config
-    '{"bundle":{"externalBin":["binaries/edecan-local","binaries/ollama"]}}'
+    "{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"macOS\":{\"hardenedRuntime\":false}}}"
+  )
+elif [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
+  TAURI_BUILD_ARGS+=(
+    --config
+    "{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON}}"
   )
 fi
 if (( ${#TAURI_BUILD_ARGS[@]} )); then

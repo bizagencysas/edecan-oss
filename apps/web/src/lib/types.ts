@@ -211,6 +211,13 @@ export type AgentEvent =
       args: Record<string, unknown>;
     }
   | {
+      type: "tool_progress";
+      tool_call_id: string | null;
+      name: string;
+      elapsed_seconds: number;
+      message: string;
+    }
+  | {
       type: "tool_end";
       tool_call_id: string | null;
       name: string;
@@ -218,6 +225,7 @@ export type AgentEvent =
       artifacts: ArtifactRef[];
       blocks_version: 1;
       blocks: ChatBlock[];
+      mission_id: string | null;
     }
   | {
       type: "confirmation_required";
@@ -232,6 +240,7 @@ export type AgentEvent =
 export const SSE_EVENT_NAMES = [
   "message.delta",
   "tool.start",
+  "tool.progress",
   "tool.end",
   "confirmation.required",
   "message.done",

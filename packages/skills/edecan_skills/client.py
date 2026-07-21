@@ -112,9 +112,15 @@ def _parsear_resultados(cuerpo: Any, k: int) -> list[SkillHit]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        source = str(item.get("source") or item.get("repo") or "").strip()
+        # skills.sh separa la ubicación instalable en dos campos: `source`
+        # identifica el repositorio y `id` incluye además la carpeta exacta
+        # de la skill (p. ej. source="anthropics/skills",
+        # id="anthropics/skills/pdf"). Usar solo `source` hacía que el
+        # instalador buscara SKILL.md en la raíz equivocada de prácticamente
+        # todos los monorepos del índice.
+        source = str(item.get("id") or item.get("source") or item.get("repo") or "").strip()
         nombre = str(item.get("name") or "").strip() or source
-        if not nombre:
+        if not nombre or not source:
             continue
         installs_raw = item.get("installs")
         es_entero = isinstance(installs_raw, int) and not isinstance(installs_raw, bool)

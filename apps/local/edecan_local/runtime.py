@@ -622,6 +622,16 @@ async def run(
         api_app = _import_api_app()
         api_settings = _import_api_settings()
 
+        # La propia app instalada es el destino de control remoto. Se
+        # registra cuando `/v1/auth/local` resuelve el tenant single-owner;
+        # así el QR del teléfono basta y no existe un segundo emparejamiento
+        # técnico que la persona deba entender.
+        from edecan_local.companion_bridge import LocalCompanionBridge
+
+        if hasattr(api_app.state, "companion_manager"):
+            local_companion = LocalCompanionBridge(app=api_app, data_dir=resolved_data_dir)
+            api_app.state.ensure_local_companion = local_companion.ensure_registered
+
         # Ollama embebido OPCIONAL (WP-V4-09, DIRECCION_ACTUAL.md "Confirmado:
         # agregar Ollama"): arranca DESPUÉS del Postgres embebido y de tener
         # `api_settings` (necesita `OLLAMA_BASE_URL`). Ciclo de vida completo

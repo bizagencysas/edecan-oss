@@ -9,6 +9,7 @@ import {
   parseChatBlock,
   publicHttpUrl,
   reduceToolTimeline,
+  toolTimelineFromCalls,
   sourceModeLabel,
 } from "./src/lib/chat-blocks.ts";
 
@@ -133,11 +134,55 @@ test("correlaciona llamadas homónimas por tool_call_id aunque terminen fuera de
     artifacts: [],
     blocks_version: 1,
     blocks: [],
+    mission_id: "22222222-2222-4222-a222-222222222222",
   });
 
   assert.equal(timeline[0].status, "running");
   assert.equal(timeline[1].status, "done");
   assert.equal(timeline[1].resultPreview, "segundo listo");
+  assert.equal(timeline[1].missionId, "22222222-2222-4222-a222-222222222222");
+});
+
+test("reconstruye el progreso de herramientas al reabrir una conversación", () => {
+  const timeline = toolTimelineFromCalls([
+    { type: "tool_start", tool_call_id: "work-1", name: "crear_app", args: {} },
+    {
+      type: "tool_end",
+      tool_call_id: "work-1",
+      name: "crear_app",
+      result_preview: "Misión creada",
+      artifacts: [],
+      blocks_version: 1,
+      blocks: [],
+      mission_id: "33333333-3333-4333-a333-333333333333",
+    },
+  ]);
+  assert.equal(timeline.length, 1);
+  assert.equal(timeline[0].status, "done");
+  assert.equal(timeline[0].missionId, "33333333-3333-4333-a333-333333333333");
+});
+
+test("mantiene visible el progreso de una herramienta larga", () => {
+  const parsed = parseAgentEvent({
+    type: "tool_progress",
+    tool_call_id: "build-1",
+    name: "construir_app",
+    elapsed_seconds: 72,
+    message: "Edecán sigue trabajando",
+  });
+  assert.equal(parsed?.type, "tool_progress");
+
+  let timeline = reduceToolTimeline([], {
+    type: "tool_start",
+    tool_call_id: "build-1",
+    name: "construir_app",
+    args: {},
+  });
+  if (parsed?.type === "tool_progress") timeline = reduceToolTimeline(timeline, parsed);
+
+  assert.equal(timeline[0].status, "running");
+  assert.equal(timeline[0].elapsedSeconds, 72);
+  assert.equal(timeline[0].progressMessage, "Edecán sigue trabajando");
 });
 
 test("helpers de presentación producen destinos y etiquetas humanas", () => {

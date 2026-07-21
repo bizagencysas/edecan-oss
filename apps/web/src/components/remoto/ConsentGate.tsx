@@ -2,8 +2,8 @@
 
 /**
  * Pantalla de consentimiento — SIEMPRE lo primero que ve el usuario antes de
- * poder iniciar una sesión remota (`ROADMAP_V2.md` §5 WP-V2-09, principio de
- * "doble consentimiento" de `docs/control-remoto.md`).
+ * poder iniciar una sesión remota. En la app instalada, el QR ya vinculó el
+ * teléfono con esta computadora; no existe un segundo emparejamiento.
  *
  * `allowControl` (WP-V4-10, control remoto fase 2) habilita el checkbox
  * adicional para pedir `kind="control"` en vez de `"view"` — el padre
@@ -38,42 +38,32 @@ export function ConsentGate({
         title={kind === "control" ? "Iniciar sesión de control remoto" : "Iniciar sesión de vista remota"}
         description={
           kind === "control"
-            ? "Vas a ver la pantalla de tu equipo Y permitir que se mueva el mouse y se escriba en él desde aquí."
-            : "Solo lectura: vas a ver la pantalla de tu equipo desde aquí — nadie puede mover tu mouse ni tu teclado."
+            ? "Vas a ver y manejar esta computadora desde tu teléfono."
+            : "Vas a ver la pantalla de esta computadora sin mover el mouse ni escribir."
         }
       />
       <CardBody className="space-y-4">
         <Alert variant="info">
-          Esto pide DOS aprobaciones distintas, en dos lugares distintos: la que das aquí abajo, y
-          una segunda, local, que tu companion (la app de escritorio de Edecán) te va a mostrar en
-          tu propia máquina antes de mandar la primera imagen
-          {kind === "control" && " (y de nuevo, por cada comando de teclado/mouse)"}. Sin esa
-          segunda aprobación no sale ni un solo frame
-          {kind === "control" && " ni se mueve un solo pixel"}. El diseño completo (emparejamiento,
-          cifrado, qué falta para llegar a control total) vive en{" "}
-          <code>docs/control-remoto.md</code>.
+          El teléfono que escaneó el QR ya está vinculado con esta computadora. Confirma esta
+          sesión una vez y podrás terminarla en cualquier momento.
         </Alert>
 
         <ul className="list-disc space-y-1.5 pl-5 text-sm text-slate-600 dark:text-slate-300">
           {kind === "control" ? (
             <>
               <li>Esta sesión puede ver la pantalla Y mover el mouse / escribir en tu equipo.</li>
-              <li>
-                Cada clic o tecla individual sigue pidiendo aprobación de tu companion (con un
-                margen para recordarla unos minutos, SOLO dentro de esta misma sesión).
-              </li>
+              <li>La autorización dura solo mientras esta sesión permanezca abierta.</li>
             </>
           ) : (
             <li>Esta sesión solo puede VER la pantalla — no existe forma de mover el mouse ni escribir.</li>
           )}
-          <li>Vas a ver un aviso permanente en pantalla mientras la sesión esté activa.</li>
-          <li>Puedes terminarla en cualquier momento con «Terminar sesión», desde aquí o desde tu equipo.</li>
+          <li>Puedes terminarla en cualquier momento con «Terminar sesión».</li>
           <li>Inicio, fin y cada comando quedan registrados en tu historial de seguridad.</li>
         </ul>
 
         {allowControl && (
           <Checkbox
-            label="Además, habilitar control remoto de teclado y mouse (requiere que tu companion tenga remote_input_enabled activado)."
+            label="También quiero usar el mouse y el teclado"
             checked={wantsControl}
             onChange={(e) => setWantsControl(e.target.checked)}
           />
@@ -82,8 +72,8 @@ export function ConsentGate({
         <Checkbox
           label={
             kind === "control"
-              ? "Entiendo que voy a ver Y controlar la pantalla de mi equipo, y que el companion me pedirá una aprobación local antes de cada acción."
-              : "Entiendo que voy a ver la pantalla de mi equipo y que el companion me pedirá una aprobación local antes de empezar."
+              ? "Confirmo que quiero ver y controlar esta computadora desde mi teléfono."
+              : "Confirmo que quiero ver la pantalla de esta computadora desde mi teléfono."
           }
           checked={checked}
           onChange={(e) => setChecked(e.target.checked)}

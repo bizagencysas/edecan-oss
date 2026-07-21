@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- El QR también puede ingresarse como deep link/manual; no se excluyen
+         tablets, Chromebooks ni equipos sin cámara de Google Play. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Visibilidad de paquetes exigida desde Android 11 para descubrir los
          servicios locales que dan voz sin claves de terceros. -->
@@ -26,6 +29,8 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,10 +42,51 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._sockets: dict[uuid.UUID, WebSocket] = {}
+        # En la app instalada, la propia computadora ES el companion. El
+        # runtime local registra aquí un ejecutor in-process después de abrir
+        # la sesión single-owner; el teléfono emparejado por QR no necesita
+        # un segundo código ni otro proceso escondido en una terminal.
+        self._local_handlers: dict[
+            uuid.UUID, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+        ] = {}
+        self._local_default_handler: (
+            Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
+        ) = None
         self._pending: dict[str, _Pending] = {}
 
     def is_connected(self, tenant_id: uuid.UUID) -> bool:
-        return tenant_id in self._sockets
+        return (
+            tenant_id in self._sockets
+            or tenant_id in self._local_handlers
+            or self._local_default_handler is not None
+        )
+
+    def register_local_default(
+        self,
+        handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Registra el único equipo de un runtime local single-owner.
+
+        Solo ``edecan_local`` llama este método. Permite que el destino esté
+        disponible desde el arranque aunque el WebView conserve un JWT y no
+        necesite volver a llamar ``/v1/auth/local``.
+        """
+        self._local_default_handler = handler
+        logger.info("Computadora del runtime local disponible")
+
+    def register_local(
+        self,
+        tenant_id: uuid.UUID,
+        handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Registra la computadora de una instalación local como destino.
+
+        No acepta URLs ni credenciales: es una función que vive en el mismo
+        proceso y solo puede crear ``edecan_local``. El canal WebSocket se
+        conserva para instalaciones hospedadas o equipos adicionales.
+        """
+        self._local_handlers[tenant_id] = handler
+        logger.info("Computadora local disponible para tenant_id=%s", tenant_id)
 
     async def connect(self, tenant_id: uuid.UUID, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -92,6 +134,15 @@ class ConnectionManager:
         timeout: float = 30,
     ) -> dict[str, Any]:
         """Envía `{request_id, action, params}` al companion del tenant y espera su respuesta."""
+        local_handler = self._local_handlers.get(tenant_id) or self._local_default_handler
+        if local_handler is not None:
+            try:
+                return await asyncio.wait_for(local_handler(action, params), timeout=timeout)
+            except TimeoutError as exc:
+                raise CompanionError(
+                    f"La computadora local no respondió a la acción '{action}' en {timeout}s."
+                ) from exc
+
         websocket = self._sockets.get(tenant_id)
         if websocket is None:
             raise CompanionError(f"No hay companion conectado para el tenant {tenant_id}.")

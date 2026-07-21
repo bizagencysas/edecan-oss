@@ -15,15 +15,18 @@ def test_tool_end_with_artifact_is_json_serializable_for_history() -> None:
     import edecan_api.routers.conversations as conversations_module
 
     file_id = uuid.uuid4()
+    mission_id = uuid.uuid4()
     event = ToolEndEvent(
         name="crear_artefactos",
         result_preview="Creado",
         artifacts=[ArtifactRef(file_id=file_id, filename="reporte.pdf", mime="application/pdf")],
+        mission_id=mission_id,
     )
 
     serialized = conversations_module._event_to_dict(event)
 
     assert serialized["artifacts"][0]["file_id"] == str(file_id)
+    assert serialized["mission_id"] == str(mission_id)
     json.dumps(serialized)  # regresión: antes lanzaba UUID is not JSON serializable
 
 

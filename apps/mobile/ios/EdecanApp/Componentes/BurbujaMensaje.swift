@@ -18,11 +18,15 @@ struct BurbujaMensaje: View {
             if mensaje.rol == .usuario { Spacer(minLength: 40) }
 
             VStack(alignment: .leading, spacing: 9) {
-                if mensaje.texto.isEmpty && mensaje.enProgreso {
+                if let trabajo = mensaje.trabajo {
+                    ProgresoTrabajoView(trabajo: trabajo)
+                }
+
+                if mensaje.texto.isEmpty && mensaje.enProgreso && mensaje.trabajo == nil {
                     ProgressView()
                         .tint(mensaje.rol == .usuario ? .white : .primary)
                 } else if !mensaje.texto.isEmpty {
-                    Text(mensaje.texto)
+                    Text(textoMarkdown(mensaje.texto))
                         .textSelection(.enabled)
                 }
 
@@ -112,6 +116,99 @@ struct BurbujaMensaje: View {
         if value == "application/pdf" { return "doc.richtext" }
         return "doc"
     }
+}
+
+/// Progreso verificable de una ejecución larga. Solo muestra eventos
+/// operativos públicos (`tool_start/progress/end`), nunca el razonamiento
+/// privado del modelo.
+private struct ProgresoTrabajoView: View {
+    let trabajo: ChatViewModel.Trabajo
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    if trabajo.estaActivo {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Text(trabajo.tituloEstado)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 8)
+                    Text(duracion(trabajo.segundosTranscurridos))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(trabajo.pasos) { paso in
+                    HStack(alignment: .top, spacing: 9) {
+                        icono(paso.estado)
+                            .frame(width: 16, height: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(nombreVisible(paso.nombre))
+                                .font(.caption.weight(.semibold))
+                            if let detalle = paso.detalle, !detalle.isEmpty {
+                                Text(detalle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(paso.estado == .ejecutando ? 1 : 2)
+                            }
+                        }
+                    }
+                }
+                if let error = trabajo.errorMision, !error.isEmpty {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                EdecanTheme.morado.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func icono(_ estado: ChatViewModel.Trabajo.Paso.Estado) -> some View {
+        switch estado {
+        case .ejecutando:
+            ProgressView().controlSize(.mini)
+        case .completado:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .error:
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+        }
+    }
+
+    private func nombreVisible(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+
+    private func duracion(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        return minutes > 0 ? "\(minutes)m \(remainder)s" : "\(remainder)s"
+    }
+}
+
+/// SwiftUI no interpreta Markdown cuando recibe un `String` normal. Esta
+/// conversión conserva saltos y espacios del chat, pero aplica el Markdown
+/// inline que una persona espera ver: negritas, cursivas, código y enlaces.
+/// Si llega texto incompleto mientras se transmite, degrada al original sin
+/// perder ningún carácter visible.
+private func textoMarkdown(_ texto: String) -> AttributedString {
+    let opciones = AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .inlineOnlyPreservingWhitespace,
+        failurePolicy: .returnPartiallyParsedIfPossible
+    )
+    return (try? AttributedString(markdown: texto, options: opciones)) ?? AttributedString(texto)
 }
 
 /// Render allowlisted de los bloques del contrato v1. Ningun bloque decide

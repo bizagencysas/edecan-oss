@@ -320,6 +320,11 @@ export default function ChatPage() {
           setToolEvents([...events]);
           break;
         }
+        case "tool_progress": {
+          events = reduceToolTimeline(events, event);
+          setToolEvents([...events]);
+          break;
+        }
         case "tool_end": {
           toolLog.push(event);
           events = reduceToolTimeline(events, event);

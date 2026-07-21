@@ -54,6 +54,22 @@ from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, r
 
 router = APIRouter(prefix="/v1/perfil", tags=["perfil"], dependencies=[Depends(rate_limit)])
 
+IDENTITY_FIELDS: tuple[str, ...] = (
+    "nombre_preferido",
+    "nombre_completo",
+    "pronombres",
+    "fecha_nacimiento",
+    "pais",
+    "ciudad",
+    "zona_horaria",
+    "ocupacion",
+    "idioma_preferido",
+    "forma_de_trato",
+    "biografia",
+)
+IDENTITY_FIELD_MAX_CHARS = 160
+BIOGRAPHY_MAX_CHARS = 1_000
+
 
 # ---------------------------------------------------------------------------
 # Esquemas de entrada — `PUT` es un patch parcial en dos niveles: el top
@@ -65,6 +81,27 @@ router = APIRouter(prefix="/v1/perfil", tags=["perfil"], dependencies=[Depends(r
 # ---------------------------------------------------------------------------
 
 
+class IdentidadPerfilIn(BaseModel):
+    """Patch de la identidad declarada por la persona.
+
+    Todos los campos son opcionales para que iOS, Android y web puedan guardar
+    una sección sin pisar el resto. La identidad nunca la reescribe el job de
+    consolidación automática.
+    """
+
+    nombre_preferido: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    nombre_completo: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    pronombres: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    fecha_nacimiento: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    pais: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    ciudad: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    zona_horaria: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    ocupacion: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    idioma_preferido: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    forma_de_trato: str | None = Field(default=None, max_length=IDENTITY_FIELD_MAX_CHARS)
+    biografia: str | None = Field(default=None, max_length=BIOGRAPHY_MAX_CHARS)
+
+
 class DatosPerfilIn(BaseModel):
     """Sub-objeto de `PUT /v1/perfil`. Todas las categorías son opcionales:
     solo las que vengan en el body se sobreescriben (con la lista COMPLETA
@@ -72,6 +109,7 @@ class DatosPerfilIn(BaseModel):
     add/remove de un chip individual lo resuelve el cliente armando la lista
     resultante, ver `apps/web/src/app/(app)/app/perfil-vivo/page.tsx`)."""
 
+    identidad: IdentidadPerfilIn | None = None
     gustos: list[str] | None = Field(default=None, max_length=LISTA_MAX_ITEMS)
     proyectos: list[str] | None = Field(default=None, max_length=LISTA_MAX_ITEMS)
     metas: list[str] | None = Field(default=None, max_length=LISTA_MAX_ITEMS)
@@ -112,21 +150,35 @@ def _from_jsonb(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _completar_datos(datos: dict[str, Any]) -> dict[str, list[str]]:
-    """Garantiza que el `dict` de salida tenga EXACTAMENTE las 6 categorías
-    pinned (`CAMPOS_DATOS`), cada una una lista de `str` — filtra cualquier
-    clave/valor inesperado en vez de reventar."""
-    return {
+def _identidad_vacia() -> dict[str, str]:
+    return {campo: "" for campo in IDENTITY_FIELDS}
+
+
+def _completar_identidad(value: Any) -> dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    identidad = _identidad_vacia()
+    for campo in IDENTITY_FIELDS:
+        value = raw.get(campo)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            limite = BIOGRAPHY_MAX_CHARS if campo == "biografia" else IDENTITY_FIELD_MAX_CHARS
+            identidad[campo] = str(value).strip()[:limite]
+    return identidad
+
+
+def _completar_datos(datos: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza identidad explícita y las seis categorías aprendidas."""
+    listas = {
         campo: [str(v) for v in (datos.get(campo) or []) if isinstance(v, (str, int, float))]
         for campo in CAMPOS_DATOS
     }
+    return {"identidad": _completar_identidad(datos.get("identidad")), **listas}
 
 
 def _fila_a_perfil(row: dict[str, Any] | None) -> dict[str, Any]:
     if row is None:
         return {
             "resumen": "",
-            "datos": {campo: [] for campo in CAMPOS_DATOS},
+            "datos": {"identidad": _identidad_vacia(), **{campo: [] for campo in CAMPOS_DATOS}},
             "version": 0,
             "updated_at": None,
         }
@@ -154,7 +206,7 @@ async def _upsert_fila(
     user_id: uuid.UUID,
     *,
     resumen: str,
-    datos: dict[str, list[str]],
+    datos: dict[str, Any],
     version: int,
 ) -> dict[str, Any]:
     # Espacio antes de `::jsonb` obligatorio: el regex de bind params de
@@ -218,6 +270,13 @@ async def put_perfil(
 
     nuevos_datos = dict(actual["datos"])
     if body.datos is not None:
+        if body.datos.identidad is not None:
+            identidad = dict(nuevos_datos.get("identidad") or _identidad_vacia())
+            for campo in IDENTITY_FIELDS:
+                valor = getattr(body.datos.identidad, campo)
+                if valor is not None:
+                    identidad[campo] = valor.strip()
+            nuevos_datos["identidad"] = identidad
         for campo in CAMPOS_DATOS:
             valor = getattr(body.datos, campo)
             if valor is not None:
@@ -233,6 +292,46 @@ async def put_perfil(
         version=nueva_version,
     )
     return _fila_a_perfil(fila_guardada)
+
+
+async def profile_context_for(
+    session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID
+) -> str:
+    """Contexto estable que se inyecta en cada turno del agente.
+
+    No usa búsqueda semántica: el nombre, el trato y el contexto declarado
+    nunca deben desaparecer solo porque el texto del mensaje actual no sea
+    parecido al resumen del perfil.
+    """
+
+    perfil = _fila_a_perfil(await _obtener_fila(session, tenant_id, user_id))
+    identidad = perfil["datos"]["identidad"]
+    lineas = ["Perfil personal declarado por la persona (fuente de verdad):"]
+    etiquetas = {
+        "nombre_preferido": "Nombre preferido",
+        "nombre_completo": "Nombre completo",
+        "pronombres": "Pronombres",
+        "fecha_nacimiento": "Fecha de nacimiento",
+        "pais": "País",
+        "ciudad": "Ciudad",
+        "zona_horaria": "Zona horaria",
+        "ocupacion": "Ocupación",
+        "idioma_preferido": "Idioma preferido",
+        "forma_de_trato": "Cómo quiere que le hables",
+        "biografia": "Sobre la persona",
+    }
+    for campo in IDENTITY_FIELDS:
+        valor = identidad.get(campo, "").strip()
+        if valor:
+            lineas.append(f"- {etiquetas[campo]}: {valor}")
+    resumen = str(perfil.get("resumen") or "").strip()
+    if resumen:
+        lineas.append(f"- Síntesis del perfil vivo: {resumen}")
+    for campo in CAMPOS_DATOS:
+        items = perfil["datos"].get(campo) or []
+        if items:
+            lineas.append(f"- {campo.capitalize()}: " + "; ".join(items))
+    return "\n".join(lineas) if len(lineas) > 1 else ""
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)

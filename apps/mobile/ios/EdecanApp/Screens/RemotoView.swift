@@ -80,23 +80,23 @@ struct RemotoView: View {
                 .font(.headline)
             Text(
                 quiereControl
-                    ? "Vas a ver la pantalla de tu Mac/PC Y permitir que se mueva el mouse y se escriba en él desde aquí."
-                    : "Solo lectura: vas a ver la pantalla de tu Mac/PC desde aquí — nadie puede mover tu mouse ni tu teclado."
+                    ? "Vas a ver y manejar tu computadora desde este iPhone."
+                    : "Vas a ver la pantalla de tu computadora sin mover el mouse ni escribir."
             )
             .font(.subheadline)
             .foregroundStyle(.secondary)
 
-            avisoDobleAprobacion
+            avisoDeVinculacion
 
-            Toggle("Además, habilitar control remoto de teclado y mouse", isOn: $quiereControl)
+            Toggle("También quiero usar el mouse y el teclado", isOn: $quiereControl)
                 .tint(EdecanTheme.morado)
                 .onChange(of: quiereControl) { consentido = false }
 
             Toggle(isOn: $consentido) {
                 Text(
                     quiereControl
-                        ? "Entiendo que voy a ver Y controlar la pantalla de mi equipo, y que el companion me pedirá una aprobación local antes de cada acción."
-                        : "Entiendo que voy a ver la pantalla de mi equipo y que el companion me pedirá una aprobación local antes de empezar."
+                        ? "Confirmo que quiero ver y controlar mi computadora desde este iPhone."
+                        : "Confirmo que quiero ver la pantalla de mi computadora desde este iPhone."
                 )
                 .font(.footnote)
             }
@@ -122,36 +122,17 @@ struct RemotoView: View {
         .tarjetaVidrio(esquina: 18)
     }
 
-    private var avisoDobleAprobacion: some View {
+    private var avisoDeVinculacion: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Esto pide DOS aprobaciones", systemImage: "checkmark.shield.fill")
+            Label("Tu iPhone ya está vinculado", systemImage: "checkmark.shield.fill")
                 .font(.caption.weight(.semibold))
-            Text(textoAvisoDobleAprobacion)
+            Text("Escaneaste el QR de esta computadora. Confirma esta sesión una vez y podrás terminarla cuando quieras.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(EdecanTheme.azul.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    /// Texto armado FUERA de la jerarquía de `View` a propósito: una
-    /// concatenación de `String` con varios `+`/ternarios inline dentro de un
-    /// `Text(...)` hace que el *type-checker* de Swift tarde demasiado
-    /// resolviendo el tipo del `ViewBuilder` completo (error real visto al
-    /// compilar: "the compiler is unable to type-check this expression in
-    /// reasonable time") — una propiedad `String` simple evita el problema
-    /// por completo.
-    private var textoAvisoDobleAprobacion: String {
-        var texto = "La que das aquí abajo, y una segunda, LOCAL, que tu companion (la app de "
-        texto += "escritorio de Edecán) te va a mostrar en tu propia máquina antes de mandar la "
-        texto += "primera imagen"
-        if quiereControl {
-            texto += " (y de nuevo, por cada comando de teclado/mouse)"
-        }
-        texto += ". Sin esa segunda aprobación no sale ni un solo frame"
-        texto += quiereControl ? " ni se mueve un solo pixel." : "."
-        return texto
     }
 
     // MARK: - Visor (con sesión)

@@ -32,7 +32,12 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import redis.asyncio as redis_asyncio
-from edecan_core.agent import Agent, artifact_refs_from_tool_data, rich_blocks_from_tool_data
+from edecan_core.agent import (
+    Agent,
+    artifact_refs_from_tool_data,
+    mission_ref_from_tool_data,
+    rich_blocks_from_tool_data,
+)
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
 from edecan_core.tools import Tool, ToolContext, ToolResult
@@ -67,6 +72,7 @@ from edecan_api.deps import (
 )
 from edecan_api.persona_tools import conversation_persona_tools
 from edecan_api.repo import Repo
+from edecan_api.routers.perfil import profile_context_for
 from edecan_api.routers.persona import persona_from_row
 from edecan_api.routers.phone import phone_tool_dispatcher_for
 
@@ -80,6 +86,7 @@ router = APIRouter(
 EVENT_NAME_MAP: dict[str, str] = {
     "text_delta": "message.delta",
     "tool_start": "tool.start",
+    "tool_progress": "tool.progress",
     "tool_end": "tool.end",
     "confirmation_required": "confirmation.required",
     "done": "message.done",
@@ -377,6 +384,7 @@ def _build_ctx(
     approved_tool_calls: set[str],
     flags: dict[str, Any],
     phone_call_dispatcher: Any | None = None,
+    profile_context: str = "",
 ) -> ToolContext:
     return ToolContext(
         tenant_id=tenant_id,
@@ -388,6 +396,7 @@ def _build_ctx(
         extras={
             "companion": _companion_caller(request, tenant_id),
             "memory_store": _build_memory_store(session, settings, persona),
+            "profile_context": profile_context,
             "memory_embedder": _build_document_embedder(settings),
             "approved_tool_calls": approved_tool_calls,
             # Callable tenant/user-scoped usado exclusivamente por las tools
@@ -817,6 +826,10 @@ async def _stream_agent_events(
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
                 yield _format_sse(sse_name, public_event)
+            elif event_type == "tool_progress":
+                # Es telemetría efímera para el turno vivo. No se persiste en
+                # cada latido para evitar inflar el historial de conversaciones.
+                yield _format_sse(sse_name, public_event)
             elif event_type == "done":
                 usage = event.get("usage") or {}
                 input_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -940,13 +953,33 @@ async def _stream_approved_confirmation(
                 "args": tool_args,
             },
         )
+        task = asyncio.create_task(tool.run(ctx, tool_args))
+        started_at = asyncio.get_running_loop().time()
         try:
-            result = await tool.run(ctx, tool_args)
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+                    break
+                except TimeoutError:
+                    elapsed = max(0, int(asyncio.get_running_loop().time() - started_at))
+                    yield _format_sse(
+                        "tool.progress",
+                        {
+                            "type": "tool_progress",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "elapsed_seconds": elapsed,
+                            "message": "Edecán sigue trabajando",
+                        },
+                    )
         except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
             logger.warning(
                 "La herramienta aprobada %r lanzó una excepción", tool_name, exc_info=True
             )
             result = ToolResult(content=f"Error: {exc}")
+        finally:
+            if not task.done():
+                task.cancel()
 
         preview = result.content[:_RESULT_PREVIEW_LEN]
         artifacts = artifact_refs_from_tool_data(result.data)
@@ -963,6 +996,9 @@ async def _stream_approved_confirmation(
             "artifacts": [item.model_dump(mode="json") for item in artifacts],
             "blocks_version": 1,
             "blocks": [item.model_dump(mode="json") for item in blocks],
+            "mission_id": (
+                str(mission_id) if (mission_id := mission_ref_from_tool_data(result.data)) else None
+            ),
         }
         yield _format_sse("tool.end", tool_end)
 
@@ -1154,6 +1190,15 @@ async def post_message(
 
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
+    # El proceso real siempre recibe una AsyncSession tenant-scoped. El
+    # repositorio de pruebas de conversaciones usa históricamente ``None``
+    # porque no toca SQL; conservar ese doble evita acoplar todo el contrato
+    # SSE a una base falsa solo por el perfil opcional.
+    profile_context = (
+        await profile_context_for(session, tenant.tenant_id, current_user.user_id)
+        if session is not None
+        else ""
+    )
 
     registry = get_tool_registry(request)
     agent = Agent(llm_router, registry)
@@ -1176,6 +1221,7 @@ async def post_message(
             repo=repo,
             vault=vault,
         ),
+        profile_context=profile_context,
     )
     # MCP bring-your-own (ARCHITECTURE.md §15): tools de los servidores MCP
     # que el tenant conectó, fusionadas SOLO para este turno — nunca tocan el

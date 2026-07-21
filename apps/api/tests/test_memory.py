@@ -17,6 +17,7 @@ from conftest import auth_headers
 from edecan_llm.base import CompletionResponse, Usage
 
 from edecan_api import deps as edecan_deps
+from edecan_api.routers.memory import _parsear_items_extraidos
 
 
 class FakeLLMRouter:
@@ -171,6 +172,55 @@ async def test_preview_import_respuesta_no_json_degrada_a_lista_vacia(client, ap
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_preview_import_rescata_hechos_si_el_modelo_responde_vacio(client, app) -> None:
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    _override_llm_router(app, "[]")
+    texto = """Quién eres
+Nombre preferido: Isacc Lara González.
+Naciste el 8 de enero de 1996.
+Eres venezolano y has residido legalmente en Colombia.
+
+Cómo prefieres que te responda
+Prefieres respuestas humanas, directas y con personalidad.
+No soportas respuestas genéricas.
+"""
+
+    response = await client.post(
+        "/v1/memory/import/preview", json={"texto": texto}, headers=headers
+    )
+
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) >= 4
+    assert any("Nombre preferido" in item["content"] for item in items)
+    assert any(item["kind"] == "preference" for item in items)
+
+
+def test_parser_tolera_prosa_fence_y_objeto_con_aliases_en_espanol() -> None:
+    respuesta = """Aquí está el resultado:
+```json
+{"recuerdos": [{"tipo": "preferencia", "contenido": "Prefiere respuestas breves"}]}
+```
+"""
+
+    assert _parsear_items_extraidos(respuesta) == [
+        {"tipo": "preferencia", "contenido": "Prefiere respuestas breves"}
+    ]
+
+
+def test_parser_recupera_objetos_completos_de_un_array_truncado() -> None:
+    respuesta = (
+        '[{"kind":"fact","content":"Vive en Medellín"},'
+        '{"kind":"preference","content":"Prefiere respuestas breves"},'
+        '{"kind":"fact","content":"incompleto'
+    )
+
+    assert _parsear_items_extraidos(respuesta) == [
+        {"kind": "fact", "content": "Vive en Medellín"},
+        {"kind": "preference", "content": "Prefiere respuestas breves"},
+    ]
 
 
 async def test_preview_import_ignora_items_con_kind_invalido(client, app) -> None:

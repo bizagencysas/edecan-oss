@@ -510,6 +510,18 @@ class EdecanApi private constructor(
     /** `GET /v1/me`. */
     suspend fun me(): Me = conAutoRefresh { obtener("/v1/me") }
 
+    /** Perfil personal compartido por computador, iOS, Android y el agente. */
+    suspend fun liveProfile(): LiveProfile = conAutoRefresh { obtener("/v1/perfil") }
+
+    /** Guarda la identidad declarada sin tocar las categorías aprendidas. */
+    suspend fun updateLiveProfile(identity: ProfileIdentity, summary: String): LiveProfile =
+        conAutoRefresh {
+            actualizar(
+                "/v1/perfil",
+                LiveProfilePatch(summary, ProfileDataPatch(identity)),
+            )
+        }
+
     /** `GET /v1/conversations` — más recientes primero (orden que ya
      * aplica el backend). */
     suspend fun conversations(): List<Conversation> = conAutoRefresh { obtener("/v1/conversations") }
@@ -651,6 +663,13 @@ class EdecanApi private constructor(
      * detalle EXACTO del proveedor si la rechazó (`400`). */
     suspend fun conectarLlm(payload: LlmCredentialsIn) {
         conAutoRefresh { actualizarSinCuerpo("/v1/credentials/llm", payload) }
+    }
+
+    suspend fun modelosLlm(): LlmModelsOut =
+        conAutoRefresh { obtener("/v1/credentials/llm/models") }
+
+    suspend fun actualizarModelosLlm(payload: LlmModelsIn) {
+        conAutoRefresh { parchearSinCuerpo("/v1/credentials/llm/models", payload) }
     }
 
     // -------------------------------------------------------------------
@@ -1153,6 +1172,20 @@ class EdecanApi private constructor(
             }
         }
         return manejarRespuestaAutenticada(response)
+    }
+
+    /** `PATCH` cuya respuesta exitosa es `204 No Content`. */
+    private suspend inline fun <reified B> parchearSinCuerpo(path: String, body: B) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.patch(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
     }
 
     /** `DELETE` "mejor esfuerzo" (`revocarDispositivo`): un `404` se trata

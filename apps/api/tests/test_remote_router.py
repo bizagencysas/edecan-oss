@@ -367,7 +367,12 @@ async def test_frame_success_transitions_pending_to_active_and_returns_canned_b6
         (
             uuid.UUID(session["tenant_id"]),
             "screenshot",
-            {"format": "jpeg", "quality": 68, "max_width": 1600},
+            {
+                "format": "jpeg",
+                "quality": 68,
+                "max_width": 1600,
+                "session_id": session["id"],
+            },
         ),
     ]
 
@@ -816,7 +821,7 @@ async def test_input_403_when_session_already_denied(
     )
 
     assert response.status_code == 403
-    assert "denegó" in response.json()["detail"]
+    assert "denegada" in response.json()["detail"]
 
 
 async def test_input_409_when_session_already_ended(

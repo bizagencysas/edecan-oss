@@ -4,6 +4,25 @@ import Testing
 
 @Suite(.serialized)
 struct APISessionRaceTests {
+    @Test func cancelacionDeSwiftUINoSeDisfrazaComoFallaDeServidor() async throws {
+        let tokens = LockedAuthTokenStore(access: "access", refresh: "refresh")
+        let session = stubSession { _ in throw URLError(.cancelled) }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        do {
+            _ = try await api.me()
+            Issue.record("La petición cancelada debía conservar CancellationError")
+        } catch is CancellationError {
+            // Resultado esperado: la capa de interfaz puede ignorarlo.
+        } catch {
+            Issue.record("La cancelación no debe convertirse en \(error.localizedDescription)")
+        }
+    }
+
     @Test func claimQRSinAuthGuardaJWTYCredencialDurable() async throws {
         let tokens = LockedAuthTokenStore(access: nil, refresh: nil)
         let durable = LockedDevicePairingStore()

@@ -28,6 +28,7 @@ El camino recomendado hoy es la app de escritorio (en construcción; ver [`roadm
 |---|---|
 | [`api.md`](./api.md) | Referencia de todas las rutas HTTP: método, autenticación, cuerpo de la petición y ejemplo de respuesta, incluido el formato de streaming SSE del chat. |
 | [`personalizacion-nivel-dios.md`](./personalizacion-nivel-dios.md) | Qué controla cada campo de `PersonaConfig`, tres personas de ejemplo completas, y cómo funciona (y se borra) la memoria de largo plazo. |
+| [`arquitectura-cognitiva.md`](./arquitectura-cognitiva.md) | Core Identity separado de Memory, Execution, Tool Orchestrator, Planning, Companion, Computer Control, Learning, Proactive y Persona Engine. |
 
 ## Integraciones
 
@@ -103,7 +104,7 @@ que el estado de cada integración y sus límites operativos sean descubribles.
 | [`vehiculos.md`](./vehiculos.md) | Conector Smartcar (multi-marca): estado y control de cerraduras de tu vehículo vía el router HTTP. Fuera de alcance para nueva inversión (`docs/roadmap.md`), el router sigue activo. | v4 |
 | [`notificaciones-push.md`](./notificaciones-push.md) | Recordatorios como notificación push nativa (APNs/FCM) con tus propias credenciales. | v5 |
 | [`rrhh.md`](./rrhh.md) | Empleados, ausencias y nómina — toda corrida de nómina nace en borrador, nunca se paga sola. | v5 |
-| [`viajes.md`](./viajes.md) | Buscar vuelos/hoteles (Amadeus) y rastrear paquetes (AfterShip) con tus propias cuentas — nunca reserva ni paga nada. | v5 |
+| [`viajes.md`](./viajes.md) | Buscar vuelos/hoteles sin API key y rastrear paquetes con AfterShip; nunca reserva ni paga nada. | v5 |
 | [`voz-telefonia.md`](./voz-telefonia.md) | Voz web vs. telefonía premium, clonación de voz con consentimiento verificable, y el checklist legal obligatorio para llamadas/SMS salientes. | v1/v5 |
 | [`reuniones.md`](./reuniones.md) | Resumen y minutas de reuniones a partir de un audio/video que subas, con el STT/LLM de tu propio tenant. Requiere el consentimiento de los participantes. | v6 |
 | [`mcp.md`](./mcp.md) | Conecta servidores MCP de terceros (o propios) como herramientas del agente — bring-your-own, siempre con confirmación por ser código no auditado. | v6 |

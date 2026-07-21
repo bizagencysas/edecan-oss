@@ -1243,6 +1243,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "edecan-api" },
+    { name = "edecan-companion", extra = ["remote-control"] },
     { name = "edecan-core" },
     { name = "edecan-db" },
     { name = "edecan-schemas" },
@@ -1264,6 +1265,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "edecan-api", editable = "apps/api" },
+    { name = "edecan-companion", extras = ["remote-control"], editable = "apps/companion" },
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-db", editable = "packages/db" },
     { name = "edecan-schemas", editable = "packages/schemas" },
@@ -1496,6 +1498,7 @@ version = "0.7.0"
 source = { editable = "packages/travel" }
 dependencies = [
     { name = "edecan-core" },
+    { name = "edecan-mcp" },
     { name = "httpx" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
@@ -1510,6 +1513,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "edecan-core", editable = "packages/core" },
+    { name = "edecan-mcp", editable = "packages/mcp" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
 ]

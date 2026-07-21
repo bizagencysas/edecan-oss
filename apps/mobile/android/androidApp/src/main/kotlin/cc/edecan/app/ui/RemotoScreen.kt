@@ -45,6 +45,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -249,21 +250,17 @@ private fun NuevaSesionCard(
             )
             Text(
                 if (esControl) {
-                    "Vas a ver la pantalla de tu Mac Y permitir que se mueva el mouse y se escriba en ella desde aquí."
+                    "Vas a ver y manejar tu computadora desde este teléfono."
                 } else {
-                    "Solo lectura: vas a ver la pantalla de tu Mac desde aquí — nadie puede mover tu mouse ni tu teclado."
+                    "Vas a ver la pantalla de tu computadora sin mover el mouse ni escribir."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
             Text(
-                "Esto pide DOS aprobaciones distintas: la que das aquí abajo, y una segunda, LOCAL, que " +
-                    "tu companion (la app de escritorio de Edecán) te va a mostrar en tu propia Mac antes " +
-                    "de mandar la primera imagen" +
-                    (if (esControl) " (y de nuevo, por cada comando de teclado/mouse)" else "") +
-                    ". Sin esa segunda aprobación no sale ni un solo frame" +
-                    (if (esControl) " ni se mueve un solo píxel" else "") + ".",
+                "Este teléfono ya está vinculado porque escaneaste el QR de la computadora. " +
+                    "Confirma esta sesión una vez y podrás terminarla cuando quieras.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
                     .padding(top = 12.dp)
@@ -284,8 +281,7 @@ private fun NuevaSesionCard(
                     // widget Y una doble locución de lector de pantalla).
                     Checkbox(checked = quiereControl, onCheckedChange = null)
                     Text(
-                        "Además, habilitar control remoto de teclado y mouse (requiere que tu companion " +
-                            "tenga remote_input_enabled activado).",
+                        "También quiero usar el mouse y el teclado",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -303,11 +299,9 @@ private fun NuevaSesionCard(
                 Checkbox(checked = entendido, onCheckedChange = null)
                 Text(
                     if (esControl) {
-                        "Entiendo que voy a ver Y controlar la pantalla de mi Mac, y que el companion me va " +
-                            "a pedir una aprobación local antes de cada acción."
+                        "Confirmo que quiero ver y controlar mi computadora desde este teléfono."
                     } else {
-                        "Entiendo que voy a ver la pantalla de mi Mac y que el companion me va a pedir una " +
-                            "aprobación local antes de empezar."
+                        "Confirmo que quiero ver la pantalla de mi computadora desde este teléfono."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -555,7 +549,7 @@ private fun VisorRemoto(
     // cualquier `graphicsLayer` ancestro), así que [tamanoElemento] (tamaño
     // de LAYOUT, que `graphicsLayer` no altera) + ese offset alcanzan sin
     // ningún ajuste manual por el zoom actual.
-    var zoom by remember(sesion.id) { mutableStateOf(1f) }
+    var zoom by remember(sesion.id) { mutableFloatStateOf(1f) }
     var pan by remember(sesion.id) { mutableStateOf(Offset.Zero) }
     // La sobrecarga moderna incluye el centroide como primer argumento. Este
     // visor mantiene su comportamiento previo (zoom centrado por graphicsLayer),

@@ -8,8 +8,8 @@
  *
  * Dos proveedores soportados (`provider` en `PUT /v1/credentials/search`):
  * Brave Search API y Tavily. Sin proveedor propio conectado, `buscar_web`/
- * `comparar_precios` siguen funcionando con resultados de ejemplo offline
- * (stub) — nunca bloquea el chat.
+ * `comparar_precios` usan la búsqueda pública real de DuckDuckGo — nunca
+ * dependen del modelo ni bloquean el chat.
  */
 
 import { useState } from "react";
@@ -62,9 +62,8 @@ export function SelectorBusqueda({ onConnected }: { onConnected?: () => void }) 
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-400">
-        Opcional — conecta tu propia key de búsqueda para que «buscar en la web» y «comparar
-        precios» usen resultados reales. Sin esto, siguen funcionando con resultados de ejemplo
-        offline (no bloquea el chat).
+        Edecán ya puede buscar en internet sin ninguna clave. Opcionalmente conecta Brave o
+        Tavily si quieres usar tu propio proveedor y sus límites de búsqueda.
       </p>
       {resultado && <Alert variant={resultado.ok ? "success" : "error"}>{resultado.ok ? `✅ ${resultado.mensaje}` : `❌ ${resultado.mensaje}`}</Alert>}
       <Field label="Proveedor" htmlFor="busqueda_provider">

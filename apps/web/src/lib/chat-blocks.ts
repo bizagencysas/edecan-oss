@@ -358,6 +358,21 @@ export function parseAgentEvent(value: unknown): AgentEvent | null {
       args,
     };
   }
+  if (raw.type === "tool_progress") {
+    const name = stringValue(raw.name, 255);
+    const message = stringValue(raw.message, 255);
+    const elapsed = typeof raw.elapsed_seconds === "number" && Number.isFinite(raw.elapsed_seconds)
+      ? Math.max(0, Math.floor(raw.elapsed_seconds))
+      : 0;
+    if (!name || !message) return null;
+    return {
+      type: "tool_progress",
+      tool_call_id: optionalString(raw.tool_call_id, 255),
+      name,
+      elapsed_seconds: elapsed,
+      message,
+    };
+  }
   if (raw.type === "tool_end") {
     const name = stringValue(raw.name, 255);
     if (!name || typeof raw.result_preview !== "string") return null;
@@ -370,6 +385,10 @@ export function parseAgentEvent(value: unknown): AgentEvent | null {
       artifacts: parseArtifactRefs(raw.artifacts),
       blocks_version: 1,
       blocks: supportedBlocks ? parseChatBlocks(raw.blocks) : [],
+      mission_id: (() => {
+        const value = optionalString(raw.mission_id, 64);
+        return value && UUID_RE.test(value) ? value : null;
+      })(),
     };
   }
   if (raw.type === "confirmation_required") {
@@ -394,13 +413,16 @@ export interface ToolTimelineEntry {
   args: Record<string, unknown>;
   status: "running" | "done";
   resultPreview?: string;
+  elapsedSeconds?: number;
+  progressMessage?: string;
   artifacts?: ArtifactRef[];
+  missionId?: string;
 }
 
 /** Reduce eventos por identidad; el nombre solo se usa como fallback para logs antiguos sin ID. */
 export function reduceToolTimeline(
   previous: ToolTimelineEntry[],
-  event: Extract<AgentEvent, { type: "tool_start" | "tool_end" }>,
+  event: Extract<AgentEvent, { type: "tool_start" | "tool_progress" | "tool_end" }>,
 ): ToolTimelineEntry[] {
   const next = [...previous];
   if (event.type === "tool_start") {
@@ -419,6 +441,30 @@ export function reduceToolTimeline(
     return next;
   }
 
+  if (event.type === "tool_progress") {
+    const index = event.tool_call_id
+      ? next.findIndex((item) => item.toolCallId === event.tool_call_id)
+      : next.findLastIndex((item) => item.name === event.name && item.status === "running");
+    if (index >= 0) {
+      next[index] = {
+        ...next[index],
+        elapsedSeconds: event.elapsed_seconds,
+        progressMessage: event.message,
+      };
+    } else {
+      next.push({
+        callKey: event.tool_call_id ? `tool:${event.tool_call_id}` : `legacy:${event.name}:${next.length}`,
+        toolCallId: event.tool_call_id,
+        name: event.name,
+        args: {},
+        status: "running",
+        elapsedSeconds: event.elapsed_seconds,
+        progressMessage: event.message,
+      });
+    }
+    return next;
+  }
+
   const index = event.tool_call_id
     ? next.findIndex((item) => item.toolCallId === event.tool_call_id)
     : next.findLastIndex((item) => item.name === event.name && item.status === "running");
@@ -430,10 +476,26 @@ export function reduceToolTimeline(
     status: "done",
     resultPreview: event.result_preview,
     artifacts: event.artifacts,
+    missionId: event.mission_id ?? undefined,
   };
   if (index >= 0) next[index] = completed;
   else next.push(completed);
   return next;
+}
+
+/** Reconstruye la traza persistida de una respuesta al volver a abrir el chat. */
+export function toolTimelineFromCalls(calls: unknown[] | null): ToolTimelineEntry[] {
+  return (calls ?? []).reduce<ToolTimelineEntry[]>((timeline, raw) => {
+    const event = parseAgentEvent(raw);
+    if (
+      event?.type !== "tool_start" &&
+      event?.type !== "tool_progress" &&
+      event?.type !== "tool_end"
+    ) {
+      return timeline;
+    }
+    return reduceToolTimeline(timeline, event);
+  }, []);
 }
 
 export function sourceModeLabel(mode: "demo" | "live" | "unknown"): string {

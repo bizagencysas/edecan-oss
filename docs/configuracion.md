@@ -66,7 +66,7 @@ Recuerda la regla dura del proyecto: **nunca** un secreto real fuera de tu `.env
 |---|---|---|---|
 | `EMBEDDINGS_MODEL` | Solo si usas `OpenAICompatEmbedder` | *(vacío)* | Nombre del modelo de embeddings a usar para memoria semántica (`pgvector`). Sin configurarlo, la memoria usa `HashEmbedder` (determinista, offline, sin llamadas externas). |
 | `EMBEDDINGS_DIM` | Opcional | `1536` | Dimensión de los vectores de embedding — debe coincidir con la columna `vector(1536)` de `memory_items`/`file_chunks` si la cambias. |
-| `SEARCH_PROVIDER` | Opcional | `stub` | `stub`, `brave` o `tavily`. Controla qué `SearchProvider` usa la herramienta `buscar_web`. `stub` no hace ninguna llamada real. |
+| `SEARCH_PROVIDER` | Opcional, solo scripts legacy | `stub` | `stub`, `duckduckgo`, `brave` o `tavily`. El chat multi-tenant usa la credencial del tenant o DuckDuckGo real sin clave. |
 | `BRAVE_API_KEY` | Solo si `SEARCH_PROVIDER=brave` | *(vacío)* | Clave de la Brave Search API. |
 | `TAVILY_API_KEY` | Solo si `SEARCH_PROVIDER=tavily` | *(vacío)* | Clave de la Tavily API. |
 

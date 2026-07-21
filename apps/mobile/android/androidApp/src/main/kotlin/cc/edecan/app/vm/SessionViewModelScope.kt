@@ -32,7 +32,6 @@ internal class SessionViewModelContainer : ViewModel() {
 
     override fun onCleared() {
         sessionStore.clear()
-        super.onCleared()
     }
 }
 

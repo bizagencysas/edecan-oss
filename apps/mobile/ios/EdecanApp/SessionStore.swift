@@ -23,6 +23,7 @@ public final class SessionStore {
     public private(set) var sesionValida = true
     private var clientGeneration = 0
     private var contentEpoch = 0
+    private let chatLocalState = ChatLocalStateStore()
 
     public init() {}
 
@@ -31,6 +32,12 @@ public final class SessionStore {
     /// `client` en `nil` — las pantallas que lo necesiten deben tratarlo
     /// como "sin sesión utilizable".
     public func actualizarBaseURL(_ url: URL?) {
+        // Al abandonar o cambiar de servidor, un hilo del tenant anterior no
+        // puede reaparecer bajo la siguiente cuenta. En el primer arranque
+        // con la URL persistida `client` aún es nil y sí se permite restaurar.
+        if client != nil || url == nil {
+            chatLocalState.clearAll()
+        }
         clientGeneration += 1
         contentEpoch += 1
         me = nil
@@ -83,6 +90,9 @@ public final class SessionStore {
     }
 
     public func marcarSesionValida() {
+        // Login/registro comienza siempre con estado local limpio. Evita que
+        // un cierre abrupto anterior exponga borradores a otra identidad.
+        chatLocalState.clearAll()
         contentEpoch += 1
         me = nil
         sesionValida = true
@@ -90,6 +100,7 @@ public final class SessionStore {
 
     private func manejarExpiracionGlobal(clientGeneration generation: Int) {
         guard generation == clientGeneration else { return }
+        chatLocalState.clearAll()
         contentEpoch += 1
         me = nil
         sesionValida = false
@@ -107,6 +118,7 @@ public final class SessionStore {
     /// en segundo plano — best-effort (nunca bloquea ni falla el cierre de
     /// sesión: WP-V4-01 puede no haber aterrizado, o puede fallar por red).
     public func cerrarSesion(deviceId: String? = nil) async {
+        chatLocalState.clearAll()
         contentEpoch += 1
         me = nil
         errorMensaje = nil

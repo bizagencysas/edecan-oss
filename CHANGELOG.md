@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- A versioned rich-chat contract for private image, video and audio, safe URL
+  previews, flight and hotel cards, deep links and draft-only actions across
+  web, iOS and Android
+- Multi-file chat attachments with private upload/download, cancellation,
+  retry, attachments-only messages and restored history
+- Native zero-key mobile voice fallback using the iOS and Android speech and
+  text-to-speech frameworks when cloud voice credentials are absent
+- Persistent mobile conversation selection, new chat, delivery failure and
+  retry, creation presets and one shared conversation for text and voice
+- Stable per-turn idempotency across web, iOS and Android, with live SSE,
+  exact replay after disconnects and recoverable pending confirmations
+
+### Changed
+
+- Native navigation now exposes only Edecan, Activity and You as primary
+  spaces; creation and remote control are contextual actions instead of
+  separate products
+- Tool presentation is an explicit trusted channel: arbitrary provider or MCP
+  data cannot mint UI actions, media references or links
+- Search and travel cards identify live, demonstration and unknown provider
+  state instead of making sample data look current
+- Every public package and client now reports version 0.6.0
+
+### Fixed
+
+- Streaming persists the assistant message before the terminal SSE event and
+  correctly parses CRLF, multi-line data and a final frame without a separator
+- Tool calls with the same name correlate by stable call ID even when they
+  finish out of order, and rich blocks restore after a reload
+- Android destroys all account-scoped ViewModels when identity changes so a
+  logout/login cannot expose the previous account's chat, drafts or attachments
+- iOS clears account-scoped chat state on logout or expiry and ignores stale
+  push-to-talk permissions after release, navigation or a newer recording
+- Mobile attachment cancellation prevents late uploads from reappearing;
+  Android streams uploads from private cache and refreshes media credentials
+  for authenticated byte-range playback
+- The setup screen no longer prefixes an already descriptive Codex CLI version
+  with a misleading extra `v`
+
+### Security
+
+- Authenticated media streaming enforces tenant ownership, safe inline MIME
+  types, byte ranges, no-store, no-sniff and a restrictive content policy
+- Rich actions accept only public HTTP(S) destinations and allowlisted native
+  screens; private-network, credential-bearing and active-content URLs are
+  rejected
+- Chat media blocks can reference only artifacts returned by the same trusted
+  tool execution
+
 ## [0.5.0] - 2026-07-20
 
 ### Added

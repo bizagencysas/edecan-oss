@@ -338,13 +338,27 @@ export async function putSetupComplete(): Promise<void> {
   await apiJson<void>("/v1/setup/complete", { method: "PUT" });
 }
 
-export async function getSetupDetect(): Promise<SetupDetect> {
+let setupDetectInFlight: Promise<SetupDetect> | null = null;
+
+async function fetchSetupDetect(): Promise<SetupDetect> {
   try {
     return await apiJson<SetupDetect>("/v1/setup/detect");
   } catch (err) {
     if (isNotFound(err)) return SETUP_DETECT_EMPTY;
     throw err;
   }
+}
+
+/** Comparte una detección en vuelo. React Strict Mode monta los efectos dos
+ * veces en desarrollo y dos subprocesos CLI simultáneos son trabajo inútil;
+ * además, una respuesta tardía no debe ocultar un resultado válido. */
+export function getSetupDetect(): Promise<SetupDetect> {
+  if (setupDetectInFlight === null) {
+    setupDetectInFlight = fetchSetupDetect().finally(() => {
+      setupDetectInFlight = null;
+    });
+  }
+  return setupDetectInFlight;
 }
 
 export async function getSmarthomeStatus(): Promise<SmarthomeStatus> {

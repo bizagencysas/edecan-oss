@@ -126,7 +126,13 @@ class GenerarImagenTool(Tool):
             preview += "…"
         return ToolResult(
             content=f"Creé la imagen «{preview}» ({tamano}) y la guardé como «{filename}».",
-            data={"file_id": str(file_id), "filename": filename},
+            data={
+                "file_id": str(file_id),
+                "filename": filename,
+                "mime": "image/png",
+                "alt_text": prompt,
+                "caption": preview,
+            },
         )
 
 
@@ -190,8 +196,7 @@ class CrearDocumentoTool(Tool):
         if not isinstance(args.get("secciones"), list) or not args["secciones"]:
             return ToolResult(
                 content=(
-                    "Necesito al menos una sección (con encabezado y párrafos) "
-                    "para el documento."
+                    "Necesito al menos una sección (con encabezado y párrafos) para el documento."
                 )
             )
         secciones = _normalizar_secciones(args["secciones"])
@@ -210,9 +215,7 @@ class CrearDocumentoTool(Tool):
         data = buffer.getvalue()
 
         filename = f"{_slug(titulo)}.docx"
-        file_id, filename = await self._uploader(
-            ctx, data=data, filename=filename, mime=_DOCX_MIME
-        )
+        file_id, filename = await self._uploader(ctx, data=data, filename=filename, mime=_DOCX_MIME)
 
         n_parrafos = sum(len(s["parrafos"]) for s in secciones)
         return ToolResult(
@@ -220,7 +223,7 @@ class CrearDocumentoTool(Tool):
                 f"Creé el documento «{titulo}» con {len(secciones)} sección(es) y "
                 f"{n_parrafos} párrafo(s), guardado como «{filename}»."
             ),
-            data={"file_id": str(file_id), "filename": filename},
+            data={"file_id": str(file_id), "filename": filename, "mime": _DOCX_MIME},
         )
 
 
@@ -285,8 +288,7 @@ class CrearPresentacionTool(Tool):
         if not isinstance(args.get("diapositivas"), list) or not args["diapositivas"]:
             return ToolResult(
                 content=(
-                    "Necesito al menos una diapositiva (con título y viñetas) "
-                    "para la presentación."
+                    "Necesito al menos una diapositiva (con título y viñetas) para la presentación."
                 )
             )
         diapositivas = _normalizar_diapositivas(args["diapositivas"])
@@ -312,16 +314,14 @@ class CrearPresentacionTool(Tool):
         data = buffer.getvalue()
 
         filename = f"{_slug(titulo)}.pptx"
-        file_id, filename = await self._uploader(
-            ctx, data=data, filename=filename, mime=_PPTX_MIME
-        )
+        file_id, filename = await self._uploader(ctx, data=data, filename=filename, mime=_PPTX_MIME)
 
         return ToolResult(
             content=(
                 f"Creé la presentación «{titulo}» con {len(diapositivas)} diapositiva(s) "
                 f"de contenido (más la portada), guardada como «{filename}»."
             ),
-            data={"file_id": str(file_id), "filename": filename},
+            data={"file_id": str(file_id), "filename": filename, "mime": _PPTX_MIME},
         )
 
 
@@ -407,7 +407,7 @@ class CrearPdfTool(Tool):
                 f"Creé el PDF «{titulo}» con {len(parrafos)} párrafo(s), "
                 f"guardado como «{filename}»."
             ),
-            data={"file_id": str(file_id), "filename": filename},
+            data={"file_id": str(file_id), "filename": filename, "mime": _PDF_MIME},
         )
 
 
@@ -547,9 +547,7 @@ class GenerarEfectoSonidoTool(Tool):
     async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         descripcion = _cap_str(args.get("descripcion"), _MAX_DESCRIPCION_EFECTO_CHARS)
         if not descripcion:
-            return ToolResult(
-                content="Necesito una descripción para generar el efecto de sonido."
-            )
+            return ToolResult(content="Necesito una descripción para generar el efecto de sonido.")
 
         cfg = await resolver_config_tts_tenant(
             session=getattr(ctx, "session", None),
@@ -570,5 +568,11 @@ class GenerarEfectoSonidoTool(Tool):
         )
         return ToolResult(
             content=f"Generé el efecto «{descripcion}»{aviso} y lo guardé como «{filename}».",
-            data={"file_id": str(file_id), "filename": filename, "es_stub": audio.es_stub},
+            data={
+                "file_id": str(file_id),
+                "filename": filename,
+                "mime": _EFFECT_MIME[audio.formato],
+                "caption": descripcion,
+                "es_stub": audio.es_stub,
+            },
         )

@@ -23,12 +23,15 @@ class ToolResult:
     sin tener que parsear `content`. `requires_confirmation` queda disponible
     para que una `Tool` señale, desde dentro de `run`, que el resultado en sí
     necesita confirmación adicional (distinto del gate `Tool.dangerous`, que
-    lo exige *antes* de ejecutar — ver `Agent.run_turn`).
+    lo exige *antes* de ejecutar — ver `Agent.run_turn`). `presentation` es
+    el único canal deliberado para bloques ricos tipados: `data` arbitrario,
+    incluido el que venga de MCPs, nunca puede acuñar UI por accidente.
     """
 
     content: str
     data: dict[str, Any] | None = None
     requires_confirmation: bool = False
+    presentation: list[dict[str, Any]] | None = None
 
 
 @dataclass

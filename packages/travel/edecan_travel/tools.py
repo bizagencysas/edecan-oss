@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -60,6 +61,32 @@ def _parse_entero(valor: Any, defecto: int) -> int:
     except (TypeError, ValueError):
         return defecto
     return entero if entero > 0 else defecto
+
+
+def _fuente_viaje(provider: Any) -> tuple[str, str | None]:
+    """Clasifica datos de proveedor sin presentar sandbox/stub como producción."""
+
+    name = str(getattr(provider, "name", "") or "").strip().lower()
+    if name == "stub":
+        return "demo", "Edecan offline"
+    if name == "amadeus":
+        mode = "live" if getattr(provider, "environment", None) == "production" else "demo"
+        return mode, "Amadeus"
+    return "unknown", name or None
+
+
+def _acciones_oferta(tipo: str, offer_id: str, indice: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"travel.{tipo}.{indice}.draft",
+            "label": "Preparar borrador",
+            "action": "prefill_message",
+            "message": (
+                f"Prepara un borrador de reserva para este {tipo}, oferta {offer_id}. "
+                "No reserves ni pagues nada todavía."
+            ),
+        }
+    ]
 
 
 class BuscarVuelosTool(Tool):
@@ -137,9 +164,35 @@ class BuscarVuelosTool(Tool):
             f"{o.moneda} {o.precio_total}"
             for o in ofertas
         ]
+        source_mode, provider_name = _fuente_viaje(provider)
+        observed_at = datetime.now(UTC).isoformat()
+        presentation = [
+            {
+                "type": "flight",
+                "fallback_text": (
+                    f"{o.aerolinea}: {o.origen or origen} a {o.destino or destino}, "
+                    f"{o.moneda} {o.precio_total}"
+                ),
+                "offer_id": o.id,
+                "airline": o.aerolinea,
+                "origin": o.origen or origen,
+                "destination": o.destino or destino,
+                "departure": o.salida,
+                "arrival": o.llegada,
+                "stops": o.escalas,
+                "price": o.precio_total,
+                "currency": o.moneda.upper(),
+                "source_mode": source_mode,
+                "provider": provider_name,
+                "observed_at": observed_at,
+                "actions": _acciones_oferta("vuelo", o.id, index),
+            }
+            for index, o in enumerate(ofertas[:10])
+        ]
         return ToolResult(
             content=f"Vuelos {origen} → {destino} el {fecha}:\n" + "\n".join(lineas),
             data={"ofertas": [asdict(o) for o in ofertas]},
+            presentation=presentation,
         )
 
 
@@ -179,9 +232,7 @@ class BuscarHotelesTool(Tool):
         checkin = _texto(args, "checkin")
         checkout = _texto(args, "checkout")
         if not ciudad:
-            return ToolResult(
-                content="Necesito el código IATA de la ciudad (p. ej. 'PAR', 'NYC')."
-            )
+            return ToolResult(content="Necesito el código IATA de la ciudad (p. ej. 'PAR', 'NYC').")
         if not checkin or not checkout:
             return ToolResult(content="Necesito las fechas de check-in y check-out (AAAA-MM-DD).")
         adultos = _parse_entero(args.get("adultos"), _ADULTOS_DEFECTO)
@@ -203,9 +254,31 @@ class BuscarHotelesTool(Tool):
             + f" — {o.moneda} {o.precio_total}"
             for o in ofertas
         ]
+        source_mode, provider_name = _fuente_viaje(provider)
+        observed_at = datetime.now(UTC).isoformat()
+        presentation = [
+            {
+                "type": "hotel",
+                "fallback_text": f"{o.nombre}: {o.moneda} {o.precio_total}",
+                "offer_id": o.id,
+                "name": o.nombre,
+                "city": ciudad,
+                "checkin": o.checkin or checkin,
+                "checkout": o.checkout or checkout,
+                "rating": o.rating,
+                "price": o.precio_total,
+                "currency": o.moneda.upper(),
+                "source_mode": source_mode,
+                "provider": provider_name,
+                "observed_at": observed_at,
+                "actions": _acciones_oferta("hotel", o.id, index),
+            }
+            for index, o in enumerate(ofertas[:10])
+        ]
         return ToolResult(
             content=f"Hoteles en {ciudad} ({checkin} → {checkout}):\n" + "\n".join(lineas),
             data={"ofertas": [asdict(o) for o in ofertas]},
+            presentation=presentation,
         )
 
 
@@ -338,24 +411,29 @@ async def _crear_reserva_draft(
     docstring del módulo). Mismas columnas que usa `packages/commerce/edecan_commerce/
     tools.py::_crear_orden_draft` para sus propios borradores."""
     row = (
-        await session.execute(
-            text(
-                "INSERT INTO orders "
-                "(tenant_id, user_id, kind, status, descripcion, monto, moneda, meta) "
-                "VALUES (:tenant_id ::uuid, :user_id ::uuid, 'purchase', 'draft', :descripcion, "
-                ":monto, :moneda, CAST(:meta AS jsonb)) "
-                "RETURNING id"
-            ),
-            {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "descripcion": descripcion,
-                "monto": monto,
-                "moneda": moneda,
-                "meta": json.dumps(meta),
-            },
+        (
+            await session.execute(
+                text(
+                    "INSERT INTO orders "
+                    "(tenant_id, user_id, kind, status, descripcion, monto, moneda, meta) "
+                    "VALUES (:tenant_id ::uuid, :user_id ::uuid, 'purchase', 'draft', "
+                    ":descripcion, "
+                    ":monto, :moneda, CAST(:meta AS jsonb)) "
+                    "RETURNING id"
+                ),
+                {
+                    "tenant_id": str(tenant_id),
+                    "user_id": str(user_id),
+                    "descripcion": descripcion,
+                    "monto": monto,
+                    "moneda": moneda,
+                    "meta": json.dumps(meta),
+                },
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     await session.flush()
     if row is None:  # defensivo: Postgres no devolvió la fila recién insertada.
         raise RuntimeError("No se pudo crear el borrador de reserva.")

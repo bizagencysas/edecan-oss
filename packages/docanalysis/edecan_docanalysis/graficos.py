@@ -161,7 +161,7 @@ class GenerarGraficoTool(Tool):
         )
         return ToolResult(
             content=f"Generé el gráfico de {tipo} «{titulo}» y lo guardé como «{filename}».",
-            data={"file_id": str(file_id), "filename": filename},
+            data={"file_id": str(file_id), "filename": filename, "mime": "image/svg+xml"},
         )
 
 

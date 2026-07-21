@@ -20,6 +20,9 @@
 import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
 import { clearTokens, getAccessToken, getRefreshToken, hasSession, setTokens } from "./tokens";
 import { isPublicAuthRoute } from "./auth-route-policy";
+import { buildChatMessageInput } from "./chat-attachments";
+import { parseAgentEvent } from "./chat-blocks";
+import { SseDataParser } from "./sse";
 import type {
   AgentEvent,
   Contact,
@@ -255,10 +258,14 @@ async function streamSse(
   body: unknown,
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
+  headers?: HeadersInit,
 ): Promise<void> {
+  const requestHeaders = new Headers(headers);
+  requestHeaders.set("Content-Type", "application/json");
+  requestHeaders.set("Accept", "text/event-stream");
   const res = await authedFetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: requestHeaders,
     body: JSON.stringify(body),
     signal,
   });
@@ -269,29 +276,31 @@ async function streamSse(
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  const parser = new SseDataParser();
+  let streamFailure: Error | null = null;
+
+  function emitPayloads(payloads: string[]) {
+    for (const jsonText of payloads) {
+      if (!jsonText.trim()) continue;
+      try {
+        const event = parseAgentEvent(JSON.parse(jsonText));
+        if (event) {
+          onEvent(event);
+          if (event.type === "error") streamFailure = new Error(event.message);
+        }
+      } catch {
+        // Frame SSE malformado: se ignora sin tumbar el resto del stream.
+      }
+    }
+  }
+
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sepIndex = buffer.indexOf("\n\n");
-    while (sepIndex !== -1) {
-      const frame = buffer.slice(0, sepIndex);
-      buffer = buffer.slice(sepIndex + 2);
-      const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
-      if (dataLine) {
-        const jsonText = dataLine.slice(5).trim();
-        if (jsonText) {
-          try {
-            onEvent(JSON.parse(jsonText) as AgentEvent);
-          } catch {
-            // Frame SSE malformado: se ignora sin tumbar el resto del stream.
-          }
-        }
-      }
-      sepIndex = buffer.indexOf("\n\n");
-    }
+    emitPayloads(parser.push(decoder.decode(value, { stream: true })));
   }
+  emitPayloads(parser.push(decoder.decode(), true));
+  if (streamFailure) throw streamFailure;
 }
 
 /** `POST /v1/conversations/{id}/messages` — arranca un turno del agente. */
@@ -300,8 +309,16 @@ export function sendMessageStream(
   text: string,
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
+  attachments: string[] = [],
+  idempotencyKey?: string,
 ): Promise<void> {
-  return streamSse(`/v1/conversations/${conversationId}/messages`, { text }, onEvent, signal);
+  return streamSse(
+    `/v1/conversations/${conversationId}/messages`,
+    buildChatMessageInput(text, attachments),
+    onEvent,
+    signal,
+    idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+  );
 }
 
 /** `POST /v1/conversations/{id}/confirm` — aprueba/rechaza una tool pendiente. */
@@ -459,7 +476,7 @@ export async function getFile(id: string): Promise<FileOut> {
 }
 
 export async function downloadFile(id: string): Promise<Blob> {
-  const res = await authedFetch(`/v1/files/${id}/download`);
+  const res = await authedFetch(`/v1/files/${encodeURIComponent(id)}/download`);
   if (!res.ok) {
     const { message, detail } = await extractErrorMessage(res);
     throw new ApiError(res.status, message, detail);
@@ -467,10 +484,10 @@ export async function downloadFile(id: string): Promise<Blob> {
   return res.blob();
 }
 
-export async function uploadFile(file: File): Promise<FileOut> {
+export async function uploadFile(file: File, signal?: AbortSignal): Promise<FileOut> {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await authedFetch("/v1/files", { method: "POST", body: formData });
+  const res = await authedFetch("/v1/files", { method: "POST", body: formData, signal });
   return parseJsonOrThrow<FileOut>(res);
 }
 

@@ -45,8 +45,8 @@ android {
         applicationId = "cc.edecan.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -106,4 +106,5 @@ dependencies {
     // sí no tiene tests unitarios en este esqueleto, solo la lógica de los
     // `ViewModel`/enums que no toca el framework de Android.
     testImplementation(kotlin("test-junit"))
+    testImplementation(libs.kotlinx.coroutines.test)
 }

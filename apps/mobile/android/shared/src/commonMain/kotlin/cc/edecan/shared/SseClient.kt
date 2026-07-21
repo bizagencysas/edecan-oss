@@ -71,12 +71,14 @@ class SseClient(private val json: Json = edecanJson) {
         url: String,
         accessToken: String,
         bodyJson: String,
+        idempotencyKey: String? = null,
     ): Flow<ChatEvent> = flow {
         try {
             client.preparePost(url) {
                 headers {
                     append(HttpHeaders.Authorization, "Bearer $accessToken")
                     append(HttpHeaders.Accept, "text/event-stream")
+                    idempotencyKey?.let { append("Idempotency-Key", it) }
                 }
                 contentType(ContentType.Application.Json)
                 setBody(bodyJson)

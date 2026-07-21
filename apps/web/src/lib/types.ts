@@ -81,12 +81,19 @@ export interface ConversationOut {
   created_at: string;
   updated_at: string;
   messages?: MessageOut[];
+  pending_confirmation?: PendingConfirmationOut | null;
+}
+
+export interface PendingConfirmationOut {
+  tool_call_id: string;
+  name: string;
+  args: Record<string, unknown>;
 }
 
 export interface MessageOut {
   id: string;
   role: "system" | "user" | "assistant" | "tool";
-  content: { text?: string } | string | null;
+  content: { text?: string; attachments?: ArtifactRef[] } | string | null;
   tool_calls: unknown[] | null;
   tokens_in: number;
   tokens_out: number;
@@ -99,10 +106,119 @@ export interface ArtifactRef {
   mime: string | null;
 }
 
+export interface ChatMessageInput {
+  text: string;
+  attachments: string[];
+}
+
+export interface ChatAttachmentDraft {
+  localId: string;
+  filename: string;
+  sizeBytes: number;
+  status: "uploading" | "ready" | "error";
+  fileId: string | null;
+  mime: string | null;
+  error: string | null;
+}
+
+export type ChatScreen =
+  | "assistant"
+  | "create"
+  | "remote"
+  | "activity"
+  | "settings"
+  | "travel"
+  | "orders"
+  | "files"
+  | "skills";
+
+export type ChatAction =
+  | { id: string; label: string; action: "open_url"; url: string }
+  | { id: string; label: string; action: "open_screen"; screen: ChatScreen }
+  | { id: string; label: string; action: "prefill_message"; message: string };
+
+interface ChatBlockBase {
+  schema_version: 1;
+  fallback_text: string | null;
+}
+
+export interface MediaBlock extends ChatBlockBase {
+  type: "media";
+  media_kind: "image" | "video" | "audio";
+  artifact: ArtifactRef;
+  alt: string;
+  caption: string | null;
+}
+
+export interface LinkPreviewBlock extends ChatBlockBase {
+  type: "link_preview";
+  url: string;
+  title: string;
+  description: string | null;
+  site_name: string | null;
+  observed_at: string | null;
+  source_mode: "demo" | "live" | "unknown";
+  actions: ChatAction[];
+}
+
+export interface FlightCardBlock extends ChatBlockBase {
+  type: "flight";
+  offer_id: string;
+  airline: string;
+  origin: string;
+  destination: string;
+  departure: string | null;
+  arrival: string | null;
+  stops: number;
+  price: string;
+  currency: string;
+  source_mode: "demo" | "live" | "unknown";
+  provider: string | null;
+  observed_at: string | null;
+  expires_at: string | null;
+  taxes: string | null;
+  cancellation: string | null;
+  actions: ChatAction[];
+}
+
+export interface HotelCardBlock extends ChatBlockBase {
+  type: "hotel";
+  offer_id: string;
+  name: string;
+  city: string;
+  checkin: string | null;
+  checkout: string | null;
+  rating: string | null;
+  price: string;
+  currency: string;
+  source_mode: "demo" | "live" | "unknown";
+  provider: string | null;
+  observed_at: string | null;
+  expires_at: string | null;
+  taxes: string | null;
+  cancellation: string | null;
+  actions: ChatAction[];
+}
+
+export type ChatBlock = MediaBlock | LinkPreviewBlock | FlightCardBlock | HotelCardBlock;
+
 export type AgentEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_end"; name: string; result_preview: string; artifacts?: ArtifactRef[] }
+  | {
+      type: "tool_start";
+      tool_call_id: string | null;
+      name: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_end";
+      tool_call_id: string | null;
+      name: string;
+      result_preview: string;
+      artifacts: ArtifactRef[];
+      blocks_version: 1;
+      blocks: ChatBlock[];
+    }
   | {
       type: "confirmation_required";
       tool_call_id: string;
@@ -210,7 +326,6 @@ export interface FileOut {
   mime: string;
   size_bytes: number;
   status: "uploaded" | "processing" | "ready" | "error" | string;
-  s3_key: string;
   created_at: string;
 }
 

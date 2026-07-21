@@ -11,4 +11,4 @@ Punto de entrada de proceso: `python -m edecan_worker.main` (`make worker`).
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"

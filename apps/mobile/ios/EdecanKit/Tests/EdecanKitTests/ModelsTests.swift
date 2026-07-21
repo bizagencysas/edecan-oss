@@ -84,6 +84,61 @@ struct ModelsTests {
         """
         let conversacion = try APIClient.crearDecoder().decode(Conversation.self, from: Data(json.utf8))
         #expect(conversacion.title == nil)
+        #expect(conversacion.updatedAt == nil)
+    }
+
+    @Test func historialNormalizaAdjuntosYConservaBloquesDeHerramienta() throws {
+        let json = """
+        {
+          "id":"c3","title":"Propuesta","channel":"web",
+          "created_at":"2026-07-01T10:00:00Z","updated_at":"2026-07-01T10:01:00Z",
+          "pending_confirmation":{"tool_call_id":"confirm-1","name":"enviar_correo","args":{"to":"ana@example.com"}},
+          "messages":[
+            {
+              "id":"m1","role":"user","tokens_in":0,"tokens_out":0,
+              "created_at":"2026-07-01T10:00:01Z",
+              "content":{"text":"Revísalo","attachments":[{"file_id":"f1","filename":"brief.pdf","mime":"application/pdf"}]},
+              "tool_calls":[]
+            },
+            {
+              "id":"m2","role":"assistant","content":"Listo","tokens_in":2,"tokens_out":1,
+              "created_at":"2026-07-01T10:01:00Z",
+              "tool_calls":[{"type":"tool_end","tool_call_id":"tc1","name":"create_pdf","ok":true,"blocks_version":1,"artifacts":[],"blocks":[{"type":"link","id":"l1","title":"Resultado","url":"https://example.com"}]}]
+            }
+          ]
+        }
+        """
+
+        let detail = try APIClient.crearDecoder().decode(ConversationDetail.self, from: Data(json.utf8))
+        #expect(detail.messages.count == 2)
+        #expect(detail.messages[0].text == "Revísalo")
+        #expect(detail.messages[0].attachments == [ChatAttachment(fileId: "f1", filename: "brief.pdf", mime: "application/pdf")])
+        guard case .toolEnd(let callId, _, _, _, let version, let blocks) = detail.messages[1].toolCalls.first else {
+            Issue.record("El historial debía conservar tool_end")
+            return
+        }
+        #expect(callId == "tc1")
+        #expect(version == 1)
+        #expect(blocks.count == 1)
+        #expect(detail.pendingConfirmation?.toolCallId == "confirm-1")
+        #expect(detail.pendingConfirmation?.name == "enviar_correo")
+        #expect(detail.pendingConfirmation?.args["to"] == .string("ana@example.com"))
+    }
+
+    @Test func decodificaLlamadaRealConEstadoAbierto() throws {
+        let json = """
+        {
+          "id":"call-1","conversation_id":"phone-thread","direction":"outgoing",
+          "from_e164":"+12025550100","to_e164":"+573001112233",
+          "goal":"Confirmar la cita","status":"in_progress","confirmed_at":"2026-07-01T10:00:00Z",
+          "started_at":"2026-07-01T10:00:05Z","ended_at":null,"duration_seconds":null,
+          "error":null,"created_at":"2026-07-01T09:59:00Z","updated_at":"2026-07-01T10:00:05Z"
+        }
+        """
+        let call = try APIClient.crearDecoder().decode(PhoneCallOut.self, from: Data(json.utf8))
+        #expect(call.toE164 == "+573001112233")
+        #expect(call.status == "in_progress")
+        #expect(call.startedAt != nil)
     }
 
     // MARK: - Fechas ISO 8601

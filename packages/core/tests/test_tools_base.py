@@ -33,6 +33,7 @@ def test_tool_result_defaults():
     result = ToolResult(content="ok")
     assert result.data is None
     assert result.requires_confirmation is False
+    assert result.presentation is None
 
 
 def test_tool_result_con_data_y_confirmacion():

@@ -76,7 +76,7 @@ struct OnboardingView: View {
 
     private var tituloDelPaso: String {
         switch paso {
-        case .servidor: return "¿Dónde vive tu servidor?"
+        case .servidor: return "Conecta tu Edecán"
         case .sesion: return "Inicia sesión"
         case .registro: return "Crea tu cuenta"
         }
@@ -84,7 +84,7 @@ struct OnboardingView: View {
 
     private var pasoServidor: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Pega la URL de TU instalación de Edecán — self-host o la app de escritorio de tu tenant. No hay un servidor por defecto: cada cliente trae el suyo.")
+            Text("Abre Edecán en tu computador y copia la dirección que aparece en Ajustes > Conectar teléfono. Solo tendrás que hacerlo una vez.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             TextField("https://mi-servidor.ejemplo.com", text: $urlTexto)
@@ -107,7 +107,7 @@ struct OnboardingView: View {
 
     private var pasoSesion: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Iniciar sesión empareja este teléfono con tu cuenta: mientras la sesión siga activa, este dispositivo queda emparejado con tu tenant.")
+            Text("Entra con la misma cuenta que usas en tu computador. Tus chats y tareas aparecerán aquí.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             TextField("Correo", text: $email)
@@ -124,7 +124,7 @@ struct OnboardingView: View {
                 Text(errorMensaje).font(.footnote).foregroundStyle(.red)
             }
             HStack {
-                Button("Cambiar servidor") { paso = .servidor }
+                Button("Cambiar conexión") { paso = .servidor }
                     .buttonStyle(.bordered)
                 Spacer()
                 Button {
@@ -152,7 +152,7 @@ struct OnboardingView: View {
 
     private var pasoRegistro: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Crea el tenant de tu equipo — quedas como owner, con una persona de Edecán ya lista para chatear.")
+            Text("Crea tu espacio. Edecán quedará listo para conversar, organizar y trabajar contigo.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             TextField("Nombre de tu empresa/equipo", text: $nombreEmpresa)

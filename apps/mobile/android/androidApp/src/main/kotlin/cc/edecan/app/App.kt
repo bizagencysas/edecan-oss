@@ -7,13 +7,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import cc.edecan.app.nav.RootNav
 import cc.edecan.app.ui.OnboardingScreen
 import cc.edecan.app.ui.theme.EdecanTheme
 import cc.edecan.app.vm.SessionViewModel
+import cc.edecan.app.vm.SessionViewModelContainer
+import cc.edecan.app.vm.SessionViewModelStoreOwner
 
 /**
  * Punto de entrada composable de la app. Si el dispositivo no está
@@ -22,29 +27,40 @@ import cc.edecan.app.vm.SessionViewModel
  * muestra [OnboardingScreen]; si ya lo está, va directo a [RootNav]. Mismo
  * criterio que `RaizDeLaApp` en `EdecanApp.swift` (iOS).
  *
- * `sessionViewModel` se resuelve UNA vez aquí vía `viewModel()` — Compose
- * cachea las instancias de `ViewModel` por clase en el `ViewModelStore` del
- * `ViewModelStoreOwner` más cercano (la `Activity`, sin
- * `androidx.navigation` de por medio en este esqueleto), así que cada
- * pantalla que también pide `SessionViewModel` con `= viewModel()` como
- * valor por defecto (`InicioScreen`, `ChatScreen`, `PerfilScreen`,
- * `OnboardingScreen`) recibe automáticamente esta MISMA instancia — el
- * equivalente práctico a inyectar `@Environment(SessionStore.self)` una
- * vez en la raíz de `EdecanApp.swift` (iOS).
+ * SessionViewModel vive en la Activity; todos los ViewModels con datos del
+ * usuario viven en un store hijo por sesión. Cerrar/cambiar cuenta limpia
+ * ese store completo, mientras una rotación conserva la sesión actual.
  */
 @Composable
 fun App() {
     EdecanTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val sessionViewModel: SessionViewModel = viewModel()
+            val sessionViewModelContainer: SessionViewModelContainer = viewModel()
             val uiState by sessionViewModel.uiState.collectAsState()
 
             when {
                 uiState.cargandoInicial -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                uiState.isPaired -> RootNav()
-                else -> OnboardingScreen(sessionViewModel)
+                uiState.isPaired -> {
+                    val parentOwner = checkNotNull(LocalViewModelStoreOwner.current)
+                    val sessionStore = sessionViewModelContainer.storeFor(uiState.sessionGeneration)
+                    val sessionOwner = remember(sessionStore, parentOwner) {
+                        SessionViewModelStoreOwner(sessionStore, parentOwner)
+                    }
+                    CompositionLocalProvider(
+                        LocalViewModelStoreOwner provides sessionOwner,
+                    ) {
+                        RootNav(sessionKey = uiState.sessionGeneration)
+                    }
+                }
+                else -> {
+                    // Síncrono e idempotente: antes de mostrar login ya no
+                    // queda ningún ViewModel ni dato de la cuenta anterior.
+                    sessionViewModelContainer.clearSession()
+                    OnboardingScreen(sessionViewModel)
+                }
             }
         }
     }

@@ -44,7 +44,12 @@ class _FakeS3Client:
 
     async def get_object(self, **kwargs) -> dict:
         stored = self._object(kwargs["Key"])
-        return {"Body": _FakeStreamingBody(stored["Body"])}
+        data = stored["Body"]
+        byte_range = kwargs.get("Range")
+        if byte_range:
+            start_raw, end_raw = byte_range.removeprefix("bytes=").split("-", 1)
+            data = data[int(start_raw) : int(end_raw) + 1]
+        return {"Body": _FakeStreamingBody(data)}
 
 
 class _FakeStreamingBody:
@@ -70,9 +75,7 @@ class _FakeAioboto3Session:
 def _patch_s3_and_queue(
     monkeypatch, files_module, *, s3_calls: list[dict], enqueue_calls: list[dict]
 ):
-    monkeypatch.setattr(
-        files_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls)
-    )
+    monkeypatch.setattr(files_module.aioboto3, "Session", lambda: _FakeAioboto3Session(s3_calls))
 
     async def fake_enqueue(settings, job_type, payload, tenant_id):
         enqueue_calls.append({"job_type": job_type, "payload": payload, "tenant_id": tenant_id})
@@ -104,6 +107,7 @@ async def test_upload_file_stores_in_s3_and_enqueues_ingest_job(
     assert body["filename"] == "informe.pdf"
     assert body["mime"] == "application/pdf"
     assert body["status"] == "uploaded"
+    assert "s3_key" not in body
 
     assert len(s3_calls) == 1
     assert s3_calls[0]["Bucket"] == "edecan-files"
@@ -220,6 +224,48 @@ async def test_download_file_requires_authentication(client) -> None:
     assert response.status_code == 401
 
 
+async def test_inline_video_supports_authenticated_byte_ranges(client, monkeypatch) -> None:
+    import edecan_api.routers.files as files_module
+
+    s3_calls: list[dict] = []
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=[])
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+    uploaded = await client.post(
+        "/v1/files",
+        files={"file": ("clip.mp4", b"0123456789", "video/mp4")},
+        headers=headers,
+    )
+
+    response = await client.get(
+        f"/v1/files/{uploaded.json()['id']}/content",
+        headers={**headers, "Range": "bytes=2-5"},
+    )
+
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-length"] == "4"
+    assert response.headers["content-disposition"] == "inline"
+
+
+async def test_inline_content_rejects_active_or_unknown_mime(client, monkeypatch) -> None:
+    import edecan_api.routers.files as files_module
+
+    s3_calls: list[dict] = []
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=[])
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+    uploaded = await client.post(
+        "/v1/files",
+        files={"file": ("vector.svg", b"<svg/>", "image/svg+xml")},
+        headers=headers,
+    )
+
+    response = await client.get(f"/v1/files/{uploaded.json()['id']}/content", headers=headers)
+
+    assert response.status_code == 415
+
+
 async def test_upload_rejects_file_above_configured_hard_limit(
     client, monkeypatch, test_settings
 ) -> None:
@@ -228,9 +274,7 @@ async def test_upload_rejects_file_above_configured_hard_limit(
     test_settings.MAX_UPLOAD_BYTES = 4
     s3_calls: list[dict] = []
     enqueue_calls: list[dict] = []
-    _patch_s3_and_queue(
-        monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=enqueue_calls
-    )
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=enqueue_calls)
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
 
     response = await client.post(

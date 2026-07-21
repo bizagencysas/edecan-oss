@@ -20,6 +20,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from edecan_core import Tool, ToolContext, ToolResult
@@ -129,6 +130,24 @@ class NavegarWebTool(Tool):
                 "url_final": pagina.url_final,
                 "enlaces": extraida.enlaces,
             },
+            presentation=[
+                {
+                    "type": "link_preview",
+                    "fallback_text": extraida.titulo or pagina.url_final,
+                    "url": pagina.url_final,
+                    "title": extraida.titulo or urlsplit(pagina.url_final).hostname or "Enlace",
+                    "description": extraida.meta_description or None,
+                    "site_name": urlsplit(pagina.url_final).hostname,
+                    "actions": [
+                        {
+                            "id": "browser.open-result",
+                            "label": "Abrir enlace",
+                            "action": "open_url",
+                            "url": pagina.url_final,
+                        }
+                    ],
+                }
+            ],
         )
 
 

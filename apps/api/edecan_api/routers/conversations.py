@@ -21,7 +21,9 @@ persistida (ver `_stream_agent_events`).
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import hashlib
 import json
 import logging
 import uuid
@@ -30,15 +32,21 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import redis.asyncio as redis_asyncio
-from edecan_core.agent import Agent
+from edecan_core.agent import Agent, artifact_refs_from_tool_data, rich_blocks_from_tool_data
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
 from edecan_core.tools import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage
 from edecan_llm.router import LLMRouter
-from edecan_schemas import UNLIMITED, ChatMessageIn, PendingAgentTurn, PersonaConfig
+from edecan_schemas import (
+    UNLIMITED,
+    ChatMessageIn,
+    PendingAgentTurn,
+    PendingConfirmationOut,
+    PersonaConfig,
+)
 from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -151,6 +159,7 @@ async def get_conversation(
     conversation_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> dict[str, Any]:
     row = await repo.get_conversation(
         tenant_id=current_user.tenant_id, conversation_id=conversation_id
@@ -162,6 +171,12 @@ async def get_conversation(
     )
     out = _conversation_out(row)
     out["messages"] = [_message_out(m) for m in messages]
+    pending = await _get_pending_confirmation(
+        redis_client,
+        tenant_id=current_user.tenant_id,
+        conversation_id=conversation_id,
+    )
+    out["pending_confirmation"] = pending.model_dump(mode="json") if pending else None
     return out
 
 
@@ -187,8 +202,46 @@ def _extract_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
-        return str(content.get("text", ""))
+        text = str(content.get("text", ""))
+        attachments = content.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            refs = [
+                _attachment_context_line(item)
+                for item in attachments[:10]
+                if isinstance(item, dict)
+            ]
+            if refs:
+                return (text + "\n\nArchivos adjuntos privados:\n" + "\n".join(refs)).strip()
+        return text
     return ""
+
+
+def _attachment_context_line(item: dict[str, Any]) -> str:
+    return (
+        f"- file_id={item.get('file_id')} · {item.get('filename') or 'archivo'}"
+        f" · {item.get('mime') or 'application/octet-stream'}"
+    )
+
+
+async def _resolve_message_attachments(
+    *, repo: Repo, tenant_id: uuid.UUID, file_ids: list[uuid.UUID]
+) -> list[dict[str, str | None]]:
+    """Resuelve adjuntos por tenant y solo expone metadata necesaria al agente."""
+
+    attachments: list[dict[str, str | None]] = []
+    for file_id in file_ids:
+        row = await repo.get_file(tenant_id=tenant_id, file_id=file_id)
+        if row is None:
+            # 404 uniforme: no revela si el UUID existe bajo otro tenant.
+            raise HTTPException(status_code=404, detail="Archivo adjunto no encontrado.")
+        attachments.append(
+            {
+                "file_id": str(file_id),
+                "filename": str(row.get("filename") or "archivo")[:255],
+                "mime": str(row.get("mime") or "application/octet-stream")[:255],
+            }
+        )
+    return attachments
 
 
 def _rows_to_chat_messages(rows: list[dict[str, Any]]) -> list[ChatMessage]:
@@ -377,6 +430,12 @@ def _pending_confirmation_key(
     return f"pending_confirm:{tenant_id}:{conversation_id}:{tool_call_id}"
 
 
+def _current_pending_confirmation_key(
+    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+) -> str:
+    return f"pending_confirm_current:{tenant_id}:{conversation_id}"
+
+
 async def _store_pending_confirmation(
     redis_client: redis_asyncio.Redis,
     *,
@@ -395,6 +454,70 @@ async def _store_pending_confirmation(
         payload_data["pending_turn"] = PendingAgentTurn.model_validate(pending_turn).model_dump()
     payload = json.dumps(payload_data, ensure_ascii=False, default=str)
     await redis_client.set(key, payload, ex=PENDING_CONFIRMATION_TTL_SECONDS)
+    public_pending = PendingConfirmationOut(
+        tool_call_id=tool_call_id,
+        name=name,
+        args=args,
+    )
+    await redis_client.set(
+        _current_pending_confirmation_key(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+        ),
+        public_pending.model_dump_json(),
+        ex=PENDING_CONFIRMATION_TTL_SECONDS,
+    )
+
+
+async def _get_pending_confirmation(
+    redis_client: redis_asyncio.Redis,
+    *,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> PendingConfirmationOut | None:
+    """Devuelve solo la vista pública de la confirmación vigente del chat.
+
+    La referencia y el payload operativo se resuelven con claves que incluyen
+    tenant + conversación. Se comprueba además que el payload de un solo uso
+    siga existiendo, de modo que una referencia vencida nunca reconstruya una
+    tarjeta que ya no puede confirmarse.
+    """
+
+    current_key = _current_pending_confirmation_key(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
+    raw_current = await redis_client.get(current_key)
+    if raw_current is None:
+        return None
+    try:
+        current = PendingConfirmationOut.model_validate_json(raw_current)
+    except Exception:  # noqa: BLE001 - Redis puede conservar datos de una versión anterior
+        await redis_client.delete(current_key)
+        return None
+
+    raw_pending = await redis_client.get(
+        _pending_confirmation_key(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            tool_call_id=current.tool_call_id,
+        )
+    )
+    if raw_pending is None:
+        await redis_client.delete(current_key)
+        return None
+    try:
+        pending = json.loads(raw_pending)
+        # Nombre y argumentos salen del mismo registro de un solo uso que
+        # consume /confirm. `pending_turn` nunca se copia a la respuesta.
+        return PendingConfirmationOut(
+            tool_call_id=current.tool_call_id,
+            name=pending["name"],
+            args=pending.get("args") or {},
+        )
+    except Exception:  # noqa: BLE001 - dato corrupto: falla cerrado
+        await redis_client.delete(current_key)
+        return None
 
 
 async def _pop_pending_confirmation(
@@ -411,7 +534,235 @@ async def _pop_pending_confirmation(
     raw = await redis_client.getdel(key)
     if raw is None:
         return None
+    current_key = _current_pending_confirmation_key(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
+    raw_current = await redis_client.getdel(current_key)
+    if raw_current is not None:
+        try:
+            current = PendingConfirmationOut.model_validate_json(raw_current)
+        except Exception:  # noqa: BLE001 - referencia corrupta, ya consumida
+            current = None
+        # Solo podría diferir si una continuación más nueva reemplazó la
+        # tarjeta visible. En ese caso se restaura esa referencia en vez de
+        # borrar una confirmación distinta.
+        if current is not None and current.tool_call_id != tool_call_id:
+            await redis_client.set(
+                current_key,
+                current.model_dump_json(),
+                ex=PENDING_CONFIRMATION_TTL_SECONDS,
+            )
     return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# Idempotencia opcional del turno de chat (Redis / fakeredis).
+# ---------------------------------------------------------------------------
+
+
+def _message_idempotency_key(
+    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID, idempotency_key: uuid.UUID
+) -> str:
+    return f"chat_idempotency:{tenant_id}:{conversation_id}:{idempotency_key}"
+
+
+def _message_request_hash(body: ChatMessageIn) -> str:
+    canonical = json.dumps(
+        body.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _load_idempotency_record(
+    redis_client: redis_asyncio.Redis,
+    *,
+    redis_key: str,
+) -> dict[str, Any] | None:
+    raw = await redis_client.get(redis_key)
+    if raw is None:
+        return None
+    try:
+        record = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El estado de este reintento no se puede recuperar con seguridad.",
+        ) from exc
+    if not isinstance(record, dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El estado de este reintento no se puede recuperar con seguridad.",
+        )
+    return record
+
+
+async def _replay_sse(chunks: list[str]) -> AsyncIterator[str]:
+    for chunk in chunks:
+        yield chunk
+
+
+async def _stream_and_complete_idempotency(
+    *,
+    stream: AsyncIterator[str],
+    redis_client: redis_asyncio.Redis,
+    redis_key: str,
+    request_hash: str,
+    owner_token: str,
+    ttl_seconds: int,
+) -> AsyncIterator[str]:
+    """Entrega SSE en vivo y deja un replay completo aunque el cliente se vaya.
+
+    El productor vive en una tarea separada del socket. Si Starlette cancela
+    el consumidor porque web/iOS/Android perdió conexión, el ``finally``
+    espera al productor bajo ``shield``: así el turno conserva sus
+    dependencias request-scoped hasta persistir mensajes, uso y replay. Una
+    nueva petición con la misma UUID recibe 409 mientras sigue en vuelo y el
+    replay exacto en cuanto termina.
+    """
+
+    queue: asyncio.Queue[tuple[str, str | BaseException | None]] = asyncio.Queue()
+    chunks: list[str] = []
+
+    async def produce() -> None:
+        try:
+            async for chunk in stream:
+                chunks.append(chunk)
+                await queue.put(("chunk", chunk))
+            await _complete_message_idempotency(
+                redis_client,
+                redis_key=redis_key,
+                request_hash=request_hash,
+                owner_token=owner_token,
+                chunks=chunks,
+                ttl_seconds=ttl_seconds,
+            )
+        except BaseException as exc:
+            await queue.put(("error", exc))
+            raise
+        else:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(produce(), name=f"chat-idempotency:{owner_token}")
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "chunk":
+                assert isinstance(payload, str)
+                yield payload
+            elif kind == "done":
+                break
+            else:
+                assert isinstance(payload, BaseException)
+                raise payload
+    finally:
+        # Una cancelación del transporte no debe cancelar el turno que ya fue
+        # reclamado. Suprimimos cancelaciones repetidas solo hasta que el
+        # productor termine; el CancelledError original del consumidor se
+        # propaga después de salir del finally.
+        while not producer.done():
+            try:
+                await asyncio.shield(producer)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if producer.done() and not producer.cancelled():
+            producer.exception()  # recupera la excepción y evita warnings de tareas huérfanas
+
+
+def _response_for_idempotency_record(
+    *,
+    record: dict[str, Any],
+    request_hash: str,
+    idempotency_key: uuid.UUID,
+) -> StreamingResponse:
+    if record.get("request_hash") != request_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key ya fue usado con un mensaje diferente.",
+        )
+    if record.get("status") == "in_flight":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ese mensaje todavía se está procesando; reintenta con la misma clave.",
+            headers={"Retry-After": "1", "Idempotency-Key": str(idempotency_key)},
+        )
+    if record.get("status") != "completed" or not isinstance(record.get("events"), list):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El estado de este reintento no se puede recuperar con seguridad.",
+        )
+    chunks = record["events"]
+    if not all(isinstance(chunk, str) for chunk in chunks):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El flujo guardado de este reintento está dañado.",
+        )
+    return StreamingResponse(
+        _replay_sse(chunks),
+        media_type="text/event-stream",
+        headers={
+            "Idempotency-Key": str(idempotency_key),
+            "Idempotency-Replayed": "true",
+        },
+    )
+
+
+async def _claim_message_idempotency(
+    redis_client: redis_asyncio.Redis,
+    *,
+    redis_key: str,
+    request_hash: str,
+    ttl_seconds: int,
+) -> tuple[str | None, dict[str, Any] | None]:
+    owner_token = str(uuid.uuid4())
+    claimed = await redis_client.set(
+        redis_key,
+        json.dumps(
+            {
+                "status": "in_flight",
+                "request_hash": request_hash,
+                "owner_token": owner_token,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        ex=ttl_seconds,
+        nx=True,
+    )
+    if claimed:
+        return owner_token, None
+    return None, await _load_idempotency_record(redis_client, redis_key=redis_key)
+
+
+async def _complete_message_idempotency(
+    redis_client: redis_asyncio.Redis,
+    *,
+    redis_key: str,
+    request_hash: str,
+    owner_token: str,
+    chunks: list[str],
+    ttl_seconds: int,
+) -> None:
+    current = await _load_idempotency_record(redis_client, redis_key=redis_key)
+    if current is None or current.get("owner_token") != owner_token:
+        raise RuntimeError("Se perdió la propiedad del turno idempotente antes de completarlo.")
+    await redis_client.set(
+        redis_key,
+        json.dumps(
+            {
+                "status": "completed",
+                "request_hash": request_hash,
+                "events": chunks,
+                "completed_at": datetime.now(UTC).isoformat(),
+            },
+            ensure_ascii=False,
+        ),
+        ex=ttl_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -459,12 +810,13 @@ async def _stream_agent_events(
             # se persiste en Redis pero nunca cruza el contrato SSE público.
             public_event = dict(event)
             public_event.pop("pending_turn", None)
-            yield _format_sse(sse_name, public_event)
 
             if event_type == "text_delta":
                 text_parts.append(str(event.get("text", "")))
+                yield _format_sse(sse_name, public_event)
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
+                yield _format_sse(sse_name, public_event)
             elif event_type == "done":
                 usage = event.get("usage") or {}
                 input_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -512,6 +864,9 @@ async def _stream_agent_events(
                         user_id,
                         exc_info=True,
                     )
+                # El cliente solo ve `done` cuando mensaje y uso ya existen.
+                # Así recargar inmediatamente nunca pierde el turno recién cerrado.
+                yield _format_sse(sse_name, public_event)
             elif event_type == "confirmation_required":
                 # El agente detiene el turno aquí (ARCHITECTURE.md §10.7): se
                 # guarda en Redis el estado completo del loop para este
@@ -527,7 +882,12 @@ async def _stream_agent_events(
                         args=event.get("args") or {},
                         pending_turn=event.get("pending_turn"),
                     )
+                # Persistir antes de publicar evita que un tap inmediato a
+                # "Confirmar" compita contra el SET de Redis.
+                yield _format_sse(sse_name, public_event)
                 break
+            else:
+                yield _format_sse(sse_name, public_event)
     except Exception as exc:  # pragma: no cover - defensivo, no debería ocurrir en flujo normal
         logger.exception("Error inesperado corriendo el turno del agente")
         yield _format_sse("error", {"type": "error", "message": str(exc)})
@@ -556,6 +916,7 @@ async def _stream_declined_confirmation(
 
 async def _stream_approved_confirmation(
     *,
+    tool_call_id: str,
     tool: Tool,
     tool_name: str,
     tool_args: dict[str, Any],
@@ -571,7 +932,13 @@ async def _stream_approved_confirmation(
     reconocería como aprobado (ver el docstring del módulo)."""
     try:
         yield _format_sse(
-            "tool.start", {"type": "tool_start", "name": tool_name, "args": tool_args}
+            "tool.start",
+            {
+                "type": "tool_start",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "args": tool_args,
+            },
         )
         try:
             result = await tool.run(ctx, tool_args)
@@ -582,14 +949,32 @@ async def _stream_approved_confirmation(
             result = ToolResult(content=f"Error: {exc}")
 
         preview = result.content[:_RESULT_PREVIEW_LEN]
-        yield _format_sse(
-            "tool.end", {"type": "tool_end", "name": tool_name, "result_preview": preview}
+        artifacts = artifact_refs_from_tool_data(result.data)
+        blocks = rich_blocks_from_tool_data(
+            result.data,
+            presentation=result.presentation,
+            artifacts=artifacts,
         )
+        tool_end = {
+            "type": "tool_end",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "result_preview": preview,
+            "artifacts": [item.model_dump(mode="json") for item in artifacts],
+            "blocks_version": 1,
+            "blocks": [item.model_dump(mode="json") for item in blocks],
+        }
+        yield _format_sse("tool.end", tool_end)
 
         text = f"Listo, ejecuté «{tool_name}». {preview}".strip()
         tool_log = [
-            {"type": "tool_start", "name": tool_name, "args": tool_args},
-            {"type": "tool_end", "name": tool_name, "result_preview": preview},
+            {
+                "type": "tool_start",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "args": tool_args,
+            },
+            tool_end,
         ]
         await repo.add_message(
             tenant_id=tenant_id,
@@ -698,8 +1083,7 @@ def _preflight_pending_turn(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    f"La herramienta «{call.name}» no está disponible en tu plan "
-                    f"'{plan_key}'."
+                    f"La herramienta «{call.name}» no está disponible en tu plan '{plan_key}'."
                 ),
             )
 
@@ -714,6 +1098,7 @@ async def post_message(
     conversation_id: uuid.UUID,
     body: ChatMessageIn,
     request: Request,
+    idempotency_key: uuid.UUID | None = Header(default=None, alias="Idempotency-Key"),
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_streaming_repo),
     session: Any = Depends(get_tenant_session, scope="request"),
@@ -729,6 +1114,27 @@ async def post_message(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
 
+    request_hash: str | None = None
+    redis_idempotency_key: str | None = None
+    idempotency_ttl = max(60, int(settings.CHAT_IDEMPOTENCY_TTL_SECONDS))
+    if idempotency_key is not None:
+        request_hash = _message_request_hash(body)
+        redis_idempotency_key = _message_idempotency_key(
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            idempotency_key=idempotency_key,
+        )
+        existing = await _load_idempotency_record(
+            redis_client,
+            redis_key=redis_idempotency_key,
+        )
+        if existing is not None:
+            return _response_for_idempotency_record(
+                record=existing,
+                request_hash=request_hash,
+                idempotency_key=idempotency_key,
+            )
+
     await _check_message_quota(repo, tenant)
 
     history_rows = await repo.list_messages(
@@ -736,12 +1142,15 @@ async def post_message(
     )
     history = _rows_to_chat_messages(history_rows)
 
-    await repo.add_message(
+    attachments = await _resolve_message_attachments(
+        repo=repo,
         tenant_id=tenant.tenant_id,
-        conversation_id=conversation_id,
-        role="user",
-        content={"text": body.text},
+        file_ids=body.attachments,
     )
+    stored_user_content: dict[str, Any] = {"text": body.text}
+    if attachments:
+        stored_user_content["attachments"] = attachments
+    user_text = _extract_text(stored_user_content)
 
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
@@ -773,25 +1182,79 @@ async def post_message(
     # `registry` compartido (ver `Agent.run_turn`/`get_mcp_tools_for_tenant`).
     # `_extra_mcp_tools_or_empty` es fail-open con dos capas (ver su docstring).
     extra_tools = await _extra_conversation_tools(request, current_user)
+
+    owner_token: str | None = None
+    if idempotency_key is not None:
+        assert request_hash is not None and redis_idempotency_key is not None
+        owner_token, raced_record = await _claim_message_idempotency(
+            redis_client,
+            redis_key=redis_idempotency_key,
+            request_hash=request_hash,
+            ttl_seconds=idempotency_ttl,
+        )
+        if raced_record is not None:
+            return _response_for_idempotency_record(
+                record=raced_record,
+                request_hash=request_hash,
+                idempotency_key=idempotency_key,
+            )
+        if owner_token is None:  # pragma: no cover - defensa ante un Redis incompatible
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No se pudo reclamar este turno idempotente.",
+            )
+
+    # La reclamación atómica ocurre inmediatamente antes del primer efecto
+    # persistente. Dos requests concurrentes con la misma clave nunca insertan
+    # dos mensajes de usuario ni arrancan dos turnos del agente.
+    await repo.add_message(
+        tenant_id=tenant.tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content=stored_user_content,
+    )
+
     events = agent.run_turn(
         ctx=ctx,
         persona=persona,
         history=history,
-        user_text=body.text,
+        user_text=user_text,
         flags=tenant.flags,
         extra_tools=extra_tools,
     )
+    stream = _stream_agent_events(
+        events=events,
+        repo=repo,
+        tenant_id=tenant.tenant_id,
+        conversation_id=conversation_id,
+        user_id=current_user.user_id,
+        settings=settings,
+        redis_client=redis_client,
+    )
+    if idempotency_key is None:
+        # Compatibilidad total: clientes existentes conservan streaming en vivo.
+        return StreamingResponse(stream, media_type="text/event-stream")
+
+    # Los eventos salen en vivo. El productor queda desacoplado del socket y
+    # completa el replay aun si el cliente pierde la conexión a mitad del turno.
+    assert request_hash is not None
+    assert redis_idempotency_key is not None
+    assert owner_token is not None
+    live_stream = _stream_and_complete_idempotency(
+        stream=stream,
+        redis_client=redis_client,
+        redis_key=redis_idempotency_key,
+        request_hash=request_hash,
+        owner_token=owner_token,
+        ttl_seconds=idempotency_ttl,
+    )
     return StreamingResponse(
-        _stream_agent_events(
-            events=events,
-            repo=repo,
-            tenant_id=tenant.tenant_id,
-            conversation_id=conversation_id,
-            user_id=current_user.user_id,
-            settings=settings,
-            redis_client=redis_client,
-        ),
+        live_stream,
         media_type="text/event-stream",
+        headers={
+            "Idempotency-Key": str(idempotency_key),
+            "Idempotency-Replayed": "false",
+        },
     )
 
 
@@ -982,6 +1445,7 @@ async def confirm_tool_call(
 
     return StreamingResponse(
         _stream_approved_confirmation(
+            tool_call_id=body.tool_call_id,
             tool=tool,
             tool_name=pending["name"],
             tool_args=pending.get("args") or {},

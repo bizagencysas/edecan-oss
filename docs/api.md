@@ -176,7 +176,12 @@ Auth: Bearer (access). Body opcional: `{"title": "Nueva conversación"}`. Respue
 
 ### `GET /v1/conversations/{id}`
 
-Auth: Bearer (access). Devuelve la conversación con su historial de `messages`.
+Auth: Bearer (access). Devuelve la conversación con su historial de `messages` y
+`pending_confirmation`. Este último vale `null` normalmente; si el turno se detuvo
+en una acción peligrosa contiene exactamente la vista pública de
+`confirmation.required` (`tool_call_id`, `name`, `args`) para reconstruir la tarjeta
+después de reiniciar un cliente. Nunca incluye `pending_turn` ni el historial interno
+del agente y se resuelve con claves Redis aisladas por tenant + conversación.
 
 ### `DELETE /v1/conversations/{id}`
 
@@ -185,6 +190,19 @@ Auth: Bearer (access). `204 No Content`.
 ### `POST /v1/conversations/{id}/messages` — turno del agente (SSE)
 
 Auth: Bearer (access). Body: `{"text": "¿Qué tengo agendado mañana?"}` (`ChatMessageIn`). Antes de abrir el stream, revisa la cuota diaria del plan (`limits.messages_per_day` sobre `usage_events` de hoy, `-1` ilimitado): si ya se agotó, responde una `429` normal (JSON, no SSE — el chequeo corre antes de construir el `StreamingResponse`), nunca un evento `error` dentro del stream.
+
+Los clientes pueden enviar opcionalmente `Idempotency-Key: <UUID>`. La clave queda
+aislada por tenant + conversación y vive el tiempo configurado en
+`CHAT_IDEMPOTENCY_TTL_SECONDS` (24 h por defecto). El primer request se reclama de
+forma atómica antes de persistir el mensaje; mientras está `in_flight`, otro request
+con la misma clave y body recibe `409` + `Retry-After: 1`. Al quedar `completed`, un
+reintento devuelve el flujo SSE exacto sin insertar otro mensaje, consumir cuota ni
+volver a ejecutar herramientas; `Idempotency-Replayed` indica `false` en el original
+y `true` en el replay. Reutilizar la clave con otro body responde `409` y una clave
+que no sea UUID responde `422`. Para hacer seguro el replay aun si la conexión cae,
+los requests que incluyen esta cabecera se completan y guardan en el servidor antes
+de abrir la respuesta; los clientes antiguos, sin cabecera, conservan el streaming
+incremental en vivo sin cambios.
 
 Respuesta: `Content-Type: text/event-stream`. Cada evento SSE tiene un `event:` (uno de los 6 nombres pinned) y un `data:` con el JSON del `AgentEvent` correspondiente (`edecan_schemas.chat`, ver `ARCHITECTURE.md` §10.7):
 

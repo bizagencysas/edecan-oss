@@ -146,9 +146,7 @@ async def test_camino_feliz_encola_process_meeting(
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
     file_id = uuid.uuid4()
-    session = _FakeSession(
-        respuestas=[[{"id": file_id, "filename": "reunion.dat", "mime": mime}]]
-    )
+    session = _FakeSession(respuestas=[[{"id": file_id, "filename": "reunion.dat", "mime": mime}]])
     ctx = _make_ctx(session, tenant_id=tenant_id, user_id=user_id)
 
     resultado = await ResumirReunionTool().run(
@@ -165,7 +163,12 @@ async def test_camino_feliz_encola_process_meeting(
     }
     assert enq_tenant_id == tenant_id
     assert DISCLAIMER_CONSENTIMIENTO in resultado.content
-    assert resultado.data == {"file_id": str(file_id), "titulo": "Kickoff del proyecto"}
+    assert resultado.data == {
+        "file_id": str(file_id),
+        "filename": "reunion.dat",
+        "mime": mime,
+        "titulo": "Kickoff del proyecto",
+    }
 
 
 async def test_sin_titulo_usa_el_nombre_del_archivo(monkeypatch: pytest.MonkeyPatch) -> None:

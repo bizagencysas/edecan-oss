@@ -93,8 +93,7 @@ class ExportarAnalisisTool(Tool):
         if len(secciones_arg) > _MAX_SECCIONES:
             return ToolResult(
                 content=(
-                    f"Demasiadas secciones ({len(secciones_arg)}); "
-                    f"el máximo es {_MAX_SECCIONES}."
+                    f"Demasiadas secciones ({len(secciones_arg)}); el máximo es {_MAX_SECCIONES}."
                 )
             )
 
@@ -117,7 +116,7 @@ class ExportarAnalisisTool(Tool):
                 f"Exporté «{titulo}» a «{filename}»: {len(secciones)} sección(es), "
                 f"{n_tablas} con tabla en hoja aparte."
             ),
-            data={"file_id": str(file_id), "filename": filename},
+            data={"file_id": str(file_id), "filename": filename, "mime": _XLSX_MIME},
         )
 
 

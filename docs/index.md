@@ -10,6 +10,7 @@ Esta carpeta es la documentación extendida del proyecto. La experiencia visible
 | [`estilos-de-acompanamiento.md`](./estilos-de-acompanamiento.md) | Estilos profesional, coach, amigo y romántico; transparencia de IA, consentimiento adulto y salida inmediata. |
 | [`autorreparacion-local.md`](./autorreparacion-local.md) | Cómo Edecan diagnostica un límite, crea una skill local o prepara una reparación Git aislada, probada y reversible. |
 | [`primeros-pasos.md`](./primeros-pasos.md) | Guía corta para pasar de cero a una primera tarea real. |
+| [`configuracion-minima.md`](./configuracion-minima.md) | Cero API keys con Codex CLI, matriz exacta de credenciales opcionales e instalación móvil local. |
 | [`roadmap.md`](./roadmap.md) | Estado público actual, prioridades, criterios de salida y límites deliberados. |
 
 ## Empezar

@@ -26,7 +26,7 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.5).** The source, tests, web app, API, workers,
+> **Developer preview (v0.6).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
@@ -39,10 +39,11 @@ email, review the document and remind me to pay tomorrow.” Edecan decides whic
 capabilities are needed, coordinates them and reports the result in the same
 conversation.
 
-The mobile product has five human-facing places: **Edecan**, **Create**,
-**Remote**, **Activity** and **Settings**. Create routes a guided request back
-into the same chat; Skills, MCP and business modules stay in collapsed advanced
-settings. They are capabilities, not separate products the person must learn.
+The mobile product has three human-facing places: **Edecan**, **Activity** and
+**You**. Creation, voice and remote control are contextual actions inside that
+experience; Skills, MCP and business modules stay behind human language and
+advanced settings. They are capabilities, not separate products the person
+must learn.
 
 Most assistants forget context, stop at text, or require credentials to pass
 through a hosted intermediary. Edecan follows a different model:
@@ -59,6 +60,9 @@ through a hosted intermediary. Edecan follows a different model:
 - **Voice in and out.** Spoken requests use the same agent path as chat, while
   a tenant-owned Twilio number can place or receive consent-aware conversational
   calls whose status and transcript remain attached to the conversation.
+- **A real rich conversation.** Private attachments, authenticated media,
+  URL previews, image/video/audio, flight and hotel cards, deep links and safe
+  draft actions survive reloads across web, iOS and Android.
 - **A relationship style you control.** Professional, coach, friend and
   adult-consented romantic tones are editable preferences. Edecan remains
   explicit that it is AI and never uses dependency or exclusivity tactics.
@@ -94,6 +98,10 @@ Home Assistant, private artifact creation, inbound/outbound calls, an embedded
 IDE, and multi-agent missions. Availability depends
 on configuration and feature flags; see the [documentation map](./docs/index.md)
 instead of assuming every integration is enabled by default.
+
+If Codex CLI is already authenticated, the assistant needs **zero new API
+keys** for its core intelligence. See the [minimal configuration matrix](./docs/configuracion-minima.md)
+for optional Internet, image, voice, travel, phone and OAuth credentials.
 
 The product behavior is defined in the
 [assistant-first contract](./docs/producto-assistant-first.md). “Anything” means

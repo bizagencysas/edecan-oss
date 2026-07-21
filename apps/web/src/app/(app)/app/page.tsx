@@ -21,11 +21,21 @@ import {
   sendMessageStream,
   speakText,
   transcribeAudio,
+  uploadFile,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
+import { reduceToolTimeline } from "@/lib/chat-blocks";
 import { splitIntoSentences } from "@/lib/speech";
 import { isTauriApp, tauriListenEvent } from "@/lib/tauriListen";
-import { FLAG_VOICE_WEB, type AgentEvent, type ConversationOut, type MessageOut } from "@/lib/types";
+import {
+  FLAG_VOICE_WEB,
+  type AgentEvent,
+  type ChatAttachmentDraft,
+  type ConversationOut,
+  type MessageOut,
+  type PendingConfirmationOut,
+} from "@/lib/types";
 
 type SpeakState = "loading" | "playing" | null;
 
@@ -52,6 +62,11 @@ function base64ToBlob(base64: string, mime: string): Blob {
   return new Blob([bytes], { type: mime || "audio/wav" });
 }
 
+function attachmentLocalId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `attachment-${crypto.randomUUID()}`;
+  return `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 /** Chat principal (ARCHITECTURE.md §9, §10.7): conversaciones + streaming SSE + voz. */
 export default function ChatPage() {
   const { me } = useAuth();
@@ -73,12 +88,14 @@ export default function ChatPage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
 
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
   const [sending, setSending] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
-  const [pendingConfirmation, setPendingConfirmation] = useState<
-    { tool_call_id: string; name: string; args: Record<string, unknown> } | null
-  >(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmationOut | null>(null);
+  const retryTurnRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [voiceId, setVoiceId] = useState<string | null>(null);
@@ -119,6 +136,14 @@ export default function ChatPage() {
       .then((p) => setVoiceId(p.voice_id))
       .catch(() => undefined);
   }, []);
+
+  useEffect(
+    () => () => {
+      for (const controller of uploadControllersRef.current.values()) controller.abort();
+      uploadControllersRef.current.clear();
+    },
+    [],
+  );
 
   // Enganche del wake word NATIVO (app de escritorio, Tauri): se suscribe de
   // forma INCONDICIONAL -- no solo cuando el usuario ya abrió el overlay a
@@ -176,7 +201,10 @@ export default function ChatPage() {
     setMessagesLoading(true);
     getConversation(activeId)
       .then((conv) => {
-        if (!cancelled) setMessages(conv.messages ?? []);
+        if (!cancelled) {
+          setMessages(conv.messages ?? []);
+          setPendingConfirmation(conv.pending_confirmation ?? null);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "No se pudo cargar la conversación.");
@@ -255,15 +283,19 @@ export default function ChatPage() {
     }
   }
 
-  async function runStream(action: () => Promise<void>) {
+  async function runStream(action: () => Promise<void>): Promise<boolean> {
     setError(null);
     setSending(true);
     setStreamingText("");
     setToolEvents([]);
     try {
       await action();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error de conexión con el asistente.");
+      setStreamingText("");
+      setToolEvents([]);
+      return false;
     } finally {
       setSending(false);
       // Refresco silencioso: solo para reordenar/actualizar título en la lista,
@@ -272,10 +304,9 @@ export default function ChatPage() {
     }
   }
 
-  function makeEventHandler() {
+  function makeEventHandler(assistantMessageId?: string) {
     let text = "";
-    let counter = 0;
-    const events: ToolEvent[] = [];
+    let events: ToolEvent[] = [];
     const toolLog: AgentEvent[] = [];
     return (event: AgentEvent) => {
       switch (event.type) {
@@ -285,33 +316,25 @@ export default function ChatPage() {
           break;
         case "tool_start": {
           toolLog.push(event);
-          events.push({ callKey: `${event.name}-${counter++}`, name: event.name, args: event.args, status: "running" });
+          events = reduceToolTimeline(events, event);
           setToolEvents([...events]);
           break;
         }
         case "tool_end": {
           toolLog.push(event);
-          const idx = events.findIndex((e) => e.name === event.name && e.status === "running");
-          if (idx !== -1) {
-            events[idx] = {
-              ...events[idx],
-              status: "done",
-              resultPreview: event.result_preview,
-              artifacts: event.artifacts ?? [],
-            };
-            setToolEvents([...events]);
-          }
+          events = reduceToolTimeline(events, event);
+          setToolEvents([...events]);
           break;
         }
         case "confirmation_required":
           setPendingConfirmation({ tool_call_id: event.tool_call_id, name: event.name, args: event.args });
           break;
         case "done":
-          if (text) {
+          if (text || toolLog.length > 0) {
             setMessages((prev) => [
               ...prev,
               {
-                id: `local-${Date.now()}`,
+                id: assistantMessageId ?? `local-${Date.now()}`,
                 role: "assistant",
                 content: { text },
                 tool_calls: toolLog.length > 0 ? toolLog : null,
@@ -335,35 +358,166 @@ export default function ChatPage() {
    * modo "Escuchar siempre" (`AlwaysListenMode`, manda el texto ya
    * transcrito directo) -- mismo turno, misma validación, dos orígenes de
    * texto distintos. */
-  function sendText(text: string) {
-    if (!text.trim() || !activeId || sending) return;
+  async function sendText(
+    text: string,
+    outgoingAttachments: ChatAttachmentDraft[] = [],
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<boolean> {
+    if ((!text.trim() && outgoingAttachments.length === 0) || !activeId || sending) return false;
+    const localId = `local-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       {
-        id: `local-${Date.now()}`,
+        id: localId,
         role: "user",
-        content: { text },
+        content: {
+          text,
+          attachments: outgoingAttachments.flatMap((attachment) =>
+            attachment.fileId
+              ? [{ file_id: attachment.fileId, filename: attachment.filename, mime: attachment.mime }]
+              : [],
+          ),
+        },
         tool_calls: null,
         tokens_in: 0,
         tokens_out: 0,
         created_at: new Date().toISOString(),
       },
     ]);
-    void runStream(() => sendMessageStream(activeId, text, makeEventHandler()));
+    const assistantMessageId = `local-assistant-${localId}`;
+    const succeeded = await runStream(() =>
+      sendMessageStream(
+        activeId,
+        text,
+        makeEventHandler(assistantMessageId),
+        undefined,
+        outgoingAttachments.flatMap((attachment) => (attachment.fileId ? [attachment.fileId] : [])),
+        idempotencyKey,
+      ),
+    );
+    if (!succeeded) {
+      setMessages((prev) =>
+        prev.filter((message) => message.id !== localId && message.id !== assistantMessageId),
+      );
+    }
+    return succeeded;
   }
 
-  function handleSend() {
-    const text = input.trim();
-    if (!text) return;
+  async function handleSend() {
+    if (!canSubmitChat(input, attachments, sending)) return;
+    const text = input;
+    const outgoingAttachments = attachments.filter(
+      (attachment) => attachment.status === "ready" && attachment.fileId,
+    );
+    const fingerprint = JSON.stringify({
+      conversationId: activeId,
+      text,
+      attachments: outgoingAttachments.map((attachment) => attachment.fileId),
+    });
+    const idempotencyKey =
+      retryTurnRef.current?.fingerprint === fingerprint
+        ? retryTurnRef.current.idempotencyKey
+        : crypto.randomUUID();
+    const sentLocalIds = new Set(outgoingAttachments.map((attachment) => attachment.localId));
     setInput("");
-    sendText(text);
+    setAttachments((current) => current.filter((attachment) => !sentLocalIds.has(attachment.localId)));
+    setAttachmentError(null);
+    const succeeded = await sendText(text, outgoingAttachments, idempotencyKey);
+    if (succeeded) {
+      retryTurnRef.current = null;
+      return;
+    }
+    retryTurnRef.current = { fingerprint, idempotencyKey };
+    // El mensaje o la subida nunca deben desaparecer ante un fallo de red.
+    setInput(text);
+    setAttachments((current) => [...outgoingAttachments, ...current].slice(0, MAX_CHAT_ATTACHMENTS));
   }
 
-  function handleConfirm(approved: boolean) {
+  function handleSelectFiles(files: File[]) {
+    const availableSlots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
+    const selected = files.slice(0, availableSlots);
+    setAttachmentError(
+      files.length > availableSlots
+        ? `Puedes adjuntar como máximo ${MAX_CHAT_ATTACHMENTS} archivos por mensaje.`
+        : null,
+    );
+    if (selected.length === 0) return;
+
+    const drafts = selected.map<ChatAttachmentDraft>((file) => ({
+      localId: attachmentLocalId(),
+      filename: file.name || "archivo",
+      sizeBytes: file.size,
+      status: "uploading",
+      fileId: null,
+      mime: file.type || null,
+      error: null,
+    }));
+    setAttachments((current) => [...current, ...drafts].slice(0, MAX_CHAT_ATTACHMENTS));
+
+    selected.forEach((file, index) => {
+      const draft = drafts[index];
+      const controller = new AbortController();
+      uploadControllersRef.current.set(draft.localId, controller);
+      uploadFile(file, controller.signal)
+        .then((uploaded) => {
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.localId === draft.localId
+                ? {
+                    ...attachment,
+                    status: "ready",
+                    fileId: uploaded.id,
+                    filename: uploaded.filename,
+                    mime: uploaded.mime,
+                    error: null,
+                  }
+                : attachment,
+            ),
+          );
+        })
+        .catch((reason: unknown) => {
+          if (controller.signal.aborted) return;
+          const message = reason instanceof Error ? reason.message : "No se pudo subir el archivo.";
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.localId === draft.localId
+                ? { ...attachment, status: "error", error: message }
+                : attachment,
+            ),
+          );
+        })
+        .finally(() => uploadControllersRef.current.delete(draft.localId));
+    });
+  }
+
+  function handleRemoveAttachment(localId: string) {
+    uploadControllersRef.current.get(localId)?.abort();
+    uploadControllersRef.current.delete(localId);
+    setAttachments((current) => current.filter((attachment) => attachment.localId !== localId));
+    setAttachmentError(null);
+  }
+
+  async function handleConfirm(approved: boolean) {
     if (!pendingConfirmation || !activeId) return;
     const { tool_call_id } = pendingConfirmation;
-    setPendingConfirmation(null);
-    void runStream(() => confirmToolCallStream(activeId, tool_call_id, approved, makeEventHandler()));
+    const conversationId = activeId;
+    const succeeded = await runStream(() =>
+      confirmToolCallStream(conversationId, tool_call_id, approved, makeEventHandler()),
+    );
+    if (succeeded) {
+      setPendingConfirmation(null);
+      return;
+    }
+    // La confirmación puede haberse consumido justo antes de un corte. El
+    // servidor es la fuente de verdad y solo expone el resumen público seguro.
+    try {
+      const conversation = await getConversation(conversationId);
+      setMessages(conversation.messages ?? []);
+      setPendingConfirmation(conversation.pending_confirmation ?? null);
+    } catch {
+      // Conserva la tarjeta actual: es más seguro volver a preguntar que
+      // esconder una acción cuya resolución todavía es ambigua.
+    }
   }
 
   async function toggleRecording() {
@@ -583,6 +737,7 @@ export default function ChatPage() {
                       canSpeak={canVoice}
                       speaking={speakingId === m.id ? speakingState : null}
                       onToggleSpeak={() => toggleSpeak(m)}
+                      onPrefillMessage={setInput}
                     />
                   ))}
                   {showStreamingBubble && (
@@ -633,6 +788,10 @@ export default function ChatPage() {
               recording={recording}
               transcribing={transcribing}
               onToggleRecording={toggleRecording}
+              attachments={attachments}
+              attachmentError={attachmentError}
+              onSelectFiles={handleSelectFiles}
+              onRemoveAttachment={handleRemoveAttachment}
             />
           </>
         )}

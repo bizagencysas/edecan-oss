@@ -1,6 +1,6 @@
 [project]
 name = "edecan-travel"
-version = "0.5.0"
+version = "0.6.0"
 description = "Bring-your-own travel search and package tracking tools with human-approved booking drafts"
 readme = "README.md"
 requires-python = ">=3.12"

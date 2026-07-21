@@ -342,9 +342,7 @@ class SintetizarVozTool(Tool):
         # llamada real al TTS bring-your-own del tenant (que puede ser un
         # proveedor de pago).
         estimated_seconds = _estimate_seconds_from_text(texto)
-        bajo_cuota, limite_minutos = await _bajo_cuota_de_voz(
-            ctx, segundos_extra=estimated_seconds
-        )
+        bajo_cuota, limite_minutos = await _bajo_cuota_de_voz(ctx, segundos_extra=estimated_seconds)
         if not bajo_cuota:
             return ToolResult(
                 content=(
@@ -384,7 +382,12 @@ class SintetizarVozTool(Tool):
                 f"Convertí «{preview}» a voz y lo guardé como «{filename}» — puedes "
                 "escucharlo desde tus archivos."
             ),
-            data={"file_id": str(file_id), "filename": filename},
+            data={
+                "file_id": str(file_id),
+                "filename": filename,
+                "mime": mime,
+                "caption": preview,
+            },
         )
 
 

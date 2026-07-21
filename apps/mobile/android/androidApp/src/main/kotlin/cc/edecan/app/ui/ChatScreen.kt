@@ -6,6 +6,9 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +39,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,12 +62,18 @@ import androidx.core.content.FileProvider
 import cc.edecan.app.ui.components.EmptyState
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.ChatViewModel
+import cc.edecan.app.vm.ArchivoSubidaLocal
 import cc.edecan.app.vm.ConfirmacionPendiente
+import cc.edecan.app.vm.EstadoAdjunto
+import cc.edecan.app.vm.EstadoEntrega
 import cc.edecan.app.vm.MensajeUi
 import cc.edecan.app.vm.SessionViewModel
 import cc.edecan.shared.ArtifactRef
+import cc.edecan.shared.ChatAction
+import cc.edecan.shared.ChatBlock
 import cc.edecan.shared.DownloadedArtifact
 import java.io.File
+import java.net.URI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,17 +91,38 @@ fun ChatScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     chatViewModel: ChatViewModel = viewModel(),
     onOpenVoice: () -> Unit = {},
+    onOpenScreen: (String) -> Boolean = { false },
     solicitudInicial: String? = null,
     onSolicitudConsumida: () -> Unit = {},
 ) {
-    val sessionState by sessionViewModel.uiState.collectAsState()
     val chatState by chatViewModel.uiState.collectAsState()
-    var textoActual by remember { mutableStateOf("") }
+    var historialAbierto by remember { mutableStateOf(false) }
     var artefactoDescargandoId by remember { mutableStateOf<String?>(null) }
     var errorArtefacto by remember { mutableStateOf<String?>(null) }
+    var previews by remember { mutableStateOf<Map<String, VistaPreviaPrivada>>(emptyMap()) }
+    var previewsCargando by remember { mutableStateOf<Set<String>>(emptySet()) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val selectorArchivo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val api = sessionViewModel.api
+        if (uri != null && api != null) {
+            coroutineScope.launch {
+                try {
+                    val local = withContext(Dispatchers.IO) {
+                        prepararArchivoSeleccionado(context.applicationContext, uri)
+                    }
+                    chatViewModel.subirAdjunto(local, api)
+                } catch (error: Exception) {
+                    errorArtefacto = "No pude preparar ese archivo: ${error.message ?: "error desconocido"}"
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(sessionViewModel.api) {
+        sessionViewModel.api?.let(chatViewModel::cargar)
+    }
 
     LaunchedEffect(chatState.mensajes.size, chatState.mensajes.lastOrNull()?.texto) {
         if (chatState.mensajes.isNotEmpty()) listState.animateScrollToItem(chatState.mensajes.lastIndex)
@@ -97,18 +130,60 @@ fun ChatScreen(
 
     LaunchedEffect(solicitudInicial) {
         val solicitud = solicitudInicial?.trim().orEmpty()
-        val api = sessionViewModel.api
-        if (solicitud.isNotEmpty() && api != null) {
+        if (solicitud.isNotEmpty()) {
             onSolicitudConsumida()
-            chatViewModel.enviar(solicitud, api)
+            // Crear siempre vuelve al mismo hilo como borrador revisable.
+            chatViewModel.actualizarBorrador(solicitud)
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Edecán") },
+                title = {
+                    Column {
+                        Text("Edecán")
+                        chatState.tituloConversacion?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        }
+                    }
+                },
                 actions = {
+                    Box {
+                        IconButton(
+                            onClick = { historialAbierto = true },
+                            enabled = !chatState.enviando,
+                            modifier = Modifier.semantics { contentDescription = "Abrir historial de chats" },
+                        ) { Text("☰", style = MaterialTheme.typography.titleLarge) }
+                        DropdownMenu(
+                            expanded = historialAbierto,
+                            onDismissRequest = { historialAbierto = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("＋ Chat nuevo") },
+                                onClick = {
+                                    historialAbierto = false
+                                    chatViewModel.nuevoChat()
+                                },
+                            )
+                            chatState.conversaciones.forEach { conversation ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            conversation.title?.takeIf { it.isNotBlank() } ?: "Conversación",
+                                            maxLines = 1,
+                                        )
+                                    },
+                                    onClick = {
+                                        historialAbierto = false
+                                        sessionViewModel.api?.let {
+                                            chatViewModel.seleccionarConversacion(conversation.id, it)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
                     IconButton(
                         onClick = onOpenVoice,
                         modifier = Modifier.semantics { contentDescription = "Hablar con Edecán" },
@@ -121,7 +196,9 @@ fun ChatScreen(
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Box(modifier = Modifier.weight(1f)) {
-                if (chatState.mensajes.isEmpty()) {
+                if (chatState.cargandoHistorial && chatState.mensajes.isEmpty()) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                } else if (chatState.mensajes.isEmpty()) {
                     EmptyState(
                         emoji = "💬",
                         titulo = "Empieza una conversación",
@@ -140,6 +217,64 @@ fun ChatScreen(
                             BurbujaMensaje(
                                 mensaje = mensaje,
                                 artefactoDescargandoId = artefactoDescargandoId,
+                                previews = previews,
+                                previewsCargando = previewsCargando,
+                                onCargarPreview = { bloque ->
+                                    val api = sessionViewModel.api ?: return@BurbujaMensaje
+                                    val artifact = bloque.artifact
+                                    if (artifact.fileId in previewsCargando || artifact.fileId in previews) {
+                                        return@BurbujaMensaje
+                                    }
+                                    previewsCargando = previewsCargando + artifact.fileId
+                                    errorArtefacto = null
+                                    coroutineScope.launch {
+                                        try {
+                                            val mime = artifact.mime?.lowercase().orEmpty()
+                                            val kind = bloque.mediaKind.lowercase()
+                                            if (kind !in setOf("image", "video", "audio") ||
+                                                !mime.startsWith("$kind/")
+                                            ) {
+                                                errorArtefacto = "No mostré ${artifact.filename}: el tipo privado " +
+                                                    "del archivo no coincide con el preview solicitado."
+                                            } else {
+                                                val preview = if (kind == "image") {
+                                                    VistaPreviaPrivada.Imagen(api.previewArtifact(artifact))
+                                                } else {
+                                                    VistaPreviaPrivada.Stream(
+                                                        artifact = artifact,
+                                                        api = api,
+                                                    )
+                                                }
+                                                previews = previews + (artifact.fileId to preview)
+                                            }
+                                        } catch (error: Exception) {
+                                            errorArtefacto = "No se pudo cargar ${artifact.filename}: " +
+                                                (error.message ?: "error desconocido")
+                                        } finally {
+                                            previewsCargando = previewsCargando - artifact.fileId
+                                        }
+                                    }
+                                },
+                                onAction = { action ->
+                                    when (action) {
+                                        is ChatAction.OpenUrl -> {
+                                            if (!abrirUrlPublica(context, action.url)) {
+                                                errorArtefacto = "No abrí ese enlace porque no es una URL pública segura."
+                                            }
+                                        }
+                                        is ChatAction.OpenScreen -> {
+                                            if (!onOpenScreen(action.screen)) {
+                                                errorArtefacto = "La pantalla «${action.label}» todavía no está disponible aquí."
+                                            }
+                                        }
+                                        is ChatAction.PrefillMessage -> {
+                                            // Deliberado: sugerir no equivale a ejecutar. La persona
+                                            // todavía debe revisar el texto y pulsar Enviar.
+                                            chatViewModel.actualizarBorrador(action.message)
+                                        }
+                                        is ChatAction.Unknown -> Unit
+                                    }
+                                },
                                 onAbrirArtefacto = { artefacto ->
                                     val api = sessionViewModel.api ?: return@BurbujaMensaje
                                     if (artefactoDescargandoId != null) return@BurbujaMensaje
@@ -159,6 +294,9 @@ fun ChatScreen(
                                             artefactoDescargandoId = null
                                         }
                                     }
+                                },
+                                onReintentar = {
+                                    sessionViewModel.api?.let { chatViewModel.reintentarMensaje(mensaje.id, it) }
                                 },
                             )
                         }
@@ -190,19 +328,29 @@ fun ChatScreen(
                 )
             }
 
+            AdjuntosComposer(
+                adjuntos = chatState.adjuntosComposer,
+                onQuitar = chatViewModel::quitarAdjunto,
+                onReintentar = { localId ->
+                    sessionViewModel.api?.let { chatViewModel.reintentarAdjunto(localId, it) }
+                },
+            )
+
             BarraDeEntrada(
-                texto = textoActual,
-                onTextoCambia = { textoActual = it },
-                habilitado = textoActual.isNotBlank() && !chatState.enviando &&
-                    chatState.confirmacionPendiente == null,
+                texto = chatState.borrador,
+                onTextoCambia = chatViewModel::actualizarBorrador,
+                habilitado = !chatState.enviando &&
+                    chatState.confirmacionPendiente == null &&
+                    chatState.adjuntosComposer.none { it.estado != EstadoAdjunto.LISTO } &&
+                    (chatState.borrador.isNotBlank() || chatState.adjuntosComposer.any { it.estado == EstadoAdjunto.LISTO }),
+                onAdjuntar = { selectorArchivo.launch(arrayOf("*/*")) },
+                onPrefill = chatViewModel::actualizarBorrador,
                 onEnviar = {
                     val api = sessionViewModel.api
                     if (api == null) {
                         return@BarraDeEntrada
                     }
-                    val texto = textoActual
-                    textoActual = ""
-                    chatViewModel.enviar(texto, api)
+                    chatViewModel.enviar(chatState.borrador, api)
                 },
             )
         }
@@ -314,7 +462,12 @@ internal fun TarjetaConfirmacion(
 private fun BurbujaMensaje(
     mensaje: MensajeUi,
     artefactoDescargandoId: String?,
+    previews: Map<String, VistaPreviaPrivada>,
+    previewsCargando: Set<String>,
+    onCargarPreview: (ChatBlock.Media) -> Unit,
+    onAction: (ChatAction) -> Unit,
     onAbrirArtefacto: (ArtifactRef) -> Unit,
+    onReintentar: () -> Unit,
 ) {
     val esUsuario = mensaje.rol == MensajeUi.Rol.USUARIO
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (esUsuario) Arrangement.End else Arrangement.Start) {
@@ -338,7 +491,37 @@ private fun BurbujaMensaje(
                     color = if (esUsuario) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (esUsuario && mensaje.adjuntos.isNotEmpty()) {
+                mensaje.adjuntos.forEach { adjunto ->
+                    Text(
+                        "📎 ${adjunto.filename}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.86f),
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (esUsuario) {
+                when (mensaje.estadoEntrega) {
+                    EstadoEntrega.ENVIANDO -> Text(
+                        "Enviando…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.72f),
+                    )
+                    EstadoEntrega.FALLIDO -> TextButton(onClick = onReintentar) {
+                        Text("No se envió · Reintentar", color = Color.White)
+                    }
+                    EstadoEntrega.ENTREGADO, null -> Unit
+                }
+            }
             if (!esUsuario) {
+                BloquesRicosMensaje(
+                    bloques = mensaje.bloques,
+                    previews = previews,
+                    previewsCargando = previewsCargando,
+                    onCargarPreview = onCargarPreview,
+                    onAction = onAction,
+                )
                 mensaje.artefactos.forEach { artefacto ->
                     OutlinedButton(
                         onClick = { onAbrirArtefacto(artefacto) },
@@ -354,6 +537,55 @@ private fun BurbujaMensaje(
                         Text(artefacto.filename, maxLines = 1, modifier = Modifier.weight(1f))
                         Text(" ↗")
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdjuntosComposer(
+    adjuntos: List<cc.edecan.app.vm.AdjuntoComposerUi>,
+    onQuitar: (String) -> Unit,
+    onReintentar: (String) -> Unit,
+) {
+    if (adjuntos.isEmpty()) return
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        adjuntos.forEach { adjunto ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                ) {
+                    if (adjunto.estado == EstadoAdjunto.SUBIENDO) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.padding(start = 8.dp))
+                    } else {
+                        Text(if (adjunto.estado == EstadoAdjunto.LISTO) "📎" else "⚠️")
+                        Spacer(modifier = Modifier.padding(start = 6.dp))
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(adjunto.filename, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                        Text(
+                            when (adjunto.estado) {
+                                EstadoAdjunto.SUBIENDO -> "Subiendo de forma privada…"
+                                EstadoAdjunto.LISTO -> "Listo para enviar"
+                                EstadoAdjunto.ERROR -> adjunto.error ?: "No se pudo subir"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (adjunto.estado == EstadoAdjunto.ERROR) {
+                                MaterialTheme.colorScheme.error
+                            } else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                    if (adjunto.estado == EstadoAdjunto.ERROR) {
+                        TextButton(onClick = { onReintentar(adjunto.localId) }) { Text("Reintentar") }
+                    }
+                    IconButton(onClick = { onQuitar(adjunto.localId) }) { Text("×") }
                 }
             }
         }
@@ -388,12 +620,40 @@ private fun BarraDeEntrada(
     texto: String,
     onTextoCambia: (String) -> Unit,
     habilitado: Boolean,
+    onAdjuntar: () -> Unit,
+    onPrefill: (String) -> Unit,
     onEnviar: () -> Unit,
 ) {
+    var menuAbierto by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.Bottom,
         modifier = Modifier.fillMaxWidth().padding(12.dp),
     ) {
+        Box {
+            IconButton(
+                onClick = { menuAbierto = true },
+                modifier = Modifier.semantics { contentDescription = "Añadir al mensaje" },
+            ) { Text("＋", style = MaterialTheme.typography.headlineSmall) }
+            DropdownMenu(expanded = menuAbierto, onDismissRequest = { menuAbierto = false }) {
+                PRESETS_CREACION.forEach { preset ->
+                    DropdownMenuItem(
+                        text = { Text(preset.label) },
+                        leadingIcon = { Text(preset.emoji) },
+                        onClick = {
+                            menuAbierto = false
+                            // Prefill únicamente: nunca envía ni ejecuta sin
+                            // que la persona revise y pulse Enviar.
+                            onPrefill(preset.message)
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Subir archivo") },
+                    leadingIcon = { Text("📎") },
+                    onClick = { menuAbierto = false; onAdjuntar() },
+                )
+            }
+        }
         OutlinedTextField(
             value = texto,
             onValueChange = onTextoCambia,
@@ -413,6 +673,82 @@ private fun BarraDeEntrada(
         }
     }
 }
+
+private data class PresetCreacion(val emoji: String, val label: String, val message: String)
+
+private val PRESETS_CREACION = listOf(
+    PresetCreacion("📄", "Documento", "Ayúdame a crear un documento. Primero pregúntame lo necesario y luego prepáralo aquí."),
+    PresetCreacion("🧾", "PDF", "Ayúdame a crear un PDF. Primero pregúntame el objetivo y el contenido que debe llevar."),
+    PresetCreacion("📊", "Presentación", "Ayúdame a crear una presentación. Pregúntame para quién es y qué quiero lograr."),
+    PresetCreacion("🌐", "Sitio", "Ayúdame a crear un sitio web. Primero entiende mi negocio, público y objetivo."),
+    PresetCreacion("📱", "App", "Ayúdame a crear una app. Primero aclaremos el problema, las personas y el flujo principal."),
+    PresetCreacion("✨", "Post", "Ayúdame a crear una publicación. Pregúntame la red, el tema, el tono y el objetivo."),
+)
+
+private fun prepararArchivoSeleccionado(context: Context, uri: Uri): ArchivoSubidaLocal {
+    val resolver = context.contentResolver
+    var filename = "archivo"
+    var declaredSize: Long? = null
+    resolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { index ->
+                filename = cursor.getString(index)?.takeIf { it.isNotBlank() } ?: filename
+            }
+            cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let { index ->
+                declaredSize = cursor.getLong(index).takeIf { it >= 0 }
+            }
+        }
+    }
+    declaredSize?.let { if (it > MAX_MOBILE_UPLOAD_BYTES) error("El archivo supera el límite móvil de 25 MB") }
+
+    val pendingDir = File(context.cacheDir, "pending_uploads").apply {
+        if (!exists() && !mkdirs()) error("No pude preparar el almacenamiento temporal")
+        if (!isDirectory) error("No pude preparar el almacenamiento temporal")
+    }
+    // Recupera espacio de una selección que quedó huérfana por un cierre
+    // abrupto. Los archivos del ViewModel activo son mucho más recientes.
+    val staleBefore = System.currentTimeMillis() - PENDING_UPLOAD_MAX_AGE_MS
+    pendingDir.listFiles()?.filter { it.isFile && it.lastModified() < staleBefore }?.forEach(File::delete)
+
+    val staged = File.createTempFile("adjunto-", ".upload", pendingDir)
+    try {
+        resolver.openInputStream(uri)?.use { input ->
+            staged.outputStream().buffered().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > MAX_MOBILE_UPLOAD_BYTES) {
+                        error("El archivo supera el límite móvil de 25 MB")
+                    }
+                    output.write(buffer, 0, read)
+                }
+            }
+        } ?: error("Android no permitió leer el archivo seleccionado")
+        return ArchivoSubidaLocal(
+            file = staged,
+            filename = filename.take(255).ifBlank { "archivo" },
+            mime = resolver.getType(uri) ?: "application/octet-stream",
+        )
+    } catch (error: Throwable) {
+        staged.delete()
+        throw error
+    }
+}
+
+/** Coincide con el `MAX_UPLOAD_BYTES` predeterminado del servidor y, más
+ * importante, evita cargar un documento arbitrariamente grande en RAM antes
+ * de que el backend pueda rechazarlo. */
+private const val MAX_MOBILE_UPLOAD_BYTES = 25L * 1024 * 1024
+private const val PENDING_UPLOAD_MAX_AGE_MS = 24L * 60 * 60 * 1000
 
 /** Escribe solo en `cacheDir/shared_artifacts` (expuesto en modo lectura por
  * el `FileProvider`) y devuelve un `content://`; ninguna app recibe una ruta
@@ -443,4 +779,48 @@ private fun compartirArtefacto(context: Context, artifact: ArtifactRef, uri: Uri
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(intent, "Compartir ${artifact.filename}"))
+}
+
+/** Defensa en profundidad antes de entregar un deep link externo a Android.
+ * El backend ya valida el mismo contrato; la app vuelve a comprobar esquema,
+ * credenciales y hosts evidentemente locales para no confiar ciegamente en
+ * un payload persistido de una versión anterior. */
+internal fun esUrlPublicaSegura(raw: String): Boolean {
+    val uri = runCatching { URI(raw.trim()) }.getOrNull() ?: return false
+    if (uri.scheme?.lowercase() !in setOf("http", "https")) return false
+    if (!uri.rawUserInfo.isNullOrBlank()) return false
+    val host = uri.host?.trimEnd('.')?.lowercase() ?: return false
+    if (host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+        host.endsWith(".internal")
+    ) return false
+    return !esDireccionIpPrivadaOReservada(host)
+}
+
+private fun esDireccionIpPrivadaOReservada(host: String): Boolean {
+    val ipv4 = host.split('.').mapNotNull { it.toIntOrNull() }
+    if (ipv4.size == 4 && ipv4.all { it in 0..255 }) {
+        val (a, b) = ipv4
+        return a == 0 || a == 10 || a == 127 ||
+            (a == 100 && b in 64..127) ||
+            (a == 169 && b == 254) ||
+            (a == 172 && b in 16..31) ||
+            (a == 192 && b == 168) ||
+            (a == 198 && b in 18..19) || a >= 224
+    }
+    if (':' !in host) return false
+    val normalized = host.removePrefix("[").removeSuffix("]").lowercase()
+    return normalized == "::" || normalized == "::1" || normalized.startsWith("fe8") ||
+        normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") ||
+        normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("ff")
+}
+
+private fun abrirUrlPublica(context: Context, url: String): Boolean {
+    if (!esUrlPublicaSegura(url)) return false
+    return runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+            },
+        )
+    }.isSuccess
 }

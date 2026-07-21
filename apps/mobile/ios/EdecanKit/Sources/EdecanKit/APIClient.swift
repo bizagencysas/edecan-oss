@@ -291,6 +291,11 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtener("/v1/conversations") }
     }
 
+    /// `GET /v1/conversations/{id}` con mensajes y tool logs persistidos.
+    public func obtenerConversacion(id: String) async throws -> ConversationDetail {
+        try await conAutoRefresh { try await self.obtener("/v1/conversations/\(id)") }
+    }
+
     /// `POST /v1/conversations`. `titulo` es opcional, igual que en la API.
     @discardableResult
     public func crearConversacion(titulo: String? = nil) async throws -> Conversation {
@@ -311,6 +316,37 @@ public actor APIClient {
             return try await self.ejecutarAutenticadoData(request).data
         }
         return DownloadedArtifact(artifact: artifact, data: data)
+    }
+
+    /// `POST /v1/files` desde un archivo local mediante multipart transmitido
+    /// desde disco. No duplica el archivo completo en memoria y conserva el
+    /// cuerpo temporal para un unico auto-refresh/reintento de autenticacion.
+    public func subirArchivo(
+        desde localURL: URL,
+        filename: String,
+        mimeType: String = "application/octet-stream"
+    ) async throws -> UploadedFile {
+        // Debe ocurrir antes de `crearArchivoMultipart`: un archivo fuera de
+        // política nunca se copia a otro temporal ni abre una petición.
+        try FileUploadPolicy.validate(localURL)
+        let boundary = "Edecan-File-\(UUID().uuidString)"
+        let multipartURL = try Self.crearArchivoMultipart(
+            sourceURL: localURL,
+            filename: filename,
+            mimeType: mimeType,
+            boundary: boundary
+        )
+        defer { try? FileManager.default.removeItem(at: multipartURL) }
+
+        return try await conAutoRefresh {
+            var request = URLRequest(url: try await self.urlCompleta("/v1/files"))
+            request.httpMethod = "POST"
+            request.setValue(
+                "multipart/form-data; boundary=\(boundary)",
+                forHTTPHeaderField: "Content-Type"
+            )
+            return try await self.ejecutarUploadAutenticado(request, fromFile: multipartURL)
+        }
     }
 
     // MARK: - Negocios (`ARCHITECTURE.md` §11 ROADMAP_V2.md §7.4/§7.7 WP-V2-12,
@@ -419,6 +455,13 @@ public actor APIClient {
     /// propia — cae al `StubTTS`; `audio/mpeg` con un proveedor real).
     public func hablar(texto: String, voiceId: String? = nil) async throws -> HablarResultado {
         try await conAutoRefresh { try await self.pedirAudio(texto: texto, voiceId: voiceId) }
+    }
+
+    /// `GET /v1/phone/calls` — feed real de llamadas del usuario actual.
+    /// El servidor aplica tanto el aislamiento por tenant como el flag de
+    /// telefonía; un plan sin esa capacidad recibe 403 tipado.
+    public func listarLlamadas() async throws -> [PhoneCallOut] {
+        try await conAutoRefresh { try await self.obtener("/v1/phone/calls") }
     }
 
     // MARK: - Dispositivos (WP-V4-01, contrato en paralelo — ver ``DeviceOut``)
@@ -854,6 +897,29 @@ public actor APIClient {
         return try decodificar(Respuesta.self, data)
     }
 
+    private func ejecutarUploadAutenticado<Respuesta: Decodable>(
+        _ request: URLRequest, fromFile fileURL: URL
+    ) async throws -> Respuesta {
+        guard let accessToken else { throw APIError.sesionExpirada }
+        var request = request
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await urlSession.upload(for: request, fromFile: fileURL)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            throw APIError.sinConexion(detalle: error.localizedDescription)
+        }
+        let http = try httpResponse(response)
+        if http.statusCode == 401 { throw APIError.sesionExpirada }
+        try validarStatus(http, data: data)
+        return try decodificar(Respuesta.self, data)
+    }
+
     /// Query params codificados correctamente (`URLComponents`, no
     /// concatenación a mano) sobre la URL que ya arma ``urlCompleta(_:)``.
     /// `items` con valor `nil`/vacío se omiten.
@@ -874,6 +940,58 @@ public actor APIClient {
     }
 
     // MARK: - Internals: multipart (voz)
+
+    /// Materializa solo el envoltorio multipart en un archivo temporal y
+    /// copia el documento por chunks. Asi `URLSession.upload(fromFile:)`
+    /// puede transmitir archivos grandes sin crear otro `Data` gigante.
+    private static func crearArchivoMultipart(
+        sourceURL: URL,
+        filename: String,
+        mimeType: String,
+        boundary: String
+    ) throws -> URL {
+        let safeName = nombreMultipartSeguro(filename)
+        let safeMime = mimeType.unicodeScalars.allSatisfy {
+            $0.value >= 32 && $0.value != 127 && $0 != "\r" && $0 != "\n"
+        } ? mimeType : "application/octet-stream"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("edecan-upload-\(UUID().uuidString)")
+            .appendingPathExtension("multipart")
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw APIError.respuestaInvalida
+        }
+
+        do {
+            let input = try FileHandle(forReadingFrom: sourceURL)
+            let output = try FileHandle(forWritingTo: destination)
+            defer {
+                try? input.close()
+                try? output.close()
+            }
+            let header = "--\(boundary)\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n"
+                + "Content-Type: \(safeMime)\r\n\r\n"
+            try output.write(contentsOf: Data(header.utf8))
+            while let chunk = try input.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+            try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    private static func nombreMultipartSeguro(_ raw: String) -> String {
+        let last = raw.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/").last.map(String.init) ?? "archivo"
+        let clean = last.unicodeScalars.filter {
+            $0.value >= 32 && $0.value != 127 && $0 != "\"" && $0 != "\\"
+        }
+        let value = String(String.UnicodeScalarView(clean)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "archivo" : String(value.prefix(180))
+    }
 
     /// `POST /v1/voice/transcribe` — `multipart/form-data` a mano (sin
     /// dependencias externas): un campo de archivo `audio` + un campo de

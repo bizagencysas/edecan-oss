@@ -1,6 +1,6 @@
 [project]
 name = "edecan-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "Tenant-isolated bring-your-own Model Context Protocol integration for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

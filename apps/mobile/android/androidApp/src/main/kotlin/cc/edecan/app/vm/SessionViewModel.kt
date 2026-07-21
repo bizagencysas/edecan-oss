@@ -38,6 +38,9 @@ data class SessionUiState(
     val cargandoMe: Boolean = false,
     val iniciandoSesion: Boolean = false,
     val errorMensaje: String? = null,
+    /** Cambia para cada identidad autenticada y al invalidar/cerrar sesión.
+     * App lo usa como frontera del ViewModelStore sensible. */
+    val sessionGeneration: Long = 0,
 )
 
 /**
@@ -124,7 +127,14 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 emparejarDispositivo(apiActual)
                 if (sessionRequestEpoch.get() != requestEpoch) return@launch
-                _uiState.update { it.copy(iniciandoSesion = false, isPaired = true) }
+                _uiState.update {
+                    it.copy(
+                        iniciandoSesion = false,
+                        isPaired = true,
+                        me = null,
+                        sessionGeneration = it.sessionGeneration + 1,
+                    )
+                }
                 cargarMe()
             } catch (e: ApiException) {
                 if (sessionRequestEpoch.get() == requestEpoch) {
@@ -154,7 +164,14 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 if (sessionRequestEpoch.get() != requestEpoch) return@launch
                 emparejarDispositivo(apiActual)
                 if (sessionRequestEpoch.get() != requestEpoch) return@launch
-                _uiState.update { it.copy(iniciandoSesion = false, isPaired = true) }
+                _uiState.update {
+                    it.copy(
+                        iniciandoSesion = false,
+                        isPaired = true,
+                        me = null,
+                        sessionGeneration = it.sessionGeneration + 1,
+                    )
+                }
                 cargarMe()
             } catch (e: ApiException) {
                 if (sessionRequestEpoch.get() == requestEpoch) {
@@ -207,6 +224,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 paso = PasoOnboarding.SESION,
                 modoSesion = ModoSesion.INICIAR,
                 errorMensaje = mensaje,
+                sessionGeneration = it.sessionGeneration + 1,
             )
         }
     }
@@ -228,6 +246,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 paso = PasoOnboarding.SESION,
                 modoSesion = ModoSesion.INICIAR,
                 errorMensaje = null,
+                sessionGeneration = it.sessionGeneration + 1,
             )
         }
         viewModelScope.launch {

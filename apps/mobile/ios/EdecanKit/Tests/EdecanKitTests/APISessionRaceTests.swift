@@ -4,6 +4,82 @@ import Testing
 
 @Suite(.serialized)
 struct APISessionRaceTests {
+    @Test func subidaDeArchivoUsaMultipartAutenticadoYDevuelveUUID() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-upload", refresh: "refresh-upload")
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/files")
+            #expect(request.httpMethod == "POST")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-upload")
+            #expect(request.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("multipart/form-data; boundary=Edecan-File-") == true)
+            return (201, Data("""
+            {"id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"brief.pdf","mime":"application/pdf","size_bytes":4,"status":"uploaded","created_at":"2026-07-01T10:00:00Z"}
+            """.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("edecan-upload-test-\(UUID().uuidString).pdf")
+        try Data("test".utf8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let result = try await api.subirArchivo(desde: source, filename: "brief.pdf", mimeType: "application/pdf")
+
+        #expect(result.id == "018f7f4c-07f4-7ed0-93c8-cf0525d1092b")
+        #expect(result.filename == "brief.pdf")
+    }
+
+    @Test func archivoMayorA25MBSeRechazaAntesDeMultipartYRed() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-upload", refresh: "refresh-upload")
+        let session = stubSession { _ in
+            Issue.record("Un archivo fuera de política no debía tocar la red")
+            return (500, Data())
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("edecan-oversize-\(UUID().uuidString).bin")
+        #expect(FileManager.default.createFile(atPath: source.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.truncate(atOffset: UInt64(FileUploadPolicy.maximumBytes + 1))
+        try handle.close()
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        do {
+            _ = try await api.subirArchivo(desde: source, filename: "grande.bin")
+            Issue.record("Debía rechazar el archivo antes del multipart")
+        } catch let error as FileUploadPolicy.ValidationError {
+            #expect(error == .tooLarge(
+                actualBytes: FileUploadPolicy.maximumBytes + 1,
+                maximumBytes: FileUploadPolicy.maximumBytes
+            ))
+        }
+    }
+
+    @Test func obtieneDetalleDeConversacionConRutaAutenticada() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-chat", refresh: "refresh-chat")
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/conversations/conversation-1")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-chat")
+            return (200, Data("""
+            {"id":"conversation-1","title":null,"channel":"web","created_at":"2026-07-01T10:00:00Z","messages":[]}
+            """.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        let detail = try await api.obtenerConversacion(id: "conversation-1")
+
+        #expect(detail.id == "conversation-1")
+        #expect(detail.messages.isEmpty)
+    }
+
     @Test func descargaArtefactoUsaRutaPrivadaYBearerSinRedReal() async throws {
         let tokens = LockedAuthTokenStore(access: "access-privado", refresh: "refresh-privado")
         let bytes = Data("contenido-pdf-sintetico".utf8)

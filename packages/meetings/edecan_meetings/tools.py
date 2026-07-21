@@ -87,9 +87,7 @@ async def _cargar_fila_archivo(ctx: ToolContext, file_id: uuid.UUID) -> dict[str
     `edecan_docanalysis._s3._get_file_row` (no importado, ver docstring del
     módulo)."""
     resultado = await ctx.session.execute(
-        sql_text(
-            "SELECT id, filename, mime FROM files WHERE tenant_id = :tenant_id AND id = :id"
-        ),
+        sql_text("SELECT id, filename, mime FROM files WHERE tenant_id = :tenant_id AND id = :id"),
         {"tenant_id": str(ctx.tenant_id), "id": str(file_id)},
     )
     fila = resultado.mappings().first()
@@ -159,7 +157,12 @@ class ResumirReunionTool(Tool):
                 f"Encolé la transcripción y minutas de '{titulo}' — te avisaré cuando esté "
                 f"lista (también la puedes ver en /app/reuniones). {DISCLAIMER_CONSENTIMIENTO}"
             ),
-            data={"file_id": str(file_id), "titulo": titulo},
+            data={
+                "file_id": str(file_id),
+                "filename": archivo["filename"],
+                "mime": archivo.get("mime"),
+                "titulo": titulo,
+            },
         )
 
 

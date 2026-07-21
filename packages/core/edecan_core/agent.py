@@ -22,9 +22,12 @@ from uuid import UUID
 from edecan_schemas import (
     AgentEvent,
     ArtifactRef,
+    ChatBlock,
+    ChatBlockAdapter,
     ConfirmationRequiredEvent,
     DoneEvent,
     ErrorEvent,
+    MediaBlock,
     PendingAgentTurn,
     PendingChatMessage,
     PendingToolCall,
@@ -53,7 +56,7 @@ _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
 
 
-def _artifact_refs(data: Any) -> list[ArtifactRef]:
+def artifact_refs_from_tool_data(data: Any) -> list[ArtifactRef]:
     """Extrae solo referencias de archivo seguras de ``ToolResult.data``.
 
     Los datos arbitrarios de una herramienta pueden contener IDs internos o
@@ -97,6 +100,96 @@ def _artifact_refs(data: Any) -> list[ArtifactRef]:
         refs.append(ref)
         seen.add(file_id)
     return refs
+
+
+def rich_blocks_from_tool_data(
+    data: Any,
+    *,
+    presentation: list[dict[str, Any]] | None = None,
+    artifacts: list[ArtifactRef] | None = None,
+) -> list[ChatBlock]:
+    """Proyecta datos de tool a bloques ricos estrictamente allowlisted.
+
+    Nunca reenvía ``data`` arbitrario. Los bloques explícitos pasan por los
+    modelos discriminados de ``edecan_schemas``; un bloque de media solo puede
+    apuntar a un artefacto que la misma tool entregó. Imágenes, video y audio
+    también se enriquecen automáticamente desde su MIME para que cualquier tool
+    existente obtenga preview sin conocer detalles de web/iOS/Android.
+    """
+
+    data_map = data if isinstance(data, dict) else {}
+    safe_artifacts = artifacts if artifacts is not None else artifact_refs_from_tool_data(data_map)
+    allowed_file_ids = {item.file_id for item in safe_artifacts}
+    blocks: list[ChatBlock] = []
+    seen: set[str] = set()
+
+    # Solo el canal deliberado ``ToolResult.presentation`` puede acuñar UI.
+    # ``data`` puede venir de MCPs o conectores de terceros y jamás se confía.
+    raw_blocks = presentation
+    if isinstance(raw_blocks, list):
+        for raw in raw_blocks[:30]:
+            try:
+                block = ChatBlockAdapter.validate_python(raw)
+            except ValueError:
+                continue
+            if isinstance(block, MediaBlock) and block.artifact.file_id not in allowed_file_ids:
+                continue
+            key = block.model_dump_json()
+            if key not in seen:
+                blocks.append(block)
+                seen.add(key)
+
+    explicit_media_ids = {
+        block.artifact.file_id for block in blocks if isinstance(block, MediaBlock)
+    }
+    metadata: dict[UUID, dict[str, Any]] = {}
+    root_file_id = data_map.get("file_id") or data_map.get("id")
+    if root_file_id:
+        try:
+            metadata[UUID(str(root_file_id))] = data_map
+        except (TypeError, ValueError, AttributeError):
+            pass
+    for key in ("artifacts", "files"):
+        candidates = data_map.get(key)
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates[:20]:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                metadata[UUID(str(candidate.get("file_id") or candidate.get("id")))] = candidate
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+    for artifact in safe_artifacts:
+        if artifact.file_id in explicit_media_ids:
+            continue
+        mime = (artifact.mime or "").lower()
+        media_kind = next(
+            (kind for kind in ("image", "video", "audio") if mime.startswith(f"{kind}/")),
+            None,
+        )
+        if media_kind is None:
+            continue
+        extra = metadata.get(artifact.file_id, {})
+        alt = str(extra.get("alt") or extra.get("alt_text") or "")[:1000]
+        caption_raw = extra.get("caption")
+        caption = str(caption_raw)[:500] if caption_raw else None
+        block = MediaBlock(
+            media_kind=media_kind,
+            artifact=artifact,
+            alt=alt,
+            caption=caption,
+        )
+        key = block.model_dump_json()
+        if key not in seen:
+            blocks.append(block)
+            seen.add(key)
+    return blocks[:30]
+
+
+# Alias interno conservado para no romper imports/tests históricos.
+_artifact_refs = artifact_refs_from_tool_data
 
 
 class PendingTurnValidationError(RuntimeError):
@@ -306,16 +399,12 @@ class Agent:
         spec_by_name = {spec.name: spec for spec in _extra_specs(extra_by_name)}
         spec_by_name.update({spec.name: spec for spec in base_specs})
         tool_specs = [
-            spec_by_name[name]
-            for name in pending.operational_tool_names
-            if name in spec_by_name
+            spec_by_name[name] for name in pending.operational_tool_names if name in spec_by_name
         ]
         current_operational_names = {spec.name for spec in tool_specs}
         resolved_calls = self._resolve_calls(
             pending.tool_calls,
-            operational_names=(
-                set(pending.operational_tool_names) & current_operational_names
-            ),
+            operational_names=(set(pending.operational_tool_names) & current_operational_names),
             extra_by_name=extra_by_name,
             flags=flags,
         )
@@ -498,12 +587,17 @@ class Agent:
         for call, tool in resolved_calls:
             if tool is None:
                 logger.warning("El modelo pidió una herramienta desconocida: %r", call.name)
-                yield None, _tool_result_block(
-                    call.id, f"Error: herramienta desconocida '{call.name}'"
+                yield (
+                    None,
+                    _tool_result_block(call.id, f"Error: herramienta desconocida '{call.name}'"),
                 )
                 continue
 
-            start = ToolStartEvent(name=call.name, args=call.arguments)
+            start = ToolStartEvent(
+                tool_call_id=call.id,
+                name=call.name,
+                args=call.arguments,
+            )
             tool_log.append(start.model_dump())
             yield start, None
             try:
@@ -511,10 +605,17 @@ class Agent:
             except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
                 logger.warning("La herramienta %r lanzó una excepción", call.name, exc_info=True)
                 result = ToolResult(content=f"Error: {redact(str(exc))}")
+            artifacts = artifact_refs_from_tool_data(result.data)
             end = ToolEndEvent(
+                tool_call_id=call.id,
                 name=call.name,
                 result_preview=result.content[:_RESULT_PREVIEW_LEN],
-                artifacts=_artifact_refs(result.data),
+                artifacts=artifacts,
+                blocks=rich_blocks_from_tool_data(
+                    result.data,
+                    presentation=result.presentation,
+                    artifacts=artifacts,
+                ),
             )
             tool_log.append(end.model_dump())
             yield end, _tool_result_block(call.id, result.content)

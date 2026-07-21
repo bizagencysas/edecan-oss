@@ -2,18 +2,11 @@
 
 import { CheckIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
-import type { ArtifactRef } from "@/lib/types";
+import type { ToolTimelineEntry } from "@/lib/chat-blocks";
 
 import { ArtifactLinks } from "./ArtifactLinks";
 
-export interface ToolEvent {
-  callKey: string;
-  name: string;
-  args: Record<string, unknown>;
-  status: "running" | "done";
-  resultPreview?: string;
-  artifacts?: ArtifactRef[];
-}
+export type ToolEvent = ToolTimelineEntry;
 
 /** Traza visual de las herramientas que el agente fue llamando durante el turno (§10.7). */
 export function ToolTimeline({ events }: { events: ToolEvent[] }) {

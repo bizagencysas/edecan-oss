@@ -47,6 +47,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.SessionViewModel
+import cc.edecan.app.vm.ChatViewModel
 import cc.edecan.app.vm.VozUiState
 import cc.edecan.app.vm.VozViewModel
 
@@ -61,10 +62,12 @@ import cc.edecan.app.vm.VozViewModel
 @Composable
 fun VozScreen(
     sessionViewModel: SessionViewModel = viewModel(),
+    chatViewModel: ChatViewModel = viewModel(),
     vozViewModel: VozViewModel = viewModel(),
     onVolver: () -> Unit = {},
 ) {
     val uiState by vozViewModel.uiState.collectAsState()
+    val chatState by chatViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
     val contexto = LocalContext.current
 
@@ -80,6 +83,13 @@ fun VozScreen(
         }
 
     LaunchedEffect(api) { api?.let { vozViewModel.verificarVozConectada(it) } }
+    LaunchedEffect(chatState.conversationId) { vozViewModel.usarConversacion(chatState.conversationId) }
+
+    val volverAlChat = {
+        val conversationId = uiState.conversationId
+        if (api != null && conversationId != null) chatViewModel.abrirConversacion(conversationId, api)
+        onVolver()
+    }
 
     Scaffold(
         topBar = {
@@ -87,7 +97,7 @@ fun VozScreen(
                 title = { Text("Hablar con Edecán") },
                 navigationIcon = {
                     IconButton(
-                        onClick = onVolver,
+                        onClick = volverAlChat,
                         modifier = Modifier.semantics { contentDescription = "Volver a Edecán" },
                     ) {
                         Text("←", style = MaterialTheme.typography.titleLarge)
@@ -100,15 +110,19 @@ fun VozScreen(
             modifier = Modifier.padding(padding).fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (uiState.vozNoConectada) {
+            if (uiState.sttDelDispositivo || uiState.ttsDelDispositivo) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 ) {
                     Text(
-                        "No conectaste un proveedor de voz propio: vas a escuchar solo silencio y la " +
-                            "transcripción va a ser siempre el mismo texto de prueba, sin reconocimiento " +
-                            "real. Conéctalo desde Ajustes.",
+                        buildString {
+                            append("Voz lista sin claves: ")
+                            if (uiState.sttDelDispositivo) append("Android reconocerá lo que digas")
+                            if (uiState.sttDelDispositivo && uiState.ttsDelDispositivo) append(" y ")
+                            if (uiState.ttsDelDispositivo) append("leerá las respuestas en voz alta")
+                            append(". Puedes conectar tus proveedores en Tú cuando quieras.")
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(12.dp),
                     )
@@ -139,7 +153,7 @@ fun VozScreen(
                     uiState.confirmacionPendiente == null,
                 permisoConcedido = permisoConcedido,
                 onPedirPermiso = { lanzadorPermiso.launch(Manifest.permission.RECORD_AUDIO) },
-                onIniciar = { vozViewModel.iniciarGrabacion() },
+                onIniciar = { api?.let { vozViewModel.iniciarGrabacion(it) } },
                 onDetener = { api?.let { vozViewModel.detenerYEnviar(it) } },
                 onCancelar = { vozViewModel.cancelarGrabacion() },
             )

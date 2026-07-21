@@ -150,7 +150,6 @@ jobs:
             rpm \
             wget \
             wmctrl \
-            xdotool \
             xvfb
 
       - name: Set up Node.js

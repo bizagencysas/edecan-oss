@@ -67,7 +67,7 @@ sudo apt-get install --yes \
   build-essential curl file gstreamer1.0-libav gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good libasound2-dev libayatana-appindicator3-dev \
   libfuse2 librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf pkg-config \
-  openbox rpm wget wmctrl xdotool xvfb dbus-x11
+  openbox rpm wget wmctrl xvfb dbus-x11
 ```
 
 `libfuse2` permite ejecutar AppImage en varias distribuciones. Los paquetes

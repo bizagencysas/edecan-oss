@@ -746,7 +746,7 @@ fn clear_loop_handle(app: &AppHandle) {
     *runtime.loop_handle.lock().unwrap() = None;
 }
 
-fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, String> {
+fn wake_detector_config(sample_rate: u32) -> RustpotterConfig {
     let mut config = RustpotterConfig::default();
     // Solo `sample_rate`/`channels` importan para el camino
     // `process_samples::<i16>` (`AudioEncoder::rencode_and_resample`, ver
@@ -755,7 +755,22 @@ fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, S
     // este módulo no usa), así que se dejan en su default.
     config.fmt.sample_rate = sample_rate as usize;
     config.fmt.channels = 1;
+    // Las referencias personales se entrenan con pocas muestras y el nivel
+    // del micrófono cambia entre una MacBook, un headset y un micrófono USB.
+    // La configuración por defecto del crate prioriza evitar falsos positivos
+    // sobre reconocer voces reales. Estos valores siguen siendo conservadores,
+    // pero evitan que el producto parezca sordo con una referencia válida.
+    config.detector.threshold = 0.42;
+    config.detector.avg_threshold = 0.15;
+    config.detector.min_scores = 3;
+    config.detector.eager = true;
+    config.filters.gain_normalizer.enabled = true;
+    config.filters.gain_normalizer.max_gain = 2.5;
+    config
+}
 
+fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, String> {
+    let config = wake_detector_config(sample_rate);
     let mut rustpotter = Rustpotter::new(&config)?;
     let model_path_str = model_path
         .to_str()
@@ -880,6 +895,19 @@ mod tests {
         assert!(validate_wake_label("   ".to_string()).is_err());
         assert!(validate_wake_label("hola\nEdecán".to_string()).is_err());
         assert!(validate_wake_label("x".repeat(MAX_WAKE_LABEL_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn personal_wake_detector_is_voice_friendly_without_being_unbounded() {
+        let config = wake_detector_config(48_000);
+        assert_eq!(config.fmt.sample_rate, 48_000);
+        assert_eq!(config.fmt.channels, 1);
+        assert_eq!(config.detector.threshold, 0.42);
+        assert_eq!(config.detector.avg_threshold, 0.15);
+        assert_eq!(config.detector.min_scores, 3);
+        assert!(config.detector.eager);
+        assert!(config.filters.gain_normalizer.enabled);
+        assert_eq!(config.filters.gain_normalizer.max_gain, 2.5);
     }
 
     #[test]

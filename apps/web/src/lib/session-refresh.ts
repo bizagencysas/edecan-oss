@@ -117,7 +117,7 @@ export function refreshSessionWithTotpPrompt(
       return { ok: false, reason: "cancelled" };
     }
     const code = window.prompt(
-      "Tu sesión expiró. Ingresá tu código de verificación en dos pasos (2FA) para continuar:",
+      "Tu sesión expiró. Ingresa tu código de verificación en dos pasos (2FA) para continuar:",
     );
     if (!code?.trim()) {
       return { ok: false, reason: "cancelled" };
@@ -154,9 +154,7 @@ export function isRefreshResultCurrent(
 }
 
 /**
- * Refresh tokens deliberately remain in per-tab `sessionStorage`. Sharing a
- * rotated refresh credential over BroadcastChannel would widen its exposure
- * to every same-origin browsing context, so cross-tab token transfer is not
- * attempted here. Concurrent requests inside a tab are coordinated safely;
- * a duplicated tab may need to authenticate again after either copy rotates.
+ * En navegador, el refresh token permanece en `sessionStorage`. La app Tauri
+ * conserva solo ese token entre aperturas; el access token sigue siendo
+ * efímero y cada rotación mantiene las defensas contra respuestas tardías.
  */

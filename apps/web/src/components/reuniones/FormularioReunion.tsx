@@ -52,7 +52,7 @@ export function FormularioReunion({ onCreated }: { onCreated: (r: ReunionOut) =>
   async function enviar(e: React.FormEvent) {
     e.preventDefault();
     if (!fileId) {
-      setError("Elegí un audio o video ya subido.");
+      setError("Elige un audio o video ya subido.");
       return;
     }
     setEnviando(true);
@@ -79,7 +79,7 @@ export function FormularioReunion({ onCreated }: { onCreated: (r: ReunionOut) =>
           <a href="/app/archivos" className="font-medium underline">
             /app/archivos
           </a>{" "}
-          y volvé acá.
+          y vuelve aquí.
         </Alert>
       ) : (
         <Field label="Audio o video de la reunión" htmlFor="reunion-archivo">
@@ -89,7 +89,7 @@ export function FormularioReunion({ onCreated }: { onCreated: (r: ReunionOut) =>
             onChange={(e) => setFileId(e.target.value)}
             disabled={loadingArchivos}
           >
-            <option value="">{loadingArchivos ? "Cargando archivos…" : "Elegí un archivo…"}</option>
+            <option value="">{loadingArchivos ? "Cargando archivos…" : "Elige un archivo…"}</option>
             {archivos.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.filename} · {formatDateTime(f.created_at)}

@@ -34,9 +34,9 @@ export function EscuchaSiempreTab() {
   if (!isTauriApp()) {
     return (
       <Alert variant="info">
-        «Escucha siempre» en segundo plano -- que te escuche sin tener la app abierta ni hacer click
+        «Escucha siempre» en segundo plano -- que te escuche sin tener la app abierta ni hacer clic
         en nada -- solo está disponible en la app de escritorio de Edecán, no en el navegador ni en
-        el modo hosted. Descargá la app de escritorio para entrenar tu palabra clave y activarla.
+        el modo alojado. Descarga la app de escritorio para entrenar tu palabra clave y activarla.
       </Alert>
     );
   }
@@ -153,8 +153,8 @@ function EscuchaSiempreTabNativa() {
       <div className="mb-6">
         <Card>
           <CardHeader
-            title="Entrená tu palabra clave"
-            description="Grabá 3 muestras cortas diciendo la frase de activación con tu propia voz -- así el detector nativo aprende a reconocerte a vos, no a cualquiera."
+            title="Entrena tu palabra clave"
+            description="Graba 3 muestras cortas diciendo la frase de activación con tu propia voz; así Edecán aprende a reconocerte a ti, no a cualquier persona."
           />
           <CardBody>
             {loading ? (
@@ -185,7 +185,7 @@ function EscuchaSiempreTabNativa() {
                   {personalizado && (
                     <Input
                       className="mt-2"
-                      placeholder="Escribí tu frase de activación"
+                      placeholder="Escribe tu frase de activación"
                       defaultValue={
                         WAKE_WORD_PRESETS.includes(wakeWord as (typeof WAKE_WORD_PRESETS)[number]) ? "" : wakeWord
                       }
@@ -197,7 +197,7 @@ function EscuchaSiempreTabNativa() {
                   )}
                   {trained && (
                     <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                      Ya entrenaste con «{state?.wake_label}». Para cambiar de palabra clave, reiniciá
+                      Ya entrenaste con «{state?.wake_label}». Para cambiar de palabra clave, reinicia
                       el entrenamiento primero.
                     </p>
                   )}
@@ -214,7 +214,7 @@ function EscuchaSiempreTabNativa() {
                       onClick={() => void handleGrabar(index)}
                     >
                       {grabandoIndex === index
-                        ? "Grabando… decí la palabra clave"
+                        ? "Grabando… di la palabra clave"
                         : index < samplesRecorded
                           ? `Muestra ${index + 1} lista`
                           : `Grabar muestra ${index + 1}`}
@@ -257,8 +257,8 @@ function EscuchaSiempreTabNativa() {
           <div className="mt-4">
             <Alert variant="info">
               Al activarlo: cerrar la ventana la minimiza a la bandeja del sistema en vez de cerrar el
-              programa -- usá «Salir» desde el ícono de la bandeja para cerrar de verdad. El sistema
-              operativo te va a pedir permiso de micrófono una sola vez.
+              programa; usa «Salir» desde el ícono de la bandeja para cerrar por completo. El sistema
+              operativo te pedirá permiso de micrófono una sola vez.
             </Alert>
           </div>
 

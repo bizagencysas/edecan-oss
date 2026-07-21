@@ -1,5 +1,7 @@
 /**
- * Almacenamiento efímero de tokens JWT en el navegador (`sessionStorage`). Módulo
+ * Almacenamiento de tokens JWT. El access token siempre es efímero. En la app
+ * de escritorio, el refresh token persiste para restaurar la sesión al volver
+ * a abrir Edecán; en un navegador normal sigue limitado a `sessionStorage`.
  * separado de `api.ts` y `auth-context.tsx` para que ambos puedan leerlo sin
  * depender uno del otro (evita import circular entre el cliente HTTP, que
  * necesita el access token para cada request, y el contexto de React, que
@@ -25,48 +27,64 @@ export interface SessionSnapshot {
   refreshToken: string | null;
 }
 
-function hasStorage(): boolean {
+function hasSessionStorage(): boolean {
   return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
 }
 
-function removeLegacyPersistentTokens(): void {
-  if (typeof window === "undefined" || typeof window.localStorage === "undefined") return;
-  window.localStorage.removeItem(ACCESS_KEY);
-  window.localStorage.removeItem(REFRESH_KEY);
+function isDesktopApp(): boolean {
+  return typeof window !== "undefined" && "__TAURI__" in window;
+}
+
+function hasPersistentStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
 
 export function getAccessToken(): string | null {
-  if (!hasStorage()) return null;
-  removeLegacyPersistentTokens();
+  if (!hasSessionStorage()) return null;
   return window.sessionStorage.getItem(ACCESS_KEY);
 }
 
 export function getRefreshToken(): string | null {
-  if (!hasStorage()) return null;
-  removeLegacyPersistentTokens();
-  return window.sessionStorage.getItem(REFRESH_KEY);
+  if (!hasSessionStorage()) return null;
+  const ephemeral = window.sessionStorage.getItem(REFRESH_KEY);
+  if (!isDesktopApp() || !hasPersistentStorage()) return ephemeral;
+  const persistent = window.localStorage.getItem(REFRESH_KEY);
+  if (persistent) return persistent;
+  if (ephemeral) {
+    window.localStorage.setItem(REFRESH_KEY, ephemeral);
+    window.sessionStorage.removeItem(REFRESH_KEY);
+  }
+  return ephemeral;
 }
 
 export function setTokens(accessToken: string, refreshToken: string): void {
   sessionGeneration += 1;
-  if (!hasStorage()) return;
+  if (!hasSessionStorage()) return;
   window.sessionStorage.setItem(ACCESS_KEY, accessToken);
-  window.sessionStorage.setItem(REFRESH_KEY, refreshToken);
-  // Limpieza de upgrades: versiones anteriores persistían ambos secretos en
-  // localStorage, donde sobrevivían al cierre completo del navegador.
-  removeLegacyPersistentTokens();
+  if (isDesktopApp() && hasPersistentStorage()) {
+    window.localStorage.setItem(REFRESH_KEY, refreshToken);
+    window.sessionStorage.removeItem(REFRESH_KEY);
+  } else {
+    window.sessionStorage.setItem(REFRESH_KEY, refreshToken);
+    if (hasPersistentStorage()) window.localStorage.removeItem(REFRESH_KEY);
+  }
+  // El access token nunca sobrevive al cierre completo, ni siquiera en Tauri.
+  if (hasPersistentStorage()) window.localStorage.removeItem(ACCESS_KEY);
 }
 
 export function clearTokens(): void {
   sessionGeneration += 1;
-  if (!hasStorage()) return;
+  if (!hasSessionStorage()) return;
   window.sessionStorage.removeItem(ACCESS_KEY);
   window.sessionStorage.removeItem(REFRESH_KEY);
-  removeLegacyPersistentTokens();
+  if (hasPersistentStorage()) {
+    window.localStorage.removeItem(ACCESS_KEY);
+    window.localStorage.removeItem(REFRESH_KEY);
+  }
 }
 
 export function hasSession(): boolean {
-  return getAccessToken() !== null;
+  return getAccessToken() !== null || getRefreshToken() !== null;
 }
 
 export function getSessionSnapshot(): SessionSnapshot {

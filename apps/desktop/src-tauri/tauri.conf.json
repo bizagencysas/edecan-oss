@@ -13,7 +13,7 @@
       "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost",
       "headers": {
         "X-Content-Type-Options": "nosniff",
-        "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+        "Permissions-Policy": "camera=(), geolocation=(), microphone=(self), payment=(), usb=()"
       }
     }
   },
@@ -23,7 +23,7 @@
     "copyright": "Edecán — Apache-2.0 (núcleo). Ver ../../LICENSE y ../../NOTICE.",
     "category": "Productivity",
     "shortDescription": "Edecán — asistente personal de IA que corre en tu equipo",
-    "longDescription": "Edecán es un asistente personal de IA (\"mayordomo digital\") que corre localmente en tu equipo. Traés tus propias credenciales de LLM, voz y conectores — nada se ejecuta en servidores de terceros salvo lo que vos mismo configures en Ajustes.",
+    "longDescription": "Edecán es un asistente personal de IA (\"mayordomo digital\") que corre localmente en tu equipo. Puedes usar tus propias credenciales de LLM, voz y conectores; nada se ejecuta en servidores de terceros salvo lo que configures en Ajustes.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

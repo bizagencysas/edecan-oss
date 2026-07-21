@@ -31,7 +31,7 @@ export function DetalleReunion({ reunion }: { reunion: ReunionOut | null }) {
       <Card>
         <CardBody>
           <EmptyState
-            title="Elegí una reunión"
+            title="Elige una reunión"
             description="Seleccioná una reunión de la lista para ver su resumen y minutas."
           />
         </CardBody>

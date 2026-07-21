@@ -5,6 +5,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { speakText, transcribeAudio } from "@/lib/api";
 import { splitIntoSentences } from "@/lib/speech";
 import type { MessageOut } from "@/lib/types";
+import {
+  SPEECH_RECOGNITION_LOCALE,
+  transcriptContainsWakePhrase,
+} from "@/lib/wake-word-detection";
 import { WAKE_WORD_PRESETS } from "@/lib/wakeWords";
 
 import { ConfirmationCard } from "./ConfirmationCard";
@@ -43,15 +47,6 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
     webkitSpeechRecognition?: SpeechRecognitionCtor;
   };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
-
-function normalizar(texto: string): string {
-  return texto
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim();
 }
 
 const STORAGE_KEY = "edecan.always_listen.wake_word";
@@ -198,6 +193,8 @@ export function AlwaysListenMode({
     () => !WAKE_WORD_PRESETS.includes(cargarWakeWordGuardada() as (typeof WAKE_WORD_PRESETS)[number]),
   );
   const [mostrarAjustes, setMostrarAjustes] = useState(false);
+  const wakeWordRef = useRef(wakeWord);
+  wakeWordRef.current = wakeWord;
 
   const faseRef = useRef<Fase>(fase);
   faseRef.current = fase;
@@ -241,13 +238,12 @@ export function AlwaysListenMode({
     const reconocedor = new SpeechRecognitionCtor();
     reconocedor.continuous = true;
     reconocedor.interimResults = true;
-    reconocedor.lang = "es-ES";
-    const objetivo = normalizar(wakeWord);
+    reconocedor.lang = SPEECH_RECOGNITION_LOCALE;
 
     reconocedor.onresult = (evento) => {
       for (let i = evento.resultIndex; i < evento.results.length; i++) {
-        const transcripcion = normalizar(evento.results[i][0]?.transcript ?? "");
-        if (objetivo && transcripcion.includes(objetivo)) {
+        const transcripcion = evento.results[i][0]?.transcript ?? "";
+        if (transcriptContainsWakePhrase(transcripcion, wakeWordRef.current)) {
           reconocedor.abort();
           void iniciarCapturaDeComando();
           return;
@@ -475,11 +471,8 @@ export function AlwaysListenMode({
 
   function handleCambiarWakeWord(valor: string) {
     setWakeWord(valor);
-    guardarWakeWord(valor);
-    if (faseRef.current === "esperando_palabra_clave") {
-      reconocedorRef.current?.abort();
-      setTimeout(() => iniciarEsperaDePalabraClave(), 50);
-    }
+    wakeWordRef.current = valor;
+    if (valor.trim()) guardarWakeWord(valor.trim());
   }
 
   return (
@@ -528,11 +521,11 @@ export function AlwaysListenMode({
             <input
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm"
               placeholder="Escribe tu frase de activación"
-              defaultValue={
-                WAKE_WORD_PRESETS.includes(wakeWord as (typeof WAKE_WORD_PRESETS)[number]) ? "" : wakeWord
-              }
+              value={WAKE_WORD_PRESETS.includes(wakeWord as (typeof WAKE_WORD_PRESETS)[number]) ? "" : wakeWord}
+              onChange={(e) => handleCambiarWakeWord(e.target.value)}
               onBlur={(e) => {
-                if (e.target.value.trim()) handleCambiarWakeWord(e.target.value.trim());
+                const value = e.target.value.trim();
+                if (value) handleCambiarWakeWord(value);
               }}
             />
           )}
@@ -544,11 +537,11 @@ export function AlwaysListenMode({
       <div>
         <p className="text-lg font-medium text-white">{ETIQUETA_POR_FASE[fase]}</p>
         {fase === "esperando_palabra_clave" && (
-          <p className="mt-1 text-sm text-slate-400">Decí «{wakeWord}» para hablarme.</p>
+          <p className="mt-1 text-sm text-slate-400">Di «{wakeWord}» para hablar conmigo.</p>
         )}
         {fase === "sin_soporte" && (
           <p className="mt-1 max-w-sm text-sm text-slate-400">
-            Probá desde Chrome o Edge -- este navegador no expone reconocimiento de voz continuo.
+            Intenta desde Chrome o Edge; este navegador no ofrece reconocimiento de voz continuo.
           </p>
         )}
       </div>

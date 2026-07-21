@@ -110,11 +110,15 @@ async def get_by_slug(session: Any, tenant_id: UUID, slug: str) -> dict[str, Any
     """Una skill por `slug` exacto, en todo el tenant (ver docstring del módulo) — fila
     completa (incluye `contenido`). `None` si no existe."""
     row = (
-        await session.execute(
-            _sql("SELECT * FROM skills WHERE tenant_id = :tenant_id ::uuid AND slug = :slug"),
-            {"tenant_id": str(tenant_id), "slug": slug},
+        (
+            await session.execute(
+                _sql("SELECT * FROM skills WHERE tenant_id = :tenant_id ::uuid AND slug = :slug"),
+                {"tenant_id": str(tenant_id), "slug": slug},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     return dict(row) if row is not None else None
 
 
@@ -122,11 +126,17 @@ async def get_by_id(session: Any, tenant_id: UUID, skill_id: UUID) -> dict[str, 
     """Una skill por `id`, en todo el tenant (ver docstring del módulo) — fila completa
     (incluye `contenido`). `None` si no existe (o es de otro tenant)."""
     row = (
-        await session.execute(
-            _sql("SELECT * FROM skills WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid"),
-            {"tenant_id": str(tenant_id), "id": str(skill_id)},
+        (
+            await session.execute(
+                _sql(
+                    "SELECT * FROM skills WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid"
+                ),
+                {"tenant_id": str(tenant_id), "id": str(skill_id)},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     return dict(row) if row is not None else None
 
 
@@ -173,38 +183,44 @@ async def insert_skill(
     enabled = not escanear_inyeccion(contenido)
 
     row = (
-        await session.execute(
-            _sql(
-                "INSERT INTO skills "
-                "(tenant_id, user_id, nombre, slug, source, descripcion, version, contenido, "
-                "recursos, trust_tier, capabilities, enabled) "
-                "VALUES (:tenant_id ::uuid, :user_id ::uuid, :nombre, :slug, :source, "
-                ":descripcion, :version, :contenido, CAST(:recursos AS jsonb), :trust_tier, "
-                "CAST(:capabilities AS jsonb), :enabled) "
-                "ON CONFLICT (tenant_id, slug) DO UPDATE SET "
-                "contenido = EXCLUDED.contenido, version = EXCLUDED.version, "
-                "descripcion = EXCLUDED.descripcion, source = EXCLUDED.source, "
-                "trust_tier = EXCLUDED.trust_tier, capabilities = EXCLUDED.capabilities, "
-                "enabled = CASE WHEN EXCLUDED.enabled = false THEN false ELSE skills.enabled END, "
-                "updated_at = now() "
-                "RETURNING *"
-            ),
-            {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "nombre": nombre,
-                "slug": slug,
-                "source": source,
-                "descripcion": descripcion,
-                "version": version,
-                "contenido": contenido,
-                "recursos": json.dumps(recursos or {}),
-                "trust_tier": trust_tier,
-                "capabilities": json.dumps(list(capabilities or [])),
-                "enabled": enabled,
-            },
+        (
+            await session.execute(
+                _sql(
+                    "INSERT INTO skills "
+                    "(tenant_id, user_id, nombre, slug, source, descripcion, version, contenido, "
+                    "recursos, trust_tier, capabilities, enabled) "
+                    "VALUES (:tenant_id ::uuid, :user_id ::uuid, :nombre, :slug, :source, "
+                    ":descripcion, :version, :contenido, CAST(:recursos AS jsonb), :trust_tier, "
+                    "CAST(:capabilities AS jsonb), :enabled) "
+                    "ON CONFLICT (tenant_id, slug) DO UPDATE SET "
+                    "contenido = EXCLUDED.contenido, version = EXCLUDED.version, "
+                    "descripcion = EXCLUDED.descripcion, source = EXCLUDED.source, "
+                    "recursos = EXCLUDED.recursos, trust_tier = EXCLUDED.trust_tier, "
+                    "capabilities = EXCLUDED.capabilities, "
+                    "enabled = CASE WHEN EXCLUDED.enabled = false THEN false "
+                    "ELSE skills.enabled END, "
+                    "updated_at = now() "
+                    "RETURNING *"
+                ),
+                {
+                    "tenant_id": str(tenant_id),
+                    "user_id": str(user_id),
+                    "nombre": nombre,
+                    "slug": slug,
+                    "source": source,
+                    "descripcion": descripcion,
+                    "version": version,
+                    "contenido": contenido,
+                    "recursos": json.dumps(recursos or {}),
+                    "trust_tier": trust_tier,
+                    "capabilities": json.dumps(list(capabilities or [])),
+                    "enabled": enabled,
+                },
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     await session.flush()
     if row is None:  # defensivo: no debería pasar nunca (INSERT/UPDATE con RETURNING).
         raise RuntimeError("No se pudo instalar la skill (fila no devuelta por Postgres).")
@@ -216,14 +232,18 @@ async def set_enabled(
 ) -> dict[str, Any] | None:
     """Activa/desactiva una skill instalada. `None` si no existe (o es de otro tenant)."""
     row = (
-        await session.execute(
-            _sql(
-                "UPDATE skills SET enabled = :enabled, updated_at = now() "
-                "WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid RETURNING *"
-            ),
-            {"enabled": enabled, "tenant_id": str(tenant_id), "id": str(skill_id)},
+        (
+            await session.execute(
+                _sql(
+                    "UPDATE skills SET enabled = :enabled, updated_at = now() "
+                    "WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid RETURNING *"
+                ),
+                {"enabled": enabled, "tenant_id": str(tenant_id), "id": str(skill_id)},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     await session.flush()
     return dict(row) if row is not None else None
 
@@ -232,13 +252,17 @@ async def delete_skill(session: Any, tenant_id: UUID, skill_id: UUID) -> bool:
     """Desinstala (borra) una skill. `True` si había una fila y se borró; `False` si no
     existía (o era de otro tenant) — el llamador HTTP lo traduce a 404 en ese caso."""
     row = (
-        await session.execute(
-            _sql(
-                "DELETE FROM skills WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid "
-                "RETURNING id"
-            ),
-            {"tenant_id": str(tenant_id), "id": str(skill_id)},
+        (
+            await session.execute(
+                _sql(
+                    "DELETE FROM skills WHERE tenant_id = :tenant_id ::uuid AND id = :id ::uuid "
+                    "RETURNING id"
+                ),
+                {"tenant_id": str(tenant_id), "id": str(skill_id)},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     await session.flush()
     return row is not None

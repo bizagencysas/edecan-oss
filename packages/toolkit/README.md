@@ -10,7 +10,7 @@ una implementa el contrato `Tool` de `edecan_core` (§10.7): `name`,
 point que consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`,
 declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## Las 17 herramientas (nombres exactos, pinned en `ARCHITECTURE.md` §10.14)
+## Herramientas principales
 
 | Módulo | Tools |
 |---|---|
@@ -23,6 +23,8 @@ declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 | `research.py` | `buscar_web` |
 | `contenido.py` | `generar_contenido`, `publicar_social` (dangerous, flag `connectors.social`) |
 | `computadora.py` | `usar_computadora` (dangerous, flag `companion`) |
+| `codigo_local.py` | `acceder_codigo_local` (dangerous, solo modo local) |
+| `autorreparacion.py` | diagnóstico + reparación Git aislada (dangerous para cambios) |
 | `utilidades.py` | `hora_actual`, `calculadora` |
 
 `_conectores.py` y `_util.py` son helpers privados compartidos (no forman

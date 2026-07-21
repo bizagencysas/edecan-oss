@@ -20,9 +20,9 @@ export function ChatComposer({
   onChange: (value: string) => void;
   onSend: () => void;
   sending: boolean;
-  /** Puede grabar AHORA (flag `voice.web` del plan Y el navegador soporta MediaRecorder). */
+  /** Puede grabar ahora: la voz está configurada y el navegador soporta MediaRecorder. */
   canVoice: boolean;
-  /** Flag `voice.web` del plan, independiente de si el navegador soporta grabar — para el tooltip. */
+  /** La instalación tiene voz web habilitada, independiente del soporte del navegador. */
   voiceFlagEnabled: boolean;
   recording: boolean;
   transcribing: boolean;
@@ -36,7 +36,7 @@ export function ChatComposer({
   }
 
   const voiceTitle = !voiceFlagEnabled
-    ? "Tu plan no incluye voz web — mejora tu plan en Facturación para activarla."
+    ? "La voz aún no está configurada en esta instalación. Puedes activarla en Ajustes."
     : !canVoice
       ? "Tu navegador no soporta grabación de audio."
       : recording
@@ -57,7 +57,7 @@ export function ChatComposer({
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           rows={2}
-          placeholder="Escribe un mensaje… (Enter para enviar, Shift+Enter para salto de línea)"
+          placeholder="Pídele cualquier cosa a Edecan…"
           className="flex-1 resize-none"
           disabled={sending}
         />

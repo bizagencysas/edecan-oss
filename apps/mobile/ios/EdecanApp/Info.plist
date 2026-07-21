@@ -23,7 +23,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Edecán necesita el micrófono para el modo de voz — mantén presionado el botón de la pestaña Voz para hablar con el asistente (ver docs/movil-ios.md).</string>
+	<string>Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

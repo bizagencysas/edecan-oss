@@ -42,6 +42,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.edecan.app.ui.components.EmptyState
@@ -52,7 +54,7 @@ import cc.edecan.app.vm.MensajeUi
 import cc.edecan.app.vm.SessionViewModel
 
 /**
- * Pestaña "Chat" — funcional: lista de mensajes, input, envío hacia
+ * Superficie principal "Edecan" — lista de mensajes, input y envío hacia
  * `POST /v1/conversations/{id}/messages` (SSE) apendeando `text_delta` a
  * medida que llega, más un indicador mientras el agente usa una
  * herramienta (`tool_start`/`tool_end`). Lógica real en [ChatViewModel];
@@ -63,6 +65,7 @@ import cc.edecan.app.vm.SessionViewModel
 fun ChatScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     chatViewModel: ChatViewModel = viewModel(),
+    onOpenVoice: () -> Unit = {},
 ) {
     val sessionState by sessionViewModel.uiState.collectAsState()
     val chatState by chatViewModel.uiState.collectAsState()
@@ -73,7 +76,21 @@ fun ChatScreen(
         if (chatState.mensajes.isNotEmpty()) listState.animateScrollToItem(chatState.mensajes.lastIndex)
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Chat") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Edecán") },
+                actions = {
+                    IconButton(
+                        onClick = onOpenVoice,
+                        modifier = Modifier.semantics { contentDescription = "Hablar con Edecán" },
+                    ) {
+                        Text("🎙️", style = MaterialTheme.typography.titleLarge)
+                    }
+                },
+            )
+        },
+    ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Box(modifier = Modifier.weight(1f)) {
                 if (chatState.mensajes.isEmpty()) {
@@ -165,13 +182,39 @@ private val ADVERTENCIAS_POR_HERRAMIENTA: Map<String, String> = mapOf(
         ),
 )
 
+/** Traduce contratos internos a la acción que la persona está autorizando.
+ * El fallback también elimina guiones bajos, así una tool nueva nunca obliga
+ * a entender nombres de API para tomar una decisión sensible. */
+private val ACCIONES_POR_HERRAMIENTA: Map<String, String> = mapOf(
+    "acceder_codigo_local" to "editar el código local de Edecán",
+    "ads_preparar_campana" to "preparar esta campaña publicitaria",
+    "casa_controlar" to "controlar este dispositivo de tu casa",
+    "configurar_credencial" to "guardar esta conexión privada",
+    "enviar_correo" to "enviar este correo",
+    "enviar_mensaje" to "enviar este mensaje",
+    "gestionar_autorreparacion_local" to "reparar el núcleo local de Edecán",
+    "gestionar_automatizacion" to "guardar esta automatización",
+    "instalar_skill" to "instalar esta capacidad de terceros",
+    "preparar_nomina" to "preparar esta nómina",
+    "preparar_orden" to "preparar esta orden simulada",
+    "preparar_pago" to "preparar este borrador de pago",
+    "preparar_reserva" to "preparar esta reserva",
+    "publicar_social" to "publicar este contenido",
+    "reparar_con_skill_local" to "reparar Edecán con esta capacidad local",
+    "usar_computadora" to "controlar tu computadora",
+    "vehiculo_controlar" to "controlar este vehículo",
+)
+
+private fun accionEnLenguajeClaro(nombre: String): String =
+    ACCIONES_POR_HERRAMIENTA[nombre] ?: nombre.replace('_', ' ')
+
 /** Tarjeta Aprobar/Rechazar de una herramienta `dangerous` pendiente
  * (evento SSE `confirmation_required`, `ARCHITECTURE.md` §10.7/§10.12) —
  * reemplaza el aviso de solo-texto del esqueleto v1: ahora el turno se
  * puede resolver in-app (`POST /v1/conversations/{id}/confirm`) sin
  * depender del panel web. */
 @Composable
-private fun TarjetaConfirmacion(
+internal fun TarjetaConfirmacion(
     pendiente: ConfirmacionPendiente,
     onAprobar: () -> Unit,
     onRechazar: () -> Unit,
@@ -183,7 +226,7 @@ private fun TarjetaConfirmacion(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                "Edecán quiere usar «${pendiente.nombre}»",
+                "Edecán necesita tu permiso para ${accionEnLenguajeClaro(pendiente.nombre)}",
                 style = MaterialTheme.typography.titleSmall,
             )
             advertenciaEspecifica?.let { advertencia ->
@@ -203,12 +246,12 @@ private fun TarjetaConfirmacion(
                 )
             }
             Row(modifier = Modifier.padding(top = 12.dp)) {
-                OutlinedButton(onClick = onRechazar) { Text("Rechazar") }
+                OutlinedButton(onClick = onRechazar) { Text("Cancelar") }
                 Spacer(modifier = Modifier.padding(start = 8.dp))
                 Button(
                     onClick = onAprobar,
                     colors = ButtonDefaults.buttonColors(containerColor = EdecanColors.Morado),
-                ) { Text("Aprobar") }
+                ) { Text("Permitir") }
             }
         }
     }
@@ -257,7 +300,7 @@ private fun IndicadorHerramienta(nombre: String) {
         CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
         Spacer(modifier = Modifier.padding(start = 8.dp))
         Text(
-            "Usando $nombre…",
+            "${accionEnLenguajeClaro(nombre).replaceFirstChar { it.uppercase() }}…",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -15,10 +15,10 @@ apps/mobile/ios/
 ├── project.yml          # fuente de verdad del proyecto Xcode (xcodegen)
 ├── EdecanKit/            # Swift Package: red/datos, sin UI (SPM local)
 │   ├── Sources/EdecanKit/{Models,NegociosModels,CredentialsModels,IDEModels,
-│   │                       DeviceModels,VoiceModels,RemoteModels,ConfirmacionFormato,
+│   │                       DeviceModels,VoiceModels,RemoteModels,ConfirmacionFormato,AssistantDestination,
 │   │                       APIClient,MultipartFormData,SSEClient,Keychain,
 │   │                       PairingStore}.swift
-│   └── Tests/EdecanKitTests/     # 89 tests (`swift test`)
+│   └── Tests/EdecanKitTests/     # 90 tests (`swift test`)
 ├── EdecanApp/             # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift        # login + registro
@@ -59,7 +59,7 @@ Mismo patrón que el dueño de Edecán ya usa en sus otros proyectos iOS:
 ## Verificar en local sin Xcode abierto
 
 ```bash
-cd EdecanKit && swift build && swift test    # capa de red/datos, 89 tests
+cd EdecanKit && swift build && swift test    # capa de red/datos, 90 tests
 cd ..
 xcodegen generate
 xcodebuild -project Edecan.xcodeproj -scheme EdecanApp -configuration Debug \

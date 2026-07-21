@@ -586,7 +586,7 @@ def test_skills_sin_flag_de_plan_router_y_tools_coinciden() -> None:
     assert ".flags.get(" not in fuente_router
 
     tools = edecan_skills.get_all_tools()
-    assert len(tools) == 5
+    assert len(tools) == 6
     for tool in tools:
         assert tool.requires_flags == frozenset()
 

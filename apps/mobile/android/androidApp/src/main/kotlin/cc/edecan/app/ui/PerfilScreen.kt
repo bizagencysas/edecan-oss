@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -44,7 +45,7 @@ import cc.edecan.app.vm.PerfilViewModel
 import cc.edecan.app.vm.SessionViewModel
 
 /**
- * Pestaña "Perfil". El encabezado (correo, tenant, plan), "Cerrar sesión" y
+ * Ajustes. El encabezado de cuenta, "Cerrar sesión" y
  * la sección "Conectar LLM" (`GET/PUT /v1/credentials`, `GET
  * /v1/setup/status` — "pegar y validar", `DIRECCION_ACTUAL.md`) son reales;
  * editar persona/tema/notificaciones sigue siendo placeholder. Mismo
@@ -55,14 +56,17 @@ import cc.edecan.app.vm.SessionViewModel
 fun PerfilScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     perfilViewModel: PerfilViewModel = viewModel(),
+    onAbrirIde: () -> Unit = {},
+    onAbrirNegocios: () -> Unit = {},
 ) {
     val uiState by sessionViewModel.uiState.collectAsState()
     val perfilState by perfilViewModel.uiState.collectAsState()
     var mostrarConfirmacionSalir by remember { mutableStateOf(false) }
+    var mostrarAvanzado by remember { mutableStateOf(false) }
 
     LaunchedEffect(sessionViewModel.api) { sessionViewModel.api?.let { perfilViewModel.cargar(it) } }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Perfil") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Ajustes") }) }) { padding ->
         // `verticalScroll` (no `LazyColumn`): esta pantalla no tiene ningún
         // componente Lazy en su árbol (Card/Column/OutlinedTextField/
         // FilterChip/EmptyState, todos "normales"), así que scrollear el
@@ -89,7 +93,7 @@ fun PerfilScreen(
                     if (me != null) {
                         Text(me.user.email, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${me.tenant.name} · plan ${me.tenant.planKey}",
+                            me.tenant.name,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -108,6 +112,28 @@ fun PerfilScreen(
                     }
                 },
             )
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                    TextButton(onClick = { mostrarAvanzado = !mostrarAvanzado }) {
+                        Text(if (mostrarAvanzado) "Ocultar modo avanzado" else "Mostrar modo avanzado")
+                    }
+                    if (mostrarAvanzado) {
+                        Text(
+                            "Herramientas especializadas que Edecan puede usar por ti.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Button(onClick = onAbrirIde, modifier = Modifier.weight(1f)) { Text("IDE") }
+                            Button(onClick = onAbrirNegocios, modifier = Modifier.weight(1f)) { Text("Negocios") }
+                        }
+                    }
+                }
+            }
 
             EmptyState(
                 emoji = "⚙️",

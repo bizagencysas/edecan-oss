@@ -1,7 +1,7 @@
 import SwiftUI
 import EdecanKit
 
-/// Pestaña "Perfil". Encabezado (correo, tenant, plan), estado de conexión
+/// Ajustes. Encabezado de cuenta, estado de conexión
 /// de LLM/voz/imágenes/búsqueda (`GET /v1/credentials`) con un selector
 /// "Conectar LLM" ("pegar y validar"), y "Cerrar sesión" — editar persona,
 /// tema y notificaciones sigue siendo placeholder.
@@ -20,6 +20,8 @@ struct PerfilView: View {
 
                     seccionConexiones
 
+                    modoAvanzado
+
                     EmptyStateView(
                         icono: "person.text.rectangle.fill",
                         titulo: "Más ajustes en camino",
@@ -36,7 +38,7 @@ struct PerfilView: View {
                 .padding()
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-            .navigationTitle("Perfil")
+            .navigationTitle("Ajustes")
             .task {
                 await session.cargarMe()
                 await credencialesVM.cargar(client: session.client)
@@ -70,7 +72,7 @@ struct PerfilView: View {
             if let me = session.me {
                 Text(me.user.email)
                     .font(.headline)
-                Text("\(me.tenant.name) · plan \(me.tenant.planKey)")
+                Text(me.tenant.name)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
@@ -80,6 +82,36 @@ struct PerfilView: View {
         .frame(maxWidth: .infinity)
         .padding(24)
         .tarjetaVidrio(esquina: 22)
+    }
+
+    private var modoAvanzado: some View {
+        DisclosureGroup("Modo avanzado") {
+            VStack(spacing: 0) {
+                NavigationLink {
+                    IDEView()
+                } label: {
+                    filaAvanzada(icono: "chevron.left.forwardslash.chevron.right", titulo: "IDE")
+                }
+                Divider().padding(.vertical, 8)
+                NavigationLink {
+                    NegociosView()
+                } label: {
+                    filaAvanzada(icono: "chart.pie.fill", titulo: "Negocios")
+                }
+            }
+            .padding(.top, 12)
+        }
+        .padding(16)
+        .tarjetaVidrio(esquina: 18)
+    }
+
+    private func filaAvanzada(icono: String, titulo: String) -> some View {
+        HStack {
+            Image(systemName: icono).frame(width: 24).foregroundStyle(EdecanTheme.morado)
+            Text(titulo).foregroundStyle(.primary)
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+        }
     }
 
     private var seccionConexiones: some View {

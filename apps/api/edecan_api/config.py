@@ -161,6 +161,16 @@ class Settings(BaseSettings):
     # fuera de la tool.
     EDECAN_LOCAL_REPO_PATH: str | None = None
 
+    # Autorreparación del propio núcleo: opt-in local y fail-closed. Los
+    # comandos se expresan como JSON de argv exactos, p. ej.
+    # `[["uv","run","--frozen","pytest","packages/toolkit/tests"]]`.
+    # No se aceptan strings de shell ni prefijos abiertos: cada ejecución o
+    # instalación además pasa por la confirmación humana normal de tools.
+    EDECAN_SELF_REPAIR_ENABLED: bool = False
+    EDECAN_SELF_REPAIR_TEST_COMMANDS_JSON: str = "[]"
+    EDECAN_SELF_REPAIR_INSTALL_COMMANDS_JSON: str = "[]"
+    EDECAN_SELF_REPAIR_COMMAND_TIMEOUT_SECONDS: int = 300
+
     # Cola de jobs en modo local: "sqs" (LocalStack/AWS real, igual que hoy) o
     # "db" (tabla `jobs` como cola, sin SQS/LocalStack — pensado para el modo
     # escritorio de un solo usuario, WP-V3-05).

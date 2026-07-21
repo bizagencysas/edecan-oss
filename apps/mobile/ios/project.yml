@@ -33,8 +33,8 @@ options:
 
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "2"
-    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "0.3.0"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
@@ -76,7 +76,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSMicrophoneUsageDescription: "Edecán necesita el micrófono para el modo de voz — mantén presionado el botón de la pestaña Voz para hablar con el asistente (ver docs/movil-ios.md)."
+        NSMicrophoneUsageDescription: "Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat."
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:

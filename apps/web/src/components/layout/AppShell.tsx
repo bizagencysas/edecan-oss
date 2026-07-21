@@ -4,9 +4,7 @@ import { useState, type ReactNode } from "react";
 
 import { LogOutIcon, MenuIcon, XIcon } from "@/components/icons";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Badge } from "@/components/ui";
 import { useAuth } from "@/lib/auth-context";
-import { PLAN_LABELS } from "@/lib/types";
 
 import { BrandMark, NavList, Sidebar } from "./Sidebar";
 
@@ -50,11 +48,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <MenuIcon className="h-5 w-5" />
           </button>
-          <div className="hidden text-sm text-slate-500 dark:text-slate-400 md:block">
-            {me?.tenant.name}
-          </div>
+          <div className="hidden text-sm text-slate-500 dark:text-slate-400 md:block">Tu asistente</div>
           <div className="flex items-center gap-3">
-            {me && <Badge variant="brand">{PLAN_LABELS[me.tenant.plan_key] ?? me.tenant.plan_key}</Badge>}
             <span className="hidden text-sm text-slate-600 dark:text-slate-300 sm:inline">{me?.user.email}</span>
             <ThemeToggle />
             <button

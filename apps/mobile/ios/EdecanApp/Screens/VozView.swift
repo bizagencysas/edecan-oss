@@ -1,13 +1,14 @@
 import SwiftUI
 import EdecanKit
 
-/// Pestaña "Voz" (antes "Llamadas" en el esqueleto original): *push-to-talk*
-/// nativo con `AVAudioEngine` — mantén presionado para hablar, Edecán
+/// Voz accesible desde el micrófono de Chat: *push-to-talk* nativo con
+/// `AVAudioEngine` — mantén presionado para hablar, Edecán
 /// transcribe (`POST /v1/voice/transcribe`), corre el turno de chat completo
 /// y responde en voz (`POST /v1/voice/speak`). El historial de llamadas de
 /// telefonía premium por tenant sigue pendiente (`docs/voz-telefonia.md`) —
 /// ver `docs/movil-ios.md`.
 struct VozView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var tabRouter
     @State private var viewModel = VozViewModel()
@@ -51,6 +52,11 @@ struct VozView: View {
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
             .navigationTitle("Voz")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cerrar") { dismiss() }
+                }
+            }
         }
     }
 
@@ -63,7 +69,10 @@ struct VozView: View {
                 Text("Tu tenant no tiene una credencial de voz conectada — conecta ElevenLabs o Polly en Perfil para una voz real.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Button("Ir a Perfil") { tabRouter.seleccion = .perfil }
+                Button("Ir a Ajustes") {
+                    tabRouter.seleccion = .settings
+                    dismiss()
+                }
                     .font(.footnote.weight(.semibold))
             }
         }

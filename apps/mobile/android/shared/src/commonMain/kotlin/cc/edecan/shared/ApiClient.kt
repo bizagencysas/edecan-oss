@@ -415,7 +415,7 @@ class EdecanApi private constructor(
         }
 
     // -------------------------------------------------------------------
-    // Credenciales bring-your-own y wizard de arranque (pestaña Perfil)
+    // Credenciales bring-your-own y wizard de arranque (Ajustes)
     // -------------------------------------------------------------------
 
     /** `GET /v1/credentials` — nunca trae el secreto completo, solo lo
@@ -436,7 +436,7 @@ class EdecanApi private constructor(
     }
 
     // -------------------------------------------------------------------
-    // Voz web (`/v1/voice/*` — pestaña Voz)
+    // Voz web (`/v1/voice/*` — micrófono dentro de Chat)
     // -------------------------------------------------------------------
 
     /** `POST /v1/voice/transcribe` — sube `audioBytes` como
@@ -496,7 +496,7 @@ class EdecanApi private constructor(
         }
 
     // -------------------------------------------------------------------
-    // IDE embebido, solo lectura (`/v1/ide/*` — pestaña IDE)
+    // IDE embebido, solo lectura (`/v1/ide/*` — Modo avanzado)
     // -------------------------------------------------------------------
 
     /** `GET /v1/ide/status` — `false`/`503` en el resto de rutas de `/v1/ide`

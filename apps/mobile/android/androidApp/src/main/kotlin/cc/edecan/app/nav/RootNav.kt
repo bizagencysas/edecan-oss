@@ -22,46 +22,50 @@ import cc.edecan.app.ui.PerfilScreen
 import cc.edecan.app.ui.RecordatoriosScreen
 import cc.edecan.app.ui.RemotoScreen
 import cc.edecan.app.ui.VozScreen
+import cc.edecan.shared.AssistantDestination
 
-/** Las 6 pestañas del mockup del panel web: Inicio, Chat, IDE, Negocios,
- * Voz, Perfil (`DIRECCION_ACTUAL.md` "Apps móviles", `ROADMAP_V2.md` §6.1)
- * — mismas 6 que `RootTabView.swift` (iOS), mismo orden. "Voz" reemplaza a
- * "Llamadas" del mockup original (WP-V4-04): lo que hay hoy es push-to-talk
- * contra el mismo asistente (`VozScreen`), no telefonía — ver su docstring. */
-private enum class Pestana(val etiqueta: String, val emoji: String) {
-    INICIO("Inicio", "🏠"),
-    CHAT("Chat", "💬"),
-    IDE("IDE", "💻"),
-    NEGOCIOS("Negocios", "📊"),
-    VOZ("Voz", "🎙️"),
-    PERFIL("Perfil", "👤"),
+private val AssistantDestination.etiqueta: String
+    get() = when (this) {
+        AssistantDestination.EDECAN -> "Edecan"
+        AssistantDestination.ACTIVITY -> "Actividad"
+        AssistantDestination.SETTINGS -> "Ajustes"
+    }
+
+private val AssistantDestination.emoji: String
+    get() = when (this) {
+        AssistantDestination.EDECAN -> "💬"
+        AssistantDestination.ACTIVITY -> "🕘"
+        AssistantDestination.SETTINGS -> "⚙️"
+    }
+
+/** Tres destinos simples. Voz se abre desde Chat; IDE y Negocios viven en
+ * el modo avanzado de Ajustes; el trabajo delegado vive en Actividad. */
+private enum class PantallaSecundaria {
+    MISIONES,
+    AUTOMATIZACIONES,
+    RECORDATORIOS,
+    REMOTO,
+    VOZ,
+    IDE,
+    NEGOCIOS,
 }
 
-/** Pantallas de nivel "secundario" (WP-V5-07, WP-V6-09 suma REMOTO): NO son
- * pestañas de la barra inferior — se llega a ellas SOLO desde los accesos
- * directos de [InicioScreen] y cubren todo el contenido (barra inferior
- * incluida) mientras están abiertas, con su propio botón "atrás" que vuelve
- * a Inicio. Mismo criterio de "push" de un solo nivel que usa
- * `InicioView.swift` (iOS) con `NavigationStack` para sus propios accesos
- * directos. */
-private enum class PantallaSecundaria { MISIONES, AUTOMATIZACIONES, RECORDATORIOS, REMOTO }
-
 /**
- * Raíz de la app ya emparejada: `Scaffold` + `NavigationBar` de 6 destinos,
+ * Raíz de la app ya emparejada: `Scaffold` + `NavigationBar` de 3 destinos,
  * conmutados con estado local simple (`remember { mutableStateOf(...) }`) —
  * sin `androidx.navigation` a propósito: no hay back-stack ni deep links
- * que gestionar en este esqueleto (6 pestañas planas, cada una su propia
+ * que gestionar en este esqueleto (3 pestañas planas, cada una su propia
  * pantalla independiente), así que sumar esa dependencia sería peso extra
  * sin beneficio real. Mismo criterio simple que el `@State private var
  * seleccion` + `TabView(selection:)` de `RootTabView.swift` (iOS).
  *
- * Encima de esas 6 pestañas, [PantallaSecundaria] (WP-V5-07) agrega un
+ * Encima de esas 3 pestañas, [PantallaSecundaria] agrega un
  * segundo nivel de navegación de un solo paso — mismo `remember {
  * mutableStateOf(...) }` local, sin tocar la `NavigationBar` de abajo.
  */
 @Composable
 fun RootNav() {
-    var seleccion by remember { mutableStateOf(Pestana.INICIO) }
+    var seleccion by remember { mutableStateOf(AssistantDestination.EDECAN) }
     var pantallaSecundaria by remember { mutableStateOf<PantallaSecundaria?>(null) }
 
     val secundaria = pantallaSecundaria
@@ -72,6 +76,9 @@ fun RootNav() {
             PantallaSecundaria.AUTOMATIZACIONES -> AutomatizacionesScreen(onVolver = volver)
             PantallaSecundaria.RECORDATORIOS -> RecordatoriosScreen(onVolver = volver)
             PantallaSecundaria.REMOTO -> RemotoScreen(onVolver = volver)
+            PantallaSecundaria.VOZ -> VozScreen(onVolver = volver)
+            PantallaSecundaria.IDE -> IdeScreen(onVolver = volver)
+            PantallaSecundaria.NEGOCIOS -> NegociosScreen(onVolver = volver)
         }
         return
     }
@@ -79,7 +86,7 @@ fun RootNav() {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                Pestana.entries.forEach { pestana ->
+                AssistantDestination.entries.forEach { pestana ->
                     NavigationBarItem(
                         selected = seleccion == pestana,
                         onClick = { seleccion = pestana },
@@ -96,17 +103,19 @@ fun RootNav() {
         // abajo, para que ningún contenido quede tapado detrás de ella.
         Box(modifier = Modifier.padding(padding)) {
             when (seleccion) {
-                Pestana.INICIO -> InicioScreen(
+                AssistantDestination.EDECAN -> ChatScreen(
+                    onOpenVoice = { pantallaSecundaria = PantallaSecundaria.VOZ },
+                )
+                AssistantDestination.ACTIVITY -> InicioScreen(
                     onAbrirMisiones = { pantallaSecundaria = PantallaSecundaria.MISIONES },
                     onAbrirAutomatizaciones = { pantallaSecundaria = PantallaSecundaria.AUTOMATIZACIONES },
                     onAbrirRecordatorios = { pantallaSecundaria = PantallaSecundaria.RECORDATORIOS },
                     onAbrirRemoto = { pantallaSecundaria = PantallaSecundaria.REMOTO },
                 )
-                Pestana.CHAT -> ChatScreen()
-                Pestana.IDE -> IdeScreen()
-                Pestana.NEGOCIOS -> NegociosScreen()
-                Pestana.VOZ -> VozScreen()
-                Pestana.PERFIL -> PerfilScreen()
+                AssistantDestination.SETTINGS -> PerfilScreen(
+                    onAbrirIde = { pantallaSecundaria = PantallaSecundaria.IDE },
+                    onAbrirNegocios = { pantallaSecundaria = PantallaSecundaria.NEGOCIOS },
+                )
             }
         }
     }

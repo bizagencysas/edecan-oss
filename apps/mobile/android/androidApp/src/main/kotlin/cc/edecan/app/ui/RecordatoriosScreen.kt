@@ -59,7 +59,7 @@ private val ETIQUETAS_ESTADO_RECORDATORIO = mapOf(
  * Pestaña "Recordatorios" (`/v1/reminders`, `ARCHITECTURE.md` §10.3,
  * §10.12, §10.11, WP-V5-07): pendientes/completados, alta con texto +
  * fecha/hora (pickers de Material3, `ui/components/FechaHoraPickers.kt`) y
- * "completar" a mano. Se llega acá SOLO desde Inicio, no es pestaña de la
+ * "completar" a mano. Se llega acá desde Actividad, no es pestaña de la
  * barra inferior. Lógica real en [RecordatoriosViewModel]; esta pantalla
  * solo dibuja su estado.
  */

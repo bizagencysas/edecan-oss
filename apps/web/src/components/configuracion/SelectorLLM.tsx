@@ -52,10 +52,14 @@ function mensajeError(err: unknown): string {
 export function SelectorLLM({
   detect,
   detectLoading = false,
+  simplified = false,
   onConnected,
 }: {
   detect: SetupDetect | null;
   detectLoading?: boolean;
+  /** En el primer arranque deja los detalles de proveedores fuera del camino
+   * principal. Ajustes sigue mostrando el selector completo. */
+  simplified?: boolean;
   onConnected: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("anthropic");
@@ -205,7 +209,24 @@ export function SelectorLLM({
         </div>
       )}
 
-      <div className={mostrarAutoDetect ? "border-t border-slate-100 pt-4 dark:border-slate-800" : ""}>
+      {simplified ? (
+        <details className={mostrarAutoDetect ? "border-t border-slate-100 pt-4 dark:border-slate-800" : ""}>
+          <summary className="cursor-pointer text-sm font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400">
+            Conectar otro servicio de IA
+          </summary>
+          <div className="mt-4">
+            <ManualProviderSelector />
+          </div>
+        </details>
+      ) : (
+        <ManualProviderSelector />
+      )}
+    </div>
+  );
+
+  function ManualProviderSelector() {
+    return (
+      <div className={mostrarAutoDetect && !simplified ? "border-t border-slate-100 pt-4 dark:border-slate-800" : ""}>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Con una API key</p>
         <div className="mb-3 flex flex-wrap gap-1.5">
           {(
@@ -382,6 +403,6 @@ export function SelectorLLM({
           </div>
         )}
       </div>
-    </div>
-  );
+    );
+  }
 }

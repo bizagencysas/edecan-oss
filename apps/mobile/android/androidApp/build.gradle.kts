@@ -1,5 +1,5 @@
 // `androidApp` — el APK real de este esqueleto (login + chat SSE básico +
-// 6 pestañas, ROADMAP_V2.md §6.1). Módulo Android puro
+// 3 destinos assistant-first; capacidades especializadas como secundarias). Módulo Android puro
 // (`com.android.application`), NO un target de `shared` — lo consume como
 // `project(":shared")`.
 //
@@ -45,8 +45,8 @@ android {
         applicationId = "cc.edecan.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     buildTypes {

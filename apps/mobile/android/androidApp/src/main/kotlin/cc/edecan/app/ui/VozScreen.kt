@@ -21,6 +21,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -38,6 +39,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -48,10 +51,9 @@ import cc.edecan.app.vm.VozUiState
 import cc.edecan.app.vm.VozViewModel
 
 /**
- * Pestaña "Voz" (antes "Llamadas" en el mockup — renombrada porque lo que
- * construye este work package es push-to-talk contra el mismo asistente,
- * no telefonía; la telefonía Twilio bring-your-own sigue pendiente, ver
- * `docs/voz-telefonia.md`). Mantén presionado el botón para grabar, suelta
+ * Pantalla de voz accesible desde el micrófono de Chat: push-to-talk contra
+ * el mismo asistente, no telefonía (Twilio bring-your-own sigue pendiente,
+ * ver `docs/voz-telefonia.md`). Mantén presionado el botón para grabar, suelta
  * para transcribir (`POST /v1/voice/transcribe`) → mandarlo por el turno
  * normal del agente → escuchar la respuesta (`POST /v1/voice/speak`).
  * Lógica real en [VozViewModel]; esta pantalla solo dibuja su estado.
@@ -60,6 +62,7 @@ import cc.edecan.app.vm.VozViewModel
 fun VozScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     vozViewModel: VozViewModel = viewModel(),
+    onVolver: () -> Unit = {},
 ) {
     val uiState by vozViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
@@ -78,7 +81,21 @@ fun VozScreen(
 
     LaunchedEffect(api) { api?.let { vozViewModel.verificarVozConectada(it) } }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Voz") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Hablar con Edecán") },
+                navigationIcon = {
+                    IconButton(
+                        onClick = onVolver,
+                        modifier = Modifier.semantics { contentDescription = "Volver a Edecán" },
+                    ) {
+                        Text("←", style = MaterialTheme.typography.titleLarge)
+                    }
+                },
+            )
+        },
+    ) { padding ->
         Column(
             modifier = Modifier.padding(padding).fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -91,7 +108,7 @@ fun VozScreen(
                     Text(
                         "No conectaste un proveedor de voz propio: vas a escuchar solo silencio y la " +
                             "transcripción va a ser siempre el mismo texto de prueba, sin reconocimiento " +
-                            "real. Conéctalo desde la pestaña Perfil.",
+                            "real. Conéctalo desde Ajustes.",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(12.dp),
                     )
@@ -102,11 +119,24 @@ fun VozScreen(
 
             EstadoVoz(uiState)
 
+            uiState.confirmacionPendiente?.let { pendiente ->
+                TarjetaConfirmacion(
+                    pendiente = pendiente,
+                    onAprobar = {
+                        api?.let { vozViewModel.resolverConfirmacion(aprobado = true, api = it) }
+                    },
+                    onRechazar = {
+                        api?.let { vozViewModel.resolverConfirmacion(aprobado = false, api = it) }
+                    },
+                )
+            }
+
             Spacer(modifier = Modifier.height(28.dp))
 
             BotonPushToTalk(
                 grabando = uiState.grabando,
-                habilitado = api != null && !uiState.procesando && !uiState.reproduciendo,
+                habilitado = api != null && !uiState.procesando && !uiState.reproduciendo &&
+                    uiState.confirmacionPendiente == null,
                 permisoConcedido = permisoConcedido,
                 onPedirPermiso = { lanzadorPermiso.launch(Manifest.permission.RECORD_AUDIO) },
                 onIniciar = { vozViewModel.iniciarGrabacion() },

@@ -9,6 +9,14 @@ evidencia de disponibilidad.
 
 Prioridades de la serie 0.x:
 
+- demostrar el contrato assistant-first de punta a punta: una petición por
+  texto o voz, una conversación, varias acciones y un resultado verificable;
+- mantener solo Edecan, Actividad y Ajustes como navegación primaria, con las
+  capacidades especializadas detrás del asistente;
+- conservar y reanudar de forma segura las órdenes compuestas que necesitan
+  una confirmación humana;
+- diagnosticar límites desde la conversación y recuperar por configuración,
+  skill local o reparación reversible del núcleo;
 - instalación reproducible desde un clon limpio en macOS, Linux y WSL2;
 - CI público para Python, web, Rust, iOS y Android;
 - releases de escritorio firmados, con checksums, SBOM y procedencia;
@@ -33,6 +41,21 @@ El trabajo transversal incluye pruebas E2E, accesibilidad, rendimiento,
 recuperación ante fallos, aislamiento multi-tenant y paridad entre clientes.
 
 ## Próximos hitos
+
+### 0. Asistente completo, no catálogo de módulos
+
+- recorrido E2E de la frase de referencia: pendientes + correo + documento +
+  recordatorio en una sola conversación;
+- misma semántica, confirmaciones y evidencia desde texto y voz;
+- Actividad como resumen único de trabajo, aprobaciones y fallos;
+- recuperación conversacional después de “haz que se pueda”;
+- pruebas de reinicio durante una confirmación y durante una reparación local;
+- lenguaje cotidiano en toda la interfaz; nombres de herramientas, planes y
+  arquitectura solo en el modo avanzado o la documentación técnica.
+
+El criterio de salida está en
+[`producto-assistant-first.md`](./producto-assistant-first.md). Añadir otra
+pantalla primaria no cuenta como progreso de producto.
 
 ### 1. Release reproducible de escritorio
 
@@ -83,13 +106,14 @@ probados. Mientras tanto, el desktop se construye desde source.
 
 ## Principios de priorización
 
-1. Seguridad, privacidad y pérdida de datos antes que amplitud.
-2. Un flujo completo y verificable antes que otra superficie parcial.
-3. Compatibilidad hacia atrás salvo razón de seguridad documentada.
-4. Provider abstractions y configuración remota antes que hardcode.
-5. Integraciones oficiales y credenciales del usuario; nunca scraping ni
+1. Una intención completa en la conversación antes que otra pantalla o módulo.
+2. Seguridad, privacidad y pérdida de datos antes que amplitud.
+3. Un flujo completo y verificable antes que otra superficie parcial.
+4. Compatibilidad hacia atrás salvo razón de seguridad documentada.
+5. Provider abstractions y configuración remota antes que hardcode.
+6. Integraciones oficiales y credenciales del usuario; nunca scraping ni
    credenciales compartidas.
-6. Acciones con dinero, mensajería o control de dispositivos conservan
+7. Acciones con dinero, mensajería o control de dispositivos conservan
    aprobación humana y gates server-side.
 
 ## Fuera de compromiso

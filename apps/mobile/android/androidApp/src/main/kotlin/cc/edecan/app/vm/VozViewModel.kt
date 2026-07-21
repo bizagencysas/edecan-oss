@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import cc.edecan.shared.ApiException
 import cc.edecan.shared.ChatEvent
 import cc.edecan.shared.ChatMessageIn
+import cc.edecan.shared.ConfirmIn
 import cc.edecan.shared.EdecanApi
 import cc.edecan.shared.SseClient
 import cc.edecan.shared.VoiceAudio
@@ -22,14 +23,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
-/** Señal de control interna de [VozViewModel.enviarYEsperarRespuesta]: el
- * turno SSE terminó en `confirmation_required` o `error` en vez de
- * `done` — no es un error HTTP (no hay `status`/`ApiException` que le
- * quede natural), así que no se reusa [ApiException.Servidor] solo para
- * tener un mensaje. `procesar` la atrapa en su rama genérica
- * `catch (e: Exception)`, mismo resultado neto que un [ApiException]. */
-private class TurnoVozException(message: String) : Exception(message)
+private data class ResultadoTurnoVoz(
+    val texto: String,
+    val confirmacion: ConfirmacionPendiente? = null,
+)
 
 data class VozUiState(
     val grabando: Boolean = false,
@@ -38,6 +40,9 @@ data class VozUiState(
     val textoTranscrito: String? = null,
     val respuesta: String? = null,
     val errorMensaje: String? = null,
+    /** La confirmación aparece y se resuelve dentro de Voz. Una frase hablada
+     * nunca obliga a abandonar el flujo para buscar una pestaña técnica. */
+    val confirmacionPendiente: ConfirmacionPendiente? = null,
     /** `true` si el tenant no conectó su propio proveedor de STT ni TTS
      * (`GET /v1/credentials`) — la voz igual "funciona" (el servidor cae al
      * `StubSTT`/`StubTTS` offline, `docs/api.md` §"Voz web") pero
@@ -48,7 +53,7 @@ data class VozUiState(
 )
 
 /**
- * Push-to-talk de la pestaña Voz: graba con [MediaRecorder]
+ * Push-to-talk de la pantalla de voz accesible desde Chat: graba con [MediaRecorder]
  * (`RECORD_AUDIO`), transcribe (`POST /v1/voice/transcribe`), manda el
  * texto transcrito por el MISMO flujo de turno que usa el chat (`POST
  * /v1/conversations/{id}/messages`, SSE) y reproduce la respuesta con
@@ -57,7 +62,7 @@ data class VozUiState(
  * temporales en `cacheDir`).
  *
  * Usa su propia conversación (no comparte `conversationId` con
- * `ChatViewModel`): mantiene este esqueleto simple —una pestaña, un flujo
+ * `ChatViewModel`): mantiene este esqueleto simple —una pantalla, un flujo
  * de ida y vuelta— sin acoplar dos `ViewModel`s que hoy Compose ya
  * resolvería como la MISMA instancia si pidieran `ChatViewModel` con
  * `viewModel()` (mismo `ViewModelStore`, ver docstring de `App.kt`).
@@ -107,7 +112,13 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
             grabador = recorder
             archivoGrabacion = archivo
             _uiState.update {
-                it.copy(grabando = true, errorMensaje = null, textoTranscrito = null, respuesta = null)
+                it.copy(
+                    grabando = true,
+                    errorMensaje = null,
+                    textoTranscrito = null,
+                    respuesta = null,
+                    confirmacionPendiente = null,
+                )
             }
         } catch (e: Exception) {
             recorder.release()
@@ -174,9 +185,24 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
                 val texto = api.transcribirVoz(audioBytes, archivo.name, "audio/mp4", language = "es")
                 _uiState.update { it.copy(textoTranscrito = texto) }
 
-                val respuesta = enviarYEsperarRespuesta(texto, api)
-                _uiState.update { it.copy(respuesta = respuesta, procesando = false) }
-                reproducir(respuesta, api)
+                val resultado = ejecutarTurno(
+                    api = api,
+                    path = "/v1/conversations/${asegurarConversacion(api)}/messages",
+                    bodyJson = edecanJson.encodeToString(ChatMessageIn(texto)),
+                )
+                if (resultado.confirmacion != null) {
+                    _uiState.update {
+                        it.copy(
+                            respuesta = resultado.texto.ifBlank { null },
+                            procesando = false,
+                            confirmacionPendiente = resultado.confirmacion,
+                        )
+                    }
+                } else {
+                    val respuesta = resultado.texto.ifBlank { "Listo." }
+                    _uiState.update { it.copy(respuesta = respuesta, procesando = false) }
+                    reproducir(respuesta, api)
+                }
             } catch (e: ApiException) {
                 _uiState.update { it.copy(procesando = false, errorMensaje = e.message) }
             } catch (e: CancellationException) {
@@ -196,31 +222,101 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
         return id
     }
 
-    /** Manda `texto` por el mismo turno SSE que usa el chat de texto
-     * (`ChatViewModel.enviar`) y devuelve la respuesta completa YA
-     * concatenada — a diferencia del chat, acá no hay una burbuja
-     * incremental que ir llenando, así que se junta todo antes de hablar. */
-    private suspend fun enviarYEsperarRespuesta(texto: String, api: EdecanApi): String {
-        val idConversacion = asegurarConversacion(api)
-        val url = api.urlCompleta("/v1/conversations/$idConversacion/messages")
-        val token = api.tokenDeAccesoValido()
-        val bodyJson = edecanJson.encodeToString(ChatMessageIn(texto))
+    /** Resuelve la única confirmación humana del turno sin salir de Voz. */
+    fun resolverConfirmacion(aprobado: Boolean, api: EdecanApi) {
+        val pendiente = _uiState.value.confirmacionPendiente ?: return
+        val idConversacion = conversationId ?: return
+        if (_uiState.value.procesando) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    procesando = true,
+                    errorMensaje = null,
+                    confirmacionPendiente = null,
+                )
+            }
+            try {
+                val resultado = ejecutarTurno(
+                    api = api,
+                    path = "/v1/conversations/$idConversacion/confirm",
+                    bodyJson = edecanJson.encodeToString(
+                        ConfirmIn(pendiente.toolCallId, aprobado),
+                    ),
+                )
+                if (resultado.confirmacion != null) {
+                    _uiState.update {
+                        it.copy(
+                            procesando = false,
+                            respuesta = resultado.texto.ifBlank { null },
+                            confirmacionPendiente = resultado.confirmacion,
+                        )
+                    }
+                    return@launch
+                }
+                val respuesta = resultado.texto.ifBlank { "Listo." }
+                _uiState.update { it.copy(procesando = false, respuesta = respuesta) }
+                reproducir(respuesta, api)
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(procesando = false, errorMensaje = e.message) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(procesando = false, errorMensaje = e.message ?: "Error desconocido")
+                }
+            }
+        }
+    }
+
+    /** Corre un mensaje o su confirmación por el mismo SSE del chat y
+     * devuelve texto + confirmación estructurada. También comparte el
+     * retry único tras 401 que ya usa [ChatViewModel]. */
+    private suspend fun ejecutarTurno(
+        api: EdecanApi,
+        path: String,
+        bodyJson: String,
+    ): ResultadoTurnoVoz {
         val textoAcumulado = StringBuilder()
         var errorDelTurno: String? = null
+        var confirmacion: ConfirmacionPendiente? = null
+        var yaRefresco = false
 
-        sseClient.stream(api.httpClientParaStream, url, token, bodyJson).collect { evento ->
-            when (evento) {
-                is ChatEvent.TextDelta -> textoAcumulado.append(evento.text)
-                is ChatEvent.ConfirmationRequired ->
-                    errorDelTurno = "Edecán necesita tu confirmación para usar «${evento.name}» — " +
-                        "resuélvelo desde la pestaña Chat."
-                is ChatEvent.ErrorEvent -> errorDelTurno = evento.message
-                else -> Unit
+        while (true) {
+            try {
+                val url = api.urlCompleta(path)
+                val token = api.tokenDeAccesoValido()
+                sseClient.stream(api.httpClientParaStream, url, token, bodyJson).collect { evento ->
+                    when (evento) {
+                        is ChatEvent.TextDelta -> textoAcumulado.append(evento.text)
+                        is ChatEvent.ConfirmationRequired ->
+                            confirmacion = ConfirmacionPendiente(
+                                evento.toolCallId,
+                                evento.name,
+                                formatearArgumentos(evento.args),
+                            )
+                        is ChatEvent.ErrorEvent -> errorDelTurno = evento.message
+                        else -> Unit
+                    }
+                }
+                break
+            } catch (e: SseClient.SseException.Servidor) {
+                if (e.status != 401 || yaRefresco) throw e
+                yaRefresco = true
+                api.refrescar()
             }
         }
 
-        errorDelTurno?.let { throw TurnoVozException(it) }
-        return textoAcumulado.toString().ifBlank { "Listo." }
+        errorDelTurno?.let { throw IllegalStateException(it) }
+        return ResultadoTurnoVoz(textoAcumulado.toString(), confirmacion)
+    }
+
+    private fun formatearArgumentos(args: JsonElement): String {
+        val objeto = args as? JsonObject ?: return ""
+        return objeto.entries.joinToString(" · ") { (clave, valor) ->
+            val texto = (valor as? JsonPrimitive)?.contentOrNull ?: valor.toString()
+            "${clave.replace('_', ' ')}: $texto"
+        }
     }
 
     private suspend fun reproducir(texto: String, api: EdecanApi) {

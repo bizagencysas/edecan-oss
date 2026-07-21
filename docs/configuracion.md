@@ -125,6 +125,11 @@ Variables nuevas de `ARCHITECTURE.md` §12g (`docs/roadmap.md`: pivote a app de 
 | `DATA_DIR` | Opcional | `~/.edecan/data` | Carpeta donde el modo local guarda datos persistentes (Postgres embebido, archivos). La fija automáticamente `apps/local`; `~` se expande a la carpeta del usuario del sistema. |
 | `SERVE_WEB_DIR` | Opcional | *(vacío)* | Si se define y la carpeta existe, `edecan_api.main.create_app()` sirve ahí el export estático de `apps/web` en la raíz (`"/"`) — así el runner local expone la UI completa desde el mismo puerto que la API. Vacío = no se monta nada en `"/"`. |
 | `LOCAL_API_PORT` | Opcional | `8765` | Puerto donde escucha la API en modo local. El runner (`apps/local`) hace bind SOLO en `127.0.0.1`, nunca `0.0.0.0` — ver `ARCHITECTURE.md` §12f. |
+| `EDECAN_LOCAL_REPO_PATH` | Solo para reparación desde código fuente | *(vacío)* | Ruta absoluta al clon Git local que Edecan puede diagnosticar y reparar. Vacío desactiva tanto el acceso al código como la reparación del núcleo. Nunca apunta a otra máquina. |
+| `EDECAN_SELF_REPAIR_ENABLED` | Opcional | `false` | Opt-in adicional para la reparación del núcleo. Exige también modo local, `EDECAN_LOCAL_REPO_PATH`, repositorio limpio y aprobación humana. No habilita push. |
+| `EDECAN_SELF_REPAIR_TEST_COMMANDS_JSON` | Solo si activas autorreparación | `[]` | Lista JSON de comandos de prueba autorizados como `argv` completos, por ejemplo `[["uv","run","--frozen","pytest","packages/toolkit/tests"]]`. No acepta strings de shell ni coincidencias por prefijo. |
+| `EDECAN_SELF_REPAIR_INSTALL_COMMANDS_JSON` | Solo si permites instalar durante una reparación | `[]` | Allowlist separada de `argv` completos para instalar dependencias dentro del worktree aislado. Vacía significa que ninguna instalación está autorizada. |
+| `EDECAN_SELF_REPAIR_COMMAND_TIMEOUT_SECONDS` | Opcional | `300` | Timeout por comando autorizado; el código lo limita al rango seguro de 1 a 1800 segundos. |
 | `QUEUE_PROVIDER` | Opcional | `sqs` | `sqs` (LocalStack/AWS real, igual que hoy) o `db` (usa la tabla `jobs` como cola, sin SQS/LocalStack) — `db` es la opción recomendada para el modo escritorio de un solo usuario. |
 
 ### Proveedores LLM nuevos (CLI local, Ollama, Vertex AI)
@@ -162,7 +167,7 @@ Bearer normal. Forma REAL de la respuesta (verificada contra `apps/api/edecan_ap
 routers/setup.py::get_setup_status`, no asumida):
 
 ```json
-{"local_mode": false, "llm_configured": false, "version": "0.2.0"}
+{"local_mode": false, "llm_configured": false, "version": "0.3.0"}
 ```
 
 - `local_mode` — `true` solo si el proceso arrancó con `EDECAN_LOCAL_MODE=true` (lo fija

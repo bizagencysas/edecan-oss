@@ -96,13 +96,13 @@ apps/mobile/ios/
 │   │   ├── SSEClient.swift         # URLSession.bytes(for:) → AsyncThrowingStream<ChatEvent>
 │   │   ├── Keychain.swift          # kSecClassGenericPassword, sin App Group
 │   │   └── PairingStore.swift      # URL del servidor + "emparejado" + deviceId (fase v4)
-│   └── Tests/EdecanKitTests/       # 89 tests, offline, corren con `swift test`
+│   └── Tests/EdecanKitTests/       # 90 tests, offline, corren con `swift test`
 ├── EdecanApp/              # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift    # login + registro (POST /v1/auth/register)
 │   ├── Screens/{Inicio,Chat,IDE,Negocios,Voz,Perfil}View.swift
-│   ├── Screens/{Misiones,Automatizaciones,Recordatorios}View.swift  # v5, alcanzables desde Inicio
-│   ├── Screens/RemotoView.swift             # fase v6, alcanzable desde Inicio (*polling*, no WebRTC)
+│   ├── Screens/{Misiones,Automatizaciones,Recordatorios}View.swift  # alcanzables desde Actividad
+│   ├── Screens/RemotoView.swift             # alcanzable desde Actividad (*polling*, no WebRTC)
 │   ├── Componentes/
 │   │   ├── ChatViewModel.swift         # turno SSE + confirmación de herramientas peligrosas
 │   │   ├── TarjetaConfirmacion.swift   # tarjeta Aprobar/Rechazar, compartida Chat ↔ Voz ↔ Misiones
@@ -163,12 +163,13 @@ reimplementarlo cada uno:
 ### `EdecanApp` — la app SwiftUI
 
 `EdecanApp.swift` decide entre `OnboardingView` (sin emparejar) y
-`RootTabView` (emparejado). `RootTabView` monta las 6 pestañas del mockup
-del panel web — Inicio, Chat, IDE, Negocios, **Voz** (antes "Llamadas" en
-el esqueleto original), Perfil — con `.tint(EdecanTheme.morado)`, y expone
-`TabRouter` (`@Observable`, vía `.environment(...)`) para que una pantalla
-pueda cambiar la pestaña activa de otra (p. ej. el aviso de "voz de prueba"
-en Voz llevando directo a Perfil).
+`RootTabView` (emparejado). `RootTabView` monta solo tres superficies:
+**Edecan** (Chat, la entrada inicial), **Actividad** (trabajo delegado,
+recordatorios, rutinas y remoto) y **Ajustes**. Voz se abre con el micrófono
+dentro de Chat; IDE y Negocios permanecen accesibles en el disclosure
+"Modo avanzado" de Ajustes. `TabRouter` (`@Observable`, vía
+`.environment(...)`) permite volver a Ajustes cuando una capacidad necesita
+configurar una conexión.
 
 **Liquid Glass:** un `TabView` estándar en iOS 26 ya adopta automáticamente
 la barra flotante translúcida del sistema, sin modifiers extra. El material
@@ -190,14 +191,13 @@ botones Aprobar/Rechazar que llaman `POST .../confirm` — nunca se manda al
 usuario al panel web para eso. **``VozViewModel`` reutiliza el mismo
 `ChatViewModel` tal cual** (no reimplementa el turno del agente) para que
 *push-to-talk* corra exactamente la misma lógica de conversación/SSE/
-confirmación que la pestaña Chat. IDE es de solo lectura (árbol +
+confirmación que Chat. IDE es de solo lectura (árbol +
 visor monoespaciado); Negocios trae KPIs + dona + facturas reales.
 
 ## Pantallas v5: Misiones, Automatizaciones, Recordatorios
 
-Tres pantallas nuevas, **alcanzables desde los accesos directos de
-`InicioView`** (`RootTabView` sigue con las mismas 6 pestañas — este WP no
-las toca), conectadas de verdad a la API real, no maquetas:
+Tres pantallas, **alcanzables desde Actividad** (`InicioView`) sin sumar
+pestañas primarias, conectadas de verdad a la API real, no maquetas:
 
 - **Misiones** (`Screens/MisionesView.swift`, `Componentes/MisionesViewModel.swift`)
   — el Orchestrator multi-agente. Consume `GET/POST /v1/missions`,
@@ -384,7 +384,7 @@ protocolo de emparejamiento propio para móvil completo (como el código
 corto de 6 dígitos que ya usa el companion de escritorio, `POST
 /v1/companion/pair-code`). Mientras el refresh token siga en el Keychain de
 este iPhone, el dispositivo cuenta como emparejado; "Cerrar sesión" en la
-pestaña Perfil lo borra y vuelve a mostrar el onboarding.
+Ajustes lo borra y vuelve a mostrar el onboarding.
 
 **Registro real por dispositivo, best-effort (fase v4):** justo después de
 un login/registro exitoso, `SessionStore.emparejarDispositivo(pairingStore:)`
@@ -419,21 +419,21 @@ cuenta Developer del propio cliente.
 | Autenticación (login, **registro**, refresh automático, Keychain) | **Real** |
 | Chat con streaming SSE (`text_delta`, indicador de herramienta) | **Real** |
 | **Confirmar/rechazar una herramienta peligrosa desde el chat** (`POST .../confirm`, tarjeta inline Aprobar/Rechazar) | **Real** — `ChatViewModel.confirmacionPendiente` + `TarjetaConfirmacion`, compartida con Voz |
-| **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — pestaña "Voz" (antes "Llamadas"); avisa con un enlace a Perfil si la respuesta usó el `StubTTS` (sin credencial de voz conectada) |
+| **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — botón de micrófono dentro de Chat; enlaza a Ajustes si falta una voz real |
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
-| **Perfil: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
-| **IDE embebido de solo lectura** (árbol navegable con `OutlineGroup` + visor monoespaciado) | **Real** — `GET /v1/ide/status\|tree\|file`; escribir/editar/correr comandos queda fuera de esta app (sigue siendo terreno del panel web) |
+| **Ajustes: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
+| **IDE embebido de solo lectura** (árbol navegable con `OutlineGroup` + visor monoespaciado) | **Real** — accesible desde Modo avanzado en Ajustes; `GET /v1/ide/status\|tree\|file` |
 | **Registro por dispositivo** (`POST /v1/devices`, revocar al cerrar sesión) | Best-effort, degrada con gracia si el servidor todavía no tiene ese router (fase v4 en paralelo) — ver ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque) |
 | **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
-| `EdecanKit` completo con 89 tests offline | **Real** |
+| `EdecanKit` completo con 90 tests offline | **Real** |
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
-| Inicio (saludo + `GET /v1/me`), Perfil (datos + cerrar sesión) | **Real** |
+| Actividad (`GET /v1/me` + accesos), Ajustes (datos + cerrar sesión) | **Real** |
 | Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |
 | Emparejamiento real por dispositivo COMPLETO (tabla `devices` con listado/gestión en la app, QR) | Pendiente — hoy solo se registra/revoca el propio dispositivo al iniciar/cerrar sesión (ver arriba), sin pantalla para ver/gestionar otros dispositivos emparejados |
 | Notificaciones push (APNs) | Pendiente — requiere el emparejamiento por dispositivo completo de arriba |
-| Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — la pestaña Voz solo cubre voz web (*push-to-talk*), no telefonía |
+| Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — el micrófono de Chat solo cubre voz web (*push-to-talk*), no telefonía |
 | IDE con escritura/edición/terminal (`PUT /v1/ide/file`, `POST /v1/ide/edit\|run\|search`) | Pendiente — la app móvil solo lee/navega, el panel web sigue siendo donde se edita |
 | **Visor de control remoto** (`RemotoView`/`RemotoViewModel`, *polling* HTTP) | **Real** — ver ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6); transporte WebRTC de baja latencia sigue pendiente (§5 de [`control-remoto.md`](./control-remoto.md)) |
 | Widget con datos reales (próxima conversación, recordatorio) | Pendiente — hoy es un placeholder estático, sin App Group con `EdecanApp` |
@@ -548,7 +548,7 @@ Por orden aproximado de lo que más desbloquea al resto:
    emparejados (hoy solo se gestiona el propio, al cerrar sesión).
 2. **Push APNs** — depende directamente del punto anterior, para poder
    dirigir una notificación a un iPhone concreto.
-3. **Voz de telefonía (Twilio, premium)** — la pestaña Voz de hoy es *push-to-talk*
+3. **Voz de telefonía (Twilio, premium)** — el micrófono de Chat hoy es *push-to-talk*
    web (`voice.web`); el historial de llamadas entrantes/salientes de
    telefonía por tenant (`voice.telephony`, ver
    [`voz-telefonia.md`](./voz-telefonia.md)) sigue sin vivir en la app.

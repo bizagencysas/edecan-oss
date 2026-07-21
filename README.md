@@ -5,8 +5,8 @@
 <h1 align="center">Edecan</h1>
 
 <p align="center">
-  <strong>A local-first AI operator for your memory, tools, and workflows.</strong><br />
-  Spanish-first · bring your own providers · human approval for consequential actions
+  <strong>Ask once. Edecan understands the job and gets it done.</strong><br />
+  One text or voice conversation · local-first · human approval when it matters
 </p>
 
 <p align="center">
@@ -26,20 +26,36 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.2).** The source, tests, web app, API, workers,
+> **Developer preview (v0.3).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
 
 ## Why Edecan?
 
-Most assistants forget context, stop at text, or require you to surrender
-credentials to a hosted intermediary. Edecan explores a different model:
+Edecan is an assistant, not a collection of dashboards. A person should be
+able to say, in one message or voice request, “organize my tasks, answer this
+email, review the document and remind me to pay tomorrow.” Edecan decides which
+capabilities are needed, coordinates them and reports the result in the same
+conversation.
+
+The main product has only three places: **Edecan**, **Activity** and
+**Settings**. Technical and business modules remain available in a collapsed
+advanced mode; they are implementation details, not the product's front door.
+
+Most assistants forget context, stop at text, or require credentials to pass
+through a hosted intermediary. Edecan follows a different model:
 
 - **Persistent, inspectable memory.** Conversations, profile facts, files,
   and graph relationships live in storage you control.
 - **Actions, not just answers.** A typed tool registry connects reminders,
   documents, research, messaging, workflows, an IDE, and multi-agent missions.
+- **One intent, several actions.** The assistant selects only the capability
+  families relevant to each request and can combine them in one turn.
+- **Recover instead of giving up.** When a capability is missing, Edecan can
+  diagnose the failure, reuse existing configuration, create a reversible local
+  skill, or — in an explicitly enabled source checkout — prepare, test and
+  roll back a local core repair before retrying the original intent.
 - **Bring your own providers.** Use local Ollama, authenticated Claude/Codex
   CLIs, or your own API and OAuth credentials. Provider access is never shared
   between tenants.
@@ -68,6 +84,12 @@ Home Assistant, an embedded IDE, and multi-agent missions. Availability depends
 on configuration and feature flags; see the [documentation map](./docs/index.md)
 instead of assuming every integration is enabled by default.
 
+The product behavior is defined in the
+[assistant-first contract](./docs/producto-assistant-first.md). “Anything” means
+anything that can be performed legitimately with the connected capabilities
+and permissions; Edecan must explain and recover from a boundary, never pretend
+that an unavailable action succeeded.
+
 ## Deliberate boundaries
 
 - No scraping or shared third-party credentials. Connectors use official APIs
@@ -77,6 +99,10 @@ instead of assuming every integration is enabled by default.
   remote keyboard/mouse control requires a separate local opt-in.
 - No real secrets in source, fixtures, logs, or example configuration.
 - No claim of SOC 2, ISO 27001, external audit, or production certification.
+- No silent self-modification. Local skills and source repairs require the
+  normal human approval boundary; core repair is off by default, runs in an
+  isolated Git worktree, uses allowlisted argument-vector commands, requires
+  passing tests and never pushes code.
 
 ## Quickstart
 
@@ -126,7 +152,10 @@ stack and its operational caveats, follow [Self-hosting](./docs/self-hosting.md)
 ## Architecture
 
 ```text
- Web · Tauri desktop · iOS/Android companions
+ Text or voice intent
+          │
+          ▼
+ Edecan · Activity · Settings
                        │ HTTPS / SSE / WebSocket
                        ▼
                 FastAPI application

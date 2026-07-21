@@ -1,9 +1,15 @@
-# ARCHITECTURE.md — «Edecán» (codename del producto)
+# ARCHITECTURE.md — Edecan
 
-Asistente personal de IA («mayordomo digital») multi-tenant, híbrido **open-core + SaaS hospedado**.
-Este documento es **EL CONTRATO** entre todos los paquetes de trabajo. Cualquier agente que escriba
-código en este repo debe respetar los nombres, firmas, rutas y reglas de la sección 10 **al pie de la letra**,
-porque los demás paquetes se escriben en paralelo contra estos mismos contratos.
+Edecan es un asistente personal de IA local-first. La experiencia de producto
+se rige por [`docs/producto-assistant-first.md`](docs/producto-assistant-first.md):
+una conversación por texto o voz es la entrada universal y la complejidad
+técnica nunca se convierte en un menú que la persona deba aprender.
+
+Este documento es el contrato **técnico** entre paquetes. Los nombres, firmas,
+rutas y reglas de la sección 10 siguen siendo obligatorios, pero no definen la
+superficie visible del producto. Si una decisión técnica contradice el contrato
+assistant-first, debe conservarse la compatibilidad interna y simplificarse la
+experiencia pública.
 
 ---
 
@@ -15,6 +21,10 @@ porque los demás paquetes se escriben en paralelo contra estos mismos contratos
 4. **No ejecutar**: `git`, `terraform`, `aws` con efectos, `docker push`, ni llamadas de red reales en tests (usa `respx`/fakes). La infraestructura solo se ESCRIBE.
 5. Idioma por defecto de UI/docs: **español**. Tests offline y deterministas.
 6. Trabaja solo dentro de la carpeta raíz de este repositorio (nunca leas ni escribas fuera de ella).
+7. **Assistant-first.** Chat y voz son la entrada a las capacidades. Nuevas
+   verticales se implementan como herramientas/skills internas; no agregan una
+   pantalla primaria ni vocabulario técnico salvo que exista una necesidad de
+   usuario demostrable.
 
 ## 1. Stack elegido (y por qué)
 
@@ -25,7 +35,9 @@ porque los demás paquetes se escriben en paralelo contra estos mismos contratos
 - **SQS + DLQ** — trabajos asíncronos; **EventBridge Scheduler** — crons en prod.
 - **Frontend: Next.js 15 (App Router) + React 19 + TypeScript + Tailwind.**
 - **LLM: Anthropic primario** vía REST puro (httpx), con adaptadores OpenAI-compatible y Bedrock detrás de una interfaz común intercambiable.
-- **Despliegue objetivo: ECS Fargate** — la automatización de infraestructura no forma parte del repositorio público.
+- **Distribución principal: aplicación local para macOS/Windows** con backend
+  local. Un despliegue self-host/hosted es una opción operativa, no la identidad
+  ni la interfaz principal del producto.
 
 ## 2. Multi-tenancy y aislamiento
 
@@ -69,14 +81,18 @@ ningún call site de primera parte lo conecta hoy (detalle en `edecan_llm.router
   TokenVault cifrados. REST directo con httpx (testeable con respx). **LinkedIn: excluido permanentemente.**
 - Hosted: sociales gateadas por flag `connectors.social` (plan Pro+). Self-host: disponibles con tus propias apps OAuth.
 
-## 6. Open-core vs Premium
+## 6. Modos de distribución
 
-- **Core (Apache-2.0)**: todo este repositorio público. Self-host con docker-compose y credenciales propias.
-- **Extensión comercial externa**: telefonía y campañas, cuotas/planes y herramientas premium.
+- **Edecan local (principal, Apache-2.0)**: aplicación personal con credenciales
+  propias, un solo dueño y datos bajo su control.
+- **Self-host avanzado**: el mismo core desplegado por la persona u organización
+  con Docker y credenciales propias.
+- **Extensión hospedada opcional**: telefonía, campañas, cuotas y herramientas
+  operativas que no deben filtrar complejidad de SaaS hacia la experiencia local.
   La API detecta el paquete opcional `edecan_premium` con `importlib.util.find_spec(...)` y monta sus rutas/herramientas cuando está instalado.
   Los flags del plan del tenant gatean cada capacidad en runtime.
 
-## 7. Topología AWS (prod)
+## 7. Topología hospedada de referencia (opcional)
 
 Route53 → CloudFront + WAF → ALB (ACM) → **ECS Fargate**: servicios `api` (8000), `web` (3000), `worker` (sin LB).
 VPC 3 AZ; subredes privadas para **RDS PostgreSQL 16 Multi-AZ (pgvector)** y **ElastiCache Redis**; VPC endpoints
@@ -316,7 +332,7 @@ Límites int (−1 = ilimitado): `limits.messages_per_day`, `limits.voice_minute
 - Puertos dev: api 8000, web 3000, postgres 5432, redis 6379, localstack 4566. CORS: permitir `WEB_BASE_URL`.
 - Frontend consume `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
 - Compose self-host de referencia: `infra/docker/compose.selfhost.yml`; Dockerfiles en `infra/docker/`.
-- Herramientas del toolkit (nombres exactos): `crear_recordatorio`, `listar_recordatorios`, `agenda_eventos`, `crear_evento`, `buscar_correo`, `enviar_correo`, `buscar_contactos`, `gestionar_contacto`, `registrar_transaccion`, `resumen_finanzas`, `consultar_documentos`, `buscar_web`, `generar_contenido`, `publicar_social`, `usar_computadora`, `hora_actual`, `calculadora`, `configurar_credencial` (2026-07-09: auto-configuración de credenciales por chat — voz/Stripe/Twilio/WhatsApp/bots/apps OAuth propias — `dangerous=True`, ver `edecan_toolkit.autoconfiguracion`), `acceder_codigo_local` (2026-07-09: lectura/escritura/comandos/commits LOCALES sobre el propio repo, solo con `EDECAN_LOCAL_MODE` + `EDECAN_LOCAL_REPO_PATH` configurados — nunca en el hosted multi-tenant, `dangerous=True`, ver `edecan_toolkit.codigo_local`).
+- Herramientas del toolkit (nombres exactos): `crear_recordatorio`, `listar_recordatorios`, `agenda_eventos`, `crear_evento`, `buscar_correo`, `enviar_correo`, `buscar_contactos`, `gestionar_contacto`, `registrar_transaccion`, `resumen_finanzas`, `consultar_documentos`, `buscar_web`, `generar_contenido`, `publicar_social`, `usar_computadora`, `hora_actual`, `calculadora`, `configurar_credencial`, `acceder_codigo_local`, `diagnosticar_autorreparacion_local` y `gestionar_autorreparacion_local`. `configurar_credencial` y las escrituras de código son `dangerous=True`. `diagnosticar_autorreparacion_local` es solo lectura; `gestionar_autorreparacion_local` es local-only, exige opt-in, checkpoint Git limpio, worktree aislado, ediciones con SHA previo, comandos `argv` exactos, pruebas verdes, integración fast-forward y nunca hace push. Ver `edecan_toolkit.autoconfiguracion`, `edecan_toolkit.codigo_local` y [`docs/autorreparacion-local.md`](docs/autorreparacion-local.md).
 - `SearchProvider` (en `edecan_toolkit.research`): `async search(query: str, k: int = 5) -> list[SearchHit(title, url, snippet)]`; impls `BraveSearch`, `TavilySearch`, `StubSearch` según `SEARCH_PROVIDER`.
 
 ### 10.15 Calidad

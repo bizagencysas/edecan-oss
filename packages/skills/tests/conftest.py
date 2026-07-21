@@ -151,6 +151,7 @@ class FakeSession:
                 existente["version"] = params["version"]
                 existente["descripcion"] = params["descripcion"]
                 existente["source"] = params["source"]
+                existente["recursos"] = json.loads(params["recursos"])
                 existente["trust_tier"] = params["trust_tier"]
                 existente["capabilities"] = json.loads(params["capabilities"])
                 if params["enabled"] is False:
@@ -169,7 +170,7 @@ class FakeSession:
                 "descripcion": params["descripcion"],
                 "version": params["version"],
                 "contenido": params["contenido"],
-                "recursos": params.get("recursos"),
+                "recursos": json.loads(params.get("recursos") or "{}"),
                 "trust_tier": params.get("trust_tier", "sin_revisar"),
                 "capabilities": json.loads(params.get("capabilities") or "[]"),
                 "enabled": params.get("enabled", True),
@@ -219,6 +220,7 @@ def _fake_settings(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "SKILLS_INDEX_URL": "https://skills.sh",
         "BROWSER_TIMEOUT_SECONDS": 20,
+        "EDECAN_LOCAL_MODE": True,
     }
     base.update(overrides)
     return SimpleNamespace(**base)

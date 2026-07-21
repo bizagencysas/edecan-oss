@@ -212,6 +212,83 @@ async def test_turno_con_tool_use_luego_texto():
 
 
 @pytest.mark.asyncio
+async def test_frase_natural_compuesta_puede_encadenar_varias_capacidades():
+    provider = FakeProvider(
+        [
+            [
+                tool_call_chunk("call_mail", "buscar_correo", {"query": "Ana"}),
+                tool_call_chunk(
+                    "call_reminder",
+                    "crear_recordatorio",
+                    {"texto": "Pagar", "cuando": "mañana"},
+                ),
+            ],
+            [text_chunk("Revisé el correo y dejé el recordatorio listo.")],
+        ]
+    )
+    mail = FakeTool(name="buscar_correo")
+    reminder = FakeTool(name="crear_recordatorio")
+    unrelated = FakeTool(name="registrar_salud")
+    registry = ToolRegistry()
+    for tool in (mail, reminder, unrelated):
+        registry.register(tool)
+    # El selector solo entra en juego para catálogos grandes; registries
+    # restringidos de hasta 12 tools se conservan completos a propósito.
+    for index in range(12):
+        registry.register(FakeTool(name=f"irrelevante_{index}"))
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Revisa el correo de Ana y recuérdame pagar mañana.",
+        flags={},
+    )
+
+    assert mail.calls == [{"query": "Ana"}]
+    assert reminder.calls == [{"texto": "Pagar", "cuando": "mañana"}]
+    assert unrelated.calls == []
+    assert [event.name for event in events if isinstance(event, ToolStartEvent)] == [
+        "buscar_correo",
+        "crear_recordatorio",
+    ]
+    request = provider.received_requests[0]
+    assert {spec.name for spec in request.tools} == {"buscar_correo", "crear_recordatorio"}
+    assert "nunca le pidas escoger un módulo" in request.system
+    assert "registrar_salud" in request.system  # catálogo para descubrimiento honesto
+
+
+@pytest.mark.asyncio
+async def test_modelo_no_puede_invocar_tool_del_catalogo_que_no_fue_seleccionada():
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("call_injected", "registrar_salud", {"tipo": "agua"})],
+            [text_chunk("No ejecuté esa acción.")],
+        ]
+    )
+    health = FakeTool(name="registrar_salud")
+    registry = ToolRegistry()
+    registry.register(health)
+    for index in range(12):
+        registry.register(FakeTool(name=f"irrelevante_{index}"))
+
+    await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="¿Qué hora es?",
+        flags={},
+    )
+
+    assert health.calls == []
+    assert provider.received_requests[0].tools == []
+    tool_result = provider.received_requests[1].messages[-1].content[0]["content"]
+    assert "herramienta desconocida" in tool_result
+
+
+@pytest.mark.asyncio
 async def test_tool_desconocida_no_rompe_el_turno():
     provider = FakeProvider(
         [
@@ -420,6 +497,199 @@ async def test_tool_dangerous_preaprobada_se_ejecuta():
 
     assert [type(e) for e in events] == [ToolStartEvent, ToolEndEvent, TextDeltaEvent, DoneEvent]
     assert tool.calls == [{"y": 2}]
+
+
+@pytest.mark.asyncio
+async def test_resume_turn_ejecuta_lote_compuesto_una_vez_y_continua_el_llm():
+    provider = FakeProvider(
+        [
+            [
+                text_chunk("Voy a hacerlo. "),
+                tool_call_chunk("mail_1", "enviar_correo", {"to": "ana@example.com"}),
+                tool_call_chunk("doc_1", "revisar_documento", {"id": "doc-7"}),
+                tool_call_chunk("rem_1", "crear_recordatorio", {"texto": "Pagar mañana"}),
+                usage_chunk(8, 3),
+            ],
+            [
+                text_chunk("Correo enviado, documento revisado y recordatorio creado."),
+                usage_chunk(4, 7),
+            ],
+        ]
+    )
+    mail = FakeTool(name="enviar_correo", dangerous=True)
+    document = FakeTool(name="revisar_documento")
+    reminder = FakeTool(name="crear_recordatorio")
+    registry = ToolRegistry()
+    for tool in (mail, document, reminder):
+        registry.register(tool)
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    first_events = await _collect(
+        agent,
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Envía el correo, revisa el documento y recuérdame pagar mañana.",
+        flags={},
+    )
+    confirmation = next(
+        event for event in first_events if isinstance(event, ConfirmationRequiredEvent)
+    )
+    assert confirmation.pending_turn is not None
+    assert mail.calls == document.calls == reminder.calls == []
+
+    resumed = [
+        event
+        async for event in agent.resume_turn(
+            ctx=_ctx(),
+            pending=confirmation.pending_turn,
+            approved_tool_call_id="mail_1",
+            flags={},
+        )
+    ]
+
+    assert mail.calls == [{"to": "ana@example.com"}]
+    assert document.calls == [{"id": "doc-7"}]
+    assert reminder.calls == [{"texto": "Pagar mañana"}]
+    assert [event.name for event in resumed if isinstance(event, ToolStartEvent)] == [
+        "enviar_correo",
+        "revisar_documento",
+        "crear_recordatorio",
+    ]
+    assert isinstance(resumed[-1], DoneEvent)
+    assert resumed[-1].usage == {"input_tokens": 12, "output_tokens": 10}
+    second_request = provider.received_requests[-1]
+    assert [message.role for message in second_request.messages][-2:] == ["assistant", "tool"]
+
+
+@pytest.mark.asyncio
+async def test_resume_turn_preflight_pide_cada_dangerous_antes_de_ejecutar_el_lote():
+    provider = FakeProvider(
+        [
+            [
+                tool_call_chunk("mail_1", "enviar_correo", {}),
+                tool_call_chunk("pay_1", "preparar_pago", {}),
+                tool_call_chunk("safe_1", "crear_recordatorio", {}),
+            ],
+            [text_chunk("Listo")],
+        ]
+    )
+    mail = FakeTool(name="enviar_correo", dangerous=True)
+    payment = FakeTool(name="preparar_pago", dangerous=True)
+    reminder = FakeTool(name="crear_recordatorio")
+    registry = ToolRegistry()
+    for tool in (mail, payment, reminder):
+        registry.register(tool)
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    first = await _collect(
+        agent, ctx=_ctx(), persona=_persona(), history=[], user_text="haz las tres", flags={}
+    )
+    pending = first[0].pending_turn
+    assert pending is not None
+    second = [
+        event
+        async for event in agent.resume_turn(
+            ctx=_ctx(), pending=pending, approved_tool_call_id="mail_1", flags={}
+        )
+    ]
+    assert len(second) == 1
+    assert isinstance(second[0], ConfirmationRequiredEvent)
+    assert second[0].tool_call_id == "pay_1"
+    assert mail.calls == payment.calls == reminder.calls == []
+
+    final_pending = second[0].pending_turn
+    assert final_pending is not None
+    final = [
+        event
+        async for event in agent.resume_turn(
+            ctx=_ctx(), pending=final_pending, approved_tool_call_id="pay_1", flags={}
+        )
+    ]
+    assert mail.calls == payment.calls == reminder.calls == [{}]
+    assert isinstance(final[-1], DoneEvent)
+
+
+@pytest.mark.asyncio
+async def test_resume_turn_falla_cerrado_si_tool_desaparece_o_pierde_su_flag():
+    provider = FakeProvider([[tool_call_chunk("call_1", "premium_danger", {})]])
+    tool = FakeTool(
+        name="premium_danger", dangerous=True, requires_flags=frozenset({"tools.premium"})
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+    first_agent = Agent(FakeLLMRouter(provider), registry)
+    first = await _collect(
+        first_agent,
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="hazlo",
+        flags={"tools.premium": True},
+    )
+    pending = first[0].pending_turn
+    assert pending is not None
+
+    downgraded = [
+        event
+        async for event in first_agent.resume_turn(
+            ctx=_ctx(),
+            pending=pending,
+            approved_tool_call_id="call_1",
+            flags={"tools.premium": False},
+        )
+    ]
+    assert len(downgraded) == 1 and isinstance(downgraded[0], ErrorEvent)
+    assert tool.calls == []
+
+    removed_agent = Agent(FakeLLMRouter(FakeProvider([])), ToolRegistry())
+    removed = [
+        event
+        async for event in removed_agent.resume_turn(
+            ctx=_ctx(),
+            pending=pending,
+            approved_tool_call_id="call_1",
+            flags={"tools.premium": True},
+        )
+    ]
+    assert len(removed) == 1 and isinstance(removed[0], ErrorEvent)
+    assert tool.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_turn_puede_suspender_una_future_dangerous_sin_repetir_la_primera():
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("mail_1", "enviar_correo", {})],
+            [tool_call_chunk("pay_2", "preparar_pago", {"monto": 20})],
+        ]
+    )
+    mail = FakeTool(name="enviar_correo", dangerous=True)
+    payment = FakeTool(name="preparar_pago", dangerous=True)
+    registry = ToolRegistry()
+    registry.register(mail)
+    registry.register(payment)
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    first = await _collect(
+        agent, ctx=_ctx(), persona=_persona(), history=[], user_text="envía y paga", flags={}
+    )
+    pending = first[0].pending_turn
+    assert pending is not None
+    resumed = [
+        event
+        async for event in agent.resume_turn(
+            ctx=_ctx(), pending=pending, approved_tool_call_id="mail_1", flags={}
+        )
+    ]
+
+    assert mail.calls == [{}]
+    assert payment.calls == []
+    next_confirmation = resumed[-1]
+    assert isinstance(next_confirmation, ConfirmationRequiredEvent)
+    assert next_confirmation.tool_call_id == "pay_2"
+    assert next_confirmation.pending_turn is not None
+    assert next_confirmation.pending_turn.iteration == 1
 
 
 # --------------------------------------------------------------------------

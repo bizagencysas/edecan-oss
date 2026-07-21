@@ -1,17 +1,15 @@
 import SwiftUI
 import EdecanKit
 
-/// Pestaña "Inicio": saludo con el nombre de pila (`GET /v1/me`, mismo
-/// criterio que usa el panel web) + accesos directos, como el mockup.
+/// Actividad: accesos simples al trabajo que Edecan ejecuta o vigila.
 struct InicioView: View {
     @Environment(SessionStore.self) private var session
-    @State private var mostrandoChat = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    saludo
+                    introduccion
                     accesosDirectos
                     if let error = session.errorMensaje {
                         Text(error)
@@ -23,22 +21,20 @@ struct InicioView: View {
                 .padding()
             }
             .background(EdecanTheme.degradado.opacity(0.06).ignoresSafeArea())
-            .navigationTitle("Inicio")
+            .navigationTitle("Actividad")
             .task { await session.cargarMe() }
             .refreshable { await session.cargarMe() }
         }
     }
 
-    private var saludo: some View {
+    private var introduccion: some View {
         VStack(alignment: .leading, spacing: 6) {
             if session.cargandoMe && session.me == nil {
                 ProgressView()
             } else {
-                Text("Hola, \(session.me?.nombrePila ?? "de nuevo") 👋")
-                    .font(.largeTitle.weight(.bold))
-            }
-            if let tenant = session.me?.tenant {
-                Text(tenant.name)
+                Text("Todo lo que Edecan está haciendo")
+                    .font(.title2.weight(.bold))
+                Text("Revisa avances, decisiones pendientes y rutinas desde un solo lugar.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -48,14 +44,13 @@ struct InicioView: View {
 
     private var accesosDirectos: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
-            AccesoDirecto(icono: "bubble.left.and.bubble.right.fill", titulo: "Chat", subtitulo: "Habla con Edecán")
             NavigationLink {
                 MisionesView()
             } label: {
                 AccesoDirecto(
                     icono: "point.3.filled.connected.trianglepath.dotted",
-                    titulo: "Misiones",
-                    subtitulo: "Objetivos con sub-agentes"
+                    titulo: "Trabajo delegado",
+                    subtitulo: "Objetivos y aprobaciones"
                 )
             }
             .buttonStyle(.plain)
@@ -64,8 +59,8 @@ struct InicioView: View {
             } label: {
                 AccesoDirecto(
                     icono: "bolt.badge.clock.fill",
-                    titulo: "Automatizaciones",
-                    subtitulo: "Reglas de agenda o webhook"
+                    titulo: "Rutinas",
+                    subtitulo: "Acciones programadas"
                 )
             }
             .buttonStyle(.plain)
@@ -81,8 +76,6 @@ struct InicioView: View {
                 AccesoDirecto(icono: "display", titulo: "Remoto", subtitulo: "Ver y controlar tu Mac/PC")
             }
             .buttonStyle(.plain)
-            AccesoDirecto(icono: "dollarsign.circle.fill", titulo: "Finanzas", subtitulo: "Próximamente en la app")
-            AccesoDirecto(icono: "doc.text.fill", titulo: "Archivos", subtitulo: "Próximamente en la app")
         }
     }
 }

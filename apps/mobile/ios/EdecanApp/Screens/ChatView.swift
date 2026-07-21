@@ -1,7 +1,7 @@
 import SwiftUI
 import EdecanKit
 
-/// Pestaña "Chat" — funcional: lista de mensajes, input, envío hacia
+/// Superficie principal "Edecan" — lista de mensajes, input y envío hacia
 /// `POST /v1/conversations/{id}/messages` (SSE) apendeando `text_delta` a
 /// medida que llega, más un indicador mientras el agente usa una
 /// herramienta (`tool_start`/`tool_end`). Lógica real en ``ChatViewModel``;
@@ -10,6 +10,7 @@ struct ChatView: View {
     @Environment(SessionStore.self) private var session
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
+    @State private var mostrandoVoz = false
     @FocusState private var campoEnfocado: Bool
 
     var body: some View {
@@ -26,8 +27,11 @@ struct ChatView: View {
                 barraDeEntrada
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-            .navigationTitle("Chat")
+            .navigationTitle("Edecan")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $mostrandoVoz) {
+                VozView()
+            }
         }
     }
 
@@ -75,6 +79,17 @@ struct ChatView: View {
 
     private var barraDeEntrada: some View {
         HStack(alignment: .bottom, spacing: 12) {
+            Button {
+                mostrandoVoz = true
+            } label: {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 42, height: 42)
+                    .foregroundStyle(EdecanTheme.morado)
+                    .tarjetaVidrio(esquina: 18)
+            }
+            .accessibilityLabel("Hablar con Edecan")
+
             TextField("Escríbele a Edecán…", text: $textoActual, axis: .vertical)
                 .lineLimit(1...4)
                 .focused($campoEnfocado)

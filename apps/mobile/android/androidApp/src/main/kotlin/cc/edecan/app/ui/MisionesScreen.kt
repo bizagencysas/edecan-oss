@@ -86,7 +86,7 @@ private val COLOR_ESTADO_MISION = mapOf(
  * `ROADMAP_V2.md` §7.4/§7.9, WP-V5-07): lista con badge por estado, alta de
  * misión, detalle con pasos + resultado, y tarjeta Aprobar/Rechazar cuando
  * la misión queda `waiting_confirmation` — todo cableado a los endpoints
- * reales de `EdecanApi`. Se llega acá SOLO desde Inicio (`InicioScreen`,
+ * reales de `EdecanApi`. Se llega acá desde Actividad (`InicioScreen`,
  * `RootNav.kt`), no es una pestaña de la barra inferior. Lógica real en
  * [MisionesViewModel]; esta pantalla solo dibuja su estado (lista o
  * detalle, según `uiState.seleccionId`).

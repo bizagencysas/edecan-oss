@@ -340,7 +340,7 @@ data class SetupStatusOut(
 )
 
 // ---------------------------------------------------------------------------
-// Voz web (`/v1/voice/*`, `docs/api.md` §"Voz web") — pestaña Voz.
+// Voz web (`/v1/voice/*`, `docs/api.md` §"Voz web") — micrófono de Chat.
 // ---------------------------------------------------------------------------
 
 /** Respuesta ya leída de `POST /v1/voice/speak`: el binario de audio (mp3
@@ -352,7 +352,7 @@ data class VoiceAudio(val bytes: ByteArray, val contentType: String)
 
 // ---------------------------------------------------------------------------
 // IDE embebido, solo lectura (`/v1/ide/*`, `docs/api.md` §"/v1/ide") —
-// pestaña IDE.
+// IDE accesible desde Modo avanzado.
 // ---------------------------------------------------------------------------
 
 @Serializable

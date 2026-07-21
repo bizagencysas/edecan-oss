@@ -204,7 +204,7 @@ class ChatViewModel : ViewModel() {
         if (objeto.isEmpty()) return ""
         return objeto.entries.joinToString(" · ") { (clave, valor) ->
             val texto = (valor as? JsonPrimitive)?.contentOrNull ?: valor.toString()
-            "$clave: $texto"
+            "${clave.replace('_', ' ')}: $texto"
         }
     }
 }

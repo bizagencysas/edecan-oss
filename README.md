@@ -26,7 +26,7 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.4).** The source, tests, web app, API, workers,
+> **Developer preview (v0.5).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
@@ -39,9 +39,10 @@ email, review the document and remind me to pay tomorrow.” Edecan decides whic
 capabilities are needed, coordinates them and reports the result in the same
 conversation.
 
-The main product has only three places: **Edecan**, **Activity** and
-**Settings**. Technical and business modules remain available in a collapsed
-advanced mode; they are implementation details, not the product's front door.
+The mobile product has five human-facing places: **Edecan**, **Create**,
+**Remote**, **Activity** and **Settings**. Create routes a guided request back
+into the same chat; Skills, MCP and business modules stay in collapsed advanced
+settings. They are capabilities, not separate products the person must learn.
 
 Most assistants forget context, stop at text, or require credentials to pass
 through a hosted intermediary. Edecan follows a different model:
@@ -78,11 +79,11 @@ through a hosted intermediary. Edecan follows a different model:
 
 | Surface | Current state | Evidence |
 |---|---|---|
-| Python core, API, workers, tools | Implemented | 4,302 offline tests pass locally |
-| Web application | Implemented | Next.js production build renders 35 routes |
+| Python core, API, workers, tools | Implemented | 4,300+ offline tests pass locally |
+| Web application | Implemented | Next.js production build renders 37 routes |
 | Local desktop runtime | Preview | Tauri shell + packaged Python backend; source build required |
 | macOS and Windows desktop packaging | Preview | Build scripts exist; signed public installers do not yet |
-| Native iOS and Android companions | Experimental | Source clients and model tests are included |
+| Native iOS and Android companions | Preview | iOS simulator build and Android debug APK compile from source |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
 | BYO Twilio conversational calls | Implemented | Signed webhook and injected-provider tests; no real calls in CI |
 

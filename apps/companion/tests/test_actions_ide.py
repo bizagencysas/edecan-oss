@@ -412,7 +412,7 @@ def test_apply_edit_rejects_binary_file(companion_config):
 
 
 def test_screenshot_rejects_unsupported_platforms(companion_config, monkeypatch):
-    monkeypatch.setattr(actions.sys, "platform", "win32")
+    monkeypatch.setattr(actions.sys, "platform", "freebsd13")
 
     with pytest.raises(actions.ActionError, match="no soportada"):
         actions._screenshot({}, companion_config)

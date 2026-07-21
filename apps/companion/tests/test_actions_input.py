@@ -29,6 +29,10 @@ class _FakeInputBackend:
         self.clicks: list[tuple[int, int, str]] = []
         self.typed: list[str] = []
         self.pressed: list[str] = []
+        self.downs: list[tuple[int, int, str]] = []
+        self.ups: list[tuple[int, int, str]] = []
+        self.scrolls: list[tuple[int, int]] = []
+        self.shortcuts: list[tuple[str, tuple[str, ...]]] = []
 
     def move_pointer(self, x: int, y: int) -> None:
         self.moves.append((x, y))
@@ -36,11 +40,22 @@ class _FakeInputBackend:
     def click_pointer(self, x: int, y: int, button: str) -> None:
         self.clicks.append((x, y, button))
 
+    def pointer_down(self, x: int, y: int, button: str) -> None:
+        self.downs.append((x, y, button))
+
+    def pointer_up(self, x: int, y: int, button: str) -> None:
+        self.ups.append((x, y, button))
+
+    def scroll_pointer(self, delta_x: int, delta_y: int) -> None:
+        self.scrolls.append((delta_x, delta_y))
+
     def type_text(self, text: str) -> None:
         self.typed.append(text)
 
-    def press_key(self, key: str) -> None:
+    def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None:
         self.pressed.append(key)
+        if modifiers:
+            self.shortcuts.append((key, modifiers))
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +75,11 @@ class _FakeQuartzModule:
     kCGMouseButtonRight = "btn_right"
     kCGMouseButtonCenter = "btn_center"
     kCGHIDEventTap = "hid_tap"
+    kCGScrollEventUnitPixel = "pixel"
+    kCGEventFlagMaskCommand = 1
+    kCGEventFlagMaskControl = 2
+    kCGEventFlagMaskAlternate = 4
+    kCGEventFlagMaskShift = 8
 
     def __init__(self, *, trusted: bool = True) -> None:
         self.trusted = trusted
@@ -79,6 +99,12 @@ class _FakeQuartzModule:
 
     def CGEventPost(self, tap, event):  # noqa: ANN001
         self.posted.append(event)
+
+    def CGEventCreateScrollWheelEvent(self, source, unit, wheel_count, delta_y, delta_x):  # noqa: ANN001
+        return {"kind": "scroll", "delta_x": delta_x, "delta_y": delta_y}
+
+    def CGEventSetFlags(self, event, flags):  # noqa: ANN001
+        event["flags"] = flags
 
 
 def _install_fake_quartz(monkeypatch, *, trusted: bool = True) -> _FakeQuartzModule:
@@ -185,10 +211,18 @@ def test_quartz_backend_press_key_uses_the_correct_virtual_keycode(monkeypatch):
 
 
 def test_get_input_backend_rejects_unsupported_platforms(monkeypatch):
-    monkeypatch.setattr(actions.sys, "platform", "linux")
+    monkeypatch.setattr(actions.sys, "platform", "freebsd13")
 
     with pytest.raises(actions.ActionError, match="no está soportado"):
         actions._get_input_backend()
+
+
+def test_get_input_backend_constructs_pynput_backend_on_linux(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(actions.sys, "platform", "linux")
+    monkeypatch.setattr(actions, "_PynputInputBackend", lambda: sentinel)
+
+    assert actions._get_input_backend() is sentinel
 
 
 def test_get_input_backend_constructs_quartz_backend_on_darwin(monkeypatch):
@@ -260,6 +294,34 @@ def test_input_pointer_honors_custom_button_for_click(companion_config, monkeypa
     assert fake.clicks == [(1, 2, "middle")]
 
 
+def test_input_pointer_scroll_moves_then_scrolls(companion_config, monkeypatch):
+    fake = _FakeInputBackend()
+    monkeypatch.setattr(actions, "_get_input_backend", lambda: fake)
+
+    result = actions._input_pointer(
+        {"x": 20, "y": 30, "accion": "scroll", "delta_y": -240}, companion_config
+    )
+
+    assert fake.moves == [(20, 30)]
+    assert fake.scrolls == [(0, -240)]
+    assert result["delta_y"] == -240
+
+
+def test_input_pointer_drag_posts_down_moves_and_up(companion_config, monkeypatch):
+    fake = _FakeInputBackend()
+    monkeypatch.setattr(actions, "_get_input_backend", lambda: fake)
+
+    actions._input_pointer(
+        {"start_x": 10, "start_y": 20, "x": 110, "y": 220, "accion": "drag"},
+        companion_config,
+    )
+
+    assert fake.moves[0] == (10, 20)
+    assert fake.moves[-1] == (110, 220)
+    assert fake.downs == [(10, 20, "left")]
+    assert fake.ups == [(110, 220, "left")]
+
+
 def test_input_pointer_requires_x(companion_config):
     with pytest.raises(actions.ActionError, match="'x'"):
         actions._input_pointer({"y": 1, "accion": "move"}, companion_config)
@@ -319,6 +381,18 @@ def test_input_key_tecla_presses_and_reports(companion_config, monkeypatch):
     assert fake.pressed == ["enter"]
     assert fake.typed == []
     assert result == {"tipo": "tecla", "tecla": "enter"}
+
+
+def test_input_key_supports_keyboard_shortcuts(companion_config, monkeypatch):
+    fake = _FakeInputBackend()
+    monkeypatch.setattr(actions, "_get_input_backend", lambda: fake)
+
+    result = actions._input_key(
+        {"tecla": "space", "modifiers": ["command", "shift"]}, companion_config
+    )
+
+    assert fake.shortcuts == [("space", ("command", "shift"))]
+    assert result["modifiers"] == ["command", "shift"]
 
 
 @pytest.mark.parametrize("tecla", actions._SPECIAL_KEYS)

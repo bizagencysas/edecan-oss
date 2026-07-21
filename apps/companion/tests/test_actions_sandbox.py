@@ -73,6 +73,23 @@ def test_write_file_supports_base64_encoding(companion_config):
     assert (companion_config.sandbox_dir / "bin.dat").read_bytes() == raw
 
 
+def test_trash_path_uses_recoverable_system_trash(companion_config, monkeypatch):
+    target = companion_config.sandbox_dir / "borrador.txt"
+    target.write_text("recuperable", encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setattr("send2trash.send2trash", lambda path: calls.append(path))
+
+    result = actions._trash_path({"path": "borrador.txt"}, companion_config)
+
+    assert calls == [str(target)]
+    assert result == {"path": "borrador.txt", "trashed": True}
+
+
+def test_trash_path_never_accepts_the_sandbox_root(companion_config):
+    with pytest.raises(actions.ActionError, match="raíz completa"):
+        actions._trash_path({}, companion_config)
+
+
 def test_read_file_rejects_files_over_max_size(companion_config):
     big = companion_config.sandbox_dir / "big.bin"
     big.write_bytes(b"a" * (actions.MAX_READ_FILE_BYTES + 1))

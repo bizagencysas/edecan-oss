@@ -18,12 +18,16 @@ el resultado.
 
 ## Superficie visible
 
-La navegación primaria tiene tres destinos:
+La navegación móvil tiene cinco destinos humanos, no módulos técnicos:
 
 1. **Edecan**: conversación por texto o voz, archivos y resultados.
-2. **Actividad**: trabajo en curso, resultados, aprobaciones y errores que
+2. **Crear**: un atajo guiado que convierte una idea en una solicitud al
+   mismo chat; no ejecuta un producto separado.
+3. **Remoto**: la computadora emparejada, siempre con consentimiento y
+   controles visibles para terminar la sesión.
+4. **Actividad**: trabajo en curso, resultados, aprobaciones y errores que
    necesitan atención.
-3. **Ajustes**: identidad, privacidad, proveedores y conexiones. Las opciones
+5. **Ajustes**: identidad, privacidad, proveedores y conexiones. Las opciones
    técnicas viven en un modo avanzado, cerrado por defecto.
 
 Negocios, correo, calendario, reuniones, documentos, recordatorios, viajes,

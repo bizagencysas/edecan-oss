@@ -157,6 +157,10 @@ private data class RemotePointerInputBody(
     val y: Int,
     val accion: String,
     val button: String? = null,
+    @SerialName("start_x") val startX: Int? = null,
+    @SerialName("start_y") val startY: Int? = null,
+    @SerialName("delta_x") val deltaX: Int = 0,
+    @SerialName("delta_y") val deltaY: Int = 0,
 )
 
 @Serializable
@@ -164,6 +168,7 @@ private data class RemoteKeyInputBody(
     val tipo: String = "key",
     val texto: String? = null,
     val tecla: String? = null,
+    val modifiers: List<String> = emptyList(),
 )
 
 /** `commonMain` es compartido con los targets iOS declarados (ver
@@ -704,6 +709,12 @@ class EdecanApi private constructor(
     suspend fun getRemoteFrame(sessionId: String): RemoteFrame =
         conAutoRefresh { obtener("/v1/remote/sessions/$sessionId/frame") }
 
+    suspend fun listSkills(): List<SkillSummary> =
+        conAutoRefresh { obtener<SkillsEnvelope>("/v1/skills").skills }
+
+    suspend fun listMcpServers(): List<McpServerSummary> =
+        conAutoRefresh { obtener("/v1/mcp/servers") }
+
     /** `POST /v1/remote/sessions/{id}/end` — termina la sesión (idempotente,
      * repetirlo no falla). Devuelve la sesión ya actualizada. */
     suspend fun endRemoteSession(sessionId: String): RemoteSession =
@@ -723,11 +734,18 @@ class EdecanApi private constructor(
         y: Int,
         accion: String,
         button: String? = null,
+        startX: Int? = null,
+        startY: Int? = null,
+        deltaX: Int = 0,
+        deltaY: Int = 0,
     ): RemoteInputResult =
         conAutoRefresh {
             enviar(
                 "/v1/remote/sessions/$sessionId/input",
-                RemotePointerInputBody(x = x, y = y, accion = accion, button = button),
+                RemotePointerInputBody(
+                    x = x, y = y, accion = accion, button = button,
+                    startX = startX, startY = startY, deltaX = deltaX, deltaY = deltaY,
+                ),
             )
         }
 
@@ -741,9 +759,14 @@ class EdecanApi private constructor(
 
     /** `POST .../input {tipo:"key", tecla}` — [tecla] debe ser una de
      * [REMOTE_SPECIAL_KEYS]. */
-    suspend fun sendRemoteKeyTecla(sessionId: String, tecla: String): RemoteInputResult =
+    suspend fun sendRemoteKeyTecla(
+        sessionId: String, tecla: String, modifiers: List<String> = emptyList()
+    ): RemoteInputResult =
         conAutoRefresh {
-            enviar("/v1/remote/sessions/$sessionId/input", RemoteKeyInputBody(tecla = tecla))
+            enviar(
+                "/v1/remote/sessions/$sessionId/input",
+                RemoteKeyInputBody(tecla = tecla, modifiers = modifiers),
+            )
         }
 
     // -------------------------------------------------------------------

@@ -45,7 +45,7 @@ import {
 } from "@/lib/api-remoto";
 import { useAuth } from "@/lib/auth-context";
 
-const AUTO_REFRESH_INTERVAL_MS = 2000;
+const AUTO_REFRESH_INTERVAL_MS = 350;
 
 function describeError(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -69,6 +69,7 @@ export default function RemotoPage() {
   const [sendingInput, setSendingInput] = useState(false);
   const [auto, setAuto] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const frameInFlightRef = useRef(false);
 
   // `session` cambia en cada frame (frames_count/status) pero el intervalo de
   // abajo no debe reiniciarse por eso — solo le interesa el `id`. Un ref
@@ -94,7 +95,8 @@ export default function RemotoPage() {
 
   const handleFrame = useCallback(async (): Promise<void> => {
     const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
+    if (!sessionId || frameInFlightRef.current) return;
+    frameInFlightRef.current = true;
     setRefreshing(true);
     try {
       const next = await getRemoteFrame(sessionId);
@@ -127,6 +129,7 @@ export default function RemotoPage() {
         void loadHistory();
       }
     } finally {
+      frameInFlightRef.current = false;
       setRefreshing(false);
     }
   }, [loadHistory]);

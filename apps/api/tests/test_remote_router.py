@@ -352,11 +352,23 @@ async def test_frame_success_transitions_pending_to_active_and_returns_canned_b6
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"image_b64": "aGVsbG8=", "width": 1920, "height": 1080, "seq": 1}
+    assert body == {
+        "image_b64": "aGVsbG8=",
+        "width": 1920,
+        "height": 1080,
+        "mime": "image/png",
+        "origin_x": 0,
+        "origin_y": 0,
+        "seq": 1,
+    }
 
-    # El companion recibió exactamente la acción "screenshot" sin parámetros.
+    # El companion recibe un frame JPEG acotado para la vista interactiva.
     assert fake_manager.calls == [
-        (uuid.UUID(session["tenant_id"]), "screenshot", {}),
+        (
+            uuid.UUID(session["tenant_id"]),
+            "screenshot",
+            {"format": "jpeg", "quality": 68, "max_width": 1600},
+        ),
     ]
 
     fetched = await client.get(f"/v1/remote/sessions/{session['id']}", headers=headers)

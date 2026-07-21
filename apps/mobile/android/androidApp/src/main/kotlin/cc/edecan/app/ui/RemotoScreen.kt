@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -109,6 +110,7 @@ fun RemotoScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     remotoViewModel: RemotoViewModel = viewModel(),
     onVolver: () -> Unit = {},
+    mostrarVolver: Boolean = true,
 ) {
     val sessionState by sessionViewModel.uiState.collectAsState()
     val uiState by remotoViewModel.uiState.collectAsState()
@@ -131,7 +133,9 @@ fun RemotoScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Remoto") },
-                navigationIcon = { IconButton(onClick = onVolver) { Text("←") } },
+                navigationIcon = {
+                    if (mostrarVolver) IconButton(onClick = onVolver) { Text("←") }
+                },
             )
         },
     ) { padding ->
@@ -161,9 +165,18 @@ fun RemotoScreen(
                     uiState = uiState,
                     onActualizar = { api?.let { remotoViewModel.actualizarFrame(it) } },
                     onTerminar = { api?.let { remotoViewModel.terminar(it) } },
-                    onPointer = { x, y, accion, boton -> api?.let { remotoViewModel.enviarPointer(it, x, y, accion, boton) } },
+                    onPointer = { comando ->
+                        api?.let {
+                            remotoViewModel.enviarPointer(
+                                it, comando.x, comando.y, comando.accion, comando.button,
+                                comando.startX, comando.startY, comando.deltaX, comando.deltaY,
+                            )
+                        }
+                    },
                     onTexto = { texto -> api?.let { remotoViewModel.enviarTexto(it, texto) } },
-                    onTecla = { tecla -> api?.let { remotoViewModel.enviarTecla(it, tecla) } },
+                    onTecla = { tecla, modifiers ->
+                        api?.let { remotoViewModel.enviarTecla(it, tecla, modifiers) }
+                    },
                 )
             }
         }
@@ -397,9 +410,9 @@ private fun SesionActivaColumn(
     uiState: RemotoUiState,
     onActualizar: () -> Unit,
     onTerminar: () -> Unit,
-    onPointer: (Int, Int, String, String?) -> Unit,
+    onPointer: (RemotePointerCommand) -> Unit,
     onTexto: (String) -> Unit,
-    onTecla: (String) -> Unit,
+    onTecla: (String, List<String>) -> Unit,
 ) {
     val sesion = uiState.sesionActual ?: return
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
@@ -498,7 +511,7 @@ private fun EsperandoAprobacionCard(cargando: Boolean, error: String?, onReinten
 // Visor: frame + zoom/pan + tap-to-click + barra de teclado.
 // ---------------------------------------------------------------------------
 
-/** Decodifica `frame.image_b64` (PNG en base64) a [ImageBitmap] en
+/** Decodifica `frame.image_b64` (JPEG/PNG en base64) a [ImageBitmap] en
  * `Dispatchers.Default` (nunca en el hilo principal — una captura de
  * pantalla completa puede pesar varios cientos de KB) — `null` mientras
  * decodifica o si el decode falla (nunca lanza, `runCatching`). */
@@ -528,9 +541,9 @@ private fun VisorRemoto(
     enviandoInput: Boolean,
     errorMensaje: String?,
     onActualizar: () -> Unit,
-    onPointer: (x: Int, y: Int, accion: String, button: String?) -> Unit,
+    onPointer: (RemotePointerCommand) -> Unit,
     onTexto: (String) -> Unit,
-    onTecla: (String) -> Unit,
+    onTecla: (String, List<String>) -> Unit,
 ) {
     val esControl = sesion.isControl
     val bitmap = rememberFrameBitmap(frame.imageB64)
@@ -563,8 +576,28 @@ private fun VisorRemoto(
             elementHeight = tam.height.toDouble(),
             frameWidth = frame.width,
             frameHeight = frame.height,
+            originX = frame.originX,
+            originY = frame.originY,
         ) ?: return // cayó en la franja vacía del letterbox -- se ignora, nunca se manda una coordenada inventada.
-        onPointer(punto.x, punto.y, accion, null)
+        onPointer(RemotePointerCommand(x = punto.x, y = punto.y, accion = accion))
+    }
+
+    fun manejarArrastre(inicio: Offset, fin: Offset) {
+        val tam = tamanoElemento
+        if (tam.width <= 0 || tam.height <= 0) return
+        fun mapear(offset: Offset) = mapPointToRemoteCoords(
+            pointX = offset.x.toDouble(), pointY = offset.y.toDouble(),
+            elementWidth = tam.width.toDouble(), elementHeight = tam.height.toDouble(),
+            frameWidth = frame.width, frameHeight = frame.height,
+            originX = frame.originX, originY = frame.originY,
+        )
+        val start = mapear(inicio) ?: return
+        val end = mapear(fin) ?: return
+        onPointer(
+            RemotePointerCommand(
+                x = end.x, y = end.y, accion = "drag", startX = start.x, startY = start.y,
+            )
+        )
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
@@ -611,6 +644,19 @@ private fun VisorRemoto(
                                     } else {
                                         Modifier
                                     },
+                                )
+                                .then(
+                                    if (esControl) {
+                                        Modifier.pointerInput(frame.seq, "drag") {
+                                            var inicio = Offset.Zero
+                                            var ultimo = Offset.Zero
+                                            detectDragGestures(
+                                                onDragStart = { inicio = it; ultimo = it },
+                                                onDrag = { change, _ -> ultimo = change.position; change.consume() },
+                                                onDragEnd = { manejarArrastre(inicio, ultimo) },
+                                            )
+                                        }
+                                    } else Modifier
                                 ),
                         )
                     } else {
@@ -650,13 +696,57 @@ private fun VisorRemoto(
 
         if (esControl) {
             Spacer(modifier = Modifier.height(16.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Mouse y scroll", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = !enviandoInput,
+                            onClick = {
+                                onPointer(
+                                    RemotePointerCommand(
+                                        x = frame.width / 2, y = frame.height / 2, accion = "right_click",
+                                    )
+                                )
+                            },
+                        ) { Text("Clic derecho") }
+                        OutlinedButton(
+                            enabled = !enviandoInput,
+                            onClick = {
+                                onPointer(
+                                    RemotePointerCommand(
+                                        x = frame.width / 2, y = frame.height / 2,
+                                        accion = "scroll", deltaY = 420,
+                                    )
+                                )
+                            },
+                        ) { Text("Scroll ↑") }
+                        OutlinedButton(
+                            enabled = !enviandoInput,
+                            onClick = {
+                                onPointer(
+                                    RemotePointerCommand(
+                                        x = frame.width / 2, y = frame.height / 2,
+                                        accion = "scroll", deltaY = -420,
+                                    )
+                                )
+                            },
+                        ) { Text("Scroll ↓") }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
             BarraTeclado(enviando = enviandoInput, onTexto = onTexto, onTecla = onTecla)
         }
     }
 }
 
 @Composable
-private fun BarraTeclado(enviando: Boolean, onTexto: (String) -> Unit, onTecla: (String) -> Unit) {
+private fun BarraTeclado(
+    enviando: Boolean,
+    onTexto: (String) -> Unit,
+    onTecla: (String, List<String>) -> Unit,
+) {
     var texto by remember { mutableStateOf("") }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -693,7 +783,7 @@ private fun BarraTeclado(enviando: Boolean, onTexto: (String) -> Unit, onTecla: 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         fila.forEach { tecla ->
                             OutlinedButton(
-                                onClick = { onTecla(tecla.valor) },
+                            onClick = { onTecla(tecla.valor, emptyList()) },
                                 enabled = !enviando,
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                                 modifier = Modifier.semantics { contentDescription = tecla.titulo },
@@ -704,6 +794,27 @@ private fun BarraTeclado(enviando: Boolean, onTexto: (String) -> Unit, onTecla: 
                     }
                 }
             }
+
+            Text("Atajos", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("a" to "⌘A", "c" to "⌘C", "v" to "⌘V", "x" to "⌘X", "z" to "⌘Z", "s" to "⌘S")
+                    .forEach { (key, label) ->
+                        OutlinedButton(onClick = { onTecla(key, listOf("command")) }, enabled = !enviando) {
+                            Text(label)
+                        }
+                    }
+            }
         }
     }
 }
+
+private data class RemotePointerCommand(
+    val x: Int,
+    val y: Int,
+    val accion: String,
+    val button: String? = null,
+    val startX: Int? = null,
+    val startY: Int? = null,
+    val deltaX: Int = 0,
+    val deltaY: Int = 0,
+)

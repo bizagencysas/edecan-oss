@@ -82,7 +82,10 @@ _MENSAJE_SIN_EMPAREJAR = (
 # siempre `True` cuando `companion` lo es, ver `edecan_schemas.plans.PLANES`)
 # pero sí una inconsistencia real de este mismo dispatch table.
 _ACCIONES_IDE = frozenset(
-    {"list_tree", "search_files", "apply_edit", "read_file", "write_file", "run_command"}
+    {
+        "list_tree", "search_files", "apply_edit", "read_file", "write_file",
+        "trash_path", "run_command",
+    }
 )
 _ACCION_CAPTURA_PANTALLA = "screenshot"
 _ACCIONES_INPUT_REMOTO = frozenset({"input_pointer", "input_key"})
@@ -116,7 +119,8 @@ class UsarComputadoraTool(Tool):
     description = (
         "Controla la computadora local del usuario a través del companion emparejado: "
         "abrir aplicaciones permitidas, leer/listar/escribir archivos dentro de un sandbox, "
-        "leer/escribir el portapapeles, o correr comandos permitidos. Requiere "
+        "mover archivos a la papelera, leer/escribir el portapapeles, controlar mouse/teclado, "
+        "capturar pantalla o correr comandos permitidos. Requiere "
         "confirmación porque actúa de verdad sobre el equipo del usuario."
     )
     requires_flags = frozenset({"companion"})
@@ -128,7 +132,9 @@ class UsarComputadoraTool(Tool):
                 "type": "string",
                 "description": (
                     "Acción a ejecutar en el companion. Una de: 'open_app', 'read_dir', "
-                    "'read_file', 'write_file', 'clipboard_get', 'clipboard_set', 'run_command'."
+                    "'read_file', 'write_file', 'trash_path', 'clipboard_get', 'clipboard_set', "
+                    "'run_command', 'list_tree', 'search_files', 'apply_edit', 'screenshot', "
+                    "'input_pointer', 'input_key'."
                 ),
             },
             "parametros": {

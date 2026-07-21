@@ -1,6 +1,6 @@
 [project]
 name = "edecan-companion"
-version = "0.4.0"
+version = "0.5.0"
 description = "Edecán Companion — agente local de escritorio, opt-in: acceso controlado y auditable al equipo del usuario"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -8,6 +8,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "websockets>=13.0",
     "pyyaml>=6.0",
+    "send2trash>=1.8.3",
 ]
 
 # Deliberadamente SIN dependencias de los demás paquetes del monorepo
@@ -15,10 +16,16 @@ dependencies = [
 # paquete pensado para instalarse solo, en la máquina del propio usuario,
 # separado del servidor. Ver README.md y ARCHITECTURE.md §10.1/§10.12.
 
-# Remote keyboard/mouse input is optional and macOS-only. The companion loads
-# Quartz lazily and the remaining actions work without this extra installed.
+# Remote control stays optional: the companion loads platform backends lazily
+# and every non-remote action continues to work without these packages.
 [project.optional-dependencies]
 remote-input = ["pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'"]
+remote-control = [
+    "pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'",
+    "mss>=10.0; sys_platform != 'darwin'",
+    "pynput>=1.7.7; sys_platform != 'darwin'",
+    "Pillow>=10.4",
+]
 
 [project.scripts]
 edecan-companion = "edecan_companion.main:main"

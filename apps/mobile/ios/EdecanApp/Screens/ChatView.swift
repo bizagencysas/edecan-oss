@@ -9,6 +9,7 @@ import UIKit
 /// esta vista solo dibuja su estado.
 struct ChatView: View {
     @Environment(SessionStore.self) private var session
+    @Environment(TabRouter.self) private var tabRouter
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var mostrandoVoz = false
@@ -37,6 +38,14 @@ struct ChatView: View {
             }
             .sheet(item: $archivoCompartible) { archivo in
                 HojaCompartir(items: [archivo.url])
+            }
+            .onChange(of: tabRouter.solicitudPendiente?.id) { _, nuevaId in
+                guard nuevaId != nil, let solicitud = tabRouter.consumirSolicitud() else { return }
+                guard let client = session.client else {
+                    viewModel.errorMensaje = "No hay sesión activa."
+                    return
+                }
+                Task { await viewModel.enviar(texto: solicitud.texto, client: client) }
             }
         }
     }

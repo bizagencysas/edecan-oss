@@ -103,7 +103,7 @@ public struct RemoteSession: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// `GET /v1/remote/sessions/{id}/frame` — un PNG suelto en base64 + el
+/// `GET /v1/remote/sessions/{id}/frame` — un PNG/JPEG en base64 + el
 /// tamaño real de la captura (necesario para mapear gestos → coordenadas,
 /// ver ``RemoteCoordinateMapper``). NUNCA se persiste en este cliente
 /// (`docs/control-remoto.md` §2, "mínima retención") — vive solo en memoria
@@ -112,18 +112,29 @@ public struct RemoteFrame: Codable, Sendable, Equatable {
     public let imageB64: String
     public let width: Int
     public let height: Int
+    public let mime: String?
+    public let originX: Int?
+    public let originY: Int?
     /// Copia de `RemoteSession.framesCount` al momento de este frame.
     public let seq: Int
 
     enum CodingKeys: String, CodingKey {
-        case width, height, seq
+        case width, height, mime, seq
         case imageB64 = "image_b64"
+        case originX = "origin_x"
+        case originY = "origin_y"
     }
 
-    public init(imageB64: String, width: Int, height: Int, seq: Int) {
+    public init(
+        imageB64: String, width: Int, height: Int, mime: String? = nil,
+        originX: Int? = nil, originY: Int? = nil, seq: Int
+    ) {
         self.imageB64 = imageB64
         self.width = width
         self.height = height
+        self.mime = mime
+        self.originX = originX
+        self.originY = originY
         self.seq = seq
     }
 }
@@ -137,13 +148,16 @@ public enum RemotePointerAccion: String, Codable, Sendable, Equatable {
     case move, click
     case doubleClick = "double_click"
     case rightClick = "right_click"
+    case mouseDown = "mouse_down"
+    case mouseUp = "mouse_up"
+    case drag, scroll
 }
 
 public enum RemoteMouseButton: String, Codable, Sendable, Equatable {
     case left, right, middle
 }
 
-/// Las 8 teclas especiales EXACTAS que soporta
+/// Las teclas especiales EXACTAS que soporta
 /// `edecan_companion.actions._input_key` (`_SPECIAL_KEYS`) — cualquier otro
 /// valor lo rechaza el backend con `422`.
 public enum RemoteSpecialKey: String, Codable, Sendable, Equatable, CaseIterable {
@@ -152,6 +166,12 @@ public enum RemoteSpecialKey: String, Codable, Sendable, Equatable, CaseIterable
     case arrowDown = "arrow_down"
     case arrowLeft = "arrow_left"
     case arrowRight = "arrow_right"
+    case deleteForward = "delete_forward"
+    case home, end
+    case pageUp = "page_up"
+    case pageDown = "page_down"
+    case space
+    case a, c, v, x, z, s
 
     /// Etiqueta corta en español para el teclado accesorio de ``RemotoView``.
     public var etiqueta: String {
@@ -164,8 +184,24 @@ public enum RemoteSpecialKey: String, Codable, Sendable, Equatable, CaseIterable
         case .arrowDown: return "↓"
         case .arrowLeft: return "←"
         case .arrowRight: return "→"
+        case .deleteForward: return "Del"
+        case .home: return "Home"
+        case .end: return "End"
+        case .pageUp: return "Pg↑"
+        case .pageDown: return "Pg↓"
+        case .space: return "Espacio"
+        case .a: return "A"
+        case .c: return "C"
+        case .v: return "V"
+        case .x: return "X"
+        case .z: return "Z"
+        case .s: return "S"
         }
     }
+}
+
+public enum RemoteKeyModifier: String, Codable, Sendable, Equatable, CaseIterable {
+    case command, control, option, shift
 }
 
 /// `POST /v1/remote/sessions/{id}/input {tipo: "pointer", ...}` — espejo
@@ -180,12 +216,44 @@ public struct RemotePointerInput: Encodable, Sendable, Equatable {
     public let y: Int
     public let accion: RemotePointerAccion
     public let button: RemoteMouseButton?
+    public let startX: Int?
+    public let startY: Int?
+    public let deltaX: Int
+    public let deltaY: Int
 
-    public init(x: Int, y: Int, accion: RemotePointerAccion, button: RemoteMouseButton? = nil) {
+    public init(
+        x: Int, y: Int, accion: RemotePointerAccion, button: RemoteMouseButton? = nil,
+        startX: Int? = nil, startY: Int? = nil, deltaX: Int = 0, deltaY: Int = 0
+    ) {
         self.x = x
         self.y = y
         self.accion = accion
         self.button = button
+        self.startX = startX
+        self.startY = startY
+        self.deltaX = deltaX
+        self.deltaY = deltaY
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tipo, x, y, accion, button
+        case startX = "start_x"
+        case startY = "start_y"
+        case deltaX = "delta_x"
+        case deltaY = "delta_y"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tipo, forKey: .tipo)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(accion, forKey: .accion)
+        try container.encodeIfPresent(button, forKey: .button)
+        try container.encodeIfPresent(startX, forKey: .startX)
+        try container.encodeIfPresent(startY, forKey: .startY)
+        if deltaX != 0 { try container.encode(deltaX, forKey: .deltaX) }
+        if deltaY != 0 { try container.encode(deltaY, forKey: .deltaY) }
     }
 }
 
@@ -199,18 +267,32 @@ public struct RemoteKeyInput: Encodable, Sendable, Equatable {
     public let tipo = "key"
     public let texto: String?
     public let tecla: RemoteSpecialKey?
+    public let modifiers: [RemoteKeyModifier]
 
     public static func texto(_ texto: String) -> RemoteKeyInput {
-        RemoteKeyInput(texto: texto, tecla: nil)
+        RemoteKeyInput(texto: texto, tecla: nil, modifiers: [])
     }
 
-    public static func tecla(_ tecla: RemoteSpecialKey) -> RemoteKeyInput {
-        RemoteKeyInput(texto: nil, tecla: tecla)
+    public static func tecla(
+        _ tecla: RemoteSpecialKey, modifiers: [RemoteKeyModifier] = []
+    ) -> RemoteKeyInput {
+        RemoteKeyInput(texto: nil, tecla: tecla, modifiers: modifiers)
     }
 
-    private init(texto: String?, tecla: RemoteSpecialKey?) {
+    private init(texto: String?, tecla: RemoteSpecialKey?, modifiers: [RemoteKeyModifier]) {
         self.texto = texto
         self.tecla = tecla
+        self.modifiers = modifiers
+    }
+
+    enum CodingKeys: String, CodingKey { case tipo, texto, tecla, modifiers }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tipo, forKey: .tipo)
+        try container.encodeIfPresent(texto, forKey: .texto)
+        try container.encodeIfPresent(tecla, forKey: .tecla)
+        if !modifiers.isEmpty { try container.encode(modifiers, forKey: .modifiers) }
     }
 }
 
@@ -331,8 +413,8 @@ public enum RemoteCoordinateMapper {
         let x = Int((relX / contenido.width * Double(frame.width)).rounded())
         let y = Int((relY / contenido.height * Double(frame.height)).rounded())
         return (
-            min(max(x, 0), frame.width - 1),
-            min(max(y, 0), frame.height - 1)
+            min(max(x, 0), frame.width - 1) + (frame.originX ?? 0),
+            min(max(y, 0), frame.height - 1) + (frame.originY ?? 0)
         )
     }
 }

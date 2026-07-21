@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     COMMERCE_MODE: str = "paper"
 
     MISSIONS_MAX_STEPS: int = 8
-    REMOTE_FRAME_MIN_INTERVAL_SECONDS: float = 1.0
+    REMOTE_FRAME_MIN_INTERVAL_SECONDS: float = 0.25
 
     # --- v3 (DIRECCION_ACTUAL.md, ARCHITECTURE.md §12, dueño WP-V3-01) ---------
     # Misma convención dura que v2 (§7.5): toda tool/router v3 lee estos campos

@@ -8,6 +8,7 @@ from edecan_creative import get_all_tools
 
 NOMBRES_PINNED = [
     "generar_imagen",
+    "crear_contenido_social",
     "crear_documento",
     "crear_presentacion",
     "crear_pdf",
@@ -16,10 +17,10 @@ NOMBRES_PINNED = [
 ]
 
 
-def test_get_all_tools_devuelve_las_6_herramientas_con_los_nombres_pinned():
+def test_get_all_tools_devuelve_las_herramientas_con_los_nombres_pinned():
     nombres = [tool.name for tool in get_all_tools()]
     assert nombres == NOMBRES_PINNED
-    assert len(set(nombres)) == 6  # sin duplicados
+    assert len(set(nombres)) == len(NOMBRES_PINNED)  # sin duplicados
 
 
 def test_cada_tool_tiene_name_description_e_input_schema_validos():
@@ -29,8 +30,6 @@ def test_cada_tool_tiene_name_description_e_input_schema_validos():
         assert isinstance(tool.input_schema, dict)
         assert tool.input_schema.get("type") == "object"
         assert isinstance(tool.input_schema.get("properties"), dict)
-        assert "linkedin" not in tool.name.lower()
-        assert "linkedin" not in tool.description.lower()
 
 
 def test_ninguna_tool_es_dangerous():
@@ -42,7 +41,7 @@ def test_requires_flags_por_tool():
     assert por_nombre["generar_imagen"].requires_flags == frozenset({"tools.images"})
     assert por_nombre["crear_podcast"].requires_flags == frozenset({"tools.podcast"})
     assert por_nombre["generar_efecto_sonido"].requires_flags == frozenset({"tools.podcast"})
-    for nombre in ("crear_documento", "crear_presentacion", "crear_pdf"):
+    for nombre in ("crear_contenido_social", "crear_documento", "crear_presentacion", "crear_pdf"):
         assert por_nombre[nombre].requires_flags == frozenset()
 
 

@@ -2,7 +2,7 @@
 
 El IDE embebido deja explorar, editar y correr comandos en una carpeta de **tu propia computadora** desde el panel web de Edecán, apoyándose por completo en el companion de escritorio que ya existe (`apps/companion/`, ver también [`api.md`](./api.md) sección "Companion de escritorio"). No hay nada de esto en la nube: cada acción viaja `web → API → WebSocket del companion → tu máquina`, y tu máquina decide si la ejecuta.
 
-Es **P0: real y funcional hoy**, no un diseño. Las cuatro acciones nuevas del companion (`list_tree`, `search_files`, `apply_edit`, `screenshot`) pasan por el mismo pipeline de sandbox + aprobación humana + auditoría que ya usaban `read_dir`/`read_file`/`write_file`/`run_command` desde v1 — nada de esto es una vía nueva ni más permisiva.
+Es **P0: real y funcional hoy**, no un diseño. Sus acciones (`list_tree`, `search_files`, `apply_edit`, `trash_path`, `screenshot`) pasan por el mismo pipeline de sandbox + aprobación humana + auditoría que ya usaban `read_dir`/`read_file`/`write_file`/`run_command` desde v1 — nada de esto es una vía nueva ni más permisiva.
 
 ## Requisitos
 
@@ -30,7 +30,7 @@ allowed_apps: []
 allowed_commands: []               # EL USUARIO decide qué binarios permitir aquí para "Ejecutar" en la terminal del IDE
 auto_approve: []
 remember_approvals_minutes: 0      # 0 = siempre pregunta; N>0 = recuerda un "sí" por acción durante N minutos
-ide_enabled: true                  # apaga las 4 acciones del IDE de un tirón si lo pones en false
+ide_enabled: true                  # apaga las acciones del IDE de un tirón si lo pones en false
 ```
 
 ### `sandbox_dir`
@@ -58,7 +58,8 @@ A diferencia de las demás listas (que empiezan vacías/apagadas), `ide_enabled`
 | `list_tree` | Árbol recursivo de una carpeta: `{path?, max_depth?, max_entries?}` → `{path, entries, truncated}` | `max_depth` ≤ 5, `max_entries` ≤ 500 (recortados en silencio, nunca fallan); ignora siempre `.git`, `node_modules`, `__pycache__`, `.venv` |
 | `search_files` | Busca texto línea por línea: `{query, path?}` → `{query, matches: [{path, line, texto}], truncated}` | substring sin distinguir mayúsculas; hasta 2000 archivos considerados, 200 coincidencias devueltas, líneas cortadas a 200 caracteres; solo archivos de texto UTF-8 < 256 KB |
 | `apply_edit` | Reemplaza `old_string` por `new_string`: `{path, old_string, new_string, replace_all?}` → `{path, replacements, bytes_written}` | sin `replace_all`, `old_string` debe ser único en el archivo (si no, error con el conteo); escritura atómica (archivo temporal + `rename`); mismo tope de 256 KB que `read_file` |
-| `screenshot` | Captura la pantalla a PNG en base64: `{display?}` → `{image_b64, width, height}` | **solo macOS**; exige el permiso de "Grabación de Pantalla" (Ajustes del Sistema → Privacidad y Seguridad) concedido por un clic humano la primera vez — sin él, error claro en vez de una imagen vacía o negra |
+| `trash_path` | Envía un archivo o carpeta del sandbox a la papelera recuperable | Siempre exige aprobación local; nunca acepta la raíz del sandbox |
+| `screenshot` | Captura y optimiza la pantalla: `{display?, format?, quality?, max_width?}` → `{image_b64, width, height, mime, origin_x, origin_y}` | macOS nativo; Windows/Linux con el extra `remote-control`; respeta los permisos de captura del sistema |
 
 Las tres primeras son nuevas de este WP; la terminal del IDE (`POST /v1/ide/run`) y abrir/guardar archivo (`GET`/`PUT /v1/ide/file`) reutilizan `run_command`/`read_file`/`write_file`, que ya existían desde v1.
 
@@ -105,15 +106,15 @@ Todo en español, cero dependencias npm nuevas, y `lib/api.ts` compartido no se 
 - **Aprobación humana explícita**, siempre, para cada acción — el IDE no introduce ningún camino nuevo que la salte. `remember_approvals_minutes` reduce cuántas veces preguntas, nunca si pregunta la primera vez.
 - **`run_command` (la terminal del IDE) nunca usa shell.** Nada de `;`, `&&`, tuberías o expansión de variables — el usuario decide exactamente qué ejecutables permite en `allowed_commands`, sin excepciones de fábrica.
 - **Escritura atómica en `apply_edit`.** Se escribe a un archivo temporal en la misma carpeta y se hace `rename` — nunca queda un archivo a medio escribir si algo falla a mitad de camino (disco lleno, permisos, el proceso se interrumpe).
-- **`screenshot` se apoya en el permiso de macOS, nunca lo evade.** La primera vez que se usa, macOS exige "Grabación de Pantalla" concedido con un clic humano en Ajustes del Sistema; sin él, la acción falla con un mensaje claro en vez de devolver una imagen vacía o negra sin explicación.
+- **`screenshot` se apoya en el permiso nativo, nunca lo evade.** En macOS usa Grabación de Pantalla; Windows/Linux usan el backend `mss` y la sesión gráfica disponible.
 - **Nunca se loguea contenido.** Ni la bitácora de auditoría del companion (`~/.edecan/companion.log`) ni los logs de la API guardan el contenido de archivos/comandos — solo tamaños, acción, aprobación y resultado (`ok`/`error`).
-- **`ide_enabled: false`** es el interruptor de emergencia: corta las 4 acciones nuevas antes de siquiera preguntar, sin tener que vaciar `allowed_commands`/`allowed_apps` si esas sí las quieres seguir usando para otra cosa.
+- **`ide_enabled: false`** es el interruptor de emergencia: corta las acciones del IDE antes de siquiera preguntar, sin tener que vaciar `allowed_commands`/`allowed_apps` si esas sí las quieres seguir usando para otra cosa.
 
 ## Limitaciones conocidas
 
 - **Sin resaltado de sintaxis** en el editor (textarea monoespaciada lisa) — decisión deliberada de este WP, no un olvido (ver "Página web" arriba).
 - **Un solo proceso `uvicorn`.** `ConnectionManager` (`companion_manager.py`) es un mapa en memoria del proceso — un despliegue con varios *workers* necesitaría un backend compartido (p. ej. pub/sub de Redis) para enrutar el comando al proceso que tiene el WebSocket del companion. Misma limitación ya documentada para el resto del companion desde v1.
-- **`screenshot` solo en macOS.** En Linux/Windows responde `ActionError` con "captura no soportada en esta plataforma" — no hay implementación alternativa hoy.
+- **Captura en Linux depende de la sesión gráfica.** X11/Wayland y las políticas del escritorio pueden exigir configuración adicional; el error conserva una indicación accionable.
 - **La terminal del IDE no es una shell interactiva.** Cada comando es una llamada nueva a `run_command` (sin estado entre comandos más allá de que `cwd` siempre es `sandbox_dir`) — no hay variables de entorno persistentes, ni un proceso de larga duración (un servidor de desarrollo, por ejemplo) que siga vivo entre una llamada y la siguiente.
 
 ## Referencias cruzadas

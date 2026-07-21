@@ -34,6 +34,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import io
 import logging
 import os
 import shlex
@@ -70,7 +71,7 @@ _IGNORED_TREE_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__", ".ve
 
 # Acciones del IDE embebido, gateadas además por `config.ide_enabled`
 # (`execute()` las corta ANTES de pedir aprobación si está en `false`).
-_IDE_ACTIONS = frozenset({"list_tree", "search_files", "apply_edit", "screenshot"})
+_IDE_ACTIONS = frozenset({"list_tree", "search_files", "apply_edit", "trash_path", "screenshot"})
 
 # -- Control remoto de teclado/mouse (WP-V4-10, docs/control-remoto.md §7) --
 #
@@ -82,7 +83,16 @@ _IDE_ACTIONS = frozenset({"list_tree", "search_files", "apply_edit", "screenshot
 # -- ver el docstring de `approval._approve_input_action`).
 _INPUT_ACTIONS = frozenset({"input_pointer", "input_key"})
 
-_POINTER_ACTIONS: tuple[str, ...] = ("move", "click", "double_click", "right_click")
+_POINTER_ACTIONS: tuple[str, ...] = (
+    "move",
+    "click",
+    "double_click",
+    "right_click",
+    "mouse_down",
+    "mouse_up",
+    "drag",
+    "scroll",
+)
 _MOUSE_BUTTONS: tuple[str, ...] = ("left", "right", "middle")
 _SPECIAL_KEYS: tuple[str, ...] = (
     "enter",
@@ -93,7 +103,20 @@ _SPECIAL_KEYS: tuple[str, ...] = (
     "arrow_down",
     "arrow_left",
     "arrow_right",
+    "delete_forward",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "space",
+    "a",
+    "c",
+    "v",
+    "x",
+    "z",
+    "s",
 )
+_KEY_MODIFIERS: tuple[str, ...] = ("command", "control", "option", "shift")
 
 # Keycodes virtuales estándar de macOS (`Events.h`, iguales en cualquier
 # distribución de teclado -- son posiciones físicas de tecla, no símbolos).
@@ -106,6 +129,18 @@ _SPECIAL_KEYCODES: dict[str, int] = {
     "arrow_down": 125,
     "arrow_left": 123,
     "arrow_right": 124,
+    "delete_forward": 117,
+    "home": 115,
+    "end": 119,
+    "page_up": 116,
+    "page_down": 121,
+    "space": 49,
+    "a": 0,
+    "c": 8,
+    "v": 9,
+    "x": 7,
+    "z": 6,
+    "s": 1,
 }
 
 
@@ -274,6 +309,22 @@ def _write_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
     target.write_bytes(data)
 
     return {"path": str(target.relative_to(config.sandbox_dir)), "bytes_written": len(data)}
+
+
+def _trash_path(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Mueve una ruta del sandbox a la papelera recuperable."""
+    target = _resolve_in_sandbox(config, params.get("path"))
+    if target == config.sandbox_dir:
+        raise ActionError("no se puede enviar a la papelera la raíz completa del sandbox")
+    if not target.exists():
+        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+    try:
+        from send2trash import send2trash
+
+        send2trash(str(target))
+    except OSError as exc:
+        raise ActionError(f"no se pudo mover a la papelera: {exc}") from exc
+    return {"path": str(target.relative_to(config.sandbox_dir)), "trashed": True}
 
 
 # ---------------------------------------------------------------------------
@@ -678,23 +729,137 @@ def _safe_int(raw: str) -> int:
         return 0
 
 
-def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
-    """Captura la pantalla completa (o `display` si se indica) a PNG en base64.
+def _screenshot_options(params: dict[str, Any]) -> tuple[str, int, int | None]:
+    """Valida las opciones de transporte sin acoplarlas al backend de captura."""
+    image_format = str(params.get("format") or "png").lower()
+    if image_format == "jpg":
+        image_format = "jpeg"
+    if image_format not in {"png", "jpeg"}:
+        raise ActionError("'format' debe ser 'png' o 'jpeg'")
 
-    SOLO macOS: usa el binario del sistema `/usr/sbin/screencapture` (`-x`
-    sin sonido de obturador, `-t png`); en cualquier otro `sys.platform` esto
-    ni siquiera lo intenta. La PRIMERA vez que corre, macOS exige el permiso
-    de "Grabación de pantalla" para el proceso que ejecuta el companion
-    (Terminal, iTerm, etc.) — es un clic humano en Ajustes del Sistema →
-    Privacidad y Seguridad que esta acción NUNCA evade ni automatiza: si el
-    permiso no está concedido, `screencapture` no deja una imagen utilizable
-    y esta función lo reporta como `ActionError` en vez de devolver un PNG
-    vacío o negro sin explicación. Las dimensiones se leen con `sips`
-    (`_png_dimensions_via_sips`); si eso falla, `width`/`height` quedan en 0
-    pero la imagen igual se devuelve (ver su docstring).
+    quality = params.get("quality", 70)
+    if not isinstance(quality, int) or isinstance(quality, bool) or not 35 <= quality <= 95:
+        raise ActionError("'quality' debe ser un entero entre 35 y 95")
+
+    max_width = params.get("max_width")
+    if max_width is not None and (
+        not isinstance(max_width, int)
+        or isinstance(max_width, bool)
+        or not 640 <= max_width <= 3840
+    ):
+        raise ActionError("'max_width' debe ser un entero entre 640 y 3840")
+    return image_format, quality, max_width
+
+
+def _optimize_screenshot(
+    image_bytes: bytes,
+    *,
+    width: int,
+    height: int,
+    image_format: str,
+    quality: int,
+    max_width: int | None,
+) -> tuple[bytes, int, int, str]:
+    """Reduce peso/latencia con Pillow cuando el extra remoto está instalado.
+
+    La captura PNG básica de macOS conserva compatibilidad con instalaciones
+    antiguas sin Pillow. En ese caso se devuelve intacta; Windows/Linux sí
+    instalan Pillow mediante el extra ``remote-control``.
     """
+    needs_conversion = image_format == "jpeg" or (max_width is not None and width > max_width)
+    if not needs_conversion:
+        return image_bytes, width, height, "image/png"
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+    except ImportError:
+        return image_bytes, width, height, "image/png"
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            image = source.convert("RGB") if image_format == "jpeg" else source.copy()
+            if max_width is not None and image.width > max_width:
+                new_height = max(1, round(image.height * max_width / image.width))
+                image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            if image_format == "jpeg":
+                image.save(output, format="JPEG", quality=quality, optimize=True)
+                mime = "image/jpeg"
+            else:
+                image.save(output, format="PNG", optimize=True)
+                mime = "image/png"
+            return output.getvalue(), image.width, image.height, mime
+    except (OSError, ValueError) as exc:
+        raise ActionError(f"no se pudo preparar la captura para transmisión: {exc}") from exc
+
+
+def _screenshot_via_mss(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:
+    """Captura la pantalla primaria (o ``display``) en Windows/Linux."""
+    try:
+        import mss  # type: ignore[import-not-found]
+        import mss.tools  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ActionError(
+            "la captura en Windows/Linux requiere el extra 'remote-control'; "
+            "instálalo con: pip install 'edecan-companion[remote-control]'"
+        ) from exc
+
+    try:
+        with mss.mss() as capture:
+            display = params.get("display")
+            monitor_index = 1 if display is None else int(display)
+            if monitor_index < 0 or monitor_index >= len(capture.monitors):
+                raise ActionError(
+                    f"'display' fuera de rango: usa un valor entre 0 y {len(capture.monitors) - 1}"
+                )
+            monitor = capture.monitors[monitor_index]
+            shot = capture.grab(monitor)
+            image_bytes = mss.tools.to_png(shot.rgb, shot.size)
+            return (
+                image_bytes,
+                int(shot.width),
+                int(shot.height),
+                int(monitor.get("left", 0)),
+                int(monitor.get("top", 0)),
+            )
+    except ActionError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        hint = "autoriza la captura de pantalla para Edecán en el sistema"
+        if sys.platform.startswith("linux"):
+            hint = "verifica la sesión gráfica X11/Wayland y el permiso de captura"
+        raise ActionError(f"no se pudo capturar la pantalla: {exc}; {hint}") from exc
+
+
+def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Captura la pantalla y devuelve un frame PNG/JPEG optimizado en base64.
+
+    En macOS usa `/usr/sbin/screencapture`; en Windows/Linux usa `mss`,
+    instalado mediante el extra ``remote-control``. Los permisos de captura
+    siguen siendo siempre los nativos del sistema operativo: esta acción no
+    los solicita, evade ni automatiza. Puede reducir el frame y convertirlo a
+    JPEG para que el visor remoto sea fluido; conserva PNG cuando se solicita.
+    """
+    image_format, quality, max_width = _screenshot_options(params)
     if sys.platform != "darwin":
-        raise ActionError("captura no soportada en esta plataforma")
+        if sys.platform != "win32" and not sys.platform.startswith("linux"):
+            raise ActionError("captura no soportada en esta plataforma")
+        image_bytes, width, height, origin_x, origin_y = _screenshot_via_mss(params)
+        image_bytes, width, height, mime = _optimize_screenshot(
+            image_bytes,
+            width=width,
+            height=height,
+            image_format=image_format,
+            quality=quality,
+            max_width=max_width,
+        )
+        return {
+            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+            "width": width,
+            "height": height,
+            "mime": mime,
+            "origin_x": origin_x,
+            "origin_y": origin_y,
+        }
 
     argv = ["/usr/sbin/screencapture", "-x", "-t", "png"]
     display = params.get("display")
@@ -731,10 +896,21 @@ def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
             )
 
         width, height = _png_dimensions_via_sips(tmp_path)
+        image_bytes, width, height, mime = _optimize_screenshot(
+            image_bytes,
+            width=width,
+            height=height,
+            image_format=image_format,
+            quality=quality,
+            max_width=max_width,
+        )
         return {
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
             "width": width,
             "height": height,
+            "mime": mime,
+            "origin_x": 0,
+            "origin_y": 0,
         }
     finally:
         with contextlib.suppress(OSError):
@@ -763,8 +939,11 @@ class InputBackend(Protocol):
 
     def move_pointer(self, x: int, y: int) -> None: ...
     def click_pointer(self, x: int, y: int, button: str) -> None: ...
+    def pointer_down(self, x: int, y: int, button: str) -> None: ...
+    def pointer_up(self, x: int, y: int, button: str) -> None: ...
+    def scroll_pointer(self, delta_x: int, delta_y: int) -> None: ...
     def type_text(self, text: str) -> None: ...
-    def press_key(self, key: str) -> None: ...
+    def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None: ...
 
 
 class _QuartzInputBackend:
@@ -835,6 +1014,34 @@ class _QuartzInputBackend:
             event = Quartz.CGEventCreateMouseEvent(None, event_type, (x, y), mouse_button)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
+
+    def _post_pointer_button(self, x: int, y: int, button: str, *, down: bool) -> None:
+        Quartz = self._Quartz
+        mouse_button = self._mouse_button_constant(button)
+        event_type = {
+            ("left", True): Quartz.kCGEventLeftMouseDown,
+            ("left", False): Quartz.kCGEventLeftMouseUp,
+            ("right", True): Quartz.kCGEventRightMouseDown,
+            ("right", False): Quartz.kCGEventRightMouseUp,
+            ("middle", True): Quartz.kCGEventOtherMouseDown,
+            ("middle", False): Quartz.kCGEventOtherMouseUp,
+        }[(button, down)]
+        event = Quartz.CGEventCreateMouseEvent(None, event_type, (x, y), mouse_button)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def pointer_down(self, x: int, y: int, button: str) -> None:
+        self._post_pointer_button(x, y, button, down=True)
+
+    def pointer_up(self, x: int, y: int, button: str) -> None:
+        self._post_pointer_button(x, y, button, down=False)
+
+    def scroll_pointer(self, delta_x: int, delta_y: int) -> None:
+        Quartz = self._Quartz
+        event = Quartz.CGEventCreateScrollWheelEvent(
+            None, Quartz.kCGScrollEventUnitPixel, 2, delta_y, delta_x
+        )
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
     def type_text(self, text: str) -> None:
         Quartz = self._Quartz
         for char in text:
@@ -843,12 +1050,102 @@ class _QuartzInputBackend:
                 Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
-    def press_key(self, key: str) -> None:
+    def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None:
         Quartz = self._Quartz
         keycode = _SPECIAL_KEYCODES[key]
+        flags = 0
+        for modifier in modifiers:
+            flags |= {
+                "command": Quartz.kCGEventFlagMaskCommand,
+                "control": Quartz.kCGEventFlagMaskControl,
+                "option": Quartz.kCGEventFlagMaskAlternate,
+                "shift": Quartz.kCGEventFlagMaskShift,
+            }[modifier]
         for key_down in (True, False):
             event = Quartz.CGEventCreateKeyboardEvent(None, keycode, key_down)
+            if flags:
+                Quartz.CGEventSetFlags(event, flags)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+class _PynputInputBackend:
+    """Backend real para Windows/Linux mediante el extra ``remote-control``."""
+
+    def __init__(self) -> None:
+        try:
+            from pynput import keyboard, mouse  # type: ignore[import-not-found]
+
+            self._keyboard_module = keyboard
+            self._mouse_module = mouse
+            self._keyboard = keyboard.Controller()
+            self._mouse = mouse.Controller()
+        except ImportError as exc:
+            raise ActionError(
+                "el control remoto en Windows/Linux requiere el extra 'remote-control'; "
+                "instálalo con: pip install 'edecan-companion[remote-control]'"
+            ) from exc
+        except Exception as exc:
+            raise ActionError(
+                f"no se pudo iniciar el control de teclado/mouse: {exc}; "
+                "verifica la sesión gráfica y sus permisos"
+            ) from exc
+
+    def _button(self, button: str) -> Any:
+        return getattr(self._mouse_module.Button, button)
+
+    def _key(self, key: str) -> Any:
+        if len(key) == 1:
+            return key
+        aliases = {
+            "escape": "esc",
+            "arrow_up": "up",
+            "arrow_down": "down",
+            "arrow_left": "left",
+            "arrow_right": "right",
+            "delete_forward": "delete",
+        }
+        return getattr(self._keyboard_module.Key, aliases.get(key, key))
+
+    def move_pointer(self, x: int, y: int) -> None:
+        self._mouse.position = (x, y)
+
+    def click_pointer(self, x: int, y: int, button: str) -> None:
+        self.move_pointer(x, y)
+        self._mouse.click(self._button(button), 1)
+
+    def pointer_down(self, x: int, y: int, button: str) -> None:
+        self.move_pointer(x, y)
+        self._mouse.press(self._button(button))
+
+    def pointer_up(self, x: int, y: int, button: str) -> None:
+        self.move_pointer(x, y)
+        self._mouse.release(self._button(button))
+
+    def scroll_pointer(self, delta_x: int, delta_y: int) -> None:
+        self._mouse.scroll(delta_x, delta_y)
+
+    def type_text(self, text: str) -> None:
+        self._keyboard.type(text)
+
+    def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None:
+        modifier_aliases = {
+            # ``command`` significa modificador primario del SO: Cmd en
+            # macOS (Quartz) y Ctrl en Windows/Linux (pynput).
+            "command": "ctrl",
+            "control": "ctrl",
+            "option": "alt",
+            "shift": "shift",
+        }
+        held = [getattr(self._keyboard_module.Key, modifier_aliases[item]) for item in modifiers]
+        try:
+            for modifier in held:
+                self._keyboard.press(modifier)
+            resolved = self._key(key)
+            self._keyboard.press(resolved)
+            self._keyboard.release(resolved)
+        finally:
+            for modifier in reversed(held):
+                self._keyboard.release(modifier)
 
 
 def _get_input_backend() -> InputBackend:
@@ -862,13 +1159,15 @@ def _get_input_backend() -> InputBackend:
     mismo criterio que el resto del archivo monkeypatchea `subprocess.run`/
     `sys.platform`, así nunca construyen un `_QuartzInputBackend` real.
     """
-    if sys.platform != "darwin":
-        raise ActionError("el control remoto de teclado/mouse no está soportado en esta plataforma")
-    return _QuartzInputBackend()
+    if sys.platform == "darwin":
+        return _QuartzInputBackend()
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        return _PynputInputBackend()
+    raise ActionError("el control remoto de teclado/mouse no está soportado en esta plataforma")
 
 
 def _input_pointer(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
-    """`{x, y, accion: move|click|double_click|right_click, button?}`.
+    """Control completo de puntero: movimiento, clics, drag y scroll.
 
     `button` (default `"left"`) elige qué botón usar para `click`/
     `double_click`; `right_click` siempre usa el botón derecho sin importar
@@ -893,14 +1192,52 @@ def _input_pointer(params: dict[str, Any], config: CompanionConfig) -> dict[str,
     if accion == "right_click":
         button = "right"
 
+    delta_x = params.get("delta_x", 0)
+    delta_y = params.get("delta_y", 0)
+    start_x = params.get("start_x")
+    start_y = params.get("start_y")
+    if accion == "scroll":
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (delta_x, delta_y)):
+            raise ActionError("'delta_x' y 'delta_y' deben ser enteros")
+        if delta_x == 0 and delta_y == 0:
+            raise ActionError("scroll necesita un delta_x o delta_y distinto de cero")
+        delta_x = max(-2400, min(delta_x, 2400))
+        delta_y = max(-2400, min(delta_y, 2400))
+    if accion == "drag":
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (start_x, start_y)):
+            raise ActionError("drag necesita 'start_x' y 'start_y' enteros")
+
     backend = _get_input_backend()
-    backend.move_pointer(x, y)
+    if accion == "scroll":
+        backend.move_pointer(x, y)
+        backend.scroll_pointer(delta_x, delta_y)
+    elif accion == "drag":
+        backend.move_pointer(start_x, start_y)
+        backend.pointer_down(start_x, start_y, button)
+        # Interpolación acotada: suficiente para que ventanas/listas reconozcan
+        # el drag sin convertir una sola petición en un stream ilimitado.
+        for step in range(1, 13):
+            px = round(start_x + (x - start_x) * step / 12)
+            py = round(start_y + (y - start_y) * step / 12)
+            backend.move_pointer(px, py)
+        backend.pointer_up(x, y, button)
+    else:
+        backend.move_pointer(x, y)
     if accion in ("click", "double_click", "right_click"):
         backend.click_pointer(x, y, button)
         if accion == "double_click":
             backend.click_pointer(x, y, button)
+    elif accion == "mouse_down":
+        backend.pointer_down(x, y, button)
+    elif accion == "mouse_up":
+        backend.pointer_up(x, y, button)
 
-    return {"x": x, "y": y, "accion": accion, "button": button}
+    result = {"x": x, "y": y, "accion": accion, "button": button}
+    if accion == "scroll":
+        result.update({"delta_x": delta_x, "delta_y": delta_y})
+    elif accion == "drag":
+        result.update({"start_x": start_x, "start_y": start_y})
+    return result
 
 
 def _input_key(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
@@ -914,6 +1251,7 @@ def _input_key(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
     """
     texto = params.get("texto")
     tecla = params.get("tecla")
+    raw_modifiers = params.get("modifiers", [])
     if (texto is None) == (tecla is None):
         raise ActionError("envía exactamente uno de 'texto' o 'tecla' (no ambos, no ninguno)")
 
@@ -930,9 +1268,18 @@ def _input_key(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
 
     if tecla not in _SPECIAL_KEYS:
         raise ActionError(f"'tecla' inválida: {tecla!r} (usa una de {_SPECIAL_KEYS})")
+    if not isinstance(raw_modifiers, list) or any(m not in _KEY_MODIFIERS for m in raw_modifiers):
+        raise ActionError(f"'modifiers' inválido: usa solo valores de {_KEY_MODIFIERS}")
+    modifiers = tuple(dict.fromkeys(raw_modifiers))
     backend = _get_input_backend()
-    backend.press_key(tecla)
-    return {"tipo": "tecla", "tecla": tecla}
+    if modifiers:
+        backend.press_key(tecla, modifiers)
+    else:
+        backend.press_key(tecla)
+    result = {"tipo": "tecla", "tecla": tecla}
+    if modifiers:
+        result["modifiers"] = list(modifiers)
+    return result
 
 
 ACTIONS: dict[str, ActionHandler] = {
@@ -940,6 +1287,7 @@ ACTIONS: dict[str, ActionHandler] = {
     "read_dir": _read_dir,
     "read_file": _read_file,
     "write_file": _write_file,
+    "trash_path": _trash_path,
     "clipboard_get": _clipboard_get,
     "clipboard_set": _clipboard_set,
     "run_command": _run_command,

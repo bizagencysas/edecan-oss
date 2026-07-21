@@ -652,7 +652,7 @@ public actor APIClient {
     /// dispara la aprobación LOCAL en el companion y puede tardar hasta ~30s
     /// (`docs/control-remoto.md`). Puede lanzar `APIError.servidor` con
     /// `status`: `429` (pediste uno antes de `REMOTE_FRAME_MIN_INTERVAL_SECONDS`,
-    /// ~1s — el *polling* de ``RemotoViewModel`` usa 2s, ya lo respeta),
+    /// 0.25s — el *polling* de ``RemotoViewModel`` usa 0.35s, ya lo respeta),
     /// `403` (el usuario denegó la sesión en su companion), `409` (la sesión
     /// ya `ended`), `501` (companion sin soporte de captura o con el IDE
     /// deshabilitado), `502`/`503` (companion sin responder a tiempo o
@@ -685,6 +685,19 @@ public actor APIClient {
         try await conAutoRefresh {
             try await self.enviar("/v1/remote/sessions/\(sessionId)/input", method: "POST", body: input)
         }
+    }
+
+    // MARK: - Capacidades (Skills + MCP)
+
+    public func listSkills() async throws -> [SkillSummary] {
+        let envelope: SkillsEnvelope = try await conAutoRefresh {
+            try await self.obtener("/v1/skills")
+        }
+        return envelope.skills
+    }
+
+    public func listMCPServers() async throws -> [MCPServerSummary] {
+        try await conAutoRefresh { try await self.obtener("/v1/mcp/servers") }
     }
 
     // MARK: - Internals: HTTP

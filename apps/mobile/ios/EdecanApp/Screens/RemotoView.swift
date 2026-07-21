@@ -194,7 +194,7 @@ struct RemotoView: View {
                         }
                     }
                 )) {
-                    Text("Auto (2s)")
+                    Text("Vista en vivo")
                 }
                 .toggleStyle(.button)
                 .disabled(sesion.esTerminal)
@@ -205,6 +205,21 @@ struct RemotoView: View {
         .tarjetaVidrio(esquina: 16)
 
         if sesion.esControl && !sesion.esTerminal {
+            ControlesPunteroView(
+                deshabilitado: viewModel.enviandoInput,
+                onAccion: { accion, deltaY in
+                    guard let frame = viewModel.frame else { return }
+                    Task {
+                        await viewModel.enviarPointer(
+                            RemotePointerInput(
+                                x: frame.width / 2, y: frame.height / 2,
+                                accion: accion, deltaY: deltaY
+                            ),
+                            client: session.client
+                        )
+                    }
+                }
+            )
             TecladoRemotoView(
                 deshabilitado: viewModel.enviandoInput,
                 onEnviarTexto: { texto in
@@ -212,6 +227,13 @@ struct RemotoView: View {
                 },
                 onEnviarTecla: { tecla in
                     Task { await viewModel.enviarKey(.tecla(tecla), client: session.client) }
+                },
+                onEnviarAtajo: { tecla, modifiers in
+                    Task {
+                        await viewModel.enviarKey(
+                            .tecla(tecla, modifiers: modifiers), client: session.client
+                        )
+                    }
                 }
             )
         }
@@ -284,6 +306,7 @@ struct RemotoView: View {
                                 .onEnded { _ in escalaBase = escala }
                         )
                         .simultaneousGesture(gestoDePuntero(sesion: sesion, frame: frame, tamano: geo.size))
+                        .simultaneousGesture(gestoDeArrastre(sesion: sesion, frame: frame, tamano: geo.size))
                         .onTapGesture(count: 2) {
                             guard !sesion.esControl else { return } // el doble tap ya es "double_click" en control
                             withAnimation { escala = 1; escalaBase = 1 }
@@ -315,6 +338,33 @@ struct RemotoView: View {
                     enviarPointer(local: valor.location, tamanoElemento: tamano, frame: frame, accion: .doubleClick)
                 case .second(let valor):
                     enviarPointer(local: valor.location, tamanoElemento: tamano, frame: frame, accion: .click)
+                }
+            }
+    }
+
+    /// Arrastrar directamente sobre la pantalla remota mueve ventanas,
+    /// selecciona texto y opera sliders con un único comando acotado.
+    private func gestoDeArrastre(
+        sesion: RemoteSession, frame: RemoteFrame, tamano: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onEnded { valor in
+                guard sesion.esControl, !sesion.esTerminal else { return }
+                guard let inicio = RemoteCoordinateMapper.mapear(
+                    puntoLocalX: Double(valor.startLocation.x), puntoLocalY: Double(valor.startLocation.y),
+                    anchoElemento: Double(tamano.width), altoElemento: Double(tamano.height), frame: frame
+                ), let fin = RemoteCoordinateMapper.mapear(
+                    puntoLocalX: Double(valor.location.x), puntoLocalY: Double(valor.location.y),
+                    anchoElemento: Double(tamano.width), altoElemento: Double(tamano.height), frame: frame
+                ) else { return }
+                Task {
+                    await viewModel.enviarPointer(
+                        RemotePointerInput(
+                            x: fin.x, y: fin.y, accion: .drag,
+                            startX: inicio.x, startY: inicio.y
+                        ),
+                        client: session.client
+                    )
                 }
             }
     }
@@ -450,15 +500,39 @@ private struct FilaSesionRemotaHistorial: View {
 
 /// Teclado accesorio simple del modo "Control": un campo de texto + botón
 /// Enviar (manda `input_key {texto}` carácter por carácter, como si se
-/// tipeara en el equipo remoto) y las 8 teclas especiales que soporta
+/// tipeara en el equipo remoto), teclas especiales y atajos que soporta
 /// `edecan_companion.actions._SPECIAL_KEYS` (``RemoteSpecialKey``). El
 /// clic/doble clic sobre el frame vive en ``RemotoView`` — esto es solo
 /// teclado, mismo reparto de responsabilidades que
 /// `apps/web/src/components/remoto/RemoteControlPanel.tsx`.
+private struct ControlesPunteroView: View {
+    let deshabilitado: Bool
+    let onAccion: (RemotePointerAccion, Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Mouse y scroll").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack {
+                Button("Clic derecho") { onAccion(.rightClick, 0) }
+                Button("Scroll ↑") { onAccion(.scroll, 420) }
+                Button("Scroll ↓") { onAccion(.scroll, -420) }
+            }
+            .buttonStyle(.bordered)
+            .disabled(deshabilitado)
+            Text("Toca para hacer clic. Toca dos veces para abrir. Arrastra sobre la pantalla para mover o seleccionar.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .tarjetaVidrio(esquina: 16)
+    }
+}
+
 private struct TecladoRemotoView: View {
     let deshabilitado: Bool
     let onEnviarTexto: (String) -> Void
     let onEnviarTecla: (RemoteSpecialKey) -> Void
+    let onEnviarAtajo: (RemoteSpecialKey, [RemoteKeyModifier]) -> Void
 
     @State private var texto = ""
 
@@ -490,6 +564,20 @@ private struct TecladoRemotoView: View {
                             .disabled(deshabilitado)
                     }
                 }
+            }
+
+            Text("Atajos").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button("⌘A") { onEnviarAtajo(.a, [.command]) }
+                    Button("⌘C") { onEnviarAtajo(.c, [.command]) }
+                    Button("⌘V") { onEnviarAtajo(.v, [.command]) }
+                    Button("⌘X") { onEnviarAtajo(.x, [.command]) }
+                    Button("⌘Z") { onEnviarAtajo(.z, [.command]) }
+                    Button("⌘S") { onEnviarAtajo(.s, [.command]) }
+                }
+                .buttonStyle(.bordered)
+                .disabled(deshabilitado)
             }
         }
         .padding(14)

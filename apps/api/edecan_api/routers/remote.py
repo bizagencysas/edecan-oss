@@ -100,22 +100,22 @@ columna ya es vocabulario abierto, sin `CHECK constraint`
 
 ## Contrato de degradación con el companion (`screenshot`)
 
-La acción `screenshot` es del contrato de WP-V2-08 (`ROADMAP_V2.md` §7.8:
-`{display?} -> {image_b64(PNG), width, height}`). Ese WP aterrizó
+La acción `screenshot` conserva el contrato de WP-V2-08 y lo amplía en v0.5:
+`{display?, format?, quality?, max_width?} -> {image_b64, width, height,
+mime, origin_x, origin_y}`. Ese WP aterrizó
 `apps/companion/edecan_companion/actions.py::_screenshot` MIENTRAS este WP
 estaba en curso — el contrato de degradación de abajo sigue siendo necesario
 igual: un companion instalado ANTES de esa actualización, cualquiera con
 `ide_enabled: false` en su `~/.edecan/companion.yaml` (`_screenshot` vive en
-`_IDE_ACTIONS`, así que hereda ese gate), o cualquiera corriendo en un
-sistema operativo distinto de macOS (`_screenshot` solo implementa la
-captura con `sys.platform == "darwin"`; ver su docstring), sigue sin poder
-servir capturas. En cualquiera de los tres casos `actions.execute` responde
+`_IDE_ACTIONS`, así que hereda ese gate), o uno en una plataforma no
+soportada, sigue sin poder servir capturas. En cualquiera de esos casos
+`actions.execute` responde
 con un mensaje de error reconocible, y este router lo traduce a `501` en vez
 de dejarlo pasar como un `502` genérico o reventar — es el "contrato de
 degradación pinned" que menciona el paquete de trabajo. Con un companion
-actualizado, en macOS, con `ide_enabled: true` (el default de `config.py`) y
-el permiso de macOS "Grabación de pantalla" concedido, la captura ya es real
-de punta a punta.
+actualizado, con `ide_enabled: true` (el default de `config.py`), el extra
+`remote-control` en Windows/Linux y los permisos de captura de su sistema, la
+captura es real de punta a punta.
 
 Del mismo contrato de `actions.execute` también se reconoce el mensaje
 exacto que el companion devuelve cuando el USUARIO deniega la aprobación
@@ -142,10 +142,10 @@ Los CUATRO candados en serie que exige `docs/control-remoto.md` §6.2 para
    control activa (`params["session_id"]`, que este router SIEMPRE incluye
    al reenviar el comando) además de a `remote_input_remember_minutes` — se
    pierde al cambiar de sesión aunque no hayan pasado esos minutos.
-4. **Permiso de Accesibilidad de macOS**, que SOLO un clic humano en Ajustes
-   del Sistema puede conceder — `apps/companion/edecan_companion/actions.py::
-   _QuartzInputBackend` lo verifica (`Quartz.AXIsProcessTrusted()`) antes de
-   sintetizar cualquier evento, nunca lo evade.
+4. **Permiso de entrada del sistema operativo**. En macOS, Accesibilidad solo
+   puede concederse con un clic humano y `_QuartzInputBackend` la verifica con
+   `Quartz.AXIsProcessTrusted()`; Windows/Linux usan `pynput` y respetan los
+   permisos y la sesión gráfica nativos. Ningún backend los evade.
 
 `send_input` reutiliza el mismo pipeline de `get_frame` en todo lo que
 aplica: 404 sesión inexistente/de otro tenant, 403 sesión `denied` (además de
@@ -182,7 +182,7 @@ import uuid
 from typing import Annotated, Any, Literal
 
 from edecan_schemas.plans import FLAG_COMPANION_REMOTE_INPUT, FLAG_COMPANION_REMOTE_VIEW
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -199,7 +199,10 @@ from edecan_api.deps import (
 )
 from edecan_api.repo import Repo
 
-router = APIRouter(prefix="/v1/remote", tags=["remote"], dependencies=[Depends(rate_limit)])
+# ``frame`` e ``input`` tienen límites dedicados mucho más precisos. El
+# límite global de 60/min se aplica a las rutas administrativas mediante sus
+# decoradores, para que no estrangule una vista interactiva de 3-4 FPS.
+router = APIRouter(prefix="/v1/remote", tags=["remote"])
 
 # Re-exportado bajo un nombre corto para el resto de este módulo (y para los
 # tests, que lo referencian como `remote.FLAG_REMOTE_VIEW`).
@@ -222,10 +225,8 @@ _INPUT_KEY_ACTION = "input_key"
 # desactualizado, de antes de WP-V2-08). "IDE deshabilitado": la acción SÍ
 # existe pero `screenshot` vive en `_IDE_ACTIONS` y ese companion tiene
 # `ide_enabled: false` en su `companion.yaml`. "plataforma no soportada": la
-# acción SÍ existe y el IDE SÍ está habilitado, pero `_screenshot` solo
-# implementa la captura en macOS (`sys.platform == "darwin"`; ver su
-# docstring) — un companion en Windows/Linux la rechaza siempre, sin
-# importar la config. Los tres son motivos distintos para el mismo
+# acción SÍ existe y el IDE SÍ está habilitado, pero la plataforma no tiene
+# un backend de captura. Los tres son motivos distintos para el mismo
 # resultado práctico ("este companion no puede servir capturas ahora
 # mismo"), así que los tres se traducen al mismo 501, cada uno con su
 # propio mensaje (ver `_translate_companion_error`).
@@ -240,8 +241,8 @@ _ERROR_PREFIX_DENIED = "acción rechazada"
 # sin importar la acción, ver su código). Textos EXACTOS producidos por
 # `edecan_companion.actions.execute`/`_get_input_backend` (WP-V4-10):
 # "deshabilitado" cuando `remote_input_enabled: false` en companion.yaml;
-# "no está soportado en esta plataforma" cuando el companion no corre en
-# macOS (`_get_input_backend`, distinto del texto de `screenshot` porque son
+# "no está soportado en esta plataforma" cuando el companion corre en una
+# plataforma sin backend (`_get_input_backend`, distinto de `screenshot` porque son
 # mensajes de módulos/acciones distintas).
 _ERROR_PREFIX_INPUT_DISABLED = "el control remoto de teclado/mouse está deshabilitado"
 _ERROR_PREFIX_INPUT_PLATFORM_UNSUPPORTED = (
@@ -255,7 +256,10 @@ _ERROR_PREFIX_INPUT_PLATFORM_UNSUPPORTED = (
 # cliente); Pydantic los usa para validar `PointerInputIn`/`KeyInputIn` con
 # un 422 automático y descriptivo si el cliente manda un valor fuera de este
 # vocabulario, sin que el companion tenga que enterarse siquiera.
-PointerAccion = Literal["move", "click", "double_click", "right_click"]
+PointerAccion = Literal[
+    "move", "click", "double_click", "right_click",
+    "mouse_down", "mouse_up", "drag", "scroll",
+]
 MouseButton = Literal["left", "right", "middle"]
 SpecialKey = Literal[
     "enter",
@@ -266,7 +270,20 @@ SpecialKey = Literal[
     "arrow_down",
     "arrow_left",
     "arrow_right",
+    "delete_forward",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "space",
+    "a",
+    "c",
+    "v",
+    "x",
+    "z",
+    "s",
 ]
+KeyModifier = Literal["command", "control", "option", "shift"]
 
 # Default documentado en `ROADMAP_V2.md` §7.5 (`REMOTE_FRAME_MIN_INTERVAL_SECONDS`).
 # Se lee de `settings` con `getattr(..., DEFAULT_FRAME_MIN_INTERVAL_SECONDS)`
@@ -274,7 +291,7 @@ SpecialKey = Literal[
 # agrega WP-V2-01 junto con el resto de `.env.example` de §7.5) — convención
 # dura de `ROADMAP_V2.md` §7.5: "toda tool lee settings con
 # `getattr(ctx.settings, "CAMPO", default)` — nunca revienta si falta el campo".
-DEFAULT_FRAME_MIN_INTERVAL_SECONDS = 1.0
+DEFAULT_FRAME_MIN_INTERVAL_SECONDS = 0.25
 
 # TTL del timestamp de rate-limit en Redis: generoso respecto al intervalo
 # mínimo (que hoy es ~1s) para no perder el registro entre un frame y el
@@ -446,6 +463,18 @@ class PointerInputIn(BaseModel):
         default=None,
         description="Default 'left' si se omite. 'right_click' siempre usa el derecho.",
     )
+    start_x: int | None = None
+    start_y: int | None = None
+    delta_x: int = Field(default=0, ge=-2400, le=2400)
+    delta_y: int = Field(default=0, ge=-2400, le=2400)
+
+    @model_validator(mode="after")
+    def _validate_action_payload(self) -> PointerInputIn:
+        if self.accion == "drag" and (self.start_x is None or self.start_y is None):
+            raise ValueError("drag necesita start_x y start_y")
+        if self.accion == "scroll" and self.delta_x == 0 and self.delta_y == 0:
+            raise ValueError("scroll necesita delta_x o delta_y")
+        return self
 
 
 class KeyInputIn(BaseModel):
@@ -456,6 +485,7 @@ class KeyInputIn(BaseModel):
     tipo: Literal["key"]
     texto: str | None = None
     tecla: SpecialKey | None = None
+    modifiers: list[KeyModifier] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def _exactly_one_of_texto_or_tecla(self) -> KeyInputIn:
@@ -474,7 +504,9 @@ SessionInputIn = Annotated[PointerInputIn | KeyInputIn, Field(discriminator="tip
 # ---------------------------------------------------------------------------
 
 
-@router.post("/sessions", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/sessions", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit)]
+)
 async def create_session(
     body: SessionCreateIn,
     request: Request,
@@ -528,7 +560,7 @@ async def create_session(
     return session
 
 
-@router.get("/sessions")
+@router.get("/sessions", dependencies=[Depends(rate_limit)])
 async def list_sessions(
     current_user: CurrentUser = Depends(_require_remote_view),
     repo: Repo = Depends(get_repo),
@@ -536,7 +568,7 @@ async def list_sessions(
     return await repo.list_remote_sessions(tenant_id=current_user.tenant_id)
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", dependencies=[Depends(rate_limit)])
 async def get_session(
     session_id: uuid.UUID,
     current_user: CurrentUser = Depends(_require_remote_view),
@@ -575,9 +607,8 @@ def _translate_companion_error(error: str) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=(
-                "El companion de esta máquina corre en un sistema operativo sin soporte "
-                "de captura de pantalla (solo macOS); empareja un companion en macOS para "
-                "usar la vista remota."
+                "El companion de esta máquina corre en un sistema operativo sin backend "
+                "de captura compatible. Usa macOS, Windows o Linux y actualiza el companion."
             ),
         )
     # `_ERROR_PREFIX_DENIED` se maneja aparte por el llamador (necesita marcar
@@ -594,6 +625,8 @@ def _translate_companion_error(error: str) -> HTTPException:
 async def get_frame(
     session_id: uuid.UUID,
     request: Request,
+    quality: Annotated[int, Query(ge=35, le=95)] = 68,
+    max_width: Annotated[int, Query(ge=640, le=3840)] = 1600,
     current_user: CurrentUser = Depends(_require_remote_view),
     repo: Repo = Depends(get_repo),
     db_session: AsyncSession = Depends(get_tenant_session),
@@ -638,7 +671,11 @@ async def get_frame(
         )
 
     try:
-        resultado = await manager.send_command(current_user.tenant_id, _SCREENSHOT_ACTION, {})
+        resultado = await manager.send_command(
+            current_user.tenant_id,
+            _SCREENSHOT_ACTION,
+            {"format": "jpeg", "quality": quality, "max_width": max_width},
+        )
     except CompanionError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -698,6 +735,9 @@ async def get_frame(
     image_b64 = result_data.get("image_b64") if isinstance(result_data, dict) else None
     width = result_data.get("width") if isinstance(result_data, dict) else None
     height = result_data.get("height") if isinstance(result_data, dict) else None
+    mime = result_data.get("mime", "image/png") if isinstance(result_data, dict) else "image/png"
+    origin_x = result_data.get("origin_x", 0) if isinstance(result_data, dict) else 0
+    origin_y = result_data.get("origin_y", 0) if isinstance(result_data, dict) else 0
     if not isinstance(image_b64, str) or not image_b64 or width is None or height is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -721,11 +761,14 @@ async def get_frame(
         "image_b64": image_b64,
         "width": width,
         "height": height,
+        "mime": mime if mime in {"image/png", "image/jpeg"} else "image/png",
+        "origin_x": origin_x if isinstance(origin_x, int) else 0,
+        "origin_y": origin_y if isinstance(origin_y, int) else 0,
         "seq": updated["frames_count"],
     }
 
 
-@router.post("/sessions/{session_id}/end")
+@router.post("/sessions/{session_id}/end", dependencies=[Depends(rate_limit)])
 async def end_session(
     session_id: uuid.UUID,
     current_user: CurrentUser = Depends(_require_remote_view),
@@ -789,8 +832,8 @@ def _translate_input_companion_error(error: str) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=(
-                "El companion de esta máquina corre en un sistema operativo sin soporte de "
-                "control remoto de teclado/mouse (solo macOS)."
+                "El companion de esta máquina corre en un sistema operativo sin backend "
+                "compatible de teclado/mouse. Usa macOS, Windows o Linux."
             ),
         )
     # `_ERROR_PREFIX_DENIED` se maneja aparte por el llamador (necesita marcar
@@ -884,6 +927,13 @@ async def send_input(
         }
         if body.button is not None:
             params["button"] = body.button
+        if body.start_x is not None:
+            params["start_x"] = body.start_x
+        if body.start_y is not None:
+            params["start_y"] = body.start_y
+        if body.accion == "scroll":
+            params["delta_x"] = body.delta_x
+            params["delta_y"] = body.delta_y
         audit_meta: dict[str, Any] = {"tipo": "pointer", "accion": body.accion}
     else:
         action = _INPUT_KEY_ACTION
@@ -895,7 +945,12 @@ async def send_input(
             audit_meta = {"tipo": "key", "clave": "texto", "length": len(body.texto)}
         else:
             params["tecla"] = body.tecla
-            audit_meta = {"tipo": "key", "clave": "tecla", "tecla": body.tecla}
+            if body.modifiers:
+                params["modifiers"] = body.modifiers
+            audit_meta = {
+                "tipo": "key", "clave": "tecla", "tecla": body.tecla,
+                "modifiers": body.modifiers,
+            }
 
     try:
         resultado = await manager.send_command(current_user.tenant_id, action, params)

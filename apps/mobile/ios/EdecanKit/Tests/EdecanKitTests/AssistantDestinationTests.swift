@@ -3,8 +3,8 @@ import Testing
 
 @Suite("Navegación assistant-first")
 struct AssistantDestinationTests {
-    @Test("expone solo Edecan, Actividad y Ajustes")
+    @Test("expone chat, estudio, remoto, actividad y ajustes")
     func primaryDestinations() {
-        #expect(AssistantDestination.allCases == [.edecan, .activity, .settings])
+        #expect(AssistantDestination.allCases == [.edecan, .studio, .remote, .activity, .settings])
     }
 }

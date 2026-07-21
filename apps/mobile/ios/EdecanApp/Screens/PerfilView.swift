@@ -94,6 +94,12 @@ struct PerfilView: View {
                 }
                 Divider().padding(.vertical, 8)
                 NavigationLink {
+                    CapabilitiesView()
+                } label: {
+                    filaAvanzada(icono: "sparkles.rectangle.stack.fill", titulo: "Capacidades")
+                }
+                Divider().padding(.vertical, 8)
+                NavigationLink {
                     NegociosView()
                 } label: {
                     filaAvanzada(icono: "chart.pie.fill", titulo: "Negocios")

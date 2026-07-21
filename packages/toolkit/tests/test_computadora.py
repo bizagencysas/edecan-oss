@@ -86,6 +86,7 @@ def _companion_no_debe_llamarse(llamadas: list[tuple[str, dict]]):
         # `ide._require_companion_ide` protege).
         ("read_file", {}, "ide"),
         ("write_file", {FLAG_COMPANION_IDE: False}, "ide"),
+        ("trash_path", {FLAG_COMPANION_IDE: False}, "ide"),
         ("run_command", {FLAG_COMPANION_IDE: False}, "ide"),
         ("screenshot", {}, "vista remota"),
         ("screenshot", {FLAG_COMPANION_REMOTE_VIEW: False}, "vista remota"),
@@ -136,6 +137,7 @@ async def test_usar_computadora_bloquea_accion_sin_dict_de_flags(make_ctx):
         ("apply_edit", {FLAG_COMPANION_IDE: True}),
         ("read_file", {FLAG_COMPANION_IDE: True}),
         ("write_file", {FLAG_COMPANION_IDE: True}),
+        ("trash_path", {FLAG_COMPANION_IDE: True}),
         ("run_command", {FLAG_COMPANION_IDE: True}),
         ("screenshot", {FLAG_COMPANION_REMOTE_VIEW: True}),
         (

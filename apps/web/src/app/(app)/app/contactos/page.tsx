@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { SearchIcon, TrashIcon } from "@/components/icons";
+import { ICloudConnectionCard } from "@/components/configuracion/ICloudConnectionCard";
 import {
   Alert,
   Badge,
@@ -21,16 +22,12 @@ import {
 import {
   createContact,
   deleteContact,
-  deleteICloudCredentials,
-  getICloudContactsStatus,
   importContactsGoogle,
-  importContactsICloud,
   listConnectors,
   listContacts,
-  putICloudCredentials,
   updateContact,
 } from "@/lib/api";
-import type { Contact, ICloudStatus } from "@/lib/types";
+import type { Contact } from "@/lib/types";
 
 function splitList(value: string): string[] {
   return value
@@ -58,21 +55,12 @@ export default function ContactosPage() {
   const [importingGoogle, setImportingGoogle] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<string | null>(null);
 
-  const [icloudStatus, setICloudStatus] = useState<ICloudStatus | null>(null);
-  const [icloudAppleId, setICloudAppleId] = useState("");
-  const [icloudPassword, setICloudPassword] = useState("");
-  const [connectingICloud, setConnectingICloud] = useState(false);
-  const [importingICloud, setImportingICloud] = useState(false);
-  const [disconnectingICloud, setDisconnectingICloud] = useState(false);
-  const [icloudMessage, setICloudMessage] = useState<string | null>(null);
-
   useEffect(() => {
     void load();
   }, []);
 
   useEffect(() => {
     void loadGoogleConnectorStatus();
-    void loadICloudStatus();
   }, []);
 
   async function load(q?: string) {
@@ -157,14 +145,6 @@ export default function ContactosPage() {
     }
   }
 
-  async function loadICloudStatus() {
-    try {
-      setICloudStatus(await getICloudContactsStatus());
-    } catch {
-      // No bloquea el resto de la pantalla si esto falla.
-    }
-  }
-
   async function handleImportGoogle() {
     setImportingGoogle(true);
     setGoogleMessage(null);
@@ -181,58 +161,6 @@ export default function ContactosPage() {
       setError(err instanceof Error ? err.message : "No se pudo importar desde Google.");
     } finally {
       setImportingGoogle(false);
-    }
-  }
-
-  async function handleConnectICloud(e: React.FormEvent) {
-    e.preventDefault();
-    if (!icloudAppleId.trim() || !icloudPassword.trim()) return;
-    setConnectingICloud(true);
-    setICloudMessage(null);
-    setError(null);
-    try {
-      await putICloudCredentials(icloudAppleId.trim(), icloudPassword.trim());
-      setICloudAppleId("");
-      setICloudPassword("");
-      await loadICloudStatus();
-      setICloudMessage("Conectado ✓");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo conectar con iCloud.");
-    } finally {
-      setConnectingICloud(false);
-    }
-  }
-
-  async function handleDisconnectICloud() {
-    setDisconnectingICloud(true);
-    setError(null);
-    try {
-      await deleteICloudCredentials();
-      await loadICloudStatus();
-      setICloudMessage(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo desconectar iCloud.");
-    } finally {
-      setDisconnectingICloud(false);
-    }
-  }
-
-  async function handleImportICloud() {
-    setImportingICloud(true);
-    setICloudMessage(null);
-    setError(null);
-    try {
-      const result = await importContactsICloud();
-      setICloudMessage(
-        result.importados > 0
-          ? `${result.importados} contacto${result.importados === 1 ? "" : "s"} nuevo${result.importados === 1 ? "" : "s"} importado${result.importados === 1 ? "" : "s"} de ${result.total_icloud} en tu cuenta de iCloud.`
-          : "Ya estaba todo al día — nada nuevo que importar de iCloud.",
-      );
-      await load(query);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo importar desde iCloud.");
-    } finally {
-      setImportingICloud(false);
     }
   }
 
@@ -276,65 +204,7 @@ export default function ContactosPage() {
         </CardBody>
       </Card>
 
-      <Card className="mb-6">
-        <CardHeader
-          title="Importar desde iCloud"
-          description="Necesitas tu Apple ID y una contraseña específica de app generada en appleid.apple.com — no uses la contraseña real de tu Apple ID."
-          actions={
-            icloudStatus?.connected ? (
-              <Badge variant="success">Conectado ({icloudStatus.apple_id})</Badge>
-            ) : (
-              <Badge variant="neutral">Sin conectar</Badge>
-            )
-          }
-        />
-        <CardBody className="space-y-3">
-          {icloudMessage && <Alert variant="success">{icloudMessage}</Alert>}
-          {icloudStatus?.connected ? (
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={handleImportICloud} loading={importingICloud}>
-                Importar contactos
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleDisconnectICloud}
-                loading={disconnectingICloud}
-              >
-                Desconectar
-              </Button>
-            </div>
-          ) : (
-            <form onSubmit={handleConnectICloud} className="flex flex-wrap items-end gap-2">
-              <Field label="Apple ID" htmlFor="icloud_apple_id" className="min-w-[220px] flex-1">
-                <Input
-                  id="icloud_apple_id"
-                  type="email"
-                  value={icloudAppleId}
-                  onChange={(e) => setICloudAppleId(e.target.value)}
-                  placeholder="tucorreo@icloud.com"
-                />
-              </Field>
-              <Field label="Contraseña de app" htmlFor="icloud_password" className="min-w-[220px] flex-1">
-                <Input
-                  id="icloud_password"
-                  type="password"
-                  value={icloudPassword}
-                  onChange={(e) => setICloudPassword(e.target.value)}
-                  placeholder="xxxx-xxxx-xxxx-xxxx"
-                />
-              </Field>
-              <Button
-                type="submit"
-                loading={connectingICloud}
-                disabled={!icloudAppleId.trim() || !icloudPassword.trim()}
-              >
-                Conectar iCloud
-              </Button>
-            </form>
-          )}
-        </CardBody>
-      </Card>
+      <div className="mb-6"><ICloudConnectionCard onImported={() => load(query)} /></div>
 
       <Card className="mb-6">
         <CardHeader title={editingId ? "Editar contacto" : "Nuevo contacto"} />

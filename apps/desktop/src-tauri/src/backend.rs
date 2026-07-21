@@ -3,10 +3,11 @@
 //! esperar la línea `EDECAN_LOCAL_READY` en su stdout (máx. 60s), y matarlo.
 //!
 //! Contrato del backend local (ver docs/desktop.md y ARCHITECTURE.md §12):
-//! `python -m edecan_local --port P --data-dir D` / binario PyInstaller
+//! `edecan --port P --data-dir D` / binario PyInstaller
 //! `edecan-local`, imprime `EDECAN_LOCAL_READY port=P` en stdout cuando está
-//! sano, expone `GET /healthz`, bindea 127.0.0.1, sirve la web estática en
-//! `/`. Este módulo NUNCA hace un GET a `/healthz` — deliberadamente lee
+//! sano, expone `GET /healthz`, sirve la web estática en `/` y, cuando se
+//! activa el emparejamiento móvil, expone la API en la LAN. Este módulo NUNCA
+//! hace un GET a `/healthz` — deliberadamente lee
 //! stdout en vez de sumar un cliente HTTP (`reqwest`) solo para esto.
 
 use std::net::TcpListener;
@@ -182,7 +183,7 @@ pub async fn start_backend(app: AppHandle) {
 /// `scripts/build-backend.sh` (`externalBin`, ver tauri.conf.json). En un
 /// perfil debug usa siempre el comando de desarrollo configurable vía la
 /// variable de entorno `EDECAN_LOCAL_DEV_CMD` (default: `"uv run
-/// --all-packages python -m edecan_local"`, corrido con cwd = raíz del
+/// --all-packages edecan"`, corrido con cwd = raíz del
 /// repo). Elegir por perfil es deliberado: con `externalBin=[]` Tauri puede
 /// devolver un `Command` válido aunque el archivo no exista, y el error
 /// aparece recién en `spawn()` — demasiado tarde para hacer fallback. El
@@ -204,13 +205,14 @@ fn build_command(
         port_arg.as_str(),
         "--data-dir",
         data_dir_arg.as_str(),
+        "--mobile-access",
     ];
 
     let source_command =
         cfg!(debug_assertions) || std::env::var_os("EDECAN_LOCAL_DEV_CMD").is_some();
     let cmd = if source_command {
         let dev_cmd = std::env::var("EDECAN_LOCAL_DEV_CMD")
-            .unwrap_or_else(|_| "uv run --all-packages python -m edecan_local".to_string());
+            .unwrap_or_else(|_| "uv run --all-packages edecan".to_string());
         let mut parts = dev_cmd.split_whitespace();
         let program = parts.next().ok_or_else(|| {
             "EDECAN_LOCAL_DEV_CMD está vacío; define un comando válido o elimina la variable."

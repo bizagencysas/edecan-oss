@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.CompositionLocalProvider
@@ -32,12 +33,24 @@ import cc.edecan.app.vm.SessionViewModelStoreOwner
  * ese store completo, mientras una rotación conserva la sesión actual.
  */
 @Composable
-fun App() {
+fun App(
+    pairingDeepLink: String? = null,
+    onPairingDeepLinkConsumed: () -> Unit = {},
+) {
     EdecanTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val sessionViewModel: SessionViewModel = viewModel()
             val sessionViewModelContainer: SessionViewModelContainer = viewModel()
             val uiState by sessionViewModel.uiState.collectAsState()
+
+            LaunchedEffect(pairingDeepLink) {
+                pairingDeepLink?.let { raw ->
+                    // Quita el secreto del estado de Activity antes de abrir
+                    // red; SessionViewModel solo lo conserva en la coroutine.
+                    onPairingDeepLinkConsumed()
+                    sessionViewModel.procesarEnlaceEmparejamiento(raw)
+                }
+            }
 
             when {
                 uiState.cargandoInicial -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

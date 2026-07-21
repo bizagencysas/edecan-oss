@@ -38,17 +38,29 @@ resultados en vivo.
 
 ## Codex CLI en el computador
 
+Para una persona normal no hay comandos: abre `Edecán.app` o haz doble clic
+en `Abrir Edecán.command`, entra a **Configuración → Conexiones** y elige
+Codex CLI. Lo siguiente es únicamente el flujo de desarrollo del repo.
+
 ```bash
 codex login
 codex login status
-uv run --all-packages python -m edecan_local --no-web
+uv run --all-packages edecan --no-web --mobile-access
 ```
 
 Cuando aparezca `EDECAN_LOCAL_READY port=8765`, Edecan está disponible solo en
 `127.0.0.1`, por diseño. El asistente detecta el binario y su versión mediante
 `GET /v1/setup/detect`; no hay que copiar tokens de Codex dentro de Edecan.
 
-## Android conectado por USB
+## Conectar iOS o Android
+
+Abre **Configuración → Conectar mi teléfono** en Edecán y escanea el QR. El
+QR es de un solo uso y vence en diez minutos; el teléfono recibe después una
+identidad durable, cifrada en Keychain/Android Keystore y revocable desde la
+lista de dispositivos. Si el JWT normal caduca o el backend local se reinicia,
+la app recupera la sesión con esa identidad sin pedir otra URL ni contraseña.
+
+## Android conectado por USB (solo desarrollo)
 
 Para un build de desarrollo y un teléfono autorizado por ADB:
 
@@ -59,17 +71,16 @@ adb reverse tcp:8765 tcp:8765
 adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
 ```
 
-En el onboarding de Android usa `http://127.0.0.1:8765`. `adb reverse` lleva
-esa dirección hasta el backend local del computador. Es un camino de
+El deep link del QR sigue siendo el flujo principal. `adb reverse` lleva
+`127.0.0.1:8765` hasta el backend local del computador y solo es un camino de
 desarrollo por USB, no un sustituto de un relay autenticado o de HTTPS para uso
 remoto diario.
 
 ## iOS
 
 Abre `apps/mobile/ios/Edecan.xcodeproj`, selecciona tu equipo y firma con tu
-cuenta de Apple. Un iPhone físico no puede usar el `127.0.0.1` del Mac: para uso
-en red necesita una URL HTTPS confiable del backend. El simulador sí sirve para
-la verificación local descrita en [`movil-ios.md`](./movil-ios.md).
+cuenta de Apple. Después usa el mismo QR de Configuración; la app de escritorio
+anuncia su dirección de red local automáticamente.
 
 ## Regla de seguridad
 

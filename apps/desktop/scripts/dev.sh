@@ -4,7 +4,7 @@
 # Modo desarrollo del shell nativo: NO corre PyInstaller. Prepara un export
 # estático de apps/web y `cargo tauri dev` arranca la app con recarga en
 # caliente del lado Rust; el backend local corre
-# directo desde el código fuente (`uv run --all-packages python -m edecan_local`)
+# directo desde el código fuente (`uv run --all-packages edecan`)
 # vía la variable de entorno EDECAN_LOCAL_DEV_CMD que lee
 # src-tauri/src/backend.rs::build_command cuando no encuentra el sidecar
 # empaquetado en src-tauri/binaries/ — que en este modo, a propósito, nunca
@@ -39,7 +39,7 @@ if [[ "$ACTUAL_TAURI_VERSION" != "tauri-cli $TAURI_CLI_VERSION" ]]; then
   exit 1
 fi
 if ! command -v uv >/dev/null 2>&1; then
-  echo "error: falta 'uv' en el PATH (lo necesita EDECAN_LOCAL_DEV_CMD para correr edecan_local desde fuente)." >&2
+  echo "error: falta 'uv' en el PATH (lo necesita EDECAN_LOCAL_DEV_CMD para correr Edecán desde fuente)." >&2
   exit 1
 fi
 
@@ -85,10 +85,10 @@ fi
 # no está seteada — se fija igual acá, explícito, para que quede a la vista
 # y sea fácil de pisar. Ejemplo si alguna vez hace falta acotar el entorno
 # de uv a un solo paquete en vez del workspace completo:
-#   EDECAN_LOCAL_DEV_CMD='uv run --package edecan-local python -m edecan_local' scripts/dev.sh
+#   EDECAN_LOCAL_DEV_CMD='uv run --package edecan-local edecan' scripts/dev.sh
 # `--all-packages` explícito: un `uv run` suelto sin este flag poda en silencio el resto del
 # workspace uv (ver README.md "Modo desarrollador" / HOTFIXES_PENDIENTES.md).
-export EDECAN_LOCAL_DEV_CMD="${EDECAN_LOCAL_DEV_CMD:-uv run --all-packages python -m edecan_local}"
+export EDECAN_LOCAL_DEV_CMD="${EDECAN_LOCAL_DEV_CMD:-uv run --all-packages edecan}"
 
 echo "==> EDECAN_LOCAL_DEV_CMD=$EDECAN_LOCAL_DEV_CMD"
 if [[ -n "${EDECAN_WEB_DIR:-}" ]]; then

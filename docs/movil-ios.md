@@ -25,7 +25,7 @@ más abajo). Cada cliente compila, firma e instala su propia copia.
    app pide la URL de tu propia instalación (self-host, o tu app de
    escritorio Tauri) en el primer arranque. Mismo principio bring-your-own
    que el resto del producto (`docs/roadmap.md`).
-4. **Iniciar sesión ES el emparejamiento**, en este v1. Ver
+4. **Escanear el QR crea el emparejamiento durable**. Ver
    ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque).
 
 ## Requisitos
@@ -364,43 +364,16 @@ La primera vez que la abras, iOS puede pedir confiar en el desarrollador:
 
 ## Emparejamiento en el primer arranque
 
-Al abrir la app por primera vez ves `OnboardingView`, 2 pasos (más un
-desvío opcional):
+El flujo principal es **Configuración → Conectar mi teléfono** en el
+computador y escanear el QR. El esquema `edecan://pair` abre iOS, canjea un
+secreto de un solo uso (10 minutos) y entra directamente al chat. No hay URL
+aleatoria que copiar.
 
-1. **URL del servidor** — pega la URL de tu propia instalación de Edecán
-   (self-host, o tu app de escritorio). Sin default: cada cliente trae el
-   suyo.
-2. **Iniciar sesión** — correo, contraseña, y un código de 6 dígitos solo
-   si tu cuenta tiene 2FA activado (`POST /v1/auth/login`, ver
-   [`api.md`](./api.md)). Si todavía no tienes cuenta, "¿No tienes cuenta?
-   Crear una" lleva a un formulario corto (nombre de empresa/equipo, correo,
-   contraseña) que llama `POST /v1/auth/register` — crea el tenant, el
-   usuario `owner` y una persona por defecto, y deja la sesión iniciada
-   igual que un login.
-
-**En este v1, el par de tokens JWT que deja el login/registro ES el
-emparejamiento** de este teléfono con tu tenant — no hay todavía un
-protocolo de emparejamiento propio para móvil completo (como el código
-corto de 6 dígitos que ya usa el companion de escritorio, `POST
-/v1/companion/pair-code`). Mientras el refresh token siga en el Keychain de
-este iPhone, el dispositivo cuenta como emparejado; "Cerrar sesión" en la
-Ajustes lo borra y vuelve a mostrar el onboarding.
-
-**Registro real por dispositivo, best-effort (fase v4):** justo después de
-un login/registro exitoso, `SessionStore.emparejarDispositivo(pairingStore:)`
-llama `POST /v1/devices {nombre, plataforma: "ios", kind: "mobile",
-fingerprint}` (`nombre` = `UIDevice.current.name`, `fingerprint` =
-`UIDevice.current.identifierForVendor`) y, si responde con éxito, guarda el
-`id` devuelto en `PairingStore.deviceId` para poder revocarlo luego
-(`POST /v1/devices/{id}/revoke`, disparado al cerrar sesión) sin tener que
-cambiar la contraseña de la cuenta. **Este es un contrato en paralelo
-(fase v4) que todavía no tiene router en `apps/api/edecan_api/routers/`**
-al escribir esto — `APIClient.registrarDispositivo`/`.revocarDispositivo`
-tratan un `404` como "todavía no existe" y degradan en silencio, sin
-bloquear ni mostrar error: el emparejamiento v1 de arriba (sesión =
-emparejamiento) sigue siendo el mecanismo real hasta que ese WP aterrice.
-Ver `EdecanKit/Sources/EdecanKit/PairingStore.swift`/`DeviceModels.swift` y
-`SessionStore.swift` para el punto de extensión exacto.
+Después del canje, servidor, `device_id`, `device_token` y JWTs quedan en
+Keychain. Si Redis o el backend local se reinician, `APIClient` usa una sola
+vez la identidad durable para recuperar tokens nuevos; un dispositivo
+revocado no puede hacerlo. URL/login/registro manual siguen disponibles como
+recuperación avanzada para self-hosting.
 
 ## Nunca App Store, nunca TestFlight
 
@@ -423,7 +396,7 @@ cuenta Developer del propio cliente.
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
 | **Ajustes: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
 | **IDE embebido de solo lectura** (árbol navegable con `OutlineGroup` + visor monoespaciado) | **Real** — accesible desde Modo avanzado en Ajustes; `GET /v1/ide/status\|tree\|file` |
-| **Registro por dispositivo** (`POST /v1/devices`, revocar al cerrar sesión) | Best-effort, degrada con gracia si el servidor todavía no tiene ese router (fase v4 en paralelo) — ver ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque) |
+| **Emparejamiento QR durable y revocable** (`/v1/devices/pairing/*`) | **Real** — deep link, Keychain y recuperación después de reinicio. |
 | **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
@@ -431,7 +404,7 @@ cuenta Developer del propio cliente.
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
 | Actividad (`GET /v1/me` + accesos), Ajustes (datos + cerrar sesión) | **Real** |
 | Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |
-| Emparejamiento real por dispositivo COMPLETO (tabla `devices` con listado/gestión en la app, QR) | Pendiente — hoy solo se registra/revoca el propio dispositivo al iniciar/cerrar sesión (ver arriba), sin pantalla para ver/gestionar otros dispositivos emparejados |
+| Gestión visual de todos los dispositivos del tenant | Pendiente — el QR y la revocación del dispositivo actual sí son reales; falta la lista administrativa completa en móvil. |
 | Notificaciones push (APNs) | Pendiente — requiere el emparejamiento por dispositivo completo de arriba |
 | Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — el micrófono de Chat solo cubre voz web (*push-to-talk*), no telefonía |
 | IDE con escritura/edición/terminal (`PUT /v1/ide/file`, `POST /v1/ide/edit\|run\|search`) | Pendiente — la app móvil solo lee/navega, el panel web sigue siendo donde se edita |

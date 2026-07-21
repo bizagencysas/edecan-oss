@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = JWT_SECRET_PLACEHOLDER
     AUTH_RATE_LIMIT_REQUESTS: int = 10
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    # QR móvil de un solo uso. La sesión durable posterior vive en `devices`
+    # y se puede revocar; este TTL solo limita la ventana del QR visible.
+    MOBILE_PAIRING_TTL_SECONDS: int = 10 * 60
 
     # --- Cifrado envolvente de credenciales de tenant (TokenVault) -----------
     LOCAL_MASTER_KEY: str = LOCAL_MASTER_KEY_PLACEHOLDER

@@ -90,14 +90,14 @@ Por eso `edecan_local.runtime._ensure_local_secrets`:
 
 ```bash
 # Desde la raíz del repo — arranca todo (Postgres embebido incluido) en :8765
-uv run --all-packages python -m edecan_local
+uv run --all-packages edecan
 
 # Con la web de apps/web corriendo aparte (npm run dev en :3000), en vez de
 # la exportación estática que empaqueta apps/desktop:
-uv run --all-packages python -m edecan_local --no-web
+uv run --all-packages edecan --no-web
 
 # Puerto y carpeta de datos propios (útil para correr dos instancias a la vez):
-uv run --all-packages python -m edecan_local --port 9001 --data-dir /tmp/edecan-dev-data
+uv run --all-packages edecan --port 9001 --data-dir /tmp/edecan-dev-data
 ```
 
 Al quedar sano (migraciones aplicadas, `GET /healthz` respondiendo de verdad — este proceso hace su propio poll antes de avisar, nunca asume) imprime en stdout la línea exacta:
@@ -114,7 +114,7 @@ Si ya tenés un Postgres corriendo (el tuyo propio, uno remoto, uno en Docker qu
 
 ```bash
 EDECAN_DATABASE_URL="postgresql+asyncpg://usuario:pass@localhost:5432/edecan" \
-  uv run --all-packages python -m edecan_local
+  uv run --all-packages edecan
 ```
 
 `edecan_local.pg.ensure_postgres` detecta esa variable y usa esa URL tal cual, sin tocar `pgserver` para nada (ni siquiera lo importa) — este proceso tampoco se hace cargo de apagarlo al salir, porque no es dueño de ese Postgres.

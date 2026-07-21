@@ -101,6 +101,30 @@ private data class DeviceRegisterBody(
 @Serializable
 private data class DeviceOut(val id: String = "")
 
+@Serializable
+private data class PairingClaimBody(
+    @SerialName("pairing_token") val pairingToken: String,
+    val nombre: String,
+    val plataforma: String = "android",
+    val kind: String = "mobile",
+    val fingerprint: String? = null,
+)
+
+@Serializable
+private data class PairingRefreshBody(
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_token") val deviceToken: String,
+)
+
+@Serializable
+private data class PairingClaimOut(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("refresh_token") val refreshToken: String,
+    @SerialName("token_type") val tokenType: String = "bearer",
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_token") val deviceToken: String,
+)
+
 private data class SessionSnapshot(val epoch: Long, val accessToken: String?)
 
 private data class LogoutCredentials(val accessToken: String?, val refreshToken: String?)
@@ -337,6 +361,33 @@ class EdecanApi private constructor(
         return tokens
     }
 
+    /** Canjea el secreto efímero contenido en el QR. La petición no lleva
+     * Authorization; la respuesta deja tanto JWTs rotables como la
+     * credencial durable del dispositivo cifrados por [TokenStore]. */
+    suspend fun reclamarEmparejamiento(
+        pairingToken: String,
+        nombre: String,
+        fingerprint: String?,
+    ) {
+        val epoch = comenzarNuevaSesion()
+        val result: PairingClaimOut = peticionSinSesion(
+            "/v1/devices/pairing/claim",
+            PairingClaimBody(
+                pairingToken = pairingToken,
+                nombre = nombre,
+                fingerprint = fingerprint,
+            ),
+        )
+        sessionStateMutex.withLock {
+            if (sessionEpoch != epoch) throw ApiException.SesionExpirada()
+            // Primero la credencial durable: si el proceso muere antes de
+            // guardar JWTs, el próximo arranque todavía puede recuperarlos.
+            tokenStore.saveDevicePairing(result.deviceId, result.deviceToken)
+            tokenStore.saveTokens(result.accessToken, result.refreshToken)
+            accessTokenEnMemoria = result.accessToken
+        }
+    }
+
     /** `POST /v1/auth/refresh`. El backend rota el refresh token en cada
      * uso, así que todas las renovaciones pasan por un único [Mutex]. Un
      * `401` aquí invalida la sesión persistida; no son credenciales de login
@@ -350,25 +401,47 @@ class EdecanApi private constructor(
             if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
             tokenStore.getRefreshToken()
         }
-        if (refreshToken == null) {
-            if (invalidarSesionSiVigente(snapshot.epoch)) {
-                onSessionExpired?.invoke()
+        if (refreshToken != null) {
+            try {
+                val tokens: TokenPair = peticionSinSesion(
+                    "/v1/auth/refresh",
+                    RefreshBody(refreshToken, totpCode.aNuloSiVacio()),
+                )
+                guardarTokensSiVigente(tokens, snapshot.epoch)
+                return tokens
+            } catch (_: ApiException.CredencialesInvalidas) {
+                // El refresh JWT puede expirar o ser revocado mientras el
+                // emparejamiento durable del dispositivo sigue vigente.
             }
-            throw ApiException.SesionExpirada()
         }
+        return refrescarConDispositivoSinLock(snapshot)
+    }
+
+    private suspend fun refrescarConDispositivoSinLock(snapshot: SessionSnapshot): TokenPair {
+        val pairing = sessionStateMutex.withLock {
+            if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+            tokenStore.getDeviceId()?.let { id ->
+                tokenStore.getDeviceToken()?.let { token -> id to token }
+            }
+        }
+        if (pairing == null) expirarEmparejamiento(snapshot.epoch)
         return try {
             val tokens: TokenPair = peticionSinSesion(
-                "/v1/auth/refresh",
-                RefreshBody(refreshToken, totpCode.aNuloSiVacio()),
+                "/v1/devices/pairing/refresh",
+                PairingRefreshBody(pairing.first, pairing.second),
             )
             guardarTokensSiVigente(tokens, snapshot.epoch)
             tokens
-        } catch (e: ApiException.CredencialesInvalidas) {
-            if (invalidarSesionSiVigente(snapshot.epoch)) {
-                onSessionExpired?.invoke()
-            }
-            throw ApiException.SesionExpirada()
+        } catch (_: ApiException.CredencialesInvalidas) {
+            expirarEmparejamiento(snapshot.epoch)
         }
+    }
+
+    private suspend fun expirarEmparejamiento(expectedEpoch: Long): Nothing {
+        if (invalidarSesionSiVigente(expectedEpoch, clearDevicePairing = true)) {
+            onSessionExpired?.invoke()
+        }
+        throw ApiException.SesionExpirada()
     }
 
     /** Invalida la sesión local de inmediato y revoca, con copias capturadas
@@ -918,6 +991,7 @@ class EdecanApi private constructor(
         sessionEpoch += 1
         accessTokenEnMemoria = null
         tokenStore.clearTokens()
+        tokenStore.clearDevicePairing()
         sessionEpoch
     }
 
@@ -929,12 +1003,16 @@ class EdecanApi private constructor(
         }
     }
 
-    private suspend fun invalidarSesionSiVigente(expectedEpoch: Long): Boolean =
+    private suspend fun invalidarSesionSiVigente(
+        expectedEpoch: Long,
+        clearDevicePairing: Boolean = false,
+    ): Boolean =
         sessionStateMutex.withLock {
             if (sessionEpoch != expectedEpoch) return@withLock false
             sessionEpoch += 1
             accessTokenEnMemoria = null
             tokenStore.clearTokens()
+            if (clearDevicePairing) tokenStore.clearDevicePairing()
             true
         }
 

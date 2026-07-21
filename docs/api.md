@@ -822,6 +822,9 @@ los 4 planes); los 5 endpoints de push nativo sí exigen
 | `POST /v1/devices {nombre, plataforma, kind, fingerprint?}` | `201`; si `fingerprint` ya existe en un dispositivo `active` del mismo usuario, responde `200` y actualiza ese en vez de duplicar. |
 | `POST /v1/devices/{id}/heartbeat` | `204`, refresca `last_seen_at`. `404` si no existe. |
 | `POST /v1/devices/{id}/revoke` | Pasa el dispositivo a `status="revoked"` + audita. |
+| `POST /v1/devices/pairing` | Auth requerida. Genera `pairing_uri` para un QR de un solo uso (10 min). |
+| `POST /v1/devices/pairing/claim` | Sin JWT. Consume el token del QR atómicamente y entrega JWTs + identidad durable del móvil. |
+| `POST /v1/devices/pairing/refresh` | Sin JWT. Restaura una sesión con `device_id` + secreto durable; falla si el dispositivo fue revocado. |
 | `POST` / `DELETE /v1/devices/{id}/push-token` | Registra/limpia `push_token`+`push_platform` de un dispositivo tuyo. `204`; `404` si no es tuyo. |
 | `PUT` / `DELETE /v1/devices/push/credentials` | Pegar-y-validar (sin llamada de red) tus credenciales APNs/FCM. `204`. |
 | `GET /v1/devices/push/status` | Qué proveedores tienes conectados + cuántos de tus dispositivos ya registraron token. |

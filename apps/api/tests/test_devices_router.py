@@ -227,7 +227,8 @@ async def test_create_device_with_fingerprint_no_match_inserts_new_and_returns_2
     assert response.status_code == 201
     assert len(fake_session.llamadas) == 2
     sql_select, params_select = fake_session.llamadas[0]
-    assert "SELECT * FROM devices" in sql_select
+    assert "FROM devices" in sql_select
+    assert "pairing_secret_hash" not in sql_select
     assert "fingerprint = :fingerprint" in sql_select
     assert "status = 'active'" in sql_select
     assert params_select["fingerprint"] == "abc123"
@@ -330,6 +331,7 @@ async def test_revoke_success_sets_status_and_audits(client, fake_session, fake_
 
     sql, params = fake_session.llamadas[0]
     assert "SET status = 'revoked'" in sql
+    assert "pairing_secret_hash = NULL" in sql
     assert params["id"] == str(device_id)
 
     assert len(fake_repo.audit_log) == 1

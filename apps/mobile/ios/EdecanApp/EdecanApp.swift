@@ -40,5 +40,8 @@ private struct RaizDeLaApp: View {
         .onChange(of: pairingStore.serverURL, initial: true) { _, nuevaURL in
             session.actualizarBaseURL(nuevaURL)
         }
+        .onOpenURL { url in
+            pairingStore.recibirEnlace(url)
+        }
     }
 }

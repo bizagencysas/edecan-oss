@@ -152,7 +152,7 @@ export default function PersonaPage() {
   return (
     <div>
       <PageHeader
-        title="Persona — nivel Dios"
+        title="Cómo te conoce Edecan"
         description="Define quién es tu asistente: nombre, tono, formalidad, instrucciones permanentes y memoria."
       />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

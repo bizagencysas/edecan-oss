@@ -1,6 +1,7 @@
 package cc.edecan.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,24 +28,28 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.edecan.app.ui.theme.EdecanColors
+import cc.edecan.app.R
 import cc.edecan.app.vm.ModoSesion
 import cc.edecan.app.vm.PasoOnboarding
 import cc.edecan.app.vm.SessionViewModel
 
 /**
- * Bienvenida de 2 pasos: 1) URL del servidor propio del tenant, 2) iniciar
- * sesión. Mismo principio de "pocos clicks" que `DIRECCION_ACTUAL.md` pide
- * para la app de escritorio, aplicado aquí al emparejamiento móvil: nada de
+ * Bienvenida QR-first: el camino normal es escanear una vez el código que
+ * muestra Edecán en el computador. URL/login siguen disponibles bajo una
+ * opción avanzada para servidores antiguos o recuperación manual. Mantiene
+ * el principio de pocos pasos: cada cliente trae su propio servidor,
  * formularios largos, sin servidor "de fábrica" — cada cliente trae el
  * suyo (self-host o su app de escritorio Tauri). Mismo contenido que
  * `OnboardingView.swift` (iOS); el token de sesión que deja
@@ -59,6 +65,7 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
     var totp by remember { mutableStateOf("") }
     var tenantName by remember { mutableStateOf("") }
     var errorLocal by remember { mutableStateOf<String?>(null) }
+    var mostrarAvanzado by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -73,19 +80,30 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
         Spacer(modifier = Modifier.height(28.dp))
 
         when (uiState.paso) {
-            PasoOnboarding.SERVIDOR -> PasoServidor(
-                urlTexto = urlTexto,
-                onUrlCambia = { urlTexto = it; errorLocal = null },
-                error = errorLocal,
-                onContinuar = {
-                    val texto = urlTexto.trim()
-                    if (!texto.startsWith("http://") && !texto.startsWith("https://")) {
-                        errorLocal = "Escribe una URL completa, con http:// o https:// al inicio."
-                        return@PasoServidor
-                    }
-                    sessionViewModel.definirServidor(texto)
-                },
-            )
+            PasoOnboarding.SERVIDOR -> {
+                PasoQr(
+                    conectando = uiState.iniciandoSesion,
+                    error = uiState.errorMensaje,
+                    mostrarAvanzado = mostrarAvanzado,
+                    onMostrarAvanzado = { mostrarAvanzado = !mostrarAvanzado },
+                )
+                if (mostrarAvanzado) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    PasoServidor(
+                        urlTexto = urlTexto,
+                        onUrlCambia = { urlTexto = it; errorLocal = null },
+                        error = errorLocal ?: uiState.errorMensaje,
+                        onContinuar = {
+                            val texto = urlTexto.trim()
+                            if (!texto.startsWith("http://") && !texto.startsWith("https://")) {
+                                errorLocal = "Escribe una URL completa, con http:// o https:// al inicio."
+                                return@PasoServidor
+                            }
+                            sessionViewModel.definirServidor(texto)
+                        },
+                    )
+                }
+            }
 
             PasoOnboarding.SESION -> PasoSesion(
                 modo = uiState.modoSesion,
@@ -100,7 +118,10 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
                 onTenantNameCambia = { tenantName = it },
                 cargando = uiState.iniciandoSesion,
                 error = uiState.errorMensaje,
-                onCambiarServidor = sessionViewModel::irAPasoServidor,
+                onCambiarServidor = {
+                    mostrarAvanzado = true
+                    sessionViewModel.irAPasoServidor()
+                },
                 onEntrar = {
                     if (uiState.modoSesion == ModoSesion.REGISTRAR) {
                         sessionViewModel.registrar(email, password, tenantName)
@@ -114,9 +135,51 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
 }
 
 @Composable
+private fun PasoQr(
+    conectando: Boolean,
+    error: String?,
+    mostrarAvanzado: Boolean,
+    onMostrarAvanzado: () -> Unit,
+) {
+    TarjetaOnboarding {
+        Text("▦", style = MaterialTheme.typography.displaySmall)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Escanea el QR de tu Edecán", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "1. En tu computador abre Edecán > Conectar teléfono.\n" +
+                "2. Escanea el código con la cámara de este teléfono.\n" +
+                "3. Toca el enlace: Edecán se conectará automáticamente.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (conectando) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(modifier = Modifier.height(20.dp), strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.padding(start = 10.dp))
+                Text("Conectando este teléfono…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (error != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        TextButton(onClick = onMostrarAvanzado, enabled = !conectando, modifier = Modifier.fillMaxWidth()) {
+            Text(if (mostrarAvanzado) "Ocultar configuración avanzada" else "No puedo usar el QR")
+        }
+    }
+}
+
+@Composable
 private fun Encabezado(paso: PasoOnboarding) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("✨", style = MaterialTheme.typography.displayMedium)
+        Image(
+            painter = painterResource(R.drawable.edecan_robot_logo),
+            contentDescription = "Logo de Edecán",
+            modifier = Modifier.size(88.dp),
+        )
         Text("Edecán", style = MaterialTheme.typography.headlineLarge)
         Text(
             if (paso == PasoOnboarding.SERVIDOR) "Conecta tu Edecán" else "Inicia sesión",
@@ -147,8 +210,7 @@ private fun PasoServidor(
 ) {
     TarjetaOnboarding {
         Text(
-            "Abre Edecán en tu computador y copia la dirección que aparece en " +
-                "Ajustes > Conectar teléfono. Solo tendrás que hacerlo una vez.",
+            "Configuración avanzada: conecta un servidor por URL y luego inicia sesión manualmente.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -1,6 +1,6 @@
 [project]
 name = "edecan-vehicles"
-version = "0.6.0"
+version = "0.7.0"
 description = "Edecán — vehicles: estado y control de vehículos conectados, bring-your-own cuenta del fabricante (edecan_vehicles). Ver ARCHITECTURE.md §13."
 readme = "README.md"
 requires-python = ">=3.12"

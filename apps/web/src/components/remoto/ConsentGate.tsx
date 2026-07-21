@@ -68,7 +68,7 @@ export function ConsentGate({
           )}
           <li>Vas a ver un aviso permanente en pantalla mientras la sesión esté activa.</li>
           <li>Puedes terminarla en cualquier momento con «Terminar sesión», desde aquí o desde tu equipo.</li>
-          <li>Inicio, fin y cada comando quedan registrados en la auditoría del tenant.</li>
+          <li>Inicio, fin y cada comando quedan registrados en tu historial de seguridad.</li>
         </ul>
 
         {allowControl && (

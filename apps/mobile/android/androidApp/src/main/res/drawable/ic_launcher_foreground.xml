@@ -1,15 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Capa de primer plano del ícono adaptativo: un sparkle de 4 puntas en
-     blanco, dentro de la "zona segura" (66dp centrales de 108dp) que el
-     sistema respeta al recortar la forma final — mismo motivo (sparkles)
-     que usa el encabezado de OnboardingView.swift en iOS, adaptado a un
-     glifo vectorial simple en vez de un ícono de sistema. -->
+<!-- Robot con audifonos del icono original de Edecan. Geometria recreada
+     como vector dentro de la zona segura del adaptive icon; los ojos son
+     recortes transparentes para que tambien funcione como themed icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:pathData="M54,20 L61.8,46.2 L88,54 L61.8,61.8 L54,88 L46.2,61.8 L20,54 L46.2,46.2 Z"
-        android:fillColor="#FFFFFFFF" />
+        android:pathData="M21,57 C21,34 35,21 54,21 C73,21 87,34 87,57"
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#FFF3F3F8"
+        android:strokeWidth="9"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M18,48 C13.5,48 11,52 11,57 L11,68 C11,74 14.5,77 20,77 C25,77 28,73 28,68 L28,57 C28,52 24.5,48 18,48 Z M90,48 C83.5,48 80,52 80,57 L80,68 C80,73 83,77 88,77 C93.5,77 97,74 97,68 L97,57 C97,52 94.5,48 90,48 Z"
+        android:fillColor="#FFF3F3F8" />
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M54,32 C67,32 75,42 75,55 L75,64 C75,74 68,80 58,80 L50,80 C40,80 33,74 33,64 L33,55 C33,42 41,32 54,32 Z M45,50 C41.7,50 39,52.7 39,56 C39,59.3 41.7,62 45,62 C48.3,62 51,59.3 51,56 C51,52.7 48.3,50 45,50 Z M63,50 C59.7,50 57,52.7 57,56 C57,59.3 59.7,62 63,62 C66.3,62 69,59.3 69,56 C69,52.7 66.3,50 63,50 Z"
+        android:fillColor="#FFF3F3F8" />
 </vector>

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { ConexionesSection } from "@/components/configuracion/ConexionesSection";
 import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, PageHeader } from "@/components/ui";
 import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
 import {
@@ -25,6 +26,7 @@ import { PERSONA_DEFAULT, type RelationshipStyle } from "@/lib/types";
 
 export default function AjustesPage() {
   const { me, signOut } = useAuth();
+  const [localMode, setLocalMode] = useState<boolean | null>(null);
 
   const [totpSecret, setTotpSecret] = useState<string | null>(null);
   const [totpUri, setTotpUri] = useState<string | null>(null);
@@ -197,9 +199,11 @@ export default function AjustesPage() {
 
   return (
     <div>
-      <PageHeader title="Ajustes" description="Cuenta, seguridad y dispositivos conectados." />
+      <PageHeader title="Ajustes" description="Conecta Edecan y decide cómo quieres que te acompañe." />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ConexionesSection onLocalModeDetected={setLocalMode} />
+
         <Card className="lg:col-span-2">
           <CardHeader
             title="Cómo quieres que Edecan te acompañe"
@@ -389,30 +393,32 @@ export default function AjustesPage() {
           </CardBody>
         </Card>
 
-        <Card>
-          <CardHeader
-            title="Edecan en tu computadora"
-            description="Conecta la aplicación local para que Edecan pueda ayudarte con archivos y apps de este equipo."
-          />
-          <CardBody className="space-y-3">
-            {pairError && <Alert variant="error">{pairError}</Alert>}
-            {pairCode ? (
-              <div>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Código (expira en 10 minutos):</p>
-                <p className="mt-1 text-2xl font-mono font-semibold tracking-widest text-brand-600 dark:text-brand-400">
-                  {pairCode}
+        {localMode === false && (
+          <Card>
+            <CardHeader
+              title="Edecan en otra computadora"
+              description="Conecta la aplicación local para que Edecan pueda ayudarte con archivos y apps de ese equipo."
+            />
+            <CardBody className="space-y-3">
+              {pairError && <Alert variant="error">{pairError}</Alert>}
+              {pairCode ? (
+                <div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Código (expira en 10 minutos):</p>
+                  <p className="mt-1 text-2xl font-mono font-semibold tracking-widest text-brand-600 dark:text-brand-400">
+                    {pairCode}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Genera un código temporal e ingrésalo en la aplicación de Edecan instalada en la otra computadora.
                 </p>
-              </div>
-            ) : (
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Genera un código temporal e ingrésalo en la aplicación de Edecan instalada en tu computadora.
-              </p>
-            )}
-            <Button variant="secondary" onClick={handlePairCode} loading={pairBusy}>
-              Conectar computadora
-            </Button>
-          </CardBody>
-        </Card>
+              )}
+              <Button variant="secondary" onClick={handlePairCode} loading={pairBusy}>
+                Conectar otra computadora
+              </Button>
+            </CardBody>
+          </Card>
+        )}
 
         <Card className="lg:col-span-2">
           <CardHeader

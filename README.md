@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/src-tauri/icons/icon.png" width="120" alt="Edecan logo" />
+  <img src="apps/web/src/app/icon.png" width="120" alt="Edecan robot with headphones" />
 </p>
 
 <h1 align="center">Edecan</h1>
@@ -26,7 +26,7 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.6).** The source, tests, web app, API, workers,
+> **Developer preview (v0.7).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
@@ -127,6 +127,14 @@ that an unavailable action succeeded.
   passing tests and never pushes code.
 
 ## Quickstart
+
+### Open Edecan like a normal app (macOS)
+
+Double-click **`Abrir Edecán.command`** at the repository root. It installs
+the native `Edecán.app` into your user Applications folder on first use and
+opens it thereafter. Provider keys, local CLI/Ollama selection and mobile QR
+pairing live under **Settings → Connections**; no `.env` or server URL is part
+of the normal-person flow.
 
 ### Verify the public core
 

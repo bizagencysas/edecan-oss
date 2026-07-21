@@ -96,7 +96,7 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
   {
     label: "Herramientas técnicas",
     items: [
-      { href: "/app/configuracion", label: "Proveedores de IA", icon: KeyIcon },
+      { href: "/app/ajustes#conexiones", label: "Conexiones", icon: KeyIcon },
       { href: "/app/skills", label: "Skills", icon: PuzzleIcon },
       { href: "/app/ide", label: "IDE", icon: CodeIcon },
       { href: "/app/remoto", label: "Control remoto", icon: MonitorIcon },

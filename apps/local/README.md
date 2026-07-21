@@ -1,8 +1,9 @@
 # apps/local — `edecan_local`
 
 Runtime local que reúne API, worker, PostgreSQL embebido y almacenamiento de
-archivos en un solo proceso. Solo escucha en `127.0.0.1`, persiste bajo
-`~/.edecan/data` y se apaga limpiamente con `SIGTERM`/`SIGINT`.
+archivos en un solo proceso. Por defecto escucha en `127.0.0.1`; la app nativa
+activa acceso LAN para el móvil. Persiste bajo `~/.edecan/data` y se apaga
+limpiamente con `SIGTERM`/`SIGINT`.
 
 ## Arranque desde un clon limpio
 
@@ -10,7 +11,7 @@ Desde la raíz del repositorio:
 
 ```bash
 uv sync --all-packages --frozen
-uv run --all-packages python -m edecan_local --no-web
+uv run --all-packages edecan --no-web
 ```
 
 No hace falta instalar PostgreSQL ni conocer extras internos en las
@@ -25,7 +26,7 @@ arquitecturas configura una base existente antes de arrancar:
 
 ```bash
 export EDECAN_DATABASE_URL='postgresql+asyncpg://usuario:clave@host:5432/edecan'
-uv run --all-packages python -m edecan_local --no-web
+uv run --all-packages edecan --no-web
 ```
 
 `EDECAN_DATABASE_URL` también sirve en cualquier plataforma para optar por un
@@ -39,4 +40,6 @@ en [`../desktop/README.md`](../desktop/README.md).
 - `--port`: puerto de API, `8765` por defecto.
 - `--data-dir`: directorio persistente, `~/.edecan/data` por defecto.
 - `--no-web`: no intenta servir un export estático de `apps/web`.
+- `--mobile-access`: permite la conexión móvil desde la red local; la app de
+  escritorio lo activa automáticamente.
 - `EDECAN_WEB_DIR`: directorio de un export estático que se sirve en `/`.

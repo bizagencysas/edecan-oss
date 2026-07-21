@@ -24,6 +24,24 @@ DIST_DIR="$PACKAGING_DIR/dist"
 WORK_DIR="$PACKAGING_DIR/build"
 BINARIES_DIR="$DESKTOP_DIR/src-tauri/binaries"
 
+# Finder no carga el perfil interactivo del usuario. Si el `node` visible no
+# es el soportado, intenta activar la instalación Node 22 de Homebrew antes de
+# fallar. Así `Abrir Edecán.command` funciona por doble clic incluso cuando la
+# terminal del usuario tiene otra versión de Node seleccionada.
+node_toolchain_is_supported() {
+  command -v node >/dev/null 2>&1 &&
+    command -v npm >/dev/null 2>&1 &&
+    [[ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)" == "22" ]] &&
+    [[ "$(npm --version 2>/dev/null | awk -F. '{print $1}')" == "10" ]]
+}
+
+if ! node_toolchain_is_supported && command -v brew >/dev/null 2>&1; then
+  NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
+  if [[ -n "$NODE22_PREFIX" && -x "$NODE22_PREFIX/bin/node" ]]; then
+    export PATH="$NODE22_PREFIX/bin:$PATH"
+  fi
+fi
+
 for bin in node npm uv rustc; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "error: falta '$bin' en el PATH. Ver requisitos en docs/desktop.md." >&2
@@ -31,9 +49,7 @@ for bin in node npm uv rustc; do
   fi
 done
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-NPM_MAJOR="$(npm --version | awk -F. '{print $1}')"
-if [[ "$NODE_MAJOR" != "22" || "$NPM_MAJOR" != "10" ]]; then
+if ! node_toolchain_is_supported; then
   echo "error: apps/web requiere Node 22 y npm 10 (detectados: Node $(node --version), npm $(npm --version))." >&2
   exit 1
 fi

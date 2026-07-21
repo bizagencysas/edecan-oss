@@ -22,6 +22,28 @@ public struct TokenPair: Codable, Sendable, Equatable {
     }
 }
 
+/// Respuesta atómica del claim QR: sesión inmediata y credencial durable del
+/// dispositivo. `deviceToken` nunca se muestra ni se guarda fuera Keychain.
+public struct PairingClaimOut: Codable, Sendable, Equatable {
+    public let accessToken: String
+    public let refreshToken: String
+    public let tokenType: String
+    public let deviceId: String
+    public let deviceToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case tokenType = "token_type"
+        case deviceId = "device_id"
+        case deviceToken = "device_token"
+    }
+
+    public var tokens: TokenPair {
+        TokenPair(accessToken: accessToken, refreshToken: refreshToken, tokenType: tokenType)
+    }
+}
+
 // MARK: - Perfil (`GET /v1/me`)
 
 /// `GET /v1/me` (`docs/api.md` §"Perfil y persona"). `flags` mezcla banderas

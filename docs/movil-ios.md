@@ -424,7 +424,9 @@ Con Xcode 26.6 (SDK iPhoneSimulator 26.5) y Swift 6.3.3 instalados:
   'generic/platform=iOS Simulator' build` → **`BUILD SUCCEEDED`**, cero
   advertencias del compilador Swift (con `SWIFT_STRICT_CONCURRENCY:
   complete`, Swift 6 en modo estricto), incluyendo la compilación y el
-  empaquetado de `EdecanWidgets.appex` dentro de `Edecán.app/PlugIns/`.
+  empaquetado de `EdecanWidgets.appex` dentro de `Edecan.app/PlugIns/`. El
+  nombre técnico del bundle usa ASCII para que la firma sea estable; en el
+  iPhone se muestra como **Edecán** mediante `CFBundleDisplayName`.
 
 ## Verificado en esta iteración (fase v4)
 

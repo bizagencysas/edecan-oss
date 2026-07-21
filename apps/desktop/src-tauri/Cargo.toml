@@ -50,7 +50,7 @@ tokio = { version = "1", features = ["time"] }
 # `rust-version = "1.77"` en su Cargo.toml — no fuerces un upgrade de esta
 # dependencia más allá de lo que cargo elija solo, se rompería el mínimo de
 # Rust de todo este binario (línea `rust-version` de arriba).
-cpal = "0.17.1"
+cpal = "0.18.1"
 # rustpotter: motor de wake-word 100% Rust, offline, sin API keys ni cuenta
 # de terceros — entrena un modelo chico a partir de 3 muestras de voz del
 # propio usuario (ver `always_listen_train` en src/listen.rs) en vez de usar
@@ -63,7 +63,7 @@ rustpotter = "3.0.2"
 # expects rand 0.8. half >=2.7 switched that optional integration to rand
 # 0.9 and makes candle fail to compile. Keep the last compatible release
 # explicit until rustpotter upgrades candle.
-half = "=2.4.1"
+half = "=2.7.1"
 # hound: lectura/escritura de WAV PCM16, 100% Rust puro sin dependencias
 # nativas. Se usa tanto para las 3 muestras de entrenamiento de la wake word
 # como para codificar el audio del comando que se emite a JS después de

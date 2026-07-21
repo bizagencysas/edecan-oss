@@ -77,7 +77,7 @@ en Rust/backend.
 - **Node.js 22** y **npm 10** (build de `apps/web`).
 - **Python 3.12** + [`uv`](https://docs.astral.sh/uv/) (workspace del repo — `edecan_local` y sus paquetes `edecan_*`).
 - macOS: Xcode Command Line Tools (`sips`/`iconutil`, usados por `scripts/make-icons.sh`).
-- Linux x64: WebKitGTK 4.1, AppIndicator, librsvg, ALSA, libxdo, `patchelf`, herramientas Debian/RPM y `pkg-config` (comando exacto en `docs/desktop.md`).
+- Linux x64: WebKitGTK 4.1, AppIndicator, librsvg, ALSA, libxdo, `patchelf`, herramientas Debian/RPM y `pkg-config`; el smoke de release también usa Xvfb, Openbox y D-Bus (comando exacto en `docs/desktop.md`).
 
 Detalle completo, por plataforma, en `docs/desktop.md`.
 

@@ -79,8 +79,12 @@ pub fn run() {
             // mantiene el proceso en la bandeja; de otro modo conserva el
             // comportamiento normal de salir y apagar el sidecar.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // El cierre lo completa explícitamente este handler. Evitar
+                // primero el destroy implícito de GTK impide que el cierre
+                // normal y `AppHandle::exit` intenten destruir la misma
+                // ventana a la vez (especialmente visible bajo X11).
+                api.prevent_close();
                 if listen::is_enabled(window.app_handle()) {
-                    api.prevent_close();
                     let _ = window.hide();
                 } else {
                     window.app_handle().exit(0);

@@ -34,6 +34,8 @@ def test_linux_release_builds_and_exercises_the_packaged_application() -> None:
     assert "apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage" in workflow
     assert "apps/desktop/src-tauri/target/release/bundle/deb/*.deb" in workflow
     assert "apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm" in workflow
+    for dependency in ("dbus-x11", "openbox", "wmctrl"):
+        assert dependency in workflow
 
 
 def test_release_shell_scripts_are_executable() -> None:
@@ -57,13 +59,17 @@ def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:
         assert f"pgserver/pginstall/lib/postgresql/{module}" in build_script
 
 
-def test_linux_smoke_shares_xauthority_and_waits_for_main_window() -> None:
+def test_linux_smoke_uses_a_real_window_manager_and_waits_for_main_window() -> None:
     verify_script = (
         REPO_ROOT / "apps" / "desktop" / "scripts" / "verify-linux-bundles.sh"
     ).read_text(encoding="utf-8")
 
     assert 'printf "%s\\n" "$XAUTHORITY"' in verify_script
     assert 'export XAUTHORITY' in verify_script
+    assert "dbus-run-session" in verify_script
+    assert "openbox --sm-disable" in verify_script
+    assert 'wmctrl -ic "$WINDOW_ID"' in verify_script
+    assert 'xdotool windowclose "$WINDOW_ID"' not in verify_script
     assert 'SPLASH_WINDOW_ID=""' in verify_script
     assert '"$candidate" != "$SPLASH_WINDOW_ID"' in verify_script
     assert '(edecan-local|postgres).*$SMOKE_DIR' in verify_script

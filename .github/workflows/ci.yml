@@ -132,6 +132,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             build-essential \
             curl \
+            dbus-x11 \
             file \
             gstreamer1.0-libav \
             gstreamer1.0-plugins-base \
@@ -143,10 +144,12 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
+            openbox \
             patchelf \
             pkg-config \
             rpm \
             wget \
+            wmctrl \
             xdotool \
             xvfb
 

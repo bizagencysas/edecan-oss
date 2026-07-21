@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUNDLE_DIR="${1:-$DESKTOP_DIR/src-tauri/target/release/bundle}"
 
-for bin in curl dpkg-deb pgrep rpm sed xdotool xvfb-run; do
+for bin in curl dbus-run-session dpkg-deb openbox pgrep rpm sed wmctrl xdotool xvfb-run; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "error: falta '$bin' para verificar los bundles Linux." >&2
     exit 1
@@ -99,9 +99,24 @@ echo "==> Arrancando el AppImage y su backend real en Xvfb…"
 # proceso hijo. El wrapper escribe ambos valores: compartir solo DISPLAY no
 # basta, porque Xvfb rechaza a xdotool si no presenta la cookie del archivo
 # de autoridad efímero creado por xvfb-run.
-APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a sh -c '
+APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a dbus-run-session sh -c '
   printf "%s\n" "$DISPLAY" > "$1"
   printf "%s\n" "$XAUTHORITY" > "$2"
+
+  # Xvfb por sí solo no es un escritorio: no implementa WM_DELETE_WINDOW ni
+  # el protocolo EWMH. Openbox hace que el smoke replique el botón X de una
+  # sesión Linux real. También se ejecuta dentro de un bus D-Bus privado para
+  # que AppIndicator pruebe su ruta normal en vez de degradarse por una
+  # carencia artificial del runner.
+  openbox --sm-disable &
+  for _wm_attempt in $(seq 1 50); do
+    wmctrl -m >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  if ! wmctrl -m >/dev/null 2>&1; then
+    echo "error: Openbox no quedó listo en la pantalla virtual." >&2
+    exit 1
+  fi
   exec "$3"
 ' _ "$DISPLAY_FILE" "$XAUTHORITY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
 LAUNCHER_PID="$!"
@@ -186,7 +201,10 @@ if [[ -z "$WINDOW_ID" ]]; then
 fi
 
 echo "==> Cerrando la ventana y verificando apagado limpio…"
-xdotool windowclose "$WINDOW_ID"
+# `xdotool windowclose` llama XDestroyWindow: destruye el recurso X11 por
+# debajo de GTK y puede provocar BadWindow sin emitir CloseRequested. wmctrl
+# envía _NET_CLOSE_WINDOW al gestor real, equivalente al botón X del usuario.
+wmctrl -ic "$WINDOW_ID"
 for _attempt in $(seq 1 30); do
   if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
     break

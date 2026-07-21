@@ -64,7 +64,9 @@ if [[ "$PLATFORM" == "Linux" ]]; then
       exit 1
     fi
   done
-  for module in webkit2gtk-4.1 alsa ayatana-appindicator3-0.1 librsvg-2.0 xdo; do
+  # libxdo-dev sigue siendo requisito de compilación de Tauri, pero Ubuntu
+  # 22.04 no instala un archivo xdo.pc: no puede validarse con pkg-config.
+  for module in webkit2gtk-4.1 alsa ayatana-appindicator3-0.1 librsvg-2.0; do
     if ! pkg-config --exists "$module"; then
       echo "error: falta la dependencia Linux '$module' (pkg-config)." >&2
       echo "       Instala los requisitos listados en docs/desktop.md §3." >&2

@@ -69,6 +69,7 @@ def test_linux_smoke_uses_a_real_window_manager_and_waits_for_main_window() -> N
     assert "dbus-run-session" in verify_script
     assert "openbox --sm-disable" in verify_script
     assert "wmctrl -l" in verify_script
+    assert "{ wmctrl -l 2>/dev/null || true; }" in verify_script
     assert 'wmctrl -ic "$WINDOW_ID"' in verify_script
     assert "xdotool search --name" not in verify_script
     assert 'SPLASH_WINDOW_ID=""' in verify_script

@@ -148,7 +148,13 @@ XAUTHORITY="$(tr -d '\r\n' < "$XAUTHORITY_FILE")"
 # arranque, no solo que quedó mostrando "cargando".
 SPLASH_WINDOW_ID=""
 for _attempt in $(seq 1 20); do
-  SPLASH_WINDOW_ID="$(wmctrl -l 2>/dev/null | awk 'tolower($0) ~ /edec/ { print $1; exit }')"
+  # `wmctrl -l` devuelve 1 (no 0) cuando el WM ya está listo pero todavía no
+  # hay ninguna ventana. Eso es un estado esperado durante el primer segundo,
+  # no un error que deba activar `set -e` y volver flakey este bucle.
+  SPLASH_WINDOW_ID="$(
+    { wmctrl -l 2>/dev/null || true; } |
+      awk 'tolower($0) ~ /edec/ { print $1; exit }'
+  )"
   [[ -n "$SPLASH_WINDOW_ID" ]] && break
   sleep 1
 done
@@ -192,7 +198,10 @@ for _attempt in $(seq 1 60); do
       WINDOW_ID="$candidate"
       break
     fi
-  done < <(wmctrl -l 2>/dev/null | awk 'tolower($0) ~ /edec/ { print $1 }')
+  done < <(
+    { wmctrl -l 2>/dev/null || true; } |
+      awk 'tolower($0) ~ /edec/ { print $1 }'
+  )
   [[ -n "$WINDOW_ID" ]] && break
   sleep 1
 done

@@ -106,7 +106,7 @@ export function SelectorVoz({
   return (
     <div className="space-y-6">
       <p className="text-xs text-slate-400">
-        Opcional — si no conectas nada aquí, la voz sigue funcionando con un stub (sin llamadas reales); no bloquea el chat de texto.
+        Opcional. Si no conectas nada aquí, siempre podrás seguir conversando por texto.
       </p>
 
       <div>

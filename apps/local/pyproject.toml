@@ -1,6 +1,6 @@
 [project]
 name = "edecan-local"
-version = "0.6.0"
+version = "0.7.0"
 description = "Local Edecan runtime bundling the API, worker, and data services for desktop use"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -26,6 +26,9 @@ dependencies = [
     # por el operador. macOS sí tiene wheels x86_64 y arm64.
     "pgserver==0.1.4; sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
+
+[project.scripts]
+edecan = "edecan_local.runtime:main"
 
 # Compatibilidad con instalaciones existentes que todavía usan
 # `edecan-local[embedded]`; pgserver ya forma parte del runtime base.

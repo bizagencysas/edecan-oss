@@ -1,6 +1,6 @@
 [project]
 name = "edecan-evals"
-version = "0.6.0"
+version = "0.7.0"
 description = "Edecán — suites de evaluación del agente y biblioteca de prompts versionada (edecan_evals). Ver ARCHITECTURE.md §10.6, §10.7."
 requires-python = ">=3.12"
 readme = "README.md"

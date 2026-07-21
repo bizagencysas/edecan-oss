@@ -17,7 +17,7 @@ const wordmarkFont = Baloo_2({
 
 export const metadata: Metadata = {
   title: "Edecán",
-  description: "Consola web del asistente personal Edecán: chat, persona nivel Dios, conectores y más.",
+  description: "Tu asistente personal para conversar, crear, organizar y hacer cosas desde cualquier dispositivo.",
 };
 
 export default function RootLayout({

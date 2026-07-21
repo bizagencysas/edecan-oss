@@ -50,13 +50,15 @@ def test_parse_args_defaults() -> None:
     assert args.port == rt.DEFAULT_PORT
     assert args.data_dir == rt.DEFAULT_DATA_DIR
     assert args.no_web is False
+    assert args.mobile_access is False
 
 
 def test_parse_args_overrides() -> None:
-    args = rt.parse_args(["--port", "9999", "--data-dir", "/tmp/x", "--no-web"])
+    args = rt.parse_args(["--port", "9999", "--data-dir", "/tmp/x", "--no-web", "--mobile-access"])
     assert args.port == 9999
     assert args.data_dir == "/tmp/x"
     assert args.no_web is True
+    assert args.mobile_access is True
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +181,46 @@ def test_build_env_incluye_serve_web_dir_cuando_se_pasa(tmp_path: Path) -> None:
         local_secrets=_local_secrets(),
     )
     assert env["SERVE_WEB_DIR"] == "/ruta/al/web"
+
+
+def test_mobile_public_url_prefiere_override_explicito(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EDECAN_MOBILE_PUBLIC_URL", "https://mi-edecan.example/")
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.1.25")
+    monkeypatch.setattr(rt.socket, "gethostname", lambda: "ignorado")
+
+    assert rt._mobile_public_url(8765) == "https://mi-edecan.example"
+
+
+def test_mobile_public_url_prefiere_ip_privada_que_resuelve_android(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    monkeypatch.setattr(rt.socket, "gethostname", lambda: "MacBook-Isacc")
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.58.105")
+
+    assert rt._mobile_public_url(8765) == "http://192.168.58.105:8765"
+
+
+def test_mobile_public_url_convierte_hostname_local_en_mdns_si_no_hay_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: None)
+    monkeypatch.setattr(rt.socket, "gethostname", lambda: "MacBook-Isacc")
+
+    assert rt._mobile_public_url(8765) == "http://MacBook-Isacc.local:8765"
+
+
+def test_mobile_public_url_conserva_hostname_mdns_existente(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: None)
+    monkeypatch.setattr(rt.socket, "gethostname", lambda: "edecan.local.")
+
+    assert rt._mobile_public_url(9000) == "http://edecan.local:9000"
 
 
 def test_apply_env_fija_todas_las_variables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -941,8 +983,15 @@ def test_main_parsea_flags_y_delega_en_asyncio_run(monkeypatch: pytest.MonkeyPat
 
     run_calls: list[dict[str, Any]] = []
 
-    def fake_run(*, port: int, data_dir: str, no_web: bool) -> Any:
-        run_calls.append({"port": port, "data_dir": data_dir, "no_web": no_web})
+    def fake_run(*, port: int, data_dir: str, no_web: bool, mobile_access: bool) -> Any:
+        run_calls.append(
+            {
+                "port": port,
+                "data_dir": data_dir,
+                "no_web": no_web,
+                "mobile_access": mobile_access,
+            }
+        )
 
         async def _noop() -> None:
             return None
@@ -952,7 +1001,9 @@ def test_main_parsea_flags_y_delega_en_asyncio_run(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(rt.asyncio, "run", fake_asyncio_run)
     monkeypatch.setattr(rt, "run", fake_run)
 
-    rt.main(["--port", "1234", "--data-dir", "/tmp/y", "--no-web"])
+    rt.main(["--port", "1234", "--data-dir", "/tmp/y", "--no-web", "--mobile-access"])
 
-    assert run_calls == [{"port": 1234, "data_dir": "/tmp/y", "no_web": True}]
+    assert run_calls == [
+        {"port": 1234, "data_dir": "/tmp/y", "no_web": True, "mobile_access": True}
+    ]
     assert "coro" in calls

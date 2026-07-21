@@ -18,10 +18,28 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>cc.edecan.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>edecan</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Edecán usa tu red local para conectarse de forma directa y privada con tu computador después de escanear su QR.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -421,6 +421,13 @@ def create_app() -> FastAPI:
             )
             continue
         app.include_router(mod.router)
+        # `devices.pairing_router` contiene claim/refresh móviles que aún no
+        # tienen JWT y por eso no pueden heredar el rate-limit autenticado del
+        # CRUD `/v1/devices`. Se monta junto a su router dueño, manteniendo el
+        # patrón defensivo de v4 y sin sumar un módulo artificial al catálogo.
+        extra_router = getattr(mod, "pairing_router", None)
+        if extra_router is not None:
+            app.include_router(extra_router)
         logger.info("router v4 'edecan_api.routers.%s' montado.", name)
 
     # v5 (ARCHITECTURE.md §14) — mismo montaje defensivo que v2/v3/v4, mismo motivo.

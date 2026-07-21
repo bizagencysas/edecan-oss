@@ -20,6 +20,33 @@ struct KeychainAuthTokenStore: AuthTokenStoring {
     }
 }
 
+protocol DevicePairingCredentialStoring: Sendable {
+    func deviceId() -> String?
+    func deviceToken() -> String?
+    func save(deviceId: String, deviceToken: String)
+    func clear()
+}
+
+struct KeychainDevicePairingCredentialStore: DevicePairingCredentialStoring {
+    func deviceId() -> String? { Keychain.get(KeychainKeys.deviceId) }
+    func deviceToken() -> String? { Keychain.get(KeychainKeys.deviceToken) }
+    func save(deviceId: String, deviceToken: String) {
+        Keychain.set(deviceId, for: KeychainKeys.deviceId)
+        Keychain.setDeviceBound(deviceToken, for: KeychainKeys.deviceToken)
+    }
+    func clear() {
+        Keychain.delete(KeychainKeys.deviceId)
+        Keychain.delete(KeychainKeys.deviceToken)
+    }
+}
+
+struct EmptyDevicePairingCredentialStore: DevicePairingCredentialStoring {
+    func deviceId() -> String? { nil }
+    func deviceToken() -> String? { nil }
+    func save(deviceId: String, deviceToken: String) {}
+    func clear() {}
+}
+
 /// Cliente tipado a mano contra `/v1/*` (`docs/api.md`, `ARCHITECTURE.md`
 /// §10.12) usando `URLSession` + `async/await` — sin generar código, sin
 /// dependencias externas, para que quede claro exactamente qué pide y qué
@@ -69,6 +96,7 @@ public actor APIClient {
     private var sessionEpoch: UInt64 = 0
     private let urlSession: URLSession
     private let tokenStore: any AuthTokenStoring
+    private let devicePairingStore: any DevicePairingCredentialStoring
     private let onSessionExpired: (@Sendable () async -> Void)?
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -82,6 +110,7 @@ public actor APIClient {
         self.baseURL = baseURL
         self.urlSession = urlSession
         self.tokenStore = store
+        self.devicePairingStore = KeychainDevicePairingCredentialStore()
         self.onSessionExpired = onSessionExpired
         self.decoder = APIClient.crearDecoder()
         self.encoder = APIClient.crearEncoder()
@@ -93,11 +122,13 @@ public actor APIClient {
         baseURL: URL,
         urlSession: URLSession,
         tokenStore: any AuthTokenStoring,
+        devicePairingStore: any DevicePairingCredentialStoring = EmptyDevicePairingCredentialStore(),
         onSessionExpired: (@Sendable () async -> Void)? = nil
     ) {
         self.baseURL = baseURL
         self.urlSession = urlSession
         self.tokenStore = tokenStore
+        self.devicePairingStore = devicePairingStore
         self.onSessionExpired = onSessionExpired
         self.decoder = APIClient.crearDecoder()
         self.encoder = APIClient.crearEncoder()
@@ -113,6 +144,7 @@ public actor APIClient {
 
     public var haySesion: Bool {
         refreshToken != nil
+            || (devicePairingStore.deviceId() != nil && devicePairingStore.deviceToken() != nil)
     }
 
     // MARK: - Autenticación
@@ -160,6 +192,38 @@ public actor APIClient {
         return tokens
     }
 
+    /// Claim sin autenticación del QR emitido por una sesión ya autorizada.
+    /// Persiste JWT y credencial durable antes de devolver éxito, de modo que
+    /// un cierre de la app entre la respuesta y la UI no pierda el pairing.
+    @discardableResult
+    public func reclamarEmparejamiento(
+        pairingToken: String,
+        nombre: String,
+        fingerprint: String?
+    ) async throws -> PairingClaimOut {
+        let epoch = comenzarNuevaSesion()
+        struct Body: Encodable {
+            let pairingToken: String
+            let nombre: String
+            let plataforma = "ios"
+            let kind = "mobile"
+            let fingerprint: String?
+
+            enum CodingKeys: String, CodingKey {
+                case pairingToken = "pairing_token"
+                case nombre, plataforma, kind, fingerprint
+            }
+        }
+        let claim: PairingClaimOut = try await peticionSinSesion(
+            path: "/v1/devices/pairing/claim",
+            body: Body(pairingToken: pairingToken, nombre: nombre, fingerprint: fingerprint)
+        )
+        try guardarTokens(claim.tokens, expectedEpoch: epoch)
+        guard sessionEpoch == epoch else { throw APIError.sesionExpirada }
+        devicePairingStore.save(deviceId: claim.deviceId, deviceToken: claim.deviceToken)
+        return claim
+    }
+
     /// `POST /v1/auth/refresh`. El backend rota el refresh token en cada uso,
     /// por lo que las renovaciones concurrentes comparten una sola tarea. Un
     /// `401` invalida la sesión persistida; no representa credenciales de
@@ -177,12 +241,14 @@ public actor APIClient {
                 throw APIError.sesionExpirada
             }
         }
-        guard let refreshToken else {
-            await expirarSesionSiVigente(epoch)
-            throw APIError.sesionExpirada
-        }
+        let refreshTokenActual = refreshToken
         let codigo = totpCodeOVacio(totpCode)
-        let task = Task { try await self.ejecutarRefresh(refreshToken: refreshToken, totpCode: codigo) }
+        let task = Task {
+            try await self.ejecutarRefreshConRecuperacionDurable(
+                refreshToken: refreshTokenActual,
+                totpCode: codigo
+            )
+        }
         refreshTask = (epoch, task)
         defer {
             if sessionEpoch == epoch {
@@ -211,6 +277,39 @@ public actor APIClient {
         return try await peticionSinSesion(
             path: "/v1/auth/refresh",
             body: Body(refreshToken: refreshToken, totpCode: totpCode)
+        )
+    }
+
+    private func ejecutarRefreshConRecuperacionDurable(
+        refreshToken: String?,
+        totpCode: String?
+    ) async throws -> TokenPair {
+        if let refreshToken {
+            do {
+                return try await ejecutarRefresh(refreshToken: refreshToken, totpCode: totpCode)
+            } catch APIError.credencialesInvalidas {
+                // Solo un rechazo definitivo activa la vía durable. Un error
+                // de red conserva el refresh JWT y se propaga sin expirar.
+            }
+        }
+        return try await ejecutarRefreshDurable()
+    }
+
+    private func ejecutarRefreshDurable() async throws -> TokenPair {
+        guard let deviceId = devicePairingStore.deviceId(),
+              let deviceToken = devicePairingStore.deviceToken()
+        else { throw APIError.credencialesInvalidas }
+        struct Body: Encodable {
+            let deviceId: String
+            let deviceToken: String
+            enum CodingKeys: String, CodingKey {
+                case deviceId = "device_id"
+                case deviceToken = "device_token"
+            }
+        }
+        return try await peticionSinSesion(
+            path: "/v1/devices/pairing/refresh",
+            body: Body(deviceId: deviceId, deviceToken: deviceToken)
         )
     }
 
@@ -771,6 +870,7 @@ public actor APIClient {
         refreshTask?.task.cancel()
         refreshTask = nil
         invalidarSesionLocal()
+        devicePairingStore.clear()
         await onSessionExpired?()
     }
 

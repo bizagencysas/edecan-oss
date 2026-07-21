@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 /// En desarrollo el sidecar congelado todavía no existe: `backend.rs` cae a
-/// `uv run ... -m edecan_local` desde el código fuente. Tauri validaba
+/// `uv run --all-packages edecan` desde el código fuente. Tauri validaba
 /// `bundle.externalBin` antes de compilar y abortaba `cargo check`/`cargo
 /// tauri dev`, por lo que ese fallback era inalcanzable en un clon limpio.
 ///

@@ -1,6 +1,6 @@
 [package]
 name = "edecan-desktop"
-version = "0.6.0"
+version = "0.7.0"
 description = "Edecán — asistente personal de IA (app de escritorio)"
 authors = ["Edecán"]
 edition = "2021"

@@ -238,6 +238,96 @@ class ApiSessionTest {
     }
 
     @Test
+    fun claimQrPersisteJwtEIdentidadDurableSinAuthorization() = runTest {
+        val store = FakeTokenStore()
+        val api = apiConMock(store) { request ->
+            assertEquals("/v1/devices/pairing/claim", request.url.encodedPath)
+            assertNull(request.headers[HttpHeaders.Authorization])
+            assertEquals(
+                """{"pairing_token":"opaque-once","nombre":"Pixel 9","plataforma":"android","kind":"mobile","fingerprint":"fingerprint-1"}""",
+                (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString(),
+            )
+            respond(
+                """{"access_token":"access-qr","refresh_token":"refresh-qr","token_type":"bearer","device_id":"device-qr","device_token":"device-secret"}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+
+        api.reclamarEmparejamiento("opaque-once", "Pixel 9", "fingerprint-1")
+
+        assertEquals("access-qr", store.access)
+        assertEquals("refresh-qr", store.refresh)
+        assertEquals("device-qr", store.deviceId)
+        assertEquals("device-secret", store.deviceToken)
+        assertTrue(store.isPaired())
+        store.access = null
+        store.refresh = null
+        assertTrue(store.isPaired())
+    }
+
+    @Test
+    fun refreshJwtRechazadoSeRecuperaUnaVezConEmparejamientoDurable() = runTest {
+        val store = FakeTokenStore(
+            access = "access-viejo",
+            refresh = "refresh-revocado",
+            deviceId = "device-1",
+            deviceToken = "durable-secret",
+        )
+        val paths = mutableListOf<String>()
+        val api = apiConMock(store) { request ->
+            paths += request.url.encodedPath
+            assertNull(request.headers[HttpHeaders.Authorization])
+            when (request.url.encodedPath) {
+                "/v1/auth/refresh" -> respond("{}", HttpStatusCode.Unauthorized)
+                "/v1/devices/pairing/refresh" -> {
+                    assertEquals(
+                        """{"device_id":"device-1","device_token":"durable-secret"}""",
+                        (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString(),
+                    )
+                    respond(
+                        """{"access_token":"access-recuperado","refresh_token":"refresh-recuperado"}""",
+                        HttpStatusCode.OK,
+                        headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+                else -> error("Ruta inesperada")
+            }
+        }
+
+        val tokens = api.refrescar()
+
+        assertEquals(listOf("/v1/auth/refresh", "/v1/devices/pairing/refresh"), paths)
+        assertEquals("access-recuperado", tokens.accessToken)
+        assertEquals("refresh-recuperado", store.refresh)
+        assertEquals("durable-secret", store.deviceToken)
+    }
+
+    @Test
+    fun refreshDurableRechazadoExpiraYLimpiaLaCredencialDeDispositivo() = runTest {
+        val store = FakeTokenStore(
+            access = null,
+            refresh = null,
+            deviceId = "device-1",
+            deviceToken = "durable-revocado",
+        )
+        var callbackInvocado = false
+        var requests = 0
+        val api = apiConMock(store, onSessionExpired = { callbackInvocado = true }) { request ->
+            requests += 1
+            assertEquals("/v1/devices/pairing/refresh", request.url.encodedPath)
+            respond("{}", HttpStatusCode.Unauthorized)
+        }
+
+        assertFailsWith<ApiException.SesionExpirada> { api.refrescar() }
+
+        assertEquals(1, requests)
+        assertNull(store.deviceId)
+        assertNull(store.deviceToken)
+        assertTrue(callbackInvocado)
+    }
+
+    @Test
     fun refreshEnVueloNoPuedeResucitarTokensDespuesDeLogout() = runTest {
         val store = FakeTokenStore(access = "access-viejo", refresh = "refresh-viejo")
         val refreshInicio = CompletableDeferred<Unit>()
@@ -406,9 +496,10 @@ class ApiSessionTest {
 private class FakeTokenStore(
     var access: String? = null,
     var refresh: String? = null,
+    var deviceId: String? = null,
+    var deviceToken: String? = null,
 ) : TokenStore {
     private var serverUrl: String? = null
-    private var deviceId: String? = null
     var clearCount = 0
         private set
 
@@ -426,6 +517,18 @@ private class FakeTokenStore(
         refresh = null
     }
     override suspend fun getDeviceId(): String? = deviceId
-    override suspend fun saveDeviceId(deviceId: String) { this.deviceId = deviceId }
-    override suspend fun clearDeviceId() { deviceId = null }
+    override suspend fun saveDeviceId(deviceId: String) {
+        this.deviceId = deviceId
+        deviceToken = null
+    }
+    override suspend fun getDeviceToken(): String? = deviceToken
+    override suspend fun saveDevicePairing(deviceId: String, deviceToken: String) {
+        this.deviceId = deviceId
+        this.deviceToken = deviceToken
+    }
+    override suspend fun clearDeviceId() = clearDevicePairing()
+    override suspend fun clearDevicePairing() {
+        deviceId = null
+        deviceToken = null
+    }
 }

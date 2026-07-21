@@ -63,6 +63,13 @@ if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
     '{"bundle":{"externalBin":["binaries/edecan-local","binaries/ollama"]}}'
   )
 fi
-cargo tauri build "${TAURI_BUILD_ARGS[@]}" -- --locked
+if (( ${#TAURI_BUILD_ARGS[@]} )); then
+  cargo tauri build "${TAURI_BUILD_ARGS[@]}" -- --locked
+else
+  # Bash 3.2 (incluido por macOS) trata la expansión de un array vacío como
+  # variable no definida cuando `set -u` está activo. Ejecutar la variante sin
+  # argumentos evita que el instalador de doble clic falle al final del build.
+  cargo tauri build -- --locked
+fi
 
 echo "==> Listo. Instaladores en src-tauri/target/release/bundle/ (ver esa carpeta: dmg/, macos/, etc.)."

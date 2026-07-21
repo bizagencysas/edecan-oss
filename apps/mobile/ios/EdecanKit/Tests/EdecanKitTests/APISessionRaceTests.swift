@@ -4,6 +4,97 @@ import Testing
 
 @Suite(.serialized)
 struct APISessionRaceTests {
+    @Test func claimQRSinAuthGuardaJWTYCredencialDurable() async throws {
+        let tokens = LockedAuthTokenStore(access: nil, refresh: nil)
+        let durable = LockedDevicePairingStore()
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/devices/pairing/claim")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            let body = try requestBody(request)
+            let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(json["pairing_token"] as? String == "qr-token-sintetico")
+            #expect(json["plataforma"] as? String == "ios")
+            #expect(json["kind"] as? String == "mobile")
+            return (200, Data(#"{"access_token":"access-qr","refresh_token":"refresh-qr","token_type":"bearer","device_id":"device-qr","device_token":"durable-qr"}"#.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        let claim = try await api.reclamarEmparejamiento(
+            pairingToken: "qr-token-sintetico",
+            nombre: "iPhone de prueba",
+            fingerprint: "fingerprint-1"
+        )
+
+        #expect(claim.deviceId == "device-qr")
+        #expect(tokens.snapshot() == .init(access: "access-qr", refresh: "refresh-qr"))
+        #expect(durable.snapshot() == .init(deviceId: "device-qr", deviceToken: "durable-qr"))
+    }
+
+    @Test func refreshJWTRechazadoSeRecuperaUnaVezConPairingDurable() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-viejo", refresh: "refresh-revocado")
+        let durable = LockedDevicePairingStore(deviceId: "device-1", deviceToken: "durable-1")
+        let session = stubSession { request in
+            switch request.url?.path {
+            case "/v1/auth/refresh":
+                return (401, Data(#"{"detail":"refresh revocado"}"#.utf8))
+            case "/v1/devices/pairing/refresh":
+                #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+                let body = try requestBody(request)
+                let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                #expect(json["device_id"] as? String == "device-1")
+                #expect(json["device_token"] as? String == "durable-1")
+                return (200, Data(#"{"access_token":"access-nuevo","refresh_token":"refresh-nuevo","token_type":"bearer"}"#.utf8))
+            default:
+                throw URLError(.badURL)
+            }
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        let refreshed = try await api.refrescar()
+
+        #expect(refreshed.accessToken == "access-nuevo")
+        #expect(tokens.snapshot() == .init(access: "access-nuevo", refresh: "refresh-nuevo"))
+        #expect(durable.snapshot().deviceToken == "durable-1")
+    }
+
+    @Test func sinJWTUsaPairingDurableYSiAmbosFallanExpiraYLimpia() async throws {
+        let tokens = LockedAuthTokenStore(access: nil, refresh: nil)
+        let durable = LockedDevicePairingStore(deviceId: "device-revocado", deviceToken: "durable-revocado")
+        let expiration = AsyncFlag()
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/devices/pairing/refresh")
+            return (401, Data(#"{"detail":"dispositivo revocado"}"#.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable,
+            onSessionExpired: { await expiration.set() }
+        )
+
+        do {
+            _ = try await api.refrescar()
+            Issue.record("Debía expirar después de fallar también el pairing durable")
+        } catch let error as APIClient.APIError {
+            #expect(error == .sesionExpirada)
+        }
+
+        #expect(tokens.snapshot() == .init(access: nil, refresh: nil))
+        #expect(durable.snapshot() == .init(deviceId: nil, deviceToken: nil))
+        #expect(await expiration.value)
+    }
+
     @Test func subidaDeArchivoUsaMultipartAutenticadoYDevuelveUUID() async throws {
         let tokens = LockedAuthTokenStore(access: "access-upload", refresh: "refresh-upload")
         let session = stubSession { request in
@@ -305,9 +396,67 @@ private final class LockedAuthTokenStore: AuthTokenStoring, @unchecked Sendable 
     func snapshot() -> Snapshot { lock.withLock { Snapshot(access: access, refresh: refresh) } }
 }
 
+private final class LockedDevicePairingStore: DevicePairingCredentialStoring, @unchecked Sendable {
+    struct Snapshot: Equatable {
+        let deviceId: String?
+        let deviceToken: String?
+    }
+
+    private let lock = NSLock()
+    private var storedDeviceId: String?
+    private var storedDeviceToken: String?
+
+    init(deviceId: String? = nil, deviceToken: String? = nil) {
+        storedDeviceId = deviceId
+        storedDeviceToken = deviceToken
+    }
+
+    func deviceId() -> String? { lock.withLock { storedDeviceId } }
+    func deviceToken() -> String? { lock.withLock { storedDeviceToken } }
+    func save(deviceId: String, deviceToken: String) {
+        lock.withLock {
+            storedDeviceId = deviceId
+            storedDeviceToken = deviceToken
+        }
+    }
+    func clear() {
+        lock.withLock {
+            storedDeviceId = nil
+            storedDeviceToken = nil
+        }
+    }
+    func snapshot() -> Snapshot {
+        lock.withLock { Snapshot(deviceId: storedDeviceId, deviceToken: storedDeviceToken) }
+    }
+}
+
 private actor AsyncFlag {
     private(set) var value = false
     func set() { value = true }
+}
+
+private func requestBody(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody {
+        return body
+    }
+    guard let stream = request.httpBodyStream else {
+        throw URLError(.cannotDecodeContentData)
+    }
+
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 {
+            throw stream.streamError ?? URLError(.cannotDecodeContentData)
+        }
+        if count == 0 {
+            return body
+        }
+        body.append(contentsOf: buffer.prefix(count))
+    }
 }
 
 private actor AsyncGate {

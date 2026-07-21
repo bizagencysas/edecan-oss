@@ -23,6 +23,7 @@ import { isPublicAuthRoute } from "./auth-route-policy";
 import { buildChatMessageInput } from "./chat-attachments";
 import { parseAgentEvent } from "./chat-blocks";
 import { SseDataParser } from "./sse";
+import type { DevicePairingOut } from "./device-pairing";
 import type {
   AgentEvent,
   Contact,
@@ -646,6 +647,11 @@ export async function speakText(text: string, voiceId?: string | null): Promise<
 
 export async function getCompanionPairCode(): Promise<{ code: string }> {
   return apiJson<{ code: string }>("/v1/companion/pair-code", { method: "POST" });
+}
+
+/** QR temporal para vincular la app móvil sin escribir ni copiar secretos. */
+export async function createDevicePairing(): Promise<DevicePairingOut> {
+  return apiJson<DevicePairingOut>("/v1/devices/pairing", { method: "POST" });
 }
 
 // --- Uso y facturación --------------------------------------------------------------------

@@ -10,6 +10,7 @@ import cc.edecan.shared.DataStoreTokenStore
 import cc.edecan.shared.EdecanApi
 import cc.edecan.shared.Me
 import cc.edecan.shared.TokenStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,9 +72,15 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         private set
 
     init {
+        val bootstrapEpoch = sessionRequestEpoch.get()
         viewModelScope.launch {
-            val url = tokenStore.getServerUrl()
-            val emparejado = tokenStore.isPaired()
+            val persistedUrl = tokenStore.getServerUrl()
+            val url = persistedUrl?.let(::validarUrlServidor)
+            val emparejado = url != null && tokenStore.isPaired()
+            // Un deep link puede llegar mientras DataStore/Keystore todavía
+            // se está leyendo. Nunca dejar que el bootstrap viejo pise ese
+            // claim más reciente.
+            if (sessionRequestEpoch.get() != bootstrapEpoch) return@launch
             if (url != null) {
                 api = crearApi(url)
             }
@@ -82,7 +89,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                     cargandoInicial = false,
                     serverUrl = url,
                     isPaired = emparejado,
-                    paso = if (url != null) PasoOnboarding.SESION else PasoOnboarding.SERVIDOR,
+                    paso = if (emparejado) PasoOnboarding.SESION else PasoOnboarding.SERVIDOR,
+                    errorMensaje = if (persistedUrl != null && url == null) {
+                        "La conexión guardada ya no cumple la política segura. Escanea un QR nuevo o corrígela manualmente."
+                    } else null,
                 )
             }
             if (emparejado) cargarMe()
@@ -101,11 +111,78 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
      * y crea/reapunta el [EdecanApi] hacia ella. NO marca "emparejado" —
      * eso solo lo hace un [iniciarSesion]/[registrar] exitoso. */
     fun definirServidor(url: String) {
-        val limpio = url.trim()
-        if (limpio.isEmpty()) return
-        viewModelScope.launch { tokenStore.saveServerUrl(limpio) }
-        api?.actualizarBaseUrl(limpio) ?: run { api = crearApi(limpio) }
-        _uiState.update { it.copy(serverUrl = limpio, paso = PasoOnboarding.SESION, errorMensaje = null) }
+        val validado = validarUrlServidor(url)
+        if (validado == null) {
+            _uiState.update {
+                it.copy(
+                    errorMensaje = "Usa HTTPS; o HTTP solo con localhost, un nombre LAN, .local o una IP privada/local, sin credenciales ni parámetros.",
+                )
+            }
+            return
+        }
+        viewModelScope.launch { tokenStore.saveServerUrl(validado) }
+        api?.actualizarBaseUrl(validado) ?: run { api = crearApi(validado) }
+        _uiState.update { it.copy(serverUrl = validado, paso = PasoOnboarding.SESION, errorMensaje = null) }
+    }
+
+    /** Consume el deep link que abrió el escáner/cámara. El token efímero no
+     * entra al estado observable ni al SavedStateHandle: se canjea y se deja
+     * caer dentro de esta coroutine. */
+    fun procesarEnlaceEmparejamiento(raw: String) {
+        val solicitud = parsearEnlaceEmparejamiento(raw)
+        if (solicitud == null) {
+            _uiState.update {
+                it.copy(
+                    cargandoInicial = false,
+                    paso = if (it.isPaired) it.paso else PasoOnboarding.SERVIDOR,
+                    errorMensaje = "Ese código de emparejamiento no es válido. Genera uno nuevo en tu computador.",
+                )
+            }
+            return
+        }
+
+        val requestEpoch = sessionRequestEpoch.incrementAndGet()
+        val apiActual = api?.also { it.actualizarBaseUrl(solicitud.serverUrl) }
+            ?: crearApi(solicitud.serverUrl).also { api = it }
+        _uiState.update {
+            it.copy(
+                cargandoInicial = false,
+                serverUrl = solicitud.serverUrl,
+                isPaired = false,
+                me = null,
+                iniciandoSesion = true,
+                paso = PasoOnboarding.SERVIDOR,
+                errorMensaje = null,
+                sessionGeneration = it.sessionGeneration + 1,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                tokenStore.saveServerUrl(solicitud.serverUrl)
+                val (nombre, huella) = identidadDispositivo()
+                apiActual.reclamarEmparejamiento(solicitud.pairingToken, nombre, huella)
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
+                _uiState.update {
+                    it.copy(
+                        iniciandoSesion = false,
+                        isPaired = true,
+                        me = null,
+                        errorMensaje = null,
+                    )
+                }
+                cargarMe()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (sessionRequestEpoch.get() != requestEpoch) return@launch
+                val message = if (e is ApiException.CredencialesInvalidas) {
+                    "Ese código ya expiró o fue usado. Genera uno nuevo en tu computador."
+                } else {
+                    e.message ?: "No pude emparejar este teléfono."
+                }
+                _uiState.update { it.copy(iniciandoSesion = false, isPaired = false, errorMensaje = message) }
+            }
+        }
     }
 
     /** Paso 2: `POST /v1/auth/login` — éxito marca este dispositivo como
@@ -206,22 +283,26 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun crearApi(url: String): EdecanApi =
-        EdecanApi(url, tokenStore) { manejarSesionExpirada(ApiException.SesionExpirada().message) }
+    private fun crearApi(url: String): EdecanApi {
+        val validado = requireNotNull(validarUrlServidor(url)) { "URL de servidor no permitida" }
+        return EdecanApi(validado, tokenStore) {
+            manejarSesionExpirada(ApiException.SesionExpirada().message)
+        }
+    }
 
     /** Solo una renovación rechazada invalida el emparejamiento. Los errores
      * offline conservan tokens y pantalla para poder reintentar al volver la
      * conexión. */
     private fun manejarSesionExpirada(mensaje: String?) {
         sessionRequestEpoch.incrementAndGet()
-        viewModelScope.launch { tokenStore.clearDeviceId() }
+        viewModelScope.launch { tokenStore.clearDevicePairing() }
         _uiState.update {
             it.copy(
                 cargandoMe = false,
                 iniciandoSesion = false,
                 isPaired = false,
                 me = null,
-                paso = PasoOnboarding.SESION,
+                paso = PasoOnboarding.SERVIDOR,
                 modoSesion = ModoSesion.INICIAR,
                 errorMensaje = mensaje,
                 sessionGeneration = it.sessionGeneration + 1,
@@ -243,7 +324,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 me = null,
                 cargandoMe = false,
                 iniciandoSesion = false,
-                paso = PasoOnboarding.SESION,
+                paso = PasoOnboarding.SERVIDOR,
                 modoSesion = ModoSesion.INICIAR,
                 errorMensaje = null,
                 sessionGeneration = it.sessionGeneration + 1,
@@ -251,7 +332,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             val deviceId = tokenStore.getDeviceId()
-            tokenStore.clearDeviceId()
+            tokenStore.clearDevicePairing()
             apiActual.cerrarSesion(deviceId)
         }
     }
@@ -263,13 +344,18 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
      * devuelto para poder revocarlo en [cerrarSesion]; si el servidor
      * todavía no expone el endpoint, sencillamente no guarda nada. */
     private suspend fun emparejarDispositivo(apiActual: EdecanApi) {
+        val (nombre, huella) = identidadDispositivo()
+        apiActual.emparejarDispositivo(nombre, huella)?.let { tokenStore.saveDeviceId(it) }
+    }
+
+    private fun identidadDispositivo(): Pair<String, String?> {
         val contexto = getApplication<Application>()
         val nombre = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android" }
         val huella = try {
             Settings.Secure.getString(contexto.contentResolver, Settings.Secure.ANDROID_ID)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
-        apiActual.emparejarDispositivo(nombre, huella)?.let { tokenStore.saveDeviceId(it) }
+        return nombre to huella
     }
 }

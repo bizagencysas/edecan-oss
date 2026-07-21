@@ -28,6 +28,12 @@ Ni la interfaz ni el backend se reescriben para la versión de escritorio: `apps
 
 ## 2. Instalación (para quien solo usa la app)
 
+En macOS, si recibiste el repositorio en vez del DMG, haz doble clic en
+**`Abrir Edecán.command`** en la raíz. La primera vez prepara e instala
+`~/Applications/Edecán.app`; después solo abre la app. El proceso que macOS
+ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
+`python3.x`, evitando que sus permisos se mezclen con Jarvis u otro proyecto.
+
 1. Descargá el instalador de tu plataforma y abrilo.
    - **macOS**: `Edecán.dmg` → arrastrá `Edecán.app` a Aplicaciones. Como el `.dmg` de este repo sale **sin firmar** por defecto (ver §7), macOS va a bloquear la primera apertura ("no se puede abrir porque no se puede verificar el desarrollador"): hacé **clic derecho (o Control-clic) sobre la app → Abrir → Abrir** de nuevo en el diálogo de confirmación. Solo hace falta esa vez.
    - **Windows**: `Edecán-Setup.exe` (NSIS) → siguiente, siguiente. SmartScreen puede avisar "Windows protegió tu PC" la primera vez (mismo motivo: sin firmar) — **Más información → Ejecutar de todas formas**.
@@ -96,7 +102,7 @@ cd apps/desktop
 
 `dev.sh` no corre PyInstaller: genera o reutiliza `apps/web/out`, arranca
 `cargo tauri dev` y ejecuta el backend desde fuente con
-`uv run --all-packages python -m edecan_local`. Usa
+`uv run --all-packages edecan`. Usa
 `EDECAN_REBUILD_WEB=1 ./scripts/dev.sh` después de modificar el frontend, o
 `EDECAN_SKIP_DEV_WEB=1 ./scripts/dev.sh` para iterar solo en Rust/backend.
 Para hot reload del frontend en el navegador sigue disponible `make web`;
@@ -111,7 +117,7 @@ Dos ubicaciones posibles — cuál aplica depende de cómo corriste el backend:
   - Windows: `%APPDATA%\cc.edecan.desktop\data\` (`C:\Users\<vos>\AppData\Roaming\cc.edecan.desktop\data\`)
 
   Ahí vive la base de datos embebida (conversaciones, memoria, credenciales cifradas, todo) y los archivos que subas.
-- **Corriendo `edecan_local` suelto** (`python -m edecan_local` o el binario `edecan-local`, sin pasar por Tauri — típico si estás depurando el backend a mano): usa su propio default, `DATA_DIR=~/.edecan/data` (`ARCHITECTURE.md` §12.g), salvo que también le pases `--data-dir` vos mismo.
+- **Corriendo el runtime suelto** (`uv run --all-packages edecan` o el binario `edecan-local`, sin pasar por Tauri — solo para desarrollo): usa su propio default, `DATA_DIR=~/.edecan/data` (`ARCHITECTURE.md` §12.g), salvo que también le pases `--data-dir` vos mismo.
 
 El menú de bandeja tiene un atajo directo: **"Ver carpeta de datos"** abre la carpeta correcta (la primera opción de arriba) en Finder/Explorador, sin tener que recordar la ruta.
 
@@ -158,6 +164,9 @@ Falta el subcomando (no viene con `cargo` ni con `rustup`): `cargo install tauri
 A diferencia de self-hosting (`self-hosting.md`, pensado para quien ya está cómodo con Docker/`.env`), la app de escritorio asume que quien la instala **no** quiere tocar archivos de configuración. Por eso:
 
 - Ninguna credencial viaja en el instalador ni en el repo — todo se conecta desde la pantalla de **Configuración** dentro de la propia app (misma pantalla web de siempre, servida ahora por el backend local).
+- **Configuración → Conexiones** reúne proveedores, voz, imágenes, búsqueda,
+  cuentas externas y el QR del teléfono. Cada formulario valida antes de
+  guardar y el backend cifra el secreto en el vault del tenant.
 - El único paso obligatorio para poder chatear es conectar un proveedor de LLM (wizard de 2-3 pasos); todo lo demás (voz, telefonía, conectores) queda como tarjetas opcionales, nunca bloqueando el primer uso — detalle completo en [`primeros-pasos.md`](./primeros-pasos.md).
 - La app detecta automáticamente `claude`/`codex`/Ollama ya instalados en tu máquina y los ofrece con un clic, sin pedir ninguna API key — tiene más sentido todavía en la app de escritorio que en cualquier otro modo, porque acá SIEMPRE hay "tu máquina" de la cual autodetectar (ver [`proveedores-llm.md`](./proveedores-llm.md)).
 

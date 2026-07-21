@@ -2,18 +2,12 @@ package cc.edecan.shared
 
 /**
  * Persistencia del "emparejamiento" de ESTE dispositivo con un tenant de
- * Edecán: la URL del servidor propio del tenant + el par de tokens JWT de la
- * sesión (`docs/api.md` §"Autenticación y sesión").
+ * Edecán: URL del servidor, sesión JWT y credencial durable del dispositivo.
+ * La implementación Android cifra todos estos valores con Android Keystore.
  *
- * **v1: el "emparejamiento" es, literalmente, tener sesión iniciada** — no
- * hay un protocolo de emparejamiento propio para el móvil todavía (a
- * diferencia del código corto que usa el companion de escritorio,
- * `POST /v1/companion/pair-code`). Mientras el refresh token viva acá, el
- * dispositivo cuenta como "emparejado". Mismo criterio, a propósito, que
- * `PairingStore`/`Keychain` en `apps/mobile/ios/EdecanKit` — ver
- * "Qué queda pendiente" en `docs/movil-android.md` para cuándo esto pasa a
- * ser un emparejamiento real por dispositivo (tabla `devices`,
- * `ROADMAP_V2.md` §6.1/§7.4).
+ * Desde v0.7 el QR entrega una credencial durable por dispositivo. Los JWT
+ * siguen rotando normalmente; si su refresh deja de servir, esa credencial
+ * puede recuperar un par nuevo sin pedir contraseña.
  *
  * Interfaz simple en `commonMain` en vez de `expect`/`actual`: cada target
  * (hoy solo Android) inyecta su propia implementación concreta por
@@ -21,8 +15,8 @@ package cc.edecan.shared
  * distintos backings de almacenamiento por target sin recompilar el
  * contrato). La implementación Android real vive en
  * `androidMain/.../TokenStore.android.kt` — [DataStoreTokenStore]: DataStore
- * Preferences para la URL del servidor (no sensible) + `EncryptedSharedPreferences`
- * (`androidx.security.crypto`) para los tokens (SIEMPRE cifrados en reposo).
+ * Preferences únicamente como fuente de migración. La URL, los JWT, el id y
+ * el token durable terminan todos bajo Android Keystore + AES-GCM.
  */
 interface TokenStore {
     suspend fun getServerUrl(): String?
@@ -41,24 +35,38 @@ interface TokenStore {
      * escribirla. */
     suspend fun clearTokens()
 
-    /** `true` si hay un refresh token guardado — ver el doc de la interfaz:
-     * es la definición completa de "emparejado" en este esqueleto v1. */
-    suspend fun isPaired(): Boolean = getRefreshToken() != null
+    /** Un JWT renovable o una credencial durable completa permiten recuperar
+     * la sesión sin volver a pedir correo/contraseña. */
+    suspend fun isPaired(): Boolean = getRefreshToken() != null ||
+        (getDeviceId() != null && getDeviceToken() != null)
 
     /** El `id` (`devices.id`) que devolvió `POST /v1/devices` la última vez
      * que `SessionViewModel` emparejó este dispositivo con un tenant
      * (`ARCHITECTURE.md`/`ROADMAP_V2.md` §6.1/§7.4, contrato de WP-V4-01 en
      * paralelo — ver `EdecanApi.emparejarDispositivo`), o `null` si todavía
-     * no se emparejó (o el servidor no tenía ese endpoint todavía). No es
-     * secreto — un id de dispositivo no autentica nada por sí solo — así que
-     * comparte el mismo almacenamiento no cifrado que [getServerUrl], nunca
-     * el de [getAccessToken]/[getRefreshToken]. */
+     * no se emparejó (o el servidor no tenía ese endpoint todavía). Aunque
+     * no autentica por sí solo, Android v0.7 también lo cifra para que toda
+     * la identidad persistida siga una única política. */
     suspend fun getDeviceId(): String?
     suspend fun saveDeviceId(deviceId: String)
+
+    /** Secreto durable emitido únicamente por el claim QR. Nunca debe
+     * guardarse en DataStore plano, logs, SavedStateHandle ni UI. */
+    suspend fun getDeviceToken(): String? = null
+
+    /** Persiste id+secreto como una sola identidad lógica. Implementaciones
+     * antiguas degradan a guardar solo el id y no habilitan refresh durable. */
+    suspend fun saveDevicePairing(deviceId: String, deviceToken: String) {
+        saveDeviceId(deviceId)
+    }
 
     /** Borra el `id` guardado por [saveDeviceId] — se llama al cerrar sesión,
      * después de intentar revocarlo en el servidor (`EdecanApi.revocarDispositivo`),
      * para que un login posterior (mismo u otro tenant) empareje un
      * dispositivo nuevo en vez de reusar un id que ya se pidió revocar. */
     suspend fun clearDeviceId()
+
+    suspend fun clearDevicePairing() {
+        clearDeviceId()
+    }
 }

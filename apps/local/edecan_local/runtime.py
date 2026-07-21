@@ -1,9 +1,9 @@
-"""Orquestador del runner local — `python -m edecan_local` (`ARCHITECTURE.md`
+"""Orquestador del runner local — comando `edecan` (`ARCHITECTURE.md`
 §12f, dueño WP-V3-05): Postgres embebido (`edecan_local.pg`) + migraciones
 (`edecan_local.migrate`) + object store S3-compatible (`edecan_local.
 objectstore`) + `edecan_api` (uvicorn) + worker in-process
-(`edecan_local.worker_loop`), todo en el MISMO proceso, bind SOLO en
-`127.0.0.1`.
+(`edecan_local.worker_loop`), todo en el MISMO proceso. El bind es loopback
+por defecto; la app nativa activa acceso LAN solo para la API móvil.
 
 ## Orden de arranque (todo dentro de `run()`)
 
@@ -81,6 +81,7 @@ import logging
 import os
 import secrets as secrets_module
 import signal
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -112,10 +113,10 @@ _DATA_DIR_MODE = 0o700
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m edecan_local",
+        prog="edecan",
         description=(
             "Runner local de Edecán: api + worker + Postgres embebido + "
-            "object store, todo en 127.0.0.1 (ARCHITECTURE.md §12f)."
+            "object store. La app nativa lo administra automáticamente."
         ),
     )
     parser.add_argument(
@@ -134,6 +135,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-web",
         action="store_true",
         help="No sirve el export estático de apps/web aunque esté disponible (dev).",
+    )
+    parser.add_argument(
+        "--mobile-access",
+        action="store_true",
+        help=(
+            "Permite que las apps móviles de la red local se conecten. "
+            "La app nativa de Edecán lo activa automáticamente."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -244,6 +253,7 @@ def _build_env(
     database_url: str,
     serve_web_dir: str | None,
     local_secrets: dict[str, str],
+    public_base_url: str | None = None,
 ) -> dict[str, str]:
     env = {
         "EDECAN_LOCAL_MODE": "1",
@@ -261,7 +271,57 @@ def _build_env(
     }
     if serve_web_dir:
         env["SERVE_WEB_DIR"] = serve_web_dir
+    if public_base_url:
+        env["PUBLIC_BASE_URL"] = public_base_url
     return env
+
+
+def _mobile_public_url(port: int) -> str:
+    """Origen que se incrusta en el QR móvil.
+
+    Un override explícito cubre dominios/relays propios. En una instalación
+    local se prefiere la IP privada que el sistema enruta hacia la LAN: Android
+    no garantiza que los clientes HTTP normales resuelvan el hostname mDNS del
+    Mac. El nombre `.local` queda como respaldo cuando no hay una interfaz IPv4.
+    """
+    configured = os.environ.get("EDECAN_MOBILE_PUBLIC_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+
+    address = _primary_lan_ipv4()
+    if address:
+        return f"http://{address}:{port}"
+
+    hostname = socket.gethostname().strip().rstrip(".")
+    if hostname and hostname.lower() not in {"localhost", "localhost.localdomain"}:
+        if "." not in hostname:
+            hostname = f"{hostname}.local"
+        try:
+            hostname = hostname.encode("idna").decode("ascii")
+        except UnicodeError:
+            hostname = ""
+    if hostname:
+        return f"http://{hostname}:{port}"
+
+    return f"http://127.0.0.1:{port}"
+
+
+def _primary_lan_ipv4() -> str | None:
+    """IPv4 elegida por la tabla de rutas sin enviar ningún paquete.
+
+    El destino TEST-NET nunca recibe tráfico: `connect()` sobre UDP solo deja
+    que el kernel seleccione la interfaz y permite leer la dirección local.
+    Loopback no sirve para un teléfono y se descarta explícitamente.
+    """
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
+        try:
+            sock.connect(("192.0.2.1", 9))
+            address = sock.getsockname()[0]
+        except OSError:
+            return None
+    if not address or address.startswith("127.") or address == "0.0.0.0":
+        return None
+    return address
 
 
 def _apply_env(env_updates: dict[str, str]) -> None:
@@ -445,6 +505,7 @@ async def run(
     port: int = DEFAULT_PORT,
     data_dir: str | Path = DEFAULT_DATA_DIR,
     no_web: bool = False,
+    mobile_access: bool = False,
     stop_event: asyncio.Event | None = None,
 ) -> None:
     """`stop_event`, si se pasa, reemplaza al que este runner crea por
@@ -487,6 +548,7 @@ async def run(
                 database_url=database_url,
                 serve_web_dir=serve_web_dir,
                 local_secrets=local_secrets,
+                public_base_url=_mobile_public_url(port) if mobile_access else None,
             )
         )
         logger.info(
@@ -521,7 +583,8 @@ async def run(
 
         ollama_handle = await asyncio.to_thread(maybe_start_ollama, api_settings)
 
-        api_server = _make_server(api_app, host="127.0.0.1", port=port)
+        api_host = "0.0.0.0" if mobile_access else "127.0.0.1"
+        api_server = _make_server(api_app, host=api_host, port=port)
         objectstore_server = _make_server(objectstore_app, host="127.0.0.1", port=objectstore_port)
 
         from edecan_local.worker_loop import build_local_deps, run_forever
@@ -594,4 +657,11 @@ async def run(
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    asyncio.run(run(port=args.port, data_dir=args.data_dir, no_web=args.no_web))
+    asyncio.run(
+        run(
+            port=args.port,
+            data_dir=args.data_dir,
+            no_web=args.no_web,
+            mobile_access=args.mobile_access,
+        )
+    )

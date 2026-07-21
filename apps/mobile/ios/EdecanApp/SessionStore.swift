@@ -23,6 +23,7 @@ public final class SessionStore {
     public private(set) var sesionValida = true
     private var clientGeneration = 0
     private var contentEpoch = 0
+    private var baseURLActual: URL?
     private let chatLocalState = ChatLocalStateStore()
 
     public init() {}
@@ -32,6 +33,7 @@ public final class SessionStore {
     /// `client` en `nil` — las pantallas que lo necesiten deben tratarlo
     /// como "sin sesión utilizable".
     public func actualizarBaseURL(_ url: URL?) {
+        if let url, url == baseURLActual, client != nil { return }
         // Al abandonar o cambiar de servidor, un hilo del tenant anterior no
         // puede reaparecer bajo la siguiente cuenta. En el primer arranque
         // con la URL persistida `client` aún es nil y sí se permite restaurar.
@@ -39,6 +41,7 @@ public final class SessionStore {
             chatLocalState.clearAll()
         }
         clientGeneration += 1
+        baseURLActual = url
         contentEpoch += 1
         me = nil
         guard let url else {

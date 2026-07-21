@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.io.IOException
@@ -19,10 +20,15 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private val Context.pairingDataStore by preferencesDataStore(name = "cc.edecan.app.pairing")
 private const val KEY_ACCESS_TOKEN = "access_token"
 private const val KEY_REFRESH_TOKEN = "refresh_token"
+private const val KEY_SERVER_URL = "server_url"
+private const val KEY_DEVICE_ID = "device_id"
+private const val KEY_DEVICE_TOKEN = "device_token"
 
 /**
  * Implementación Android de [TokenStore] (ver su docstring en `commonMain`
@@ -30,14 +36,11 @@ private const val KEY_REFRESH_TOKEN = "refresh_token"
  * `Keychain.swift`/`PairingStore.swift` en `EdecanKit` (iOS). Split
  * deliberado en DOS mecanismos de persistencia distintos, no uno solo:
  *
- * - **DataStore Preferences** para la URL del servidor: NO es un dato
- *   sensible (ni siquiera secreto dentro del propio dispositivo) —
- *   DataStore es el reemplazo moderno recomendado de `SharedPreferences`
- *   para esto, con una API 100% basada en coroutines.
- * - **Android Keystore + AES-256-GCM** SOLO para el par de tokens JWT: son
- *   credenciales de sesión reales y deben quedar SIEMPRE cifradas en reposo.
+ * - **Android Keystore + AES-256-GCM** para URL, JWTs, id y token durable.
  *   SharedPreferences guarda únicamente payloads cifrados versionados; la
- *   clave no es exportable y vive en el Keystore del dispositivo.
+ *   clave no exportable vive en el Keystore del dispositivo.
+ * - **DataStore Preferences** queda solo para migrar instalaciones antiguas
+ *   que guardaron URL/id en claro; el valor se elimina tras cifrarlo.
  *
  * Las llamadas que tocan el almacén cifrado corren en
  * [Dispatchers.IO] a propósito: la primera lectura por proceso (creación
@@ -64,22 +67,50 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
     private val tokenVault: AndroidKeystoreTokenVault by lazy {
         AndroidKeystoreTokenVault(context.applicationContext)
     }
+    private val plaintextMigrationMutex = Mutex()
 
-    override suspend fun getServerUrl(): String? =
-        context.pairingDataStore.data.first()[Keys.serverUrl]
+    override suspend fun getServerUrl(): String? = encryptedOrMigrate(KEY_SERVER_URL, Keys.serverUrl)
 
     override suspend fun saveServerUrl(url: String) {
-        context.pairingDataStore.edit { it[Keys.serverUrl] = url }
+        withContext(Dispatchers.IO) { tokenVault.putAll(mapOf(KEY_SERVER_URL to url)) }
+        context.pairingDataStore.edit { it.remove(Keys.serverUrl) }
     }
 
-    override suspend fun getDeviceId(): String? =
-        context.pairingDataStore.data.first()[Keys.deviceId]
+    override suspend fun getDeviceId(): String? = encryptedOrMigrate(KEY_DEVICE_ID, Keys.deviceId)
 
     override suspend fun saveDeviceId(deviceId: String) {
-        context.pairingDataStore.edit { it[Keys.deviceId] = deviceId }
+        withContext(Dispatchers.IO) {
+            // Un id proveniente del login clásico no puede conservar el
+            // secreto durable de otra identidad/tenant.
+            tokenVault.update(mapOf(KEY_DEVICE_ID to deviceId), setOf(KEY_DEVICE_TOKEN))
+        }
+        context.pairingDataStore.edit { it.remove(Keys.deviceId) }
     }
 
     override suspend fun clearDeviceId() {
+        clearDevicePairing()
+    }
+
+    override suspend fun getDeviceToken(): String? = withContext(Dispatchers.IO) {
+        tokenVault.get(KEY_DEVICE_TOKEN)
+    }
+
+    override suspend fun saveDevicePairing(deviceId: String, deviceToken: String) {
+        withContext(Dispatchers.IO) {
+            tokenVault.putAll(
+                mapOf(
+                    KEY_DEVICE_ID to deviceId,
+                    KEY_DEVICE_TOKEN to deviceToken,
+                ),
+            )
+        }
+        context.pairingDataStore.edit { it.remove(Keys.deviceId) }
+    }
+
+    override suspend fun clearDevicePairing() {
+        withContext(Dispatchers.IO) {
+            tokenVault.remove(KEY_DEVICE_ID, KEY_DEVICE_TOKEN)
+        }
         context.pairingDataStore.edit { it.remove(Keys.deviceId) }
     }
 
@@ -93,16 +124,33 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
 
     override suspend fun saveTokens(accessToken: String, refreshToken: String) {
         withContext(Dispatchers.IO) {
-            tokenVault.save(accessToken, refreshToken)
+            tokenVault.putAll(
+                mapOf(
+                    KEY_ACCESS_TOKEN to accessToken,
+                    KEY_REFRESH_TOKEN to refreshToken,
+                ),
+            )
         }
     }
 
     override suspend fun clearTokens() {
         withContext(Dispatchers.IO) {
-            tokenVault.clear()
+            tokenVault.remove(KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN)
         }
     }
 
+    private suspend fun encryptedOrMigrate(
+        encryptedKey: String,
+        legacyKey: Preferences.Key<String>,
+    ): String? = plaintextMigrationMutex.withLock {
+        withContext(Dispatchers.IO) {
+            tokenVault.get(encryptedKey)?.let { return@withContext it }
+            val legacy = context.pairingDataStore.data.first()[legacyKey] ?: return@withContext null
+            tokenVault.putAll(mapOf(encryptedKey to legacy))
+            context.pairingDataStore.edit { it.remove(legacyKey) }
+            legacy
+        }
+    }
 }
 
 /** Payload autocontenido y versionado: `v1:<iv>:<ciphertext+tag>`. */
@@ -168,34 +216,32 @@ private class AndroidKeystoreTokenVault(private val context: Context) {
         return try {
             AesGcmTokenCipher.decrypt(encrypted, name, key)
         } catch (_: IllegalArgumentException) {
-            clearCorruptedTokens()
+            clearCorruptedValue(name)
             null
         } catch (_: AEADBadTagException) {
-            clearCorruptedTokens()
+            clearCorruptedValue(name)
             null
         } catch (_: KeyPermanentlyInvalidatedException) {
-            clearCorruptedTokens()
+            clearCorruptedValue(name)
             null
         }
     }
 
-    fun save(accessToken: String, refreshToken: String) {
-        val committed = preferences.edit()
-            .putString(KEY_ACCESS_TOKEN, AesGcmTokenCipher.encrypt(accessToken, KEY_ACCESS_TOKEN, key))
-            .putString(
-                KEY_REFRESH_TOKEN,
-                AesGcmTokenCipher.encrypt(refreshToken, KEY_REFRESH_TOKEN, key),
-            )
-            .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
-            .commit()
-        requireCommitted(committed)
-        LegacyEncryptedTokenMigration.clear(context)
+    fun putAll(values: Map<String, String>) {
+        update(values, emptySet())
     }
 
-    fun clear() {
-        val committed = preferences.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_REFRESH_TOKEN)
+    fun remove(vararg names: String) {
+        update(emptyMap(), names.toSet())
+    }
+
+    fun update(values: Map<String, String>, removals: Set<String>) {
+        val editor = preferences.edit()
+        removals.forEach(editor::remove)
+        values.forEach { (name, value) ->
+            editor.putString(name, AesGcmTokenCipher.encrypt(value, name, key))
+        }
+        val committed = editor
             .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
             .commit()
         requireCommitted(committed)
@@ -231,12 +277,15 @@ private class AndroidKeystoreTokenVault(private val context: Context) {
         }
     }
 
-    private fun clearCorruptedTokens() {
-        preferences.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_REFRESH_TOKEN)
-            .putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true)
-            .commit()
+    private fun clearCorruptedValue(name: String) {
+        val related = when (name) {
+            KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN -> setOf(KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN)
+            KEY_DEVICE_ID, KEY_DEVICE_TOKEN -> setOf(KEY_DEVICE_ID, KEY_DEVICE_TOKEN)
+            else -> setOf(name)
+        }
+        val editor = preferences.edit()
+        related.forEach(editor::remove)
+        editor.putBoolean(KEY_LEGACY_MIGRATION_COMPLETE, true).commit()
         LegacyEncryptedTokenMigration.clear(context)
     }
 

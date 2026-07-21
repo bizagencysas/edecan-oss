@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Config de PRODUCCIÓN (usada por `release`, y por `debug` salvo que
-    `src/debug/res/xml/network_security_config.xml` la reemplace — ver el
-    comentario largo en ese archivo y en AndroidManifest.xml).
-    `cleartextTrafficPermitted="false"` es ya el default en `targetSdk` 28+,
-    se deja explícito para que quede documentado en el propio archivo.
+    Android no admite rangos CIDR/IP en domain-config. Release permite
+    cleartext a nivel de transporte para alcanzar la IP LAN entregada por el
+    QR; PairingDeepLink.validarUrlServidor es el gate obligatorio que limita
+    HTTP a loopback, link-local, RFC1918, IPv6 local, .local o hostname LAN de
+    una sola etiqueta. HTTPS sí puede ser público. Ninguna URL llega a
+    EdecanApi sin pasar ese gate.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

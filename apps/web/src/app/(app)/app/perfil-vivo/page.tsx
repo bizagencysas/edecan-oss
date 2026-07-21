@@ -326,10 +326,9 @@ export default function PerfilVivoPage() {
         <CardHeader title="Privacidad" />
         <CardBody>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Este perfil es solo tuyo: vive dentro de tu organización (tenant) y queda aislado del
-            resto por Row-Level Security en la base de datos — nadie de otro tenant puede verlo ni
-            tocarlo. Puedes editarlo a mano en cualquier momento arriba, o borrarlo por completo
-            abajo.
+            Este perfil es solo tuyo y permanece aislado de las demás cuentas. Nadie fuera de tu
+            espacio puede verlo ni modificarlo. Puedes editarlo en cualquier momento arriba o
+            borrarlo por completo abajo.
           </p>
         </CardBody>
       </Card>

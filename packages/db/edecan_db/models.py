@@ -898,6 +898,12 @@ class Device(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     __table_args__ = (
         _enum_check("kind", ("companion", "mobile")),
         _enum_check("status", ("active", "revoked")),
+        Index(
+            "uq_devices_pairing_secret_hash",
+            "pairing_secret_hash",
+            unique=True,
+            postgresql_where=text("pairing_secret_hash IS NOT NULL"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -911,6 +917,10 @@ class Device(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
     push_token: Mapped[str | None] = mapped_column(String, nullable=True)
     push_platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Solo el hash del secreto durable emitido por el emparejamiento QR. El
+    # secreto original nunca sale del Keystore/Keychain del teléfono.
+    pairing_secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    paired_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
 
 class RemoteSession(IDMixin, TenantScopedMixin, TimestampMixin, Base):

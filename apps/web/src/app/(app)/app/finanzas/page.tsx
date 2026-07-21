@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 
 import { TrashIcon } from "@/components/icons";
+import { StripeConnectionCard } from "@/components/configuracion/StripeConnectionCard";
 import {
   Alert,
-  Badge,
   Button,
   Card,
   CardBody,
@@ -18,16 +18,12 @@ import {
 } from "@/components/ui";
 import {
   createTransaction,
-  deleteStripeCredentials,
   deleteTransaction,
   getFinanceSummary,
-  getStripeStatus,
   listTransactions,
-  putStripeCredentials,
-  syncStripeTransactions,
 } from "@/lib/api";
 import { currentMonth, formatDate, formatMoney, formatNumber } from "@/lib/format";
-import type { FinanceSummary, StripeStatus, Transaction } from "@/lib/types";
+import type { FinanceSummary, Transaction } from "@/lib/types";
 
 const emptyForm = { fecha: new Date().toISOString().slice(0, 10), monto: "", moneda: "USD", categoria: "", descripcion: "", cuenta: "" };
 
@@ -42,28 +38,10 @@ export default function FinanzasPage() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [stripeStatus, setStripeStatus] = useState<StripeStatus | null>(null);
-  const [stripeApiKey, setStripeApiKey] = useState("");
-  const [connectingStripe, setConnectingStripe] = useState(false);
-  const [syncingStripe, setSyncingStripe] = useState(false);
-  const [stripeMessage, setStripeMessage] = useState<string | null>(null);
-
   useEffect(() => {
     void load(mes);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mes]);
-
-  useEffect(() => {
-    void loadStripeStatus();
-  }, []);
-
-  async function loadStripeStatus() {
-    try {
-      setStripeStatus(await getStripeStatus());
-    } catch {
-      // No bloquea el resto de la pantalla si esto falla.
-    }
-  }
 
   async function load(month: string) {
     setLoading(true);
@@ -116,57 +94,6 @@ export default function FinanzasPage() {
     }
   }
 
-  async function handleConnectStripe(e: React.FormEvent) {
-    e.preventDefault();
-    if (!stripeApiKey.trim()) return;
-    setConnectingStripe(true);
-    setStripeMessage(null);
-    setError(null);
-    try {
-      await putStripeCredentials(stripeApiKey.trim());
-      setStripeApiKey("");
-      await loadStripeStatus();
-      setStripeMessage("Conectado ✓");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo conectar con Stripe.");
-    } finally {
-      setConnectingStripe(false);
-    }
-  }
-
-  async function handleDisconnectStripe() {
-    setConnectingStripe(true);
-    setError(null);
-    try {
-      await deleteStripeCredentials();
-      await loadStripeStatus();
-      setStripeMessage(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo desconectar Stripe.");
-    } finally {
-      setConnectingStripe(false);
-    }
-  }
-
-  async function handleSyncStripe() {
-    setSyncingStripe(true);
-    setStripeMessage(null);
-    setError(null);
-    try {
-      const result = await syncStripeTransactions();
-      setStripeMessage(
-        result.sincronizadas > 0
-          ? `${result.sincronizadas} transacción${result.sincronizadas === 1 ? "" : "es"} nueva${result.sincronizadas === 1 ? "" : "s"} importada${result.sincronizadas === 1 ? "" : "s"}.`
-          : "Ya estaba todo al día — nada nuevo que importar.",
-      );
-      await load(mes);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo sincronizar con Stripe.");
-    } finally {
-      setSyncingStripe(false);
-    }
-  }
-
   return (
     <div>
       <PageHeader
@@ -214,52 +141,7 @@ export default function FinanzasPage() {
         </div>
       )}
 
-      <Card className="mb-6">
-        <CardHeader
-          title="Stripe"
-          description="Trae los movimientos de tu propia cuenta de Stripe con una Restricted key de solo lectura — ver docs/finanzas-stripe.md."
-          actions={
-            stripeStatus?.connected ? (
-              <Badge variant="success">Conectado {stripeStatus.masked}</Badge>
-            ) : (
-              <Badge variant="neutral">Sin conectar</Badge>
-            )
-          }
-        />
-        <CardBody className="space-y-3">
-          {stripeMessage && <Alert variant="success">{stripeMessage}</Alert>}
-          {stripeStatus?.connected ? (
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={handleSyncStripe} loading={syncingStripe}>
-                Sincronizar ahora
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleDisconnectStripe}
-                loading={connectingStripe}
-              >
-                Desconectar
-              </Button>
-            </div>
-          ) : (
-            <form onSubmit={handleConnectStripe} className="flex flex-wrap items-end gap-2">
-              <Field label="Restricted key de Stripe" htmlFor="stripe_key" className="min-w-[280px] flex-1">
-                <Input
-                  id="stripe_key"
-                  type="password"
-                  value={stripeApiKey}
-                  onChange={(e) => setStripeApiKey(e.target.value)}
-                  placeholder="rk_live_…"
-                />
-              </Field>
-              <Button type="submit" loading={connectingStripe} disabled={!stripeApiKey.trim()}>
-                Conectar Stripe
-              </Button>
-            </form>
-          )}
-        </CardBody>
-      </Card>
+      <div className="mb-6"><StripeConnectionCard onSynced={() => load(mes)} /></div>
 
       {summary && summary.por_categoria.length > 0 && (
         <Card className="mb-6">

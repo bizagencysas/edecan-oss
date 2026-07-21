@@ -93,14 +93,14 @@ export function CardCredencial({
         actions={
           <div className="flex items-center gap-2">
             <Badge variant={estado === "conectado" ? "success" : "neutral"}>
-              {estado === "conectado" ? "Conectado" : "Sin conectar"}
+              {estado === "conectado" ? "Conectado" : "Falta conectar"}
             </Badge>
             <Button
               size="sm"
               variant={estado === "conectado" ? "secondary" : "primary"}
               onClick={() => setExpanded((e) => !e)}
             >
-              {estado === "conectado" ? "Cambiar" : "Configurar"}
+              {estado === "conectado" ? "Cambiar" : "Conectar"}
             </Button>
           </div>
         }

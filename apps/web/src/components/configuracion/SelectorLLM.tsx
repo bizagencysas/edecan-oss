@@ -89,7 +89,7 @@ export function SelectorLLM({
     setFeedback(null);
     try {
       await putLlmCredential({ kind, validate: true, ...body });
-      setFeedback({ accion, ok: true, mensaje: "Conectado y validado." });
+      setFeedback({ accion, ok: true, mensaje: "Guardado de forma segura y validado." });
       onConnected();
     } catch (err) {
       setFeedback({ accion, ok: false, mensaje: mensajeError(err) });
@@ -122,7 +122,7 @@ export function SelectorLLM({
       {mostrarAutoDetect && !detectLoading && (
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Un clic — usa lo que ya tienes
+            En esta computadora · sin API key
           </p>
 
           {detect?.claude_cli.installed && (
@@ -130,6 +130,9 @@ export function SelectorLLM({
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
                 <span className="text-sm text-slate-700 dark:text-slate-200">
                   Usar mi Claude CLI{versionDetectada(detect.claude_cli.version)}
+                  <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    Sin API key
+                  </span>
                 </span>
                 <Button
                   size="sm"
@@ -149,6 +152,9 @@ export function SelectorLLM({
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
                 <span className="text-sm text-slate-700 dark:text-slate-200">
                   Usar mi Codex CLI{versionDetectada(detect.codex_cli.version)}
+                  <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    Sin API key
+                  </span>
                 </span>
                 <Button
                   size="sm"
@@ -168,6 +174,9 @@ export function SelectorLLM({
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
                 <span className="text-sm text-slate-700 dark:text-slate-200">
                   Usar Ollama ({detect.ollama.models.length} modelo{detect.ollama.models.length === 1 ? "" : "s"})
+                  <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    Sin API key
+                  </span>
                 </span>
                 {detect.ollama.models.length > 0 ? (
                   <div className="flex flex-1 flex-wrap items-center gap-2">

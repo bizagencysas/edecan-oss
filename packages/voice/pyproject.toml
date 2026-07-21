@@ -1,6 +1,6 @@
 [project]
 name = "edecan-voice"
-version = "0.6.0"
+version = "0.7.0"
 description = "Pluggable STT and TTS with offline fakes, tenant voices, and consent-gated cloning"
 requires-python = ">=3.12"
 readme = "README.md"

@@ -12,8 +12,8 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <!-- Ícono temático (Android 13+, "themed icons"): reutiliza el mismo
-         sparkle — ya es un glifo de un solo color, el sistema solo mira su
+    <!-- Ícono temático (Android 13+): reutiliza el robot monocromático;
+         el sistema solo mira su
          canal alfa para recolorearlo según el fondo de pantalla del
          usuario. -->
     <monochrome android:drawable="@drawable/ic_launcher_foreground" />

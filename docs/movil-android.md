@@ -120,39 +120,19 @@ adb install androidApp/build/outputs/apk/release/androidApp-release.apk
 
 ## Emparejamiento al primer arranque
 
-La app pide, en un onboarding de 2 pasos (mismo principio de "pocos
-clicks" que la app de escritorio, `docs/roadmap.md`):
+El flujo principal ya no pide escribir una URL ni una contraseña en el
+teléfono:
 
-1. **La URL de tu servidor** — self-host propio o tu app de escritorio
-   Tauri. Sin servidor "de fábrica": cada cliente trae el suyo.
-2. **Iniciar sesión** (correo + contraseña, + código TOTP si tienes 2FA
-   activado, `POST /v1/auth/login`) **o crear una cuenta nueva** (correo +
-   contraseña + nombre de tu negocio/tenant, `POST /v1/auth/register` —
-   botón "¿No tienes cuenta? Regístrate" en el mismo paso; crea tenant +
-   usuario owner + persona por defecto y deja la sesión iniciada de una).
+1. En Edecán para computador abre **Configuración → Conectar mi teléfono**.
+2. Escanea el QR con Android; el deep link `edecan://pair` abre la app.
+3. La app canjea el secreto de un solo uso y entra al chat.
 
-**El "emparejamiento" sigue siendo, ante todo, tener sesión iniciada** —
-mientras el refresh token (30 días de vida, `ARCHITECTURE.md` §10.12) siga
-guardado y cifrado en el teléfono (`EncryptedSharedPreferences`, respaldado
-por el Android Keystore), el dispositivo cuenta como emparejado. Cerrar
-sesión desde Ajustes borra los tokens y vuelve a mostrar el
-onboarding — la URL del servidor SÍ se conserva, para no tener que volver a
-escribirla.
-
-**Además, desde fase v4, un login/registro exitoso registra el
-dispositivo de verdad**: `POST /v1/devices {nombre: "<fabricante> <modelo>",
-plataforma: "android", kind: "mobile", fingerprint: ANDROID_ID}` (contrato
-de fase v4, tabla `devices`, `docs/roadmap.md`) — el `id` que
-devuelve el servidor se guarda local (no cifrado — un id de dispositivo no
-autentica nada por sí solo) y se usa para `DELETE /v1/devices/{id}` al
-cerrar sesión, revocando el emparejamiento en el servidor. Ambas llamadas
-son **mejor esfuerzo**: `EdecanApi.emparejarDispositivo`/`.revocarDispositivo`
-nunca lanzan — si `/v1/devices` todavía no existe del lado del servidor
-(`404`, fase v4 corriendo en paralelo) o falla por cualquier otro motivo,
-el login/logout de todas formas sigue su curso normal. Emparejamiento real
-por **QR + verificación de *fingerprint*** (en vez de simplemente confiar
-en la sesión) sigue diseñado en [`control-remoto.md`](./control-remoto.md)
-§4/§9 como el siguiente paso — ver "Roadmap" más abajo.
+El QR vence en diez minutos y solo se puede consumir una vez. Después Android
+guarda `device_token`, tokens JWT y servidor cifrados con Android Keystore. La
+identidad durable permite recuperar JWTs después de reiniciar el backend local,
+pero sigue siendo revocable: cerrar sesión o revocar el dispositivo anula el
+secreto en Postgres. La URL/login manual permanecen dentro de **Opciones
+avanzadas** para self-hosting y recuperación, no como onboarding principal.
 
 ## Arquitectura
 

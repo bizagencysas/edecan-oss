@@ -28,21 +28,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { BorradoresAds } from "@/components/ads/BorradoresAds";
-import { ConectarMetaAds } from "@/components/ads/ConectarMetaAds";
 import { ResumenCampanas } from "@/components/ads/ResumenCampanas";
-import { Alert, Badge, Card, CardBody, CardHeader, PageHeader, Spinner } from "@/components/ui";
+import { AdsConnectionCard } from "@/components/configuracion/AdsConnectionCard";
+import { Alert, PageHeader } from "@/components/ui";
 import {
   ApiError,
-  deleteAdsCredentials,
-  getAdsStatus,
   listAdDrafts,
   type AdDraft,
   type AdsStatus,
 } from "@/lib/api-ads";
-
-function EstadoBadge({ configurado }: { configurado: boolean }) {
-  return <Badge variant={configurado ? "success" : "neutral"}>{configurado ? "Conectado" : "Sin conectar"}</Badge>;
-}
 
 function mensajeError(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -53,23 +47,8 @@ function mensajeError(err: unknown): string {
 export default function AdsPage() {
   const [status, setStatus] = useState<AdsStatus | null>(null);
   const [drafts, setDrafts] = useState<AdDraft[]>([]);
-  const [loadingStatus, setLoadingStatus] = useState(true);
   const [loadingDrafts, setLoadingDrafts] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [quitando, setQuitando] = useState(false);
-
-  const cargarStatus = useCallback(async () => {
-    setLoadingStatus(true);
-    try {
-      const s = await getAdsStatus();
-      setStatus(s);
-      setError(null);
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setLoadingStatus(false);
-    }
-  }, []);
 
   const cargarDrafts = useCallback(async () => {
     setLoadingDrafts(true);
@@ -85,21 +64,8 @@ export default function AdsPage() {
   }, []);
 
   useEffect(() => {
-    void cargarStatus();
     void cargarDrafts();
-  }, [cargarStatus, cargarDrafts]);
-
-  async function desconectar() {
-    setQuitando(true);
-    try {
-      await deleteAdsCredentials();
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setQuitando(false);
-      await cargarStatus();
-    }
-  }
+  }, [cargarDrafts]);
 
   const conectado = status?.configured ?? false;
 
@@ -117,39 +83,7 @@ export default function AdsPage() {
       )}
 
       <div className="mb-6">
-        <Card>
-          <CardHeader
-            title="Meta Ads"
-            actions={
-              loadingStatus ? <Spinner className="h-4 w-4 text-slate-400" /> : <EstadoBadge configurado={conectado} />
-            }
-          />
-          <CardBody className="space-y-3">
-            {conectado && status && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-950/40">
-                <span className="text-slate-700 dark:text-slate-200">
-                  {[
-                    status.nombre_cuenta,
-                    status.ad_account_id ? `act_${status.ad_account_id}` : null,
-                    status.moneda,
-                    status.reachable === false ? "sin respuesta ahora mismo" : undefined,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void desconectar()}
-                  disabled={quitando}
-                  className="text-xs font-medium text-rose-600 hover:text-rose-700 disabled:opacity-50 dark:text-rose-400"
-                >
-                  {quitando ? "Quitando…" : "Quitar"}
-                </button>
-              </div>
-            )}
-            <ConectarMetaAds onConnected={cargarStatus} />
-          </CardBody>
-        </Card>
+        <AdsConnectionCard onStatusChange={setStatus} />
       </div>
 
       <div className="space-y-6">

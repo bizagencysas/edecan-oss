@@ -14,6 +14,9 @@ public enum KeychainKeys {
     /// falló: el emparejamiento v1 (sesión = emparejamiento) sigue
     /// funcionando igual sin este valor.
     public static let deviceId = "cc.edecan.app.deviceId"
+    /// Secreto durable emitido solo por el claim QR. Está ligado a la fila
+    /// del dispositivo y permite recuperar JWT sin contraseña.
+    public static let deviceToken = "cc.edecan.app.deviceToken"
 }
 
 /// Envoltorio mínimo sobre el Keychain de iOS (`Security.framework`) para
@@ -32,6 +35,16 @@ public enum Keychain {
 
     /// Guarda `value` bajo `key`, reemplazando cualquier valor previo.
     public static func set(_ value: String, for key: String) {
+        set(value, for: key, accessibility: kSecAttrAccessibleAfterFirstUnlock)
+    }
+
+    /// Variante que no migra a otro dispositivo mediante backup. Se usa para
+    /// el token durable del iPhone, que pierde sentido fuera de este hardware.
+    public static func setDeviceBound(_ value: String, for key: String) {
+        set(value, for: key, accessibility: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    }
+
+    private static func set(_ value: String, for key: String, accessibility: CFString) {
         let data = Data(value.utf8)
         // SecItemAdd falla con errSecDuplicateItem si la clave ya existe —
         // se borra primero para que `set` siempre sea "upsert".
@@ -41,7 +54,7 @@ public enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: accessibility,
         ]
         SecItemAdd(query as CFDictionary, nil)
     }

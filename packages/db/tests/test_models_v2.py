@@ -131,9 +131,7 @@ def test_automation_run_fk_a_automation_y_status_default_running():
     fks = {fk.column.table.name for fk in cols["automation_id"].foreign_keys}
     assert fks == {"automations"}
     checks = [
-        c
-        for c in AutomationRun.__table__.constraints
-        if c.__class__.__name__ == "CheckConstraint"
+        c for c in AutomationRun.__table__.constraints if c.__class__.__name__ == "CheckConstraint"
     ]
     sqltext = " ".join(str(c.sqltext) for c in checks)
     for estado in ("running", "done", "error", "waiting_confirmation"):
@@ -143,6 +141,8 @@ def test_automation_run_fk_a_automation_y_status_default_running():
 def test_device_kind_y_status_check():
     cols = Base.metadata.tables["devices"].columns
     assert cols["status"].server_default.arg == "active"
+    assert cols["pairing_secret_hash"].nullable is True
+    assert cols["paired_at"].nullable is True
     checks = [c for c in Device.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
     sqltext = " ".join(str(c.sqltext) for c in checks)
     assert "companion" in sqltext

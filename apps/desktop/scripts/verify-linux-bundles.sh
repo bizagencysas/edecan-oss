@@ -69,7 +69,19 @@ trap cleanup EXIT INT TERM
 export XDG_CONFIG_HOME="$SMOKE_DIR/config"
 export XDG_DATA_HOME="$SMOKE_DIR/data"
 export XDG_CACHE_HOME="$SMOKE_DIR/cache"
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+# `pgserver` usa `platformdirs.user_runtime_path()` para su lock entre
+# procesos. Los escritorios Linux normales ya traen XDG_RUNTIME_DIR, pero
+# un runner CI sin sesión systemd puede no tener `/run/user/<uid>`. Darle un
+# runtime privado replica el contrato XDG real y evita confundir esa carencia
+# del runner con un fallo del AppImage.
+export XDG_RUNTIME_DIR="$SMOKE_DIR/runtime"
+# Solo durante este smoke, el escritorio imprime las últimas líneas del
+# sidecar si el backend falla. En instalaciones normales esta variable no
+# existe, por lo que los logs potencialmente sensibles siguen sin salir a
+# stderr.
+export EDECAN_DESKTOP_DIAGNOSTICS=1
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+chmod 0700 "$XDG_RUNTIME_DIR"
 chmod u+x "$APPIMAGE"
 
 echo "==> Arrancando el AppImage y su backend real en Xvfb…"

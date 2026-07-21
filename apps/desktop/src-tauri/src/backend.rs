@@ -466,8 +466,29 @@ fn read_lines(buffer: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 
 fn emit_error(app: &AppHandle, message: String, log: Vec<String>) {
     eprintln!("[edecan-desktop] {message}");
+    // La app entrega estas líneas a la pantalla de error para que la persona
+    // pueda entender/reintentar el problema. Solo las duplicamos en stderr
+    // bajo una bandera explícita de diagnóstico (CI/soporte): algunos
+    // proveedores o conectores podrían escribir datos privados en sus logs,
+    // así que nunca deben terminar por defecto en una consola o journal.
+    if diagnostics_enabled() {
+        for line in &log {
+            eprintln!("[edecan-local] {line}");
+        }
+    }
     let payload = serde_json::json!({ "message": message, "log": log });
     let _ = app.emit("edecan://backend-error", payload);
+}
+
+fn diagnostics_enabled() -> bool {
+    std::env::var("EDECAN_DESKTOP_DIAGNOSTICS")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Crea (si hace falta) y muestra la ventana principal apuntando al backend

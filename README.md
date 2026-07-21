@@ -85,8 +85,8 @@ through a hosted intermediary. Edecan follows a different model:
 |---|---|---|
 | Python core, API, workers, tools | Implemented | 4,300+ offline tests pass locally |
 | Web application | Implemented | Next.js production build renders 37 routes |
-| Local desktop runtime | Preview | Tauri shell + packaged Python backend; source build required |
-| macOS and Windows desktop packaging | Preview | Build scripts exist; signed public installers do not yet |
+| Local desktop runtime | Preview | Tauri shell + packaged Python backend for macOS, Windows and Linux x64 |
+| Native desktop packaging | Preview | DMG, NSIS/MSI, AppImage, Debian and RPM builds; public installers are not signed yet |
 | Native iOS and Android companions | Preview | iOS simulator build and Android debug APK compile from source |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
 | BYO Twilio conversational calls | Implemented | Signed webhook and injected-provider tests; no real calls in CI |
@@ -128,13 +128,20 @@ that an unavailable action succeeded.
 
 ## Quickstart
 
-### Open Edecan like a normal app (macOS)
+### Open Edecan like a normal app
 
-Double-click **`Abrir Edecán.command`** at the repository root. It installs
-the native `Edecán.app` into your user Applications folder on first use and
-opens it thereafter. Provider keys, local CLI/Ollama selection and mobile QR
-pairing live under **Settings → Connections**; no `.env` or server URL is part
-of the normal-person flow.
+- **macOS:** double-click **`Abrir Edecán.command`** at the repository root. It
+  installs the native `Edecán.app` into your user Applications folder on first
+  use and opens it thereafter.
+- **Windows:** open the generated `Edecán-Setup.exe`; the installer creates the
+  normal Start-menu shortcut and uninstaller.
+- **Linux x64:** open the generated `.deb` in the software center on
+  Debian/Ubuntu, use the `.rpm` on Fedora/openSUSE, or mark the AppImage as
+  executable and double-click it on other desktop distributions.
+
+Provider keys, local CLI/Ollama selection and mobile QR pairing live under
+**Settings → Connections**; no `.env`, Docker or server URL is part of the
+normal-person flow.
 
 ### Verify the public core
 
@@ -232,7 +239,10 @@ scripts/        local install and repository verification helpers
 - Python tests: pytest/pytest-asyncio, offline and deterministic.
 - Python dependency advisories: pinned `pip-audit` scan of the exported lock.
 - Web checks: dependency audit, ESLint, TypeScript, and production build.
-- Desktop checks: locked Rust dependency graph and sidecar-free unit build.
+- Desktop checks: locked Rust tests plus a Linux build of AppImage, Debian and
+  RPM packages that boots the packaged backend, checks `/healthz`, opens a real
+  window in a virtual display and verifies clean shutdown without orphaned
+  sidecars.
 - Self-host checks: clean image builds, real migrations, readiness, CSP, worker import, and non-root runtimes.
 - CI uses least-privilege permissions and frozen lockfiles.
 - Production startup rejects public placeholder secrets.

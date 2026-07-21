@@ -1,6 +1,6 @@
 # App de escritorio (Tauri)
 
-**El vehículo principal de venta del producto** es un instalable de macOS/Windows que se descarga, se instala, se abre, se conecta con tus propias credenciales en Configuración y queda funcionando — sin servidor propio, sin Docker, sin editar ningún archivo a mano. Este documento cubre instalación, requisitos y pasos de build por plataforma, dónde viven tus datos, cómo desinstalar y troubleshooting. Para el recorrido completo del wizard de bienvenida y la pantalla de Configuración (que es el mismo dentro de la app de escritorio que en cualquier otro modo), ver [`primeros-pasos.md`](./primeros-pasos.md). Para cómo corre el backend empaquetado por dentro (Postgres embebido, migraciones, colas), ver [`desktop-local.md`](./desktop-local.md) *(fase v3)*.
+La aplicación local de Edecán es instalable en macOS, Windows y Linux x64: se descarga, se instala, se abre, se conecta con tus propias credenciales en Configuración y queda funcionando — sin servidor propio, sin Docker y sin editar archivos a mano. Este documento cubre instalación, requisitos y build por plataforma, ubicación de datos, desinstalación y troubleshooting. Para el wizard de bienvenida y la pantalla de Configuración, ver [`primeros-pasos.md`](./primeros-pasos.md). Para el backend empaquetado (Postgres embebido, migraciones y colas), ver [`desktop-local.md`](./desktop-local.md).
 
 Código fuente de este paquete: [`apps/desktop`](../apps/desktop) (referencia técnica rápida en su propio `README.md`).
 
@@ -37,6 +37,9 @@ ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 1. Descargá el instalador de tu plataforma y abrilo.
    - **macOS**: `Edecán.dmg` → arrastrá `Edecán.app` a Aplicaciones. Como el `.dmg` de este repo sale **sin firmar** por defecto (ver §7), macOS va a bloquear la primera apertura ("no se puede abrir porque no se puede verificar el desarrollador"): hacé **clic derecho (o Control-clic) sobre la app → Abrir → Abrir** de nuevo en el diálogo de confirmación. Solo hace falta esa vez.
    - **Windows**: `Edecán-Setup.exe` (NSIS) → siguiente, siguiente. SmartScreen puede avisar "Windows protegió tu PC" la primera vez (mismo motivo: sin firmar) — **Más información → Ejecutar de todas formas**.
+   - **Debian/Ubuntu x64**: abrí el paquete `.deb` con el centro de software e instalalo. También podés usar `sudo apt install ./ruta/al/paquete.deb`.
+   - **Fedora/openSUSE x64**: abrí el paquete `.rpm` con el instalador gráfico de tu distribución, o instalalo con `sudo dnf install ./ruta/al/paquete.rpm` en Fedora.
+   - **Otras distribuciones Linux x64**: hacé clic derecho sobre el `Edecán_*.AppImage` → Propiedades → permitir ejecutar como programa, y después doble clic. Si tu escritorio no ofrece esa opción: `chmod +x Edecán_*.AppImage` una sola vez.
 2. Al abrir por primera vez ves la ventana de splash ("Arrancando tu asistente…") mientras el backend local termina de prepararse (crea su base de datos embebida, corre migraciones) — tarda unos segundos, no minutos.
 3. La app abre directo en el wizard de bienvenida (2–3 pasos: conectar un proveedor de LLM y listo) — recorrido completo en [`primeros-pasos.md`](./primeros-pasos.md).
 
@@ -54,6 +57,22 @@ Solo hacen falta si vos mismo vas a **generar** el instalador (no para usarlo ya
 | **PyInstaller 6.21.0** | Congela `edecan_local` en un binario | **No hace falta instalarlo a mano**: está fijado en el grupo `release` de `pyproject.toml` y resuelto por `uv.lock` |
 | macOS: Xcode Command Line Tools | `sips`/`iconutil` (`scripts/make-icons.sh`) | Ya presentes en cualquier Mac con Xcode CLT instalado |
 | Windows: Visual Studio Build Tools (C++) | Requisito estándar de compilar con MSVC | El instalador de Rust para Windows ya te lo pide si falta |
+| Linux x64: WebKitGTK 4.1 y herramientas de paquetes | Webview nativo y AppImage/deb/rpm | Comando reproducible debajo; ARM64 usa self-hosting con una base externa |
+
+En Debian/Ubuntu 22.04+ instalá las dependencias Linux con:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes \
+  build-essential curl file gstreamer1.0-libav gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good libasound2-dev libayatana-appindicator3-dev \
+  libfuse2 librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf pkg-config \
+  openbox rpm wget wmctrl xvfb dbus-x11
+```
+
+`libfuse2` permite ejecutar AppImage en varias distribuciones. Los paquetes
+GStreamer se incluyen al crear el AppImage para que imágenes, audio y video del
+Mega Chat no dependan por completo de los plugins multimedia del host.
 
 ## 4. Build paso a paso
 
@@ -87,11 +106,31 @@ Salida en `src-tauri\target\release\bundle\`:
 
 ### 4.3 Linux
 
-Este repo no publica hoy un bundle Tauri para Linux: `tauri.conf.json` solo
-declara DMG, NSIS y MSI, y no hay un flujo de instalador Linux verificado.
-En Linux usa el despliegue documentado en [`self-hosting.md`](./self-hosting.md).
-El runtime Python sí funciona en Linux x64 con Postgres embebido; en Linux
-ARM64 requiere `EDECAN_DATABASE_URL` (ver [`desktop-local.md`](./desktop-local.md) §6).
+En una máquina Linux x64 con los requisitos de §3:
+
+```bash
+cd apps/desktop
+./scripts/build-app.sh
+```
+
+El script construye la web, congela el backend local con PyInstaller y genera
+tres formatos en `src-tauri/target/release/bundle/`:
+
+- `appimage/Edecán_<version>_amd64.AppImage` — portable y recomendado para
+  distribuciones que no usan Debian o RPM.
+- `deb/Edecán_<version>_amd64.deb` — instalación integrada para Debian/Ubuntu.
+- `rpm/Edecán-<version>-1.x86_64.rpm` — instalación integrada para
+  Fedora/openSUSE y otras distribuciones RPM.
+
+Después del build, `./scripts/verify-linux-bundles.sh` inspecciona los paquetes,
+arranca el AppImage en Xvfb, espera el `/healthz` del backend empaquetado, exige
+una ventana visible y confirma que el cierre no deja `edecan-local` huérfano.
+Ese mismo smoke test corre en GitHub Actions sobre Ubuntu 22.04 en cada cambio.
+
+La app local-first empaquetada requiere Linux x64 porque `pgserver` publica el
+Postgres embebido para esa arquitectura. Linux ARM64 sigue soportado mediante
+[`self-hosting.md`](./self-hosting.md) con `EDECAN_DATABASE_URL` apuntando a
+Postgres externo (ver [`desktop-local.md`](./desktop-local.md) §6).
 
 ### 4.4 Modo desarrollo
 
@@ -115,20 +154,22 @@ Dos ubicaciones posibles — cuál aplica depende de cómo corriste el backend:
 - **Corriendo por la app de escritorio (el caso normal, siempre)**: la app SIEMPRE le pasa `--data-dir` explícito al backend, apuntando a la carpeta de datos de la propia app que resuelve Tauri (`app_data_dir()` + `/data`):
   - macOS: `~/Library/Application Support/cc.edecan.desktop/data/`
   - Windows: `%APPDATA%\cc.edecan.desktop\data\` (`C:\Users\<vos>\AppData\Roaming\cc.edecan.desktop\data\`)
+  - Linux: `${XDG_DATA_HOME:-~/.local/share}/cc.edecan.desktop/data/`
 
   Ahí vive la base de datos embebida (conversaciones, memoria, credenciales cifradas, todo) y los archivos que subas.
 - **Corriendo el runtime suelto** (`uv run --all-packages edecan` o el binario `edecan-local`, sin pasar por Tauri — solo para desarrollo): usa su propio default, `DATA_DIR=~/.edecan/data` (`ARCHITECTURE.md` §12.g), salvo que también le pases `--data-dir` vos mismo.
 
-El menú de bandeja tiene un atajo directo: **"Ver carpeta de datos"** abre la carpeta correcta (la primera opción de arriba) en Finder/Explorador, sin tener que recordar la ruta.
+El menú de bandeja tiene un atajo directo: **"Ver carpeta de datos"** abre la carpeta correcta en Finder, Explorador o el administrador de archivos de Linux, sin tener que recordar la ruta.
 
-Nota aparte: la ventana principal carga `http://127.0.0.1:<puerto>/` como contenido **externo** (no un asset empaquetado de Tauri) — el motor de webview del sistema (WKWebView en macOS, WebView2 en Windows) guarda su propio caché/cookies para ese origen en su ubicación estándar del SO, separada de lo de arriba. Es contenido regenerable (no hay nada ahí que no puedas volver a cargar), así que no hace falta trackearlo para backups.
+Nota aparte: la ventana principal carga `http://127.0.0.1:<puerto>/` como contenido **externo** (no un asset empaquetado de Tauri) — el motor de webview del sistema (WKWebView en macOS, WebView2 en Windows y WebKitGTK en Linux) guarda su propio caché/cookies para ese origen en la ubicación estándar del SO, separada de lo de arriba. Es contenido regenerable, así que no hace falta incluirlo en backups.
 
 ## 6. Cómo desinstalar
 
 - **macOS**: arrastrá `Edecán.app` (en Aplicaciones) a la Papelera. No queda un ícono de desinstalador separado — así funciona cualquier `.app` de macOS.
 - **Windows**: **Configuración → Aplicaciones → Aplicaciones instaladas → Edecán → Desinstalar** (el instalador NSIS registra un desinstalador estándar de Windows).
+- **Linux**: desinstalá Edecán desde el mismo centro de software con el que instalaste el `.deb`/`.rpm`. Si usaste AppImage, eliminá únicamente ese archivo.
 
-En ambos casos, **tus datos NO se borran** — desinstalar la app deja intacta la carpeta de §5 por defecto, para que reinstalar más adelante no pierda nada. Si además querés borrar tus datos por completo, borrá a mano esa carpeta (usá "Ver carpeta de datos" en la bandeja mientras la app todavía esté instalada para encontrarla rápido, o andá directo a la ruta de §5).
+En todos los casos, **tus datos NO se borran** — desinstalar la app deja intacta la carpeta de §5 por defecto, para que reinstalar más adelante no pierda nada. Si además querés borrar tus datos por completo, borrá a mano esa carpeta (usá "Ver carpeta de datos" en la bandeja mientras la app todavía esté instalada para encontrarla rápido, o andá directo a la ruta de §5).
 
 ## 7. Firma de código
 
@@ -136,6 +177,7 @@ Este repo genera instaladores **sin firmar** por defecto — es el camino que fu
 
 - **macOS**: si tenés tu propio Apple Developer ID, `packaging/edecan_local.spec` ya lee `EDECAN_MACOS_CODESIGN_IDENTITY` (env var, tu `"Developer ID Application: Tu Nombre (TEAMID)"`) para firmar el binario del sidecar; para firmar el `.app`/`.dmg` final, `cargo tauri build` respeta las variables estándar de Tauri (`APPLE_SIGNING_IDENTITY`, y para notarizar además `APPLE_ID`/`APPLE_PASSWORD` o `APPLE_API_KEY` — ver la [guía oficial de firma de Tauri](https://v2.tauri.app/distribute/sign/macos/)). Sin notarizar, Gatekeeper sigue pidiendo el clic derecho→Abrir de §2 aunque esté firmado; con notarización completa, desaparece.
 - **Windows**: Authenticode requiere un certificado de firma de código y la configuración de Tauri `certificateThumbprint`, `digestAlgorithm` y `timestampUrl`, o un `signCommand` que invoque tu firmador. `TAURI_SIGNING_PRIVATE_KEY` firma artefactos del updater de Tauri; **no** aplica Authenticode al `.exe`/`.msi`. Consulta la [guía oficial de firma para Windows](https://v2.tauri.app/distribute/sign/windows/). Sin firma, SmartScreen avisa la primera vez (§2).
+- **Linux**: el pipeline actual crea AppImage, `.deb` y `.rpm` reproducibles pero no firma repositorios APT/RPM ni publica una clave de distribución. El smoke test comprueba contenido y ejecución; la firma y procedencia de artefactos siguen siendo un requisito para el release estable.
 
 Ninguna identidad ni certificado real vive en este repo — solo el enganche para que vos pongas el tuyo.
 
@@ -190,6 +232,10 @@ cd apps\desktop
 $env:EDECAN_BUNDLE_OLLAMA = "1"
 .\scripts\build-app.ps1
 ```
+
+Linux x64 detecta Ollama, Claude CLI y Codex CLI ya instalados, pero no incluye
+Ollama dentro de AppImage/deb/rpm. `EDECAN_BUNDLE_OLLAMA=1` falla de inmediato
+en Linux con una explicación clara para evitar publicar un paquete incompleto.
 
 Esas son las rutas canónicas que **descargan y realmente agregan** Ollama a
 `bundle.externalBin`. Los scripts fijan Ollama `v0.32.1`, descargan el asset

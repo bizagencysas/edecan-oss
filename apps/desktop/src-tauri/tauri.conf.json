@@ -19,7 +19,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "nsis", "msi"],
     "publisher": "Edecán",
     "copyright": "Edecán — Apache-2.0 (núcleo). Ver ../../LICENSE y ../../NOTICE.",
     "category": "Productivity",

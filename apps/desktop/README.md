@@ -1,6 +1,6 @@
 # apps/desktop — `edecan-desktop` (Tauri)
 
-Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán como una app de escritorio instalable para macOS y Windows — **el vehículo principal de venta del producto** (`docs/roadmap.md`, "Qué se vende"). No reimplementa nada: reusa la interfaz web ya construida en [`apps/web`](../web) (Next.js, export estático) y el backend local ya definido en [`apps/local`](../local) (`edecan_local`, fase v3) — este directorio solo los orquesta:
+Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán como una app de escritorio instalable para macOS, Windows y Linux x64. No reimplementa nada: reusa la interfaz web ya construida en [`apps/web`](../web) (Next.js, export estático) y el backend local ya definido en [`apps/local`](../local) (`edecan_local`, fase v3) — este directorio solo los orquesta:
 
 1. Al arrancar, elige un puerto libre (preferencia `8765`) y lanza `edecan_local` como *sidecar* (empaquetado con PyInstaller, o desde el código fuente en modo desarrollo).
 2. Muestra una ventana de splash mientras espera a que el backend avise `EDECAN_LOCAL_READY` por stdout (máx. 60s), con un panel de error + reintentar si algo falla.
@@ -26,6 +26,9 @@ apps/desktop/
 │   ├── icons/           # generados por scripts/make-icons.sh
 │   ├── binaries/        # sidecar compilado (gitignored, ver abajo)
 │   ├── tauri.conf.json
+│   ├── tauri.macos.conf.json
+│   ├── tauri.windows.conf.json
+│   ├── tauri.linux.conf.json
 │   └── Cargo.toml
 ├── packaging/
 │   ├── edecan_local.spec        # spec de PyInstaller para edecan_local
@@ -37,6 +40,7 @@ apps/desktop/
 │   ├── download-ollama.sh|.ps1  # OPCIONAL: descarga Ollama -> sidecar (fase v4)
 │   ├── dev.sh                   # cargo tauri dev, backend desde fuente
 │   ├── build-app.sh             # build-backend + cargo tauri build
+│   ├── verify-linux-bundles.sh  # smoke real AppImage + inspección deb/rpm
 │   └── make-icons.sh            # assets/icon-source.png -> src-tauri/icons/
 └── assets/
     └── icon-source.png          # placeholder — reemplazalo por el logo real
@@ -56,8 +60,10 @@ apps/desktop/
 ./scripts/build-app.sh
 ```
 
-En Windows x64, el equivalente es `scripts\build-app.ps1`. Este repositorio
-no publica hoy un bundle Tauri para Linux; allí usa el flujo de self-hosting.
+En Windows x64, el equivalente es `scripts\build-app.ps1`. En Linux x64 el
+mismo `build-app.sh` produce AppImage, `.deb` y `.rpm`; el CI además arranca el
+AppImage, espera el backend real y confirma que cerrar la ventana no deje
+procesos huérfanos.
 
 `dev.sh` funciona desde un clon sin sidecar precompilado. La primera corrida
 instala las dependencias declaradas y genera la UI estática; las siguientes
@@ -71,6 +77,7 @@ en Rust/backend.
 - **Node.js 22** y **npm 10** (build de `apps/web`).
 - **Python 3.12** + [`uv`](https://docs.astral.sh/uv/) (workspace del repo — `edecan_local` y sus paquetes `edecan_*`).
 - macOS: Xcode Command Line Tools (`sips`/`iconutil`, usados por `scripts/make-icons.sh`).
+- Linux x64: WebKitGTK 4.1, AppIndicator, librsvg, ALSA, libxdo, `patchelf`, herramientas Debian/RPM y `pkg-config`; el smoke de release también usa Xvfb, Openbox y D-Bus (comando exacto en `docs/desktop.md`).
 
 Detalle completo, por plataforma, en `docs/desktop.md`.
 
@@ -87,5 +94,6 @@ cargo test --locked
 
 Los scripts de release se validan además con `bash -n`. Un `cargo check` o
 los tests unitarios no sustituyen el build de los instaladores: publica desde
-macOS con `build-app.sh` y desde Windows x64 con `build-app.ps1`, y prueba el
-artefacto generado en la plataforma correspondiente.
+macOS/Linux x64 con `build-app.sh` y desde Windows x64 con `build-app.ps1`, y
+prueba el artefacto generado en la plataforma correspondiente. En Linux, usa
+`scripts/verify-linux-bundles.sh` después del build.

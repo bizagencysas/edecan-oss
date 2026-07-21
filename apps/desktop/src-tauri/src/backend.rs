@@ -240,23 +240,76 @@ fn build_command(
 /// de Python como fuente de verdad de "¿está instalado?" — solo amplían
 /// dónde busca.
 fn extra_cli_search_dirs() -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut dirs = vec![
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let mut dirs = Vec::new();
+
+    #[cfg(not(target_os = "windows"))]
+    dirs.extend([
         "/opt/homebrew/bin".to_string(),
         "/opt/homebrew/sbin".to_string(),
         "/usr/local/bin".to_string(),
         "/usr/local/sbin".to_string(),
-    ];
+        "/snap/bin".to_string(),
+        "/var/lib/flatpak/exports/bin".to_string(),
+    ]);
+
     if !home.is_empty() {
         dirs.extend([
             format!("{home}/.local/bin"),
             format!("{home}/.cargo/bin"),
             format!("{home}/.bun/bin"),
+            format!("{home}/.deno/bin"),
+            format!("{home}/.volta/bin"),
+            format!("{home}/.asdf/shims"),
+            format!("{home}/.local/share/mise/shims"),
+            format!("{home}/.local/share/pnpm"),
+            format!("{home}/.local/share/flatpak/exports/bin"),
             format!("{home}/go/bin"),
+            format!("{home}/.npm/bin"),
             format!("{home}/.npm-global/bin"),
         ]);
+
+        // nvm y fnm guardan cada Node en una carpeta versionada que una app
+        // abierta desde Finder, el menú Inicio o el launcher de Linux nunca
+        // hereda. Descubrimos solo el nivel esperado y agregamos sus `bin`;
+        // no ejecutamos ningún shell ni archivo de perfil del usuario.
+        append_versioned_bin_dirs(
+            &mut dirs,
+            &PathBuf::from(&home).join(".nvm/versions/node"),
+            &["bin"],
+        );
+        append_versioned_bin_dirs(
+            &mut dirs,
+            &PathBuf::from(&home).join(".local/share/fnm/node-versions"),
+            &["installation", "bin"],
+        );
     }
+
+    #[cfg(target_os = "windows")]
+    if let Ok(app_data) = std::env::var("APPDATA") {
+        dirs.push(format!("{app_data}/npm"));
+    }
+
+    dirs.sort();
+    dirs.dedup();
     dirs
+}
+
+fn append_versioned_bin_dirs(dirs: &mut Vec<String>, root: &Path, suffix: &[&str]) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let mut candidate = entry.path();
+        for component in suffix {
+            candidate.push(component);
+        }
+        if candidate.is_dir() {
+            dirs.push(candidate.to_string_lossy().to_string());
+        }
+    }
 }
 
 /// Suma `extra_cli_search_dirs()` al `PATH` heredado del proceso Tauri
@@ -280,13 +333,22 @@ fn with_expanded_path(
     cmd: tauri_plugin_shell::process::Command,
 ) -> tauri_plugin_shell::process::Command {
     let current = std::env::var("PATH").unwrap_or_default();
-    let extended = extra_cli_search_dirs().join(":");
-    let path = if current.is_empty() {
-        extended
-    } else {
-        format!("{current}:{extended}")
-    };
+    let path = expanded_path_value(&current, &extra_cli_search_dirs());
     cmd.env("PATH", path)
+}
+
+fn expanded_path_value(current: &str, extra_dirs: &[String]) -> String {
+    let separator = if cfg!(target_os = "windows") {
+        ";"
+    } else {
+        ":"
+    };
+    let extended = extra_dirs.join(separator);
+    match (current.is_empty(), extended.is_empty()) {
+        (true, _) => extended,
+        (_, true) => current.to_string(),
+        (false, false) => format!("{current}{separator}{extended}"),
+    }
 }
 
 /// Suma al `Command` del backend local dos env vars OPCIONALES para que
@@ -404,8 +466,29 @@ fn read_lines(buffer: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 
 fn emit_error(app: &AppHandle, message: String, log: Vec<String>) {
     eprintln!("[edecan-desktop] {message}");
+    // La app entrega estas líneas a la pantalla de error para que la persona
+    // pueda entender/reintentar el problema. Solo las duplicamos en stderr
+    // bajo una bandera explícita de diagnóstico (CI/soporte): algunos
+    // proveedores o conectores podrían escribir datos privados en sus logs,
+    // así que nunca deben terminar por defecto en una consola o journal.
+    if diagnostics_enabled() {
+        for line in &log {
+            eprintln!("[edecan-local] {line}");
+        }
+    }
     let payload = serde_json::json!({ "message": message, "log": log });
     let _ = app.emit("edecan://backend-error", payload);
+}
+
+fn diagnostics_enabled() -> bool {
+    std::env::var("EDECAN_DESKTOP_DIAGNOSTICS")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Crea (si hace falta) y muestra la ventana principal apuntando al backend
@@ -505,7 +588,10 @@ pub fn kill_backend(app: &AppHandle) {
 /// se pudo mandar la señal / el binario `kill` no está disponible), y el
 /// caller debe escalar al kill duro de siempre como red de seguridad.
 /// Bloqueante a propósito (`kill_backend` no es async): el margen máximo es
-/// corto (3s) y este camino solo corre al cerrar la app.
+/// acotado (15s) y este camino solo corre al cerrar la app. El margen debe
+/// cubrir el shutdown real de Postgres en equipos modestos: con 3s el
+/// bootloader onefile de PyInstaller podía seguir esperando a su proceso
+/// Python cuando escalábamos a SIGKILL, dejando a Postgres huérfano.
 #[cfg(not(target_os = "windows"))]
 fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
     let sent = std::process::Command::new("kill")
@@ -518,7 +604,7 @@ fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
     }
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
-    const MAX_WAIT: Duration = Duration::from_secs(3);
+    const MAX_WAIT: Duration = Duration::from_secs(15);
     let mut waited = Duration::ZERO;
     while waited < MAX_WAIT {
         std::thread::sleep(POLL_INTERVAL);
@@ -533,4 +619,32 @@ fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expanded_path_value, parse_ready_port};
+
+    #[test]
+    fn ready_port_parser_ignores_unrelated_text() {
+        assert_eq!(parse_ready_port("EDECAN_LOCAL_READY port=9876"), Some(9876));
+        assert_eq!(parse_ready_port("EDECAN_LOCAL_READY"), None);
+        assert_eq!(parse_ready_port("port=nope"), None);
+    }
+
+    #[test]
+    fn expanded_path_keeps_existing_entries_and_platform_separator() {
+        let separator = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
+        let actual = expanded_path_value("system-path", &["user-a".into(), "user-b".into()]);
+        assert_eq!(
+            actual,
+            format!("system-path{separator}user-a{separator}user-b")
+        );
+        assert_eq!(expanded_path_value("", &["user-a".into()]), "user-a");
+        assert_eq!(expanded_path_value("system-path", &[]), "system-path");
+    }
 }

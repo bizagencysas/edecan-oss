@@ -59,7 +59,7 @@ pantalla primaria no cuenta como progreso de producto.
 
 ### 1. Release reproducible de escritorio
 
-- pipeline de build para macOS y Windows;
+- pipeline de build para macOS, Windows y Linux x64;
 - firma/notarización y publicación de checksums;
 - actualización segura y rollback;
 - smoke test del instalador en máquina limpia;

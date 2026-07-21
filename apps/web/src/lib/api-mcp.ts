@@ -70,7 +70,7 @@ async function rawFetch(path: string, init: RequestInit): Promise<Response> {
 function redirectToLogin(): void {
   if (typeof window === "undefined" || hasSession()) return;
   if (window.location.pathname !== "/login") {
-    window.location.assign("/login");
+    window.location.assign("/login/");
   }
 }
 

@@ -6,23 +6,22 @@ callable `async (action: str, params: dict) -> dict` inyectado por la API
 cuando hay un companion emparejado (`POST /v1/companion/pair-code` +
 `WS /v1/companion/ws?code=`).
 
-Guardrail de cumplimiento (riesgo-legal-tos) — por qué esta tool NO tiene un
-`check_navigation` propio: a diferencia de `edecan_browser`
-(`edecan_browser/policy.py::check_navigation`, que bloquea LinkedIn/checkout/
-SSRF por dominio ANTES de cualquier fetch real, ver su docstring), esta tool
+Guardrail de interacción — por qué esta tool NO tiene un `check_navigation`
+propio: a diferencia de `edecan_browser`
+(`edecan_browser/policy.py::check_navigation`, que bloquea scraping no
+autorizado, checkout y SSRF antes de cualquier fetch real), esta tool
 nunca recibe una URL — `accion`/`parametros` son coordenadas de pantalla,
 texto a escribir o comandos de bajo nivel (`apps/companion/edecan_companion/
 actions.py`: `input_pointer`, `input_key`, `screenshot`, ...), así que no hay
-ningún dominio que un guardrail de código pueda inspeccionar aquí. La
-exclusión de LinkedIn para este camino (incluida una sesión que el usuario ya
-tenga abierta en pantalla) vive, en cambio, en la regla 3 del system prompt
-(`edecan_core.persona._REGLAS_SEGURIDAD_ES`/`_SAFETY_RULES_EN`,
-`prompts/persona_v2.md`) y en la advertencia específica que ve quien aprueba
-en `apps/web/src/components/chat/ConfirmationCard.tsx` — ambas se SUMAN a
-(no reemplazan) las capas ya reales de esta tool: `dangerous = True` +
-confirmación humana en el chat, `remote_input_enabled` apagado por defecto en
-el companion, aprobación local por acción, y el permiso de Accesibilidad de
-macOS que solo un clic humano puede conceder.
+ningún dominio que un guardrail de código pueda inspeccionar aquí. Por eso
+cada uso pasa por la advertencia específica que ve quien aprueba en
+`apps/web/src/components/chat/ConfirmationCard.tsx`. Edecán puede continuar
+una tarea puntual en una sesión local ya autorizada —incluida una publicación
+aprobada—, pero no scraping, captura de credenciales, contacto masivo ni
+acciones ocultas. Esa política se suma a las capas reales de esta tool:
+`dangerous = True`, confirmación humana en el chat, `remote_input_enabled`
+apagado por defecto, aprobación local por acción y el permiso de Accesibilidad
+que solo una persona puede conceder.
 """
 
 from __future__ import annotations

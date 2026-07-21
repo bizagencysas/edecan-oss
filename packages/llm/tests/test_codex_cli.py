@@ -195,8 +195,25 @@ async def test_complete_prompt_viaja_por_stdin(tmp_path: Path) -> None:
     stdin_content = (tmp_path / "stdin.txt").read_text()
     assert "motor de decisión de Edecan" in stdin_content
     assert "no ejecutes comandos" in stdin_content
+    assert "únicamente el mensaje final destinado a la persona" in stdin_content
     assert "Eres Edecán, un mayordomo de IA." in stdin_content
     assert "Usuario: ¿Qué hora es?" in stdin_content
+
+
+@pytest.mark.asyncio
+async def test_complete_elimina_autonarracion_pero_conserva_respuesta_final(tmp_path: Path) -> None:
+    leaked = (
+        "El usuario dijo que era una broma. Debo responder con calma. "
+        "Respondo con humor ligero."
+        "JAJAJA, entendido."
+    )
+    line = json.dumps({"type": "agent_message", "text": leaked})
+    fake = _make_fake_cli(tmp_path, stdout=line)
+    provider = CodexCLIProvider(binary_path=fake)
+
+    response = await provider.complete(_req())
+
+    assert response.text == "JAJAJA, entendido."
 
 
 @pytest.mark.asyncio

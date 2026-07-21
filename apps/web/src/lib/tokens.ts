@@ -10,6 +10,7 @@
 
 const ACCESS_KEY = "edecan_access_token";
 const REFRESH_KEY = "edecan_refresh_token";
+const DESKTOP_USER_AGENT_PREFIX = "EdecanDesktop/";
 
 /**
  * Monotonic generation for the session owned by this JavaScript runtime.
@@ -32,7 +33,12 @@ function hasSessionStorage(): boolean {
 }
 
 function isDesktopApp(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
+  if (typeof window === "undefined") return false;
+  if ("__TAURI__" in window) return true;
+  // La ventana principal de Tauri navega al backend HTTP local. Según la
+  // plataforma, el global IPC no se inyecta en ese origen remoto; Rust marca
+  // la WebView con un User-Agent propio para no confundirla con Safari/Chrome.
+  return window.navigator?.userAgent?.includes(DESKTOP_USER_AGENT_PREFIX) === true;
 }
 
 function hasPersistentStorage(): boolean {

@@ -9,11 +9,10 @@
  * describe algo que los perfiles de `packages/agents/edecan_agents/
  * profiles.py` pueden hacer de verdad hoy con sus `allowed_tools` reales
  * (investigación web, análisis de tablas, contenido, finanzas/estado del
- * negocio, legal informativo). Ninguna promete algo que el repo no hace:
- * nunca LinkedIn, nunca "publica esto por mí" sin aprobación explícita
- * (`publicar_social` es `dangerous`, siempre pausa para confirmación humana,
- * `ARCHITECTURE.md` §10.7), nunca conectar una cuenta/plataforma que Edecán
- * no soporta. El `Orchestrator.plan()` decide él solo qué perfil(es) usar
+ * negocio, legal informativo). Las plantillas pueden crear contenido para
+ * cualquier red, incluido LinkedIn; publicar sigue el gate real de la tool
+ * (`publicar_social` o `usar_computadora` son `dangerous` y pausan para la
+ * confirmación puntual, `ARCHITECTURE.md` §10.7). El `Orchestrator.plan()` decide él solo qué perfil(es) usar
  * para cada paso — estas plantillas no fuerzan un agente, solo redactan un
  * objetivo claro y concreto para que ese planificador lo divida bien.
  */

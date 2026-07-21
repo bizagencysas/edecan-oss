@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -9,13 +8,12 @@ import { useAuth } from "@/lib/auth-context";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
-  const router = useRouter();
 
   useEffect(() => {
     if (!loading && isAuthenticated) {
-      router.replace("/app");
+      window.location.replace("/app/");
     }
-  }, [loading, isAuthenticated, router]);
+  }, [loading, isAuthenticated]);
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-brand-50 to-white px-4 py-12 dark:from-slate-950 dark:to-slate-950">

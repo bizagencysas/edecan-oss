@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 import { Alert, Button, Card, CardBody, Field, Input } from "@/components/ui";
@@ -10,7 +9,6 @@ import { useAuth } from "@/lib/auth-context";
 
 export default function RegisterPage() {
   const { register } = useAuth();
-  const router = useRouter();
   const [tenantName, setTenantName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -31,7 +29,9 @@ export default function RegisterPage() {
       // con el tenant: un tenant nuevo en un navegador que ya había pasado
       // el wizard con OTRA cuenta se lo saltaba entero.
       const setupStatus = await getSetupStatus();
-      router.replace(setupStatus.onboarding_completed ? "/app" : "/app/bienvenida");
+      window.location.replace(
+        setupStatus.onboarding_completed ? "/app/" : "/app/bienvenida/",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo crear la cuenta.");
     } finally {

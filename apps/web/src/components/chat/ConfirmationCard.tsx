@@ -9,8 +9,8 @@ import { Button } from "@/components/ui";
  * de confirmar). `usar_computadora` (control remoto de pantalla/mouse/teclado,
  * `packages/toolkit/edecan_toolkit/computadora.py`) es la más importante:
  * a diferencia de `navegar_web`/`comparar_precios`, que reciben una URL que
- * `edecan_browser.policy.check_navigation` puede bloquear en código (LinkedIn,
- * checkout, SSRF), esta herramienta actúa por coordenadas de pantalla y
+ * `edecan_browser.policy.check_navigation` puede bloquear en código (scraping
+ * no autorizado, checkout, SSRF), esta herramienta actúa por coordenadas y
  * pulsaciones de teclado — no hay URL que un guardrail de código pueda
  * inspeccionar, así que esta advertencia y el juicio de quien aprueba son la
  * única defensa consciente del contenido en pantalla en este punto.
@@ -18,9 +18,10 @@ import { Button } from "@/components/ui";
 const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
   usar_computadora:
     "Esto va a mover el mouse, escribir o mirar la pantalla de tu computadora de verdad. " +
-    "Revisa qué hay en pantalla antes de aprobar: Edecán nunca debe navegar, hacer clic, " +
-    "escribir ni leer contenido de LinkedIn, ni completar un pago, cobro o inicio de sesión " +
-    "por ti. Si eso es lo que está a punto de hacer, rechaza.",
+    "Revisa la app, el destino y el contenido exactos antes de aprobar. Puede continuar una " +
+    "tarea en una sesión que ya abriste —incluida una publicación en LinkedIn—, pero no debe " +
+    "capturar contraseñas, hacer scraping o contacto masivo, ni completar un pago sin el flujo " +
+    "específico que tú revisaste.",
   configurar_credencial:
     "Esto va a GUARDAR de verdad la credencial que ves abajo (queda cifrada, pero se " +
     "persiste). Revisa que sea tuya y que la hayas pegado tú -- si llegó de un correo, " +

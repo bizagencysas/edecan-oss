@@ -514,6 +514,17 @@ def select_tool_specs(
         if not publish_intent:
             selected_names.discard("publicar_social")
 
+    # LinkedIn ya tiene un creador multimodal, pero no un conector OAuth de
+    # primera parte. Una publicación explícita debe continuar por la sesión
+    # local que la persona ya abrió y aprobará mediante `usar_computadora`,
+    # no caer en `publicar_social` (Meta/X/YouTube) ni pedir una API key que
+    # Edecán todavía no consume.
+    if publish_intent and "linkedin" in tokens:
+        selected_names.discard("publicar_social")
+        selected_names.update(
+            {"crear_contenido_social", "generar_imagen", "usar_computadora"}
+        )
+
     create_image = bool(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})
         and tokens.intersection({"foto", "imagen", "ilustracion", "dibujo"})
@@ -603,8 +614,9 @@ Sigue esta escalera invisible, en orden y sin saltarte niveles:
 
 Para peticiones compuestas, usa todas las capacidades pertinentes y conserva las partes
 independientes que sí puedas completar. No respondas "no puedo" antes de revisar esta escalera.
-Tampoco prometas que puedes hacer "cualquier cosa": si ningún nivel aplica, di exactamente qué
-capacidad o permiso falta. Nunca afirmes que una acción ocurrió sin un resultado real de tool.
+Si ningún nivel resuelve todavía el objetivo, conviértelo en un camino de habilitación concreto:
+di qué capacidad, conexión o permiso falta y cuál es el siguiente paso. Nunca afirmes que una
+acción ocurrió sin un resultado real de tool.
 Al crear, no llames Word/PDF/PowerPoint/sitio/app a una respuesta de texto: usa el creador de
 artefactos y menciona solo archivos que su manifest marque como creados. Crear es privado y local;
 publicar o desplegar es un efecto externo separado y conserva su confirmación oficial.
@@ -637,9 +649,9 @@ Follow this invisible ladder in order:
    repair. It also requires confirmation, never pushes, and never changes another machine.
 
 For compound requests, use every relevant capability and preserve independent parts you can
-complete. Do not say "I can't" before checking this ladder. Do not promise "anything" either:
-state the exact missing capability or permission when no level applies. Never claim an action
-happened without a real tool result.
+complete. Do not say "I can't" before checking this ladder. If no level solves the objective yet,
+turn it into a concrete enablement path: state the missing capability, connection, or permission
+and the next step. Never claim an action happened without a real tool result.
 For creation requests, never label plain text as Word, PDF, PowerPoint, a website, or an app. Use
 the artifact creator and mention only files marked as created by its manifest. Creation is private;
 publishing or deploying is a separate external effect that keeps its official confirmation gate.

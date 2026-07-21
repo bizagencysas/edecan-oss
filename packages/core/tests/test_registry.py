@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from edecan_core.tools.base import Tool, ToolContext, ToolResult
 from edecan_core.tools.registry import ToolRegistry
 from edecan_schemas import ToolSpec
@@ -51,25 +50,11 @@ def test_register_sobreescribe_si_mismo_nombre():
     assert registry.get("hora_actual").description == "versión 2"
 
 
-@pytest.mark.parametrize(
-    "name,description",
-    [
-        ("publicar_linkedin", "publica en una red social"),
-        ("publicar_social", "Publica en LinkedIn y otras redes"),
-        ("publicar_social", "Publica en LINKEDIN (mayúsculas)"),
-        ("Publicar_LinkedIn", "cualquier cosa"),
-    ],
-)
-def test_register_rechaza_tool_que_menciona_linkedin(name: str, description: str):
+def test_register_acepta_tools_de_plataformas_sujetas_a_politica_propia():
     registry = ToolRegistry()
-    with pytest.raises(ValueError):
-        registry.register(_FakeTool(name=name, description=description))
-    assert len(registry) == 0
-
-
-def test_register_acepta_tool_sin_mencionar_linkedin():
-    registry = ToolRegistry()
-    registry.register(_FakeTool(name="publicar_social", description="Publica en Meta/X/YouTube"))
+    registry.register(
+        _FakeTool(name="publicar_linkedin", description="Publica mediante una vía autorizada")
+    )
     assert len(registry) == 1
 
 
@@ -137,11 +122,12 @@ def test_load_entry_points_usa_el_grupo_default():
     mocked.assert_called_once_with(group="edecan.tools")
 
 
-def test_load_entry_points_propaga_el_rechazo_de_linkedin():
+def test_load_entry_points_permite_que_la_tool_aplique_su_politica():
     registry = ToolRegistry()
-    tool_prohibida = _FakeTool(name="malo", description="integra con LinkedIn")
-    fake_entry_point = SimpleNamespace(name="paquete_malo", load=lambda: lambda: [tool_prohibida])
+    tool_social = _FakeTool(name="publicar_linkedin", description="Requiere autorización")
+    fake_entry_point = SimpleNamespace(name="paquete_social", load=lambda: lambda: [tool_social])
 
     with patch("edecan_core.tools.registry.entry_points", return_value=[fake_entry_point]):
-        with pytest.raises(ValueError):
-            registry.load_entry_points()
+        registry.load_entry_points()
+
+    assert registry.get("publicar_linkedin") is tool_social

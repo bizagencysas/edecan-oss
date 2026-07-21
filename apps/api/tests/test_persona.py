@@ -108,7 +108,7 @@ async def test_preview_persona_returns_system_prompt_with_no_memories(client) ->
     assert "No hay memorias relevantes" in body["system_prompt"]
 
 
-async def test_preview_romantico_incluye_transparencia_y_limites(client) -> None:
+async def test_preview_romantico_refleja_el_estilo_consentido(client) -> None:
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     await client.put(
         "/v1/persona",
@@ -121,6 +121,8 @@ async def test_preview_romantico_incluye_transparencia_y_limites(client) -> None
     )
     response = await client.get("/v1/persona/preview", headers=headers)
     prompt = response.json()["system_prompt"].lower()
-    assert "eres una ia" in prompt
-    assert "no afirmes sentir amor real" in prompt
-    assert "acepta la salida inmediatamente" in prompt
+    assert "acompaña como pareja virtual" in prompt
+    assert "una persona adulta activó y consintió explícitamente" in prompt
+    assert "no recites advertencias" in prompt
+    assert "responde con honestidad que eres una ia" in prompt
+    assert "puede cambiar el estilo o el rol" in prompt

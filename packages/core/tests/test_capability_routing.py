@@ -40,6 +40,9 @@ ALL_SPECS = [
     _spec("crear_presentacion", "Crea PowerPoint."),
     _spec("generar_contenido", "Redacta texto."),
     _spec("publicar_social", "Publica contenido en una red conectada."),
+    _spec("crear_contenido_social", "Crea posts e imágenes para redes."),
+    _spec("generar_imagen", "Genera una imagen original."),
+    _spec("usar_computadora", "Opera mouse y teclado con confirmación."),
 ]
 
 
@@ -124,7 +127,7 @@ def test_tool_mcp_futura_es_alcanzable_por_nombre_sin_tabla_central():
     assert "notion_buscar_paginas" in {spec.name for spec in selected}
 
 
-def test_guidance_no_promete_cualquier_cosa_y_distingue_catalogo_de_tools_operativas():
+def test_guidance_maximiza_capacidades_y_distingue_catalogo_de_tools_operativas():
     guidance = build_capability_guidance(
         selected_specs=[_spec("crear_recordatorio")],
         all_specs=[_spec("crear_recordatorio"), _spec("crear_factura")],
@@ -134,7 +137,7 @@ def test_guidance_no_promete_cualquier_cosa_y_distingue_catalogo_de_tools_operat
     assert "nunca le pidas escoger un módulo" in guidance
     assert guidance.index("primero diagnostica") < guidance.index("herramientas existentes")
     assert 'No respondas "no puedo"' in guidance
-    assert 'Tampoco prometas que puedes hacer "cualquier cosa"' in guidance
+    assert "camino de habilitación concreto" in guidance
     assert "Herramientas operativas seleccionadas para este turno: crear_recordatorio" in guidance
     assert "crear_factura" in guidance
     assert "Solo puedes ejecutar" in guidance
@@ -147,7 +150,7 @@ def test_guidance_english_preserva_los_mismos_limites():
         language="en",
     )
     assert "never ask them to choose a module" in guidance
-    assert 'Do not promise "anything"' in guidance
+    assert "concrete enablement path" in guidance
     assert "official gate be the only confirmation" in guidance
 
 
@@ -171,3 +174,16 @@ def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
     selected = select_tool_specs(ALL_SPECS, "Crea un post y publícalo en X.")
     names = {spec.name for spec in selected}
     assert {"crear_artefactos", "publicar_social", "configurar_credencial"} <= names
+
+
+def test_linkedin_crea_paquete_multimedia_y_publica_por_sesion_local_aprobada() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea un post de LinkedIn con su propia imagen y publícalo.",
+    )
+    names = {spec.name for spec in selected}
+
+    assert {"crear_artefactos", "crear_contenido_social", "generar_imagen"} <= names
+    assert "usar_computadora" in names
+    assert "publicar_social" not in names
+    assert "configurar_credencial" not in names

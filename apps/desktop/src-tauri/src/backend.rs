@@ -34,6 +34,7 @@ const READY_MARKER: &str = "EDECAN_LOCAL_READY";
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LOG_LINES: usize = 50;
 const PREFERRED_PORT: u16 = 8765;
+const DESKTOP_USER_AGENT: &str = "EdecanDesktop/0.7";
 
 /// Elige un puerto libre en 127.0.0.1: primero intenta `preferred`, y si
 /// está ocupado deja que el SO asigne uno libre (bind a puerto 0). En
@@ -508,6 +509,11 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
         let main_window =
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
                 .title("Edecán")
+                // La UI vive en un origen HTTP local. En páginas externas,
+                // `window.__TAURI__` no es una señal fiable aunque la ventana
+                // sí sea nativa. Este marcador permite que el frontend guarde
+                // solo el refresh token de forma persistente en desktop.
+                .user_agent(DESKTOP_USER_AGENT)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 600.0)
                 .center()

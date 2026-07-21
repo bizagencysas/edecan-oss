@@ -162,12 +162,13 @@ La Data API v3 usa cuota de proyecto en **unidades**, con un default de **10,000
 
 ---
 
-## Integraciones excluidas
+## LinkedIn: creación y publicación controlada
 
-**LinkedIn no forma parte de este producto, en ninguna forma, y esto es una decisión de cumplimiento permanente — no una omisión temporal.**
+Edecán ya crea paquetes completos para LinkedIn: copy, manifiesto reutilizable e imagen original, entregados en el Mega Chat para web, iOS y Android. La creación es local y privada; no necesita acceso a la cuenta.
 
-- No hay conector, scope, URL, texto de UI ni mención de LinkedIn en ningún lugar del código o la documentación de Edecán (`ARCHITECTURE.md` §0.2).
-- Existe un test automatizado (`test_no_linkedin`, en `packages/connectors/tests/`) que **falla la suite** si la palabra "linkedin" aparece en `packages/connectors/` — no es una convención de estilo, es una barrera técnica.
-- **No se aceptarán Pull Requests que agreguen soporte de LinkedIn** de ninguna forma (API oficial incluida). Si tienes un caso de uso que crees que lo justifica, la respuesta seguirá siendo no: es una decisión de producto y cumplimiento, no una limitación técnica que se pueda argumentar caso por caso.
+Para publicar existen dos vías autorizadas:
 
-Para el detalle de por qué (riesgo de scraping/automatización no oficial en ese ecosistema específico, términos de servicio particularmente restrictivos con herramientas de automatización de redes profesionales) ver [`cumplimiento/tos-redes.md`](./cumplimiento/tos-redes.md).
+- Un conector oficial, si el operador de la instancia dispone de acceso aprobado a la API y configura sus propios scopes OAuth. Edecán no incluye todavía ese conector de primera parte.
+- Una sesión local que la persona ya abrió en su computadora. Edecán puede continuar la publicación mediante `usar_computadora`; la acción muestra el contenido y destino y exige confirmación puntual antes de mouse o teclado.
+
+El extractor web genérico no scrapea LinkedIn y Edecán no hace extracción masiva, spam, contacto masivo ni engagement artificial. La falta de un conector directo nunca debe impedir crear el contenido ni entregarlo listo para publicar.

@@ -3,8 +3,9 @@
 /**
  * Contexto de sesión: expone el `MeOut` (usuario + tenant + flags del plan,
  * `GET /v1/me`) a toda la app y centraliza login/registro/logout. Los tokens
- * en sí viven en `sessionStorage` (`lib/tokens.ts`); este contexto solo
- * refleja si hay sesión activa y quién es el usuario actual.
+ * en sí viven en `lib/tokens.ts`: el access token es efímero y, solo en la
+ * app de escritorio, el refresh token persiste para restaurar la sesión al
+ * abrir. Este contexto refleja si hay sesión activa y quién es el usuario.
  */
 
 import {

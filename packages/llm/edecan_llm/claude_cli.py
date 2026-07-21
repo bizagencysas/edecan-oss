@@ -28,6 +28,7 @@ from collections.abc import AsyncIterator
 
 from .base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
 from .errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
+from .output_safety import VISIBLE_OUTPUT_CONTRACT_ES, sanitize_visible_assistant_text
 from .prompted_tools import parse_tool_call, render_prompt
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class ClaudeCLIProvider(LLMProvider):
         args = self._base_args("json")
         if req.model:
             args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, render_prompt(req))
+        stdout, _stderr = await self._run(args, _render_cli_prompt(req))
         return _parse_response(stdout, req)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
@@ -74,7 +75,7 @@ class ClaudeCLIProvider(LLMProvider):
         args = self._base_args("stream-json", verbose=True)
         if req.model:
             args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, render_prompt(req))
+        stdout, _stderr = await self._run(args, _render_cli_prompt(req))
 
         chunks = _parse_stream_json(stdout, tools_requested=bool(req.tools))
         if chunks is None:
@@ -152,6 +153,10 @@ def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:
     return chunks
 
 
+def _render_cli_prompt(req: CompletionRequest) -> str:
+    return f"{VISIBLE_OUTPUT_CONTRACT_ES}\n\n{render_prompt(req)}"
+
+
 def _parse_response(stdout: str, req: CompletionRequest) -> CompletionResponse:
     """Parsea la salida de `--output-format json`: el campo `result` trae el
     texto final (shape documentado del CLI). Si el `stdout` no es JSON (o no
@@ -169,6 +174,8 @@ def _parse_response(stdout: str, req: CompletionRequest) -> CompletionResponse:
     else:
         text = stdout.strip()
         usage = Usage()
+
+    text = sanitize_visible_assistant_text(text)
 
     if req.tools:
         tool_call = parse_tool_call(text)
@@ -231,6 +238,10 @@ def _parse_stream_json(stdout: str, *, tools_requested: bool) -> list[StreamChun
         return None
 
     full_text = "".join(c.text or "" for c in text_chunks)
+    visible_text = sanitize_visible_assistant_text(full_text)
+    if visible_text != full_text:
+        text_chunks = [StreamChunk(type="text", text=visible_text)]
+        full_text = visible_text
     tool_call = parse_tool_call(full_text) if tools_requested and full_text else None
     if tool_call is not None:
         chunks: list[StreamChunk] = [StreamChunk(type="tool_call", tool_call=tool_call)]

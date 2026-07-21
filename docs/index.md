@@ -33,7 +33,7 @@ El camino recomendado hoy es la app de escritorio (en construcción; ver [`roadm
 
 | Documento | Para qué sirve |
 |---|---|
-| [`conectores.md`](./conectores.md) | Cómo registrar tu propia app OAuth en Google, Microsoft, Meta, X y YouTube, los scopes mínimos exactos que usa Edecán, la URL de callback y los límites de uso conocidos de cada API. Incluye por qué LinkedIn está excluido permanentemente. |
+| [`conectores.md`](./conectores.md) | Cómo registrar tu propia app OAuth en Google, Microsoft, Meta, X y YouTube, los scopes mínimos exactos que usa Edecán, la URL de callback y los límites de uso conocidos. Incluye creación para LinkedIn y sus vías de publicación controlada. |
 | [`voz-telefonia.md`](./voz-telefonia.md) | Diferencia entre voz web (núcleo) y telefonía (premium), y el checklist legal obligatorio para operar llamadas y SMS salientes. |
 
 ## Cumplimiento y seguridad

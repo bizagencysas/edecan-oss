@@ -110,8 +110,40 @@ async def test_complete_prompt_viaja_por_stdin(tmp_path: Path) -> None:
     await provider.complete(_req())
 
     stdin_content = (tmp_path / "stdin.txt").read_text()
+    assert "respuesta final destinada a la persona" in stdin_content
+    assert "No muestres analisis, razonamiento" in stdin_content
     assert "Eres Edecán, un mayordomo de IA." in stdin_content
     assert "Usuario: ¿Qué hora es?" in stdin_content
+
+
+@pytest.mark.asyncio
+async def test_complete_elimina_autonarracion_pero_conserva_respuesta_final(tmp_path: Path) -> None:
+    leaked = (
+        "El usuario aclaró que era un video de TikTok, no una petición real. "
+        "No necesito herramientas. Nada de tool calls aquí. "
+        "Respondo con calidez, aligerando pero sin dramatizar de más. "
+        "Tono profesional-cálido, sin emojis."
+        "JAJAJA, vale, ahora sí entendí."
+    )
+    fake = _make_fake_cli(tmp_path, stdout=json.dumps({"result": leaked}))
+    provider = ClaudeCLIProvider(binary_path=fake)
+
+    response = await provider.complete(_req())
+
+    assert response.text == "JAJAJA, vale, ahora sí entendí."
+    assert "El usuario" not in response.text
+    assert "herramientas" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_complete_no_altera_respuesta_legitima_sobre_herramientas(tmp_path: Path) -> None:
+    visible = "No hace falta ninguna herramienta para esto. Puedo explicártelo aquí."
+    fake = _make_fake_cli(tmp_path, stdout=json.dumps({"result": visible}))
+    provider = ClaudeCLIProvider(binary_path=fake)
+
+    response = await provider.complete(_req())
+
+    assert response.text == visible
 
 
 @pytest.mark.asyncio
@@ -320,6 +352,48 @@ async def test_stream_formato_reconocido_emite_texto_incremental(tmp_path: Path)
     assert usage_chunks[-1].usage.input_tokens == 9
     assert usage_chunks[-1].usage.output_tokens == 3
     assert chunks[-1].type == "stop"
+
+
+@pytest.mark.asyncio
+async def test_stream_no_emite_prefacio_de_autonarracion(tmp_path: Path) -> None:
+    lines = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "El usuario aclaró que era una broma. ",
+                        }
+                    ]
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Debo responder con humor. JAJAJA, entendido.",
+                        }
+                    ]
+                },
+            }
+        ),
+        json.dumps({"type": "result", "result": "resultado completo"}),
+    ]
+    fake = _make_fake_cli(tmp_path, stdout="\n".join(lines))
+    provider = ClaudeCLIProvider(binary_path=fake)
+
+    chunks = [chunk async for chunk in provider.stream(_req())]
+
+    visible = "".join(chunk.text or "" for chunk in chunks if chunk.type == "text")
+    assert visible == "JAJAJA, entendido."
+    assert "El usuario" not in visible
+    assert "Debo responder" not in visible
 
 
 @pytest.mark.asyncio

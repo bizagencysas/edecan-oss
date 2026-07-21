@@ -16,8 +16,8 @@ experiencia pública.
 ## 0. Reglas duras (aplican a TODO el repo)
 
 1. **Cero secretos reales.** Solo placeholders `TU_X_AQUI` y únicamente en `.env.example` y docs. Nunca datos personales de nadie.
-2. **LinkedIn PROHIBIDO** en cualquier forma: código, scopes, URLs, texto de UI, docs. Existe un test (`test_no_linkedin`) que falla si aparece la palabra en `packages/connectors/`.
-3. **Solo APIs oficiales.** Cada tenant conecta SUS credenciales vía OAuth; jamás scraping, jamás credenciales compartidas o hardcodeadas.
+2. **Integraciones autorizadas, nunca scraping.** Edecán puede crear contenido para cualquier red. Para leer o publicar usa una API oficial autorizada cuando exista o una sesión local ya abierta mediante `usar_computadora`, siempre con confirmación puntual.
+3. **Credenciales propias.** Cada tenant conecta SUS credenciales vía OAuth; jamás credenciales compartidas o hardcodeadas, extracción masiva, spam ni engagement artificial.
 4. **No ejecutar**: `git`, `terraform`, `aws` con efectos, `docker push`, ni llamadas de red reales en tests (usa `respx`/fakes). La infraestructura solo se ESCRIBE.
 5. Idioma por defecto de UI/docs: **español**. Tests offline y deterministas.
 6. Trabaja solo dentro de la carpeta raíz de este repositorio (nunca leas ni escribas fuera de ella).
@@ -78,7 +78,9 @@ ningún call site de primera parte lo conecta hoy (detalle en `edecan_llm.router
 - **Núcleo**: Google (Gmail + Calendar), Microsoft (Outlook Mail + Calendar).
 - **Sociales**: Meta (Páginas de Facebook + Instagram Business), X (API v2), YouTube (Data API v3).
 - Todas OAuth 2.0: la plataforma registra su app; **cada tenant autoriza su propia cuenta**; tokens al
-  TokenVault cifrados. REST directo con httpx (testeable con respx). **LinkedIn: excluido permanentemente.**
+  TokenVault cifrados. REST directo con httpx (testeable con respx). LinkedIn dispone hoy de creación
+  multimedia y publicación puntual mediante una sesión local ya autorizada; un conector directo solo
+  se incorpora mediante una API oficial y scopes aprobados.
 - Hosted: sociales gateadas por flag `connectors.social` (plan Pro+). Self-host: disponibles con tus propias apps OAuth.
 
 ## 6. Modos de distribución
@@ -237,7 +239,7 @@ class ToolContext: tenant_id: UUID; user_id: UUID; session: Any; settings: Any; 
 @dataclass
 class ToolResult: content: str; data: dict | None = None; requires_confirmation: bool = False
 ```
-- `ToolRegistry`: `.register(tool)` (rechaza con `ValueError` cualquier tool cuyo nombre/descripción contenga «linkedin»), `.get(name)`, `.specs(flags) -> list[ToolSpec]` (filtra por `requires_flags`), `.load_entry_points(group="edecan.tools")`. Cada entry point del grupo resuelve a un callable sin argumentos que retorna `list[Tool]`.
+- `ToolRegistry`: `.register(tool)`, `.get(name)`, `.specs(flags) -> list[ToolSpec]` (filtra por `requires_flags`), `.load_entry_points(group="edecan.tools")`. Cada entry point del grupo resuelve a un callable sin argumentos que retorna `list[Tool]`; las políticas de plataforma viven en cada tool/conector, no en un filtro de palabras global.
 - `edecan_core.persona.build_system_prompt(persona: PersonaConfig, memories: list[str], extra_context: str | None = None) -> str` — plantilla en español; formalidad 0–3 (tú↔usted); las instrucciones del usuario van en sección delimitada y NUNCA anulan reglas de seguridad.
 - `edecan_core.agent.Agent(llm_router, registry, *, model_alias: str | None = None)` con
   `run_turn(*, ctx, persona, history: list[ChatMessage], user_text: str, flags: dict) -> AsyncIterator[AgentEvent]`
@@ -371,8 +373,8 @@ Resumen de qué fija cada subsección:
 | 7.13 | Excepción pinned v2 sobre `edecan_connectors`/API v1 (§10.8, §10.12): 6ª key `"slack"` + endpoint genérico de credenciales por bot (responsable de la fase v2) |
 
 Los guardrails de producto no negociables de v2 (dinero real, control
-remoto, salud/legal/finanzas informativo, solo APIs oficiales, LinkedIn
-prohibido) se resumen en `docs/roadmap.md` y aplican con el mismo peso que
+remoto, salud/legal/finanzas informativo, integraciones autorizadas y sin
+scraping) se resumen en `docs/roadmap.md` y aplican con el mismo peso que
 §0.
 
 ---
@@ -564,7 +566,7 @@ CLI/Ollama/Vertex y skills. Ante una ambigüedad técnica sobre nombres,
 rutas o tipos, esta sección es la referencia normativa.
 
 Los guardrails de producto no negociables (dinero real, control remoto,
-salud/legal/finanzas informativo, solo APIs oficiales, LinkedIn prohibido,
+salud/legal/finanzas informativo, integraciones autorizadas y sin scraping,
 cero secretos reales, cero comandos git, cero infraestructura real aplicada)
 se resumen en `docs/roadmap.md` y aplican con el mismo peso que §0.
 
@@ -838,8 +840,8 @@ Las capacidades ERP, ads y vehículos de esta sección conservan los
 principios de producto resumidos en `docs/roadmap.md`. Los
 guardrails no negociables (dinero real nunca se mueve solo — aplica
 directo a `ad_drafts`/`ads_preparar_campana`, §13.b/§13.e —, control remoto
-con emparejamiento explícito, salud/legal/finanzas informativo, solo APIs
-oficiales, LinkedIn prohibido, cero secretos reales, cero comandos git, cero
+con emparejamiento explícito, salud/legal/finanzas informativo, integraciones
+autorizadas y sin scraping, cero secretos reales, cero comandos git, cero
 infraestructura real aplicada) siguen sin cambios y aplican con el mismo
 peso que `ARCHITECTURE.md` §0.
 
@@ -1108,7 +1110,7 @@ edecan_skills`, trust tiers/capacidades, ver `NOTICE`). Los guardrails no
 negociables (dinero real nunca se mueve solo — aplica directo a
 `payroll_runs`/`preparar_nomina` y a las reservas de `preparar_reserva`,
 §14.b/§14.e —, control remoto con emparejamiento explícito, salud/legal/
-finanzas informativo, solo APIs oficiales, LinkedIn prohibido, cero secretos
+finanzas informativo, integraciones autorizadas y sin scraping, cero secretos
 reales, cero comandos git, cero infraestructura real aplicada, y la regla
 de §13.e y `docs/vehiculos.md`: cero inversión nueva en
 `packages/vehicles`/`routers/vehiculos.py`) siguen sin
@@ -1379,8 +1381,8 @@ producto resumidos en `docs/roadmap.md`, con el mismo modelo
 bring-your-own reforzado (§15.g: incluso los secretos de servidores MCP de
 terceros pasan por `TokenVault`, nunca `.env` de plataforma). Los guardrails
 no negociables (dinero real nunca se mueve solo, control remoto con
-emparejamiento explícito, salud/legal/finanzas informativo, solo APIs
-oficiales, LinkedIn prohibido, cero secretos reales, cero comandos git, cero
+emparejamiento explícito, salud/legal/finanzas informativo, integraciones
+autorizadas y sin scraping, cero secretos reales, cero comandos git, cero
 infraestructura real aplicada, y la exclusión de §13.e y
 `docs/vehiculos.md`: cero inversión nueva en
 `packages/vehicles`/`routers/vehiculos.py`) siguen sin cambios y aplican con

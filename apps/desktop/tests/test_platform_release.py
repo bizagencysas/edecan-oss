@@ -42,6 +42,21 @@ def test_release_shell_scripts_are_executable() -> None:
         assert mode & stat.S_IXUSR, f"{name} must be executable in a source checkout"
 
 
+def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:
+    spec = (REPO_ROOT / "apps" / "desktop" / "packaging" / "edecan_local.spec").read_text(
+        encoding="utf-8"
+    )
+    build_script = (
+        REPO_ROOT / "apps" / "desktop" / "scripts" / "build-backend.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'sys.platform.startswith("linux")' in spec
+    assert '_postgres_module_dest = "pgserver/pginstall/lib/postgresql"' in spec
+    for module in ("dict_snowball.so", "vector.so"):
+        assert module in spec
+        assert f"pgserver/pginstall/lib/postgresql/{module}" in build_script
+
+
 def test_linux_is_documented_as_a_first_class_desktop_target() -> None:
     desktop_guide = (REPO_ROOT / "docs" / "desktop.md").read_text(encoding="utf-8")
     desktop_readme = (REPO_ROOT / "apps" / "desktop" / "README.md").read_text(

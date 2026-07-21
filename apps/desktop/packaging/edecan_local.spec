@@ -43,8 +43,9 @@ carpeta) al lugar donde Tauri espera el sidecar.
 from __future__ import annotations
 
 import os
+import sys
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, get_package_paths
 
 # ---------------------------------------------------------------------------
 # Rutas. PyInstaller inyecta `SPECPATH` en el namespace de este archivo ANTES
@@ -241,6 +242,52 @@ hiddenimports += collect_submodules("edecan_worker.handlers")
 # ---------------------------------------------------------------------------
 for _pkg in ("pgserver", "fakeredis", "alembic", "uvicorn", "boto3", "botocore", "aiobotocore", "aioboto3"):
     _collect(_pkg)
+
+# En Linux, los `.so` bajo `pgserver/pginstall/lib/postgresql` NO son
+# extensiones de Python ni bibliotecas enlazadas directamente por el
+# ejecutable congelado. Son módulos que Postgres carga en runtime mediante
+# `$libdir/<nombre>` (por ejemplo `dict_snowball.so` durante `initdb` y
+# `vector.so` al aplicar nuestras migraciones). Si quedan en `a.binaries`,
+# PyInstaller intenta tratarlos como dependencias ELF del proceso Python y
+# puede omitirlos/reubicarlos; el onefile entonces arranca `initdb`, pero
+# Postgres falla con `could not access file "$libdir/dict_snowball"`.
+#
+# Reubicarlos de `binaries` a `datas` conserva bytes y ruta exactos dentro de
+# `_MEIPASS`, que es precisamente el prefijo relocatable que el Postgres del
+# wheel ya calcula desde `pginstall/bin/postgres`. Las bibliotecas enlazadas
+# normales de `pginstall/lib` permanecen en `binaries` y siguen recibiendo el
+# análisis ELF de PyInstaller.
+if sys.platform.startswith("linux"):
+    _postgres_module_dest = "pgserver/pginstall/lib/postgresql"
+    _, _pgserver_package_dir = get_package_paths("pgserver")
+    _postgres_module_dir = os.path.join(
+        _pgserver_package_dir, "pginstall", "lib", "postgresql"
+    )
+    _postgres_loadable_modules = [
+        (entry.path, _postgres_module_dest)
+        for entry in os.scandir(_postgres_module_dir)
+        if entry.is_file() and entry.name.endswith(".so")
+    ]
+
+    # `collect_all()` sí encuentra alguna biblioteca aislada de esta carpeta
+    # (hoy `libpqwalreceiver.so`) y la agrega a `binaries`. Se quitan esas
+    # entradas antes de agregar el conjunto completo como `datas` para no
+    # dejar dos TOC con el mismo destino dentro del onefile.
+    binaries[:] = [
+        entry
+        for entry in binaries
+        if entry[1].replace("\\", "/") != _postgres_module_dest
+    ]
+    datas.extend(_postgres_loadable_modules)
+
+    _module_names = {os.path.basename(entry[0]) for entry in _postgres_loadable_modules}
+    _required_modules = {"dict_snowball.so", "vector.so"}
+    _missing_modules = _required_modules - _module_names
+    if _missing_modules:
+        raise SystemExit(
+            "[edecan_local.spec] el wheel Linux de pgserver no contiene módulos "
+            f"PostgreSQL requeridos: {', '.join(sorted(_missing_modules))}."
+        )
 
 # Gotchas conocidos de congelar uvicorn/SQLAlchemy+asyncpg con PyInstaller
 # que `collect_all("uvicorn")` NO cubre (solo mira dentro del propio paquete

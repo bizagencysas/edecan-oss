@@ -125,6 +125,23 @@ if [[ ! -f "$FROZEN_FILE" ]]; then
   exit 1
 fi
 
+# `pgserver` carga estos módulos por nombre en runtime; no existe un import de
+# Python ni un enlace ELF que permita a PyInstaller descubrir el uso. El spec
+# los conserva como datos en su ruta `$libdir` exacta y esta inspección del
+# onefile final evita gastar varios minutos construyendo AppImage/deb/rpm si
+# una futura versión del wheel o de PyInstaller volviera a perderlos.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  ARCHIVE_LIST="$(uv run --frozen --all-packages --group release pyi-archive_viewer -l "$FROZEN_FILE")"
+  for required_entry in \
+    'pgserver/pginstall/lib/postgresql/dict_snowball.so' \
+    'pgserver/pginstall/lib/postgresql/vector.so'; do
+    if ! grep -F -- "$required_entry" <<<"$ARCHIVE_LIST" >/dev/null; then
+      echo "error: el sidecar congelado no contiene $required_entry." >&2
+      exit 1
+    fi
+  done
+fi
+
 echo "==> [4/4] Instalando el sidecar en src-tauri/binaries/…"
 TARGET_TRIPLE="$(rustc -Vv | awk '/^host:/ { print $2 }')"
 if [[ -z "$TARGET_TRIPLE" ]]; then

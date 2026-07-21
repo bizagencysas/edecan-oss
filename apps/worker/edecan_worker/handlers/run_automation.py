@@ -301,6 +301,9 @@ def _persona_from_row(row: dict[str, Any] | None) -> PersonaConfig:
         rasgos=list(row.get("rasgos") or []),
         memoria_activada=bool(row.get("memoria_activada", True)),
         voice_id=row.get("voice_id"),
+        estilo_relacion=row.get("estilo_relacion") or "profesional",
+        adulto_confirmado=bool(row.get("adulto_confirmado", False)),
+        consentimiento_romantico=bool(row.get("consentimiento_romantico", False)),
     )
 
 

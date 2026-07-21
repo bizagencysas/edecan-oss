@@ -119,7 +119,9 @@ async def test_put_llm_openai_compat_va_al_base_url_del_tenant_no_al_de_platafor
     escenario del hallazgo #1 de v4 (`HOTFIXES_PENDIENTES.md`), pero en la
     validación de `credentials.py` en vez de en `LLMRouter`."""
     route = respx.get("https://servidor-del-tenant.example/v1/models").mock(
-        return_value=httpx.Response(200, json={"data": []})
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "modelo-del-tenant", "created": 1}]}
+        )
     )
     _install(app)
 

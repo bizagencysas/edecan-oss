@@ -1,6 +1,6 @@
 [project]
 name = "edecan-skills"
-version = "0.3.0"
+version = "0.4.0"
 description = "Open Agent Skills discovery, validation, and installation for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

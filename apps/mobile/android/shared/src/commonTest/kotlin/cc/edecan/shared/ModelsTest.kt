@@ -153,6 +153,29 @@ class ModelsTest {
     }
 
     @Test
+    fun toolEnd_conserva_referencias_de_artefactos_descargables() {
+        val evento = edecanJson.decodeFromString(
+            ChatEvent.serializer(),
+            """{"type":"tool_end","name":"crear_pdf","result_preview":"PDF listo","artifacts":[{"file_id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"propuesta.pdf","mime":"application/pdf"}]}""",
+        )
+
+        assertEquals(
+            ChatEvent.ToolEnd(
+                name = "crear_pdf",
+                resultPreview = "PDF listo",
+                artifacts = listOf(
+                    ArtifactRef(
+                        fileId = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+                        filename = "propuesta.pdf",
+                        mime = "application/pdf",
+                    ),
+                ),
+            ),
+            evento,
+        )
+    }
+
+    @Test
     fun chatEvent_type_desconocido_cae_a_Unknown_en_vez_de_lanzar() {
         // Pedido explícito del work package original (ver KDoc de
         // `ChatEvent.Unknown`): un evento SSE nuevo que el backend agregue

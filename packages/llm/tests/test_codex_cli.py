@@ -131,6 +131,46 @@ async def test_complete_message_con_content_como_lista_de_bloques(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_complete_extrae_item_agent_message_del_jsonl_actual(tmp_path: Path) -> None:
+    """Regresión del Codex CLI 0.144: el mensaje vive dentro de `item`."""
+    tool_call_text = json.dumps(
+        {"tool_call": {"name": "crear_artefactos", "arguments": {"formatos": ["pdf"]}}}
+    )
+    lines = [
+        json.dumps({"type": "thread.started", "thread_id": "thread-test"}),
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"id": "warning", "type": "error", "message": "warning interno"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"id": "answer", "type": "agent_message", "text": tool_call_text},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 21, "output_tokens": 7},
+            }
+        ),
+    ]
+    fake = _make_fake_cli(tmp_path, stdout="\n".join(lines))
+    provider = CodexCLIProvider(binary_path=fake)
+    tools = [ToolSpec(name="crear_artefactos", description="Crea archivos", input_schema={})]
+
+    response = await provider.complete(_req(tools=tools))
+
+    assert response.text == ""
+    assert response.stop_reason == "tool_use"
+    assert response.tool_calls[0].name == "crear_artefactos"
+    assert response.usage.input_tokens == 21
+    assert response.usage.output_tokens == 7
+
+
+@pytest.mark.asyncio
 async def test_complete_ningun_evento_reconocido_cae_a_stdout_crudo(tmp_path: Path) -> None:
     fake = _make_fake_cli(tmp_path, stdout=json.dumps({"type": "otro_tipo", "foo": "bar"}))
     provider = CodexCLIProvider(binary_path=fake)
@@ -153,6 +193,8 @@ async def test_complete_prompt_viaja_por_stdin(tmp_path: Path) -> None:
     await provider.complete(_req())
 
     stdin_content = (tmp_path / "stdin.txt").read_text()
+    assert "motor de decisión de Edecan" in stdin_content
+    assert "no ejecutes comandos" in stdin_content
     assert "Eres Edecán, un mayordomo de IA." in stdin_content
     assert "Usuario: ¿Qué hora es?" in stdin_content
 
@@ -173,6 +215,37 @@ async def test_complete_agrega_flag_model_si_req_trae_modelo(tmp_path: Path) -> 
     assert "--json" in args
     assert "--model" in args
     assert args[args.index("--model") + 1] == "o3"
+
+
+@pytest.mark.asyncio
+async def test_complete_aisla_codex_del_repo_y_sus_herramientas(tmp_path: Path) -> None:
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=json.dumps({"type": "agent_message", "text": "ok"}),
+        args_capture_name="args.txt",
+    )
+    provider = CodexCLIProvider(binary_path=fake)
+
+    await provider.complete(_req())
+
+    args = (tmp_path / "args.txt").read_text().splitlines()
+    assert args[args.index("--sandbox") + 1] == "read-only"
+    assert "--ephemeral" in args
+    assert "--ignore-user-config" in args
+    assert "--skip-git-repo-check" in args
+    disabled = [args[index + 1] for index, value in enumerate(args) if value == "--disable"]
+    assert set(disabled) >= {
+        "shell_tool",
+        "unified_exec",
+        "apps",
+        "browser_use",
+        "computer_use",
+        "image_generation",
+        "multi_agent",
+    }
+    isolated_workdir = Path(args[args.index("-C") + 1])
+    assert isolated_workdir.name.startswith("edecan-codex-")
+    assert not isolated_workdir.exists()
 
 
 @pytest.mark.asyncio

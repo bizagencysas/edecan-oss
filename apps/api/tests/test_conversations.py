@@ -3,9 +3,27 @@ y cuota diaria de mensajes -> 429 (ARCHITECTURE.md §10.12, §10.7, §10.13)."""
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from conftest import auth_headers
+from edecan_schemas import ArtifactRef, ToolEndEvent
+
+
+def test_tool_end_with_artifact_is_json_serializable_for_history() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    file_id = uuid.uuid4()
+    event = ToolEndEvent(
+        name="crear_artefactos",
+        result_preview="Creado",
+        artifacts=[ArtifactRef(file_id=file_id, filename="reporte.pdf", mime="application/pdf")],
+    )
+
+    serialized = conversations_module._event_to_dict(event)
+
+    assert serialized["artifacts"][0]["file_id"] == str(file_id)
+    json.dumps(serialized)  # regresión: antes lanzaba UUID is not JSON serializable
 
 
 async def _create_conversation(client, headers: dict[str, str]) -> str:

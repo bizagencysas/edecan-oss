@@ -2,6 +2,9 @@
 
 import { CheckIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
+import type { ArtifactRef } from "@/lib/types";
+
+import { ArtifactLinks } from "./ArtifactLinks";
 
 export interface ToolEvent {
   callKey: string;
@@ -9,6 +12,7 @@ export interface ToolEvent {
   args: Record<string, unknown>;
   status: "running" | "done";
   resultPreview?: string;
+  artifacts?: ArtifactRef[];
 }
 
 /** Traza visual de las herramientas que el agente fue llamando durante el turno (§10.7). */
@@ -29,6 +33,7 @@ export function ToolTimeline({ events }: { events: ToolEvent[] }) {
               <span className="text-slate-500 dark:text-slate-400"> — {event.resultPreview}</span>
             )}
             {event.status === "running" && <span className="text-slate-400"> — ejecutando…</span>}
+            {event.status === "done" && <ArtifactLinks artifacts={event.artifacts ?? []} />}
           </div>
         </div>
       ))}

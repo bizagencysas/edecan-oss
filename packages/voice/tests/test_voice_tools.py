@@ -25,6 +25,7 @@ from edecan_voice.stubs import StubTTS
 from edecan_voice.tools import (
     VOCES_STUB,
     ListarVocesTool,
+    LlamarContactoTool,
     SintetizarVozTool,
     _estimate_seconds_from_text,
     _subir_archivo,
@@ -109,6 +110,7 @@ def make_ctx():
         vault: Any = None,
         tenant_id: UUID | None = None,
         user_id: UUID | None = None,
+        extras: dict[str, Any] | None = None,
     ) -> SimpleNamespace:
         return SimpleNamespace(
             tenant_id=tenant_id or uuid4(),
@@ -117,7 +119,7 @@ def make_ctx():
             settings=settings if settings is not None else SimpleNamespace(),
             llm=None,
             vault=vault,
-            extras={},
+            extras=extras or {},
         )
 
     return _make_ctx
@@ -128,10 +130,10 @@ def make_ctx():
 # ---------------------------------------------------------------------------
 
 
-def test_get_all_tools_devuelve_las_dos_tools_pinned():
+def test_get_all_tools_incluye_telefonia_conversacional():
     tools = get_all_tools()
     nombres = [t.name for t in tools]
-    assert nombres == ["listar_voces", "sintetizar_voz"]
+    assert nombres == ["listar_voces", "sintetizar_voz", "llamar_contacto"]
 
 
 def test_listar_voces_no_es_dangerous_y_gatea_voice_web():
@@ -144,6 +146,28 @@ def test_sintetizar_voz_no_es_dangerous_y_gatea_voice_web():
     tool = SintetizarVozTool()
     assert tool.dangerous is False
     assert tool.requires_flags == frozenset({"voice.web"})
+
+
+def test_llamar_contacto_es_dangerous_y_gatea_telefonia():
+    tool = LlamarContactoTool()
+    assert tool.dangerous is True
+    assert tool.requires_flags == frozenset({"voice.telephony"})
+
+
+async def test_llamar_contacto_delega_en_dispatcher_transaccional(make_ctx):
+    calls: list[dict[str, str]] = []
+
+    async def dispatch(**kwargs):
+        calls.append(kwargs)
+        return {"call_id": uuid4(), "conversation_id": uuid4(), "status": "queued"}
+
+    ctx = make_ctx(extras={"phone_call_dispatcher": dispatch})
+    result = await LlamarContactoTool().run(
+        ctx,
+        {"telefono_e164": " +573001234567 ", "objetivo": " Confirmar  la cita "},
+    )
+    assert calls == [{"to_e164": "+573001234567", "goal": "Confirmar la cita"}]
+    assert result.data["status"] == "queued"
 
 
 def test_ninguna_tool_de_voz_avanzada_clona_nada():

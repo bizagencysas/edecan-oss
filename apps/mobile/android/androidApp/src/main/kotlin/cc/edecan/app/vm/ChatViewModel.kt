@@ -3,6 +3,7 @@ package cc.edecan.app.vm
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import cc.edecan.shared.ApiException
+import cc.edecan.shared.ArtifactRef
 import cc.edecan.shared.ChatEvent
 import cc.edecan.shared.ChatMessageIn
 import cc.edecan.shared.ConfirmIn
@@ -26,6 +27,7 @@ data class MensajeUi(
     val rol: Rol,
     val texto: String = "",
     val enProgreso: Boolean = false,
+    val artefactos: List<ArtifactRef> = emptyList(),
 ) {
     enum class Rol { USUARIO, ASISTENTE }
 }
@@ -46,6 +48,23 @@ data class ChatUiState(
     val confirmacionPendiente: ConfirmacionPendiente? = null,
     val enviando: Boolean = false,
     val errorMensaje: String? = null,
+)
+
+/** Reductor puro del `tool_end`: apaga el indicador y conserva en el mismo
+ * mensaje las referencias descargables, sin duplicarlas si el stream se
+ * reconecta o una tool repite la misma referencia. Separado para probar el
+ * estado sin red, Android runtime ni un `ViewModelScope` real. */
+internal fun aplicarFinDeHerramienta(
+    estado: ChatUiState,
+    idRespuesta: String,
+    nuevos: List<ArtifactRef>,
+): ChatUiState = estado.copy(
+    herramientaActiva = null,
+    mensajes = estado.mensajes.map { mensaje ->
+        if (mensaje.id != idRespuesta) return@map mensaje
+        val ids = mensaje.artefactos.mapTo(mutableSetOf()) { it.fileId }
+        mensaje.copy(artefactos = mensaje.artefactos + nuevos.filter { ids.add(it.fileId) })
+    },
 )
 
 /**
@@ -177,7 +196,9 @@ class ChatViewModel : ViewModel() {
         when (evento) {
             is ChatEvent.TextDelta -> actualizarRespuesta(idRespuesta) { it.copy(texto = it.texto + evento.text) }
             is ChatEvent.ToolStart -> _uiState.update { it.copy(herramientaActiva = evento.name) }
-            is ChatEvent.ToolEnd -> _uiState.update { it.copy(herramientaActiva = null) }
+            is ChatEvent.ToolEnd -> _uiState.update {
+                aplicarFinDeHerramienta(it, idRespuesta, evento.artifacts)
+            }
             is ChatEvent.ConfirmationRequired -> _uiState.update {
                 it.copy(
                     confirmacionPendiente =

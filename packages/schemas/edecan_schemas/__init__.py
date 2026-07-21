@@ -19,6 +19,7 @@ from edecan_schemas.automations import (
 from edecan_schemas.chat import (
     AgentEvent,
     AgentEventAdapter,
+    ArtifactRef,
     ChatMessageIn,
     ConfirmationRequiredEvent,
     DoneEvent,
@@ -31,6 +32,15 @@ from edecan_schemas.chat import (
     ToolStartEvent,
 )
 from edecan_schemas.commerce import ORDER_KINDS, ORDER_STATUSES, OrderOut
+from edecan_schemas.creator import (
+    ArtifactEvidence,
+    ArtifactKind,
+    ArtifactStatus,
+    CreationDeliverable,
+    CreationManifest,
+    CreationPlan,
+    CreationStatus,
+)
 from edecan_schemas.devices import (
     DEVICE_KINDS,
     DEVICE_STATUSES,
@@ -44,7 +54,13 @@ from edecan_schemas.missions import (
     MissionOut,
     MissionStepOut,
 )
-from edecan_schemas.models import PersonaConfig, TenantOut, UserOut
+from edecan_schemas.models import (
+    RELATIONSHIP_STYLES,
+    PersonaConfig,
+    RelationshipStyle,
+    TenantOut,
+    UserOut,
+)
 from edecan_schemas.plans import (
     BOOL_FLAGS,
     FLAG_AGENTS_MISSIONS,
@@ -117,8 +133,16 @@ __all__ = [
     "AgentEvent",
     "AgentEventAdapter",
     "AgentInstructionAccion",
+    "ArtifactRef",
+    "ArtifactEvidence",
+    "ArtifactKind",
+    "ArtifactStatus",
     "ChatMessageIn",
     "ConfirmationRequiredEvent",
+    "CreationDeliverable",
+    "CreationManifest",
+    "CreationPlan",
+    "CreationStatus",
     "DeviceOut",
     "DoneEvent",
     "ErrorEvent",
@@ -131,6 +155,8 @@ __all__ = [
     "PendingChatMessage",
     "PendingToolCall",
     "PersonaConfig",
+    "RELATIONSHIP_STYLES",
+    "RelationshipStyle",
     "PlanDef",
     "ProfileData",
     "RemoteSessionOut",

@@ -106,6 +106,8 @@ EXPECTED_TABLES_V6 = {
     "podcasts",
 }
 
+EXPECTED_TABLES_PHONE = {"phone_calls", "phone_call_events"}
+
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
     | EXPECTED_TABLES_V2
@@ -113,6 +115,7 @@ EXPECTED_TABLES = (
     | EXPECTED_TABLES_V4
     | EXPECTED_TABLES_V5
     | EXPECTED_TABLES_V6
+    | EXPECTED_TABLES_PHONE
 )
 
 
@@ -120,10 +123,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 48
+    assert len(Base.metadata.tables) == 50
 
 
-def test_hay_exactamente_48_tablas_pinned():
+def test_hay_exactamente_50_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -144,7 +147,26 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     # 20 de v1 + 14 de v2 + 1 de v3 + 3 de v4 + 5 de v5 + 2 de v6 (ninguna de
     # las tablas nuevas es global, ver ROADMAP_V2.md §7.4/ARCHITECTURE.md
     # §12e/§13/§14/§15: todas tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 45
+    assert len(RLS_TABLES) == 47
+
+
+def test_phone_call_events_fk_compuesta_impide_cruce_de_tenant():
+    table = Base.metadata.tables["phone_call_events"]
+    foreign_keys = [
+        constraint
+        for constraint in table.constraints
+        if constraint.__class__.__name__ == "ForeignKeyConstraint"
+    ]
+    composite = next(
+        constraint
+        for constraint in foreign_keys
+        if constraint.name == "fk_phone_call_events_tenant_call"
+    )
+    assert [element.parent.name for element in composite.elements] == ["tenant_id", "call_id"]
+    assert [element.target_fullname for element in composite.elements] == [
+        "phone_calls.tenant_id",
+        "phone_calls.id",
+    ]
 
 
 def test_tablas_rls_tienen_columna_tenant_id():
@@ -174,6 +196,12 @@ def test_persona_defaults_espejan_edecan_schemas_personaconfig():
     assert cols["tono"].server_default.arg == "cálido y profesional"
     assert cols["formalidad"].nullable is False
     assert cols["voice_id"].nullable is True
+    assert cols["estilo_relacion"].server_default.arg == "profesional"
+    assert cols["adulto_confirmado"].nullable is False
+    assert cols["consentimiento_romantico"].nullable is False
+    constraint_names = {constraint.name for constraint in Persona.__table__.constraints}
+    assert "ck_personas_persona_estilo_relacion_valid" in constraint_names
+    assert "ck_personas_persona_romantico_requires_consent" in constraint_names
     assert Persona.__table__.name == "personas"
 
 

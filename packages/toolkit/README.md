@@ -25,6 +25,7 @@ declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 | `computadora.py` | `usar_computadora` (dangerous, flag `companion`) |
 | `codigo_local.py` | `acceder_codigo_local` (dangerous, solo modo local) |
 | `autorreparacion.py` | diagnóstico + reparación Git aislada (dangerous para cambios) |
+| `creator.py` | `crear_artefactos`: creación compuesta de Markdown, DOCX, PDF, PPTX, web y apps con manifest |
 | `utilidades.py` | `hora_actual`, `calculadora` |
 
 `_conectores.py` y `_util.py` son helpers privados compartidos (no forman

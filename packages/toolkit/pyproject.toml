@@ -1,6 +1,6 @@
 [project]
 name = "edecan-toolkit"
-version = "0.3.0"
+version = "0.4.0"
 description = "Edecán — herramientas de dominio del agente: agenda, correo, CRM, finanzas, documentos, research, contenido y computadora (edecan_toolkit)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,6 +12,7 @@ dependencies = [
     "edecan-schemas",
     "edecan-db",
     "edecan-connectors",
+    "edecan-creative",
     "edecan-llm",
 ]
 
@@ -33,6 +34,7 @@ edecan-core = { workspace = true }
 edecan-schemas = { workspace = true }
 edecan-db = { workspace = true }
 edecan-connectors = { workspace = true }
+edecan-creative = { workspace = true }
 edecan-llm = { workspace = true }
 
 [build-system]

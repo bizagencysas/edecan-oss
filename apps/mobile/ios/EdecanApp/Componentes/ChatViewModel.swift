@@ -18,6 +18,7 @@ final class ChatViewModel {
         var rol: Rol
         var texto: String
         var enProgreso: Bool = false
+        var artefactos: [ArtifactRef] = []
     }
 
     /// Una confirmación de herramienta `dangerous` pendiente de aprobar o
@@ -188,8 +189,12 @@ final class ChatViewModel {
             mensajes[indiceRespuesta].texto += texto
         case .toolStart(let nombre, _):
             herramientaActiva = nombre
-        case .toolEnd:
+        case .toolEnd(_, _, let artefactos):
             herramientaActiva = nil
+            for artefacto in artefactos
+            where !mensajes[indiceRespuesta].artefactos.contains(where: { $0.fileId == artefacto.fileId }) {
+                mensajes[indiceRespuesta].artefactos.append(artefacto)
+            }
         case .confirmationRequired(let toolCallId, let nombre, let args):
             herramientaActiva = nil
             confirmacionPendiente = ConfirmacionPendiente(

@@ -3,15 +3,15 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { BellIcon, CheckIcon, RocketIcon, ZapIcon } from "@/components/icons";
+import { BellIcon, CheckIcon, PhoneIcon, RocketIcon, ZapIcon } from "@/components/icons";
 import { Alert, Badge, Button, Card, CardBody, CardHeader, EmptyState, PageHeader, Spinner } from "@/components/ui";
-import { listReminders } from "@/lib/api";
+import { cancelPhoneCall, confirmPhoneCall, listPhoneCalls, listReminders } from "@/lib/api";
 import { FLAG_AUTOMATIONS_RULES, listAutomations, type Automation } from "@/lib/api-automatizaciones";
 import { FLAG_AGENTS_MISSIONS, listMissions, type Mission } from "@/lib/api-misiones";
 import { buildActivityOverview, type ActivityEntry } from "@/lib/activity";
 import { useAuth } from "@/lib/auth-context";
 import { formatDateTime } from "@/lib/format";
-import type { Reminder } from "@/lib/types";
+import { FLAG_VOICE_TELEPHONY, type PhoneCall, type Reminder } from "@/lib/types";
 
 const TONE_VARIANT = {
   attention: "warning",
@@ -25,11 +25,14 @@ export default function ActividadPage() {
   const { me } = useAuth();
   const canMissions = Boolean(me?.flags?.[FLAG_AGENTS_MISSIONS]);
   const canAutomations = Boolean(me?.flags?.[FLAG_AUTOMATIONS_RULES]);
+  const canPhone = Boolean(me?.flags?.[FLAG_VOICE_TELEPHONY]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [automations, setAutomations] = useState<Automation[]>([]);
+  const [calls, setCalls] = useState<PhoneCall[]>([]);
   const [loading, setLoading] = useState(true);
   const [warning, setWarning] = useState<string | null>(null);
+  const [callActionId, setCallActionId] = useState<string | null>(null);
   const loadGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -38,12 +41,15 @@ export default function ActividadPage() {
     const requests: Array<Promise<unknown>> = [listReminders()];
     if (canMissions) requests.push(listMissions());
     if (canAutomations) requests.push(listAutomations());
+    if (canPhone) requests.push(listPhoneCalls());
 
     const results = await Promise.allSettled(requests);
     let index = 0;
     const reminderResult = results[index++];
     const missionResult = canMissions ? results[index++] : undefined;
     const automationResult = canAutomations ? results[index] : undefined;
+    if (canAutomations) index += 1;
+    const callsResult = canPhone ? results[index] : undefined;
 
     // React StrictMode y el botón Actualizar pueden solapar lecturas. Solo la
     // más nueva puede decidir lo que se muestra; una respuesta vieja o
@@ -53,21 +59,50 @@ export default function ActividadPage() {
     if (reminderResult?.status === "fulfilled") setReminders(reminderResult.value as Reminder[]);
     if (missionResult?.status === "fulfilled") setMissions(missionResult.value as Mission[]);
     if (automationResult?.status === "fulfilled") setAutomations(automationResult.value as Automation[]);
+    if (callsResult?.status === "fulfilled") setCalls(callsResult.value as PhoneCall[]);
 
     const failed = results.filter((result) => result.status === "rejected").length;
     setWarning(failed ? "Parte de la actividad no pudo actualizarse. Puedes volver a intentarlo sin perder lo ya cargado." : null);
     setLoading(false);
-  }, [canAutomations, canMissions]);
+  }, [canAutomations, canMissions, canPhone]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const overview = useMemo(
-    () => buildActivityOverview({ reminders, missions, automations }),
-    [automations, missions, reminders],
+    () => buildActivityOverview({ reminders, missions, automations, calls }),
+    [automations, calls, missions, reminders],
   );
   const isEmpty = overview.attention.length + overview.current.length + overview.recent.length === 0;
+
+  async function handleConfirmCall(callId: string) {
+    const call = calls.find((candidate) => candidate.id === callId);
+    if (!call) return;
+    setCallActionId(callId);
+    setWarning(null);
+    try {
+      const updated = await confirmPhoneCall(call);
+      setCalls((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : "No se pudo iniciar la llamada.");
+    } finally {
+      setCallActionId(null);
+    }
+  }
+
+  async function handleCancelCall(callId: string) {
+    setCallActionId(callId);
+    setWarning(null);
+    try {
+      const updated = await cancelPhoneCall(callId);
+      setCalls((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : "No se pudo cancelar la llamada.");
+    } finally {
+      setCallActionId(null);
+    }
+  }
 
   return (
     <div>
@@ -105,6 +140,9 @@ export default function ActividadPage() {
               title="Necesita tu atención"
               description="Edecan se detuvo antes de una decisión importante o encontró un problema."
               items={overview.attention}
+              callActionId={callActionId}
+              onConfirmCall={(id) => void handleConfirmCall(id)}
+              onCancelCall={(id) => void handleCancelCall(id)}
             />
           )}
           <ActivitySection
@@ -133,11 +171,17 @@ function ActivitySection({
   description,
   items,
   empty,
+  callActionId,
+  onConfirmCall,
+  onCancelCall,
 }: {
   title: string;
   description?: string;
   items: ActivityEntry[];
   empty?: string;
+  callActionId?: string | null;
+  onConfirmCall?: (id: string) => void;
+  onCancelCall?: (id: string) => void;
 }) {
   return (
     <Card>
@@ -149,18 +193,37 @@ function ActivitySection({
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
             {items.map((item) => (
               <li key={item.id}>
-                <Link href={item.href} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
-                    {item.tone === "complete" ? <CheckIcon className="h-4 w-4" /> : item.kind === "reminder" ? <BellIcon className="h-4 w-4" /> : item.kind === "automation" ? <ZapIcon className="h-4 w-4" /> : <RocketIcon className="h-4 w-4" />}
+                    {item.tone === "complete" ? <CheckIcon className="h-4 w-4" /> : item.kind === "phone" ? <PhoneIcon className="h-4 w-4" /> : item.kind === "reminder" ? <BellIcon className="h-4 w-4" /> : item.kind === "automation" ? <ZapIcon className="h-4 w-4" /> : <RocketIcon className="h-4 w-4" />}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-100">{item.title}</span>
+                    <Link href={item.href} className="block truncate text-sm font-medium text-slate-800 hover:text-brand-700 dark:text-slate-100">{item.title}</Link>
                     <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                       {item.detail}{item.timestamp ? ` · ${formatDateTime(item.timestamp)}` : ""}
                     </span>
+                    {item.phoneConfirmation && (
+                      <span className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => onConfirmCall?.(item.phoneConfirmation!.callId)}
+                          loading={callActionId === item.phoneConfirmation.callId}
+                        >
+                          Llamar ahora
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => onCancelCall?.(item.phoneConfirmation!.callId)}
+                          disabled={callActionId === item.phoneConfirmation.callId}
+                        >
+                          Cancelar
+                        </Button>
+                      </span>
+                    )}
                   </span>
                   <Badge variant={TONE_VARIANT[item.tone]}>{item.statusLabel}</Badge>
-                </Link>
+                </div>
               </li>
             ))}
           </ul>

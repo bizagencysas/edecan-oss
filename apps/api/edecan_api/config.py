@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     ELEVENLABS_API_KEY: str | None = None
     ELEVENLABS_VOICE_ID: str | None = None
     POLLY_VOICE: str = "Lupe"
+    # Máximo de respuestas LLM por llamada. Evita un Gather/LLM sin límite
+    # ante silencio, bots o una llamada olvidada; el último turno cuelga.
+    PHONE_MAX_TURNS: int = 8
 
     # --- OAuth por plataforma (cada tenant autoriza su propia cuenta) --------
     GOOGLE_CLIENT_ID: str | None = None
@@ -149,6 +152,10 @@ class Settings(BaseSettings):
     # usuario normal nunca los toca a mano.
     EDECAN_LOCAL_MODE: bool = False
     DATA_DIR: str = "~/.edecan/data"
+    # Workspace aislado de artefactos/proyectos creados desde chat. `None`
+    # deriva a `$DATA_DIR/creator`; una ruta explícita sirve para inspeccionar
+    # los proyectos directamente en instalaciones locales.
+    CREATOR_WORKSPACE_DIR: str | None = None
     SERVE_WEB_DIR: str | None = None
     LOCAL_API_PORT: int = 8765
 

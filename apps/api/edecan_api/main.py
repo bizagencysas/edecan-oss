@@ -12,11 +12,12 @@
 - Monta todos los routers de `edecan_api.routers`.
 - En el `lifespan` construye el `ToolRegistry` de `edecan_core` y carga las
   herramientas registradas vía entry points (`edecan.tools`).
-- Si `edecan_premium` está instalado (`importlib.util.find_spec`), monta
-  `edecan_premium.twilio_router.router` (§10.10) y `edecan_api.routers.
-  consents.router` (`POST /v1/consents`, único punto de entrada auditado hacia
-  `edecan_premium.compliance.grant_consent`) — el núcleo funciona completo sin
-  ese paquete. `twilio_router` espera un contrato en `app.state` (documentado
+- Monta siempre los routers OSS `phone` (`/v1/phone/*`) y `consents`
+  (`POST /v1/consents`): llamadas entrantes/salientes, confirmación humana,
+  webhooks firmados y consentimiento no dependen de paquetes privados.
+- Si `edecan_premium` está instalado (`importlib.util.find_spec`), monta además
+  su `twilio_router` legado para SMS/campañas y Media Streams. Ese router espera
+  un contrato en `app.state` (documentado
   en su propio módulo): `get_session` (mismo contrato que
   `edecan_db.session.get_session`), `make_vault(session) -> TokenVault` y
   `settings` (la instancia real de `Settings` del proceso -- barrido v7,
@@ -29,11 +30,8 @@
   está presente, y resolver identidad/persona para una llamada entrante (sin
   usuario autenticado) es una decisión de producto que no está pinned en
   ARCHITECTURE.md — queda para un paquete de trabajo dedicado a telefonía.
-  `edecan_api.routers.consents`, a diferencia de `twilio_router`, sí usa
-  `edecan_api.deps` (`get_current_user`/`get_tenant_session`/`rate_limit`)
-  porque autentica al usuario del tenant vía JWT normal, no vía firma Twilio —
-  por eso vive en `apps/api` y no en `premium/` (ver el docstring de ese
-  router para el razonamiento completo de capas).
+  El router OSS `consents` usa `edecan_api.deps` porque autentica al usuario
+  del tenant vía JWT normal, no mediante firma Twilio.
 - Monta los routers v2 (ROADMAP_V2.md §7.6, dueño WP-V2-01: `missions`,
   `automations`, `hooks`, `ide`, `remote`, `commerce`, `negocios`, `perfil`)
   de forma DEFENSIVA: cada uno se importa con `importlib.import_module`
@@ -113,6 +111,7 @@ from edecan_api.routers import (
     billing,
     companion,
     connectors,
+    consents,
     contacts,
     conversations,
     files,
@@ -120,6 +119,7 @@ from edecan_api.routers import (
     me,
     memory,
     persona,
+    phone,
     reminders,
     usage,
     voice,
@@ -311,6 +311,16 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.state.companion_manager = ConnectionManager()
+    # Telefonía OSS: los webhooks no tienen JWT, por eso resuelven tenant por
+    # número/Call SID y abren su propia sesión después de validar la firma.
+    from edecan_db.session import get_session
+    from edecan_db.vault import TokenVault
+
+    from edecan_api.deps import build_key_provider
+
+    app.state.get_session = get_session
+    app.state.make_vault = lambda session: TokenVault(session, build_key_provider(settings))
+    app.state.settings = settings
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -345,21 +355,15 @@ def create_app() -> FastAPI:
     app.include_router(contacts.router)
     app.include_router(finance.router)
     app.include_router(voice.router)
+    app.include_router(consents.router)
+    app.include_router(phone.router)
     app.include_router(companion.router)
     app.include_router(usage.router)
     app.include_router(admin.router)
     app.include_router(billing.router)
 
     if importlib.util.find_spec("edecan_premium") is not None:
-        from edecan_db.session import get_session
-        from edecan_db.vault import TokenVault
         from edecan_premium.twilio_router import router as twilio_router
-
-        from edecan_api.deps import build_key_provider
-        from edecan_api.routers import consents
-
-        app.state.get_session = get_session
-        app.state.make_vault = lambda session: TokenVault(session, build_key_provider(settings))
         # `app.state.settings` (barrido v7, WP-V7-12): sin esta línea,
         # `edecan_premium.media_streams._media_streams_enabled()` nunca podía
         # leer `TWILIO_MEDIA_STREAMS_ENABLED` como `True` en un despliegue real
@@ -370,16 +374,9 @@ def create_app() -> FastAPI:
         # propósito (ver el docstring del módulo, arriba): resolver identidad
         # para una llamada entrante sin usuario autenticado es una decisión de
         # producto que no está pinned todavía.
-        app.state.settings = settings
-
         app.include_router(twilio_router)
-        # `edecan_api.routers.consents` importa `edecan_premium.compliance` a
-        # nivel de módulo (único invocador de `grant_consent`, ver su
-        # docstring) — por eso se importa/monta aquí, detrás del mismo guard
-        # que `twilio_router`, y no en la lista incondicional de arriba.
-        app.include_router(consents.router)
         logger.info(
-            "edecan_premium detectado: rutas de telefonía Twilio y consentimiento montadas."
+            "edecan_premium detectado: rutas heredadas de telefonía Twilio montadas."
         )
 
     # v2 (ROADMAP_V2.md §7.6) — montaje defensivo, ver docstring del módulo

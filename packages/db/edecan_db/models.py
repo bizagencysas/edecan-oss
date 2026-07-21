@@ -98,6 +98,7 @@ from sqlalchemy import (
     Date,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -311,6 +312,17 @@ class Persona(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     __tablename__ = "personas"
     __table_args__ = (
         CheckConstraint("formalidad >= 0 AND formalidad <= 3", name="formalidad_range"),
+        CheckConstraint(
+            "estilo_relacion IN ('profesional', 'coach', 'amigo', 'romantico')",
+            name="persona_estilo_relacion_valid",
+        ),
+        CheckConstraint(
+            "(estilo_relacion = 'romantico' AND adulto_confirmado "
+            "AND consentimiento_romantico) OR "
+            "(estilo_relacion <> 'romantico' AND NOT adulto_confirmado "
+            "AND NOT consentimiento_romantico)",
+            name="persona_romantico_requires_consent",
+        ),
         # Como máximo una persona "default" (user_id NULL) por tenant. Postgres
         # trata cada NULL como distinto en un UNIQUE normal, por eso hace falta
         # un índice único parcial en vez de un UniqueConstraint(tenant_id, user_id).
@@ -338,6 +350,15 @@ class Persona(IDMixin, TenantScopedMixin, TimestampMixin, Base):
         Boolean, nullable=False, server_default=text("true")
     )
     voice_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    estilo_relacion: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="profesional"
+    )
+    adulto_confirmado: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    consentimiento_romantico: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -1443,6 +1464,86 @@ class Podcast(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 
 
 # ---------------------------------------------------------------------------
+# v0.4 — telefonía como canal de la misma conversación.
+# ---------------------------------------------------------------------------
+
+
+class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Una llamada entrante/saliente ligada a `Conversation(channel='phone')`."""
+
+    __tablename__ = "phone_calls"
+    __table_args__ = (
+        _enum_check("direction", ("incoming", "outgoing")),
+        _enum_check(
+            "status",
+            (
+                "draft",
+                "confirmed",
+                "queued",
+                "ringing",
+                "in_progress",
+                "completed",
+                "failed",
+                "busy",
+                "no_answer",
+                "cancelled",
+            ),
+        ),
+        UniqueConstraint("provider_call_sid", name="uq_phone_calls_provider_call_sid"),
+        UniqueConstraint("tenant_id", "id", name="uq_phone_calls_tenant_id_id"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    from_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    to_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
+    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="twilio")
+    provider_call_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PhoneCallEvent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Evento inmutable de proveedor, consentimiento o transcripción."""
+
+    __tablename__ = "phone_call_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "call_id"],
+            ["phone_calls.tenant_id", "phone_calls.id"],
+            name="fk_phone_call_events_tenant_call",
+            ondelete="CASCADE",
+        ),
+    )
+
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registro explícito de todas las tablas — útil para tests de "import de
 # modelos" y para que `alembic`/scripts puedan iterar `Base.metadata` sin
 # tener que enumerar clases a mano en más de un lugar.
@@ -1502,11 +1603,14 @@ ALL_MODELS: tuple[type[Base], ...] = (
     # --- v6 (ARCHITECTURE.md §15) --------------------------------------------
     Meeting,
     Podcast,
+    # --- v0.4 (telefonía conversacional OSS) ----------------------------------
+    PhoneCall,
+    PhoneCallEvent,
 )
 """Las 23 tablas de v1 (`ARCHITECTURE.md` §10.3) + las 14 de v2
 (`ROADMAP_V2.md` §7.4) + la 1 de v3 (`ARCHITECTURE.md` §12e) + las 3 de v4
 (`ARCHITECTURE.md` §13) + las 5 de v5 (`ARCHITECTURE.md` §14) + las 2 de v6
-(`ARCHITECTURE.md` §15) = 48 tablas. Las globales sin RLS (`Tenant`, `User`,
+(`ARCHITECTURE.md` §15) + 2 de telefonía v0.4 = 50 tablas. Las globales sin RLS (`Tenant`, `User`,
 `TenantKey`) van agrupadas primero, como en la sección "Globales (sin RLS)"
 de arriba; el resto respeta el mismo orden relativo en que aparecen en
 §10.3, las 14 de v2 van a continuación en el mismo orden en que aparecen en

@@ -4,8 +4,9 @@ import { PlayIcon, SquareIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
 import type { MessageOut } from "@/lib/types";
 
+import { ArtifactLinks } from "./ArtifactLinks";
 import { MarkdownText } from "./markdown";
-import { messageText } from "./utils";
+import { messageArtifacts, messageText } from "./utils";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -24,6 +25,7 @@ export function MessageBubble({
 }) {
   const isUser = message.role === "user";
   const text = messageText(message.content);
+  const artifacts = messageArtifacts(message.tool_calls);
   if (!text && message.role !== "assistant") return null;
 
   return (
@@ -39,6 +41,7 @@ export function MessageBubble({
         <div className="whitespace-pre-wrap break-words [&_hr]:my-2 [&_ul]:my-1">
           {text ? <MarkdownText text={text} /> : "…"}
         </div>
+        {!isUser && <ArtifactLinks artifacts={artifacts} />}
         {!isUser && canSpeak && text && (
           <button
             onClick={onToggleSpeak}

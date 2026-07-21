@@ -152,6 +152,16 @@ data class Usage(
     @SerialName("output_tokens") val outputTokens: Int = 0,
 )
 
+/** Referencia privada a un archivo creado por una tool. No contiene una URL
+ * publica: [EdecanApi.downloadArtifact] usa [fileId] contra el endpoint
+ * autenticado y limitado al tenant actual. */
+@Serializable
+data class ArtifactRef(
+    @SerialName("file_id") val fileId: String,
+    val filename: String,
+    val mime: String? = null,
+)
+
 /**
  * Un evento del stream SSE de `POST /v1/conversations/{id}/messages` (y de
  * `POST .../confirm`), decodificado por el campo `"type"` de cada bloque
@@ -176,6 +186,7 @@ sealed interface ChatEvent {
     data class ToolEnd(
         val name: String,
         @SerialName("result_preview") val resultPreview: String = "",
+        val artifacts: List<ArtifactRef> = emptyList(),
     ) : ChatEvent
 
     @Serializable

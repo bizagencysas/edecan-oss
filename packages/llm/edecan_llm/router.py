@@ -22,8 +22,11 @@ Alias = Literal["principal", "rapido"]
 
 _DEFAULT_MODEL_PRINCIPAL = "claude-sonnet-4-5"
 _DEFAULT_MODEL_RAPIDO = "claude-haiku-4-5"
-_DEFAULT_VERTEX_MODEL_PRINCIPAL = "gemini-2.5-pro"
-_DEFAULT_VERTEX_MODEL_RAPIDO = "gemini-2.5-flash"
+# Fallbacks estables para service accounts sin acceso al endpoint de catálogo.
+# Las conexiones por API key guardan IDs descubiertos exactos al conectarse;
+# estos valores solo cubren el camino offline/legacy.
+_DEFAULT_VERTEX_MODEL_PRINCIPAL = "gemini-3.5-flash"
+_DEFAULT_VERTEX_MODEL_RAPIDO = "gemini-3.1-flash-lite"
 _DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 # `kind`s que solo tienen sentido con el backend corriendo LOCAL en la

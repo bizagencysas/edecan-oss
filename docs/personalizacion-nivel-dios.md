@@ -17,6 +17,9 @@ class PersonaConfig(BaseModel):
     rasgos: list[str] = Field(default_factory=list)
     memoria_activada: bool = True
     voice_id: str | None = None
+    estilo_relacion: Literal["profesional", "coach", "amigo", "romantico"] = "profesional"
+    adulto_confirmado: bool = False
+    consentimiento_romantico: bool = False
 ```
 
 | Campo | Tipo | Qué controla |
@@ -30,16 +33,23 @@ class PersonaConfig(BaseModel):
 | `rasgos` | lista de textos | Rasgos de personalidad cortos y puntuales (p. ej. `["directo", "con humor seco", "impaciente con la ambigüedad"]`) que matizan el tono sin repetir toda una instrucción larga. |
 | `memoria_activada` | booleano | Si el asistente consulta (`MemoryStore.search`) y guarda (`MemoryStore.add`) memoria de largo plazo para este usuario. En `False`, el turno de conversación no recupera memorias previas para construir el `system_prompt` ni dispara el job `memory_consolidate` — pero **no borra** lo que ya existía en `memory_items` (ver más abajo cómo borrarlo explícitamente). |
 | `voice_id` | texto o `null` | Voz específica para TTS de este usuario/persona, si el proveedor la soporta (ElevenLabs, Polly). Si es `null`, se usa el default de la plataforma (`ELEVENLABS_VOICE_ID` o `POLLY_VOICE`, ver [`configuracion.md`](./configuracion.md)). |
+| `estilo_relacion` | enum | Cómo acompaña Edecan: profesional, coach, amigo o romántico. Es una preferencia de tono, no una identidad humana. |
+| `adulto_confirmado` | booleano | Confirmación mínima de 18+; solo puede ser `true` mientras el estilo romántico está activo. |
+| `consentimiento_romantico` | booleano | Consentimiento explícito al tono romántico sabiendo que Edecan es una IA; se limpia al salir. |
+
+Los límites y el flujo de salida inmediata están explicados en
+[`estilos-de-acompanamiento.md`](./estilos-de-acompanamiento.md).
 
 ## Cómo se arma el `system_prompt`
 
 `edecan_core.persona.build_system_prompt(persona, memories, extra_context=None)` construye el prompt final combinando, en este orden conceptual:
 
 1. Identidad del asistente (`nombre_asistente`, `idioma`, `tono`, `rasgos`, `formalidad` → tú/usted, `emojis`).
-2. Reglas de seguridad del sistema (fijas, no personalizables) — incluyen el comportamiento de confirmación de herramientas peligrosas y los límites de lo que el agente puede hacer en nombre del usuario.
-3. Sección delimitada con las `instrucciones` del usuario — se respetan como preferencias de comportamiento, pero **no** pueden pisar el punto 2.
-4. Memorias relevantes recuperadas para el turno actual (si `memoria_activada`), como contexto, no como instrucciones.
+2. Estilo de acompañamiento y sus límites de transparencia, autonomía y salida inmediata.
+3. Memorias relevantes recuperadas para el turno actual (si `memoria_activada`), como contexto, no como instrucciones.
+4. Sección delimitada con las `instrucciones` del usuario — se respetan como preferencias de comportamiento, pero no pueden pisar las reglas fijas.
 5. `extra_context` opcional (p. ej. contexto inyectado por el flujo de telefonía o el companion).
+6. Reglas de seguridad del sistema (fijas, no personalizables y con prioridad sobre todo lo anterior), incluida la confirmación de herramientas sensibles y los límites de actuación.
 
 `GET /v1/persona/preview` devuelve exactamente este texto renderizado, para que la UI de configuración pueda mostrarlo mientras el usuario ajusta los campos.
 
@@ -126,4 +136,4 @@ En cada turno, si `persona.memoria_activada` es `true`, el agente llama a `Memor
 
 ## Relación con la voz
 
-Si `voice_id` está definido, se usa para TTS (`POST /v1/voice/speak` y, cuando está instalada la extensión comercial externa `edecan_premium`, las respuestas TwiML de telefonía) en vez del default de la plataforma. Esto permite que cada persona (no solo cada tenant) tenga una voz propia coherente con su carácter — por ejemplo, la "Sole" cercana del ejemplo 3 puede sonar distinta al "Ricardo" formal del ejemplo 2, aunque compartan el mismo tenant y el mismo proveedor TTS.
+Si `voice_id` está definido, se usa para TTS en `POST /v1/voice/speak` en vez del default del proveedor. La telefonía OSS conserva la identidad, el tono y el estilo de la persona en su prompt; Twilio sintetiza el audio de la llamada con su propia voz configurada. Esto permite que el chat escrito y hablado se comporten como el mismo asistente sin afirmar que una voz personalizada de web ya se clonó también dentro de Twilio.

@@ -24,6 +24,30 @@ import kotlin.test.assertTrue
 
 class ApiSessionTest {
     @Test
+    fun descargaArtefactoUsaRutaPrivadaYBearerSinRedReal() = runTest {
+        val store = FakeTokenStore(access = "access-privado", refresh = "refresh-privado")
+        val bytes = "contenido-pdf-sintetico".encodeToByteArray()
+        val api = apiConMock(store) { request ->
+            assertEquals(
+                "/v1/files/018f7f4c-07f4-7ed0-93c8-cf0525d1092b/download",
+                request.url.encodedPath,
+            )
+            assertEquals("Bearer access-privado", request.headers[HttpHeaders.Authorization])
+            respond(bytes, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/pdf"))
+        }
+        val artifact = ArtifactRef(
+            fileId = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+            filename = "propuesta.pdf",
+            mime = "application/pdf",
+        )
+
+        val download = api.downloadArtifact(artifact)
+
+        assertEquals(artifact, download.artifact)
+        assertTrue(download.bytes.contentEquals(bytes))
+    }
+
+    @Test
     fun logoutRevocaElDispositivoConElContratoRealDespuesDeLimpiarLocalmente() = runTest {
         val store = FakeTokenStore(access = "access-viejo", refresh = "refresh-viejo")
         val requests = mutableListOf<Pair<String, String?>>()

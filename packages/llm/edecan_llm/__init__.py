@@ -38,6 +38,7 @@ from .errors import (
     ProviderDownError,
     RateLimitedError,
 )
+from .model_selection import ModelChoice, choose_discovered_models
 from .ollama import OllamaProvider
 from .openai_compat import OpenAICompatProvider
 from .prompted_tools import parse_tool_call, render_prompt, render_tools_block
@@ -58,6 +59,7 @@ __all__ = [
     "LLMProvider",
     "LLMProviderConfig",
     "LLMRouter",
+    "ModelChoice",
     "OllamaProvider",
     "OpenAICompatProvider",
     "ProviderDownError",
@@ -68,6 +70,7 @@ __all__ = [
     "Usage",
     "VertexAIProvider",
     "detect_local_providers",
+    "choose_discovered_models",
     "parse_tool_call",
     "render_prompt",
     "render_tools_block",

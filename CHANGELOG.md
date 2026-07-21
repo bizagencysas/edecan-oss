@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-20
+
+### Added
+
+- A universal creator that turns one text or voice request into private,
+  downloadable Markdown, Word, PDF, PowerPoint, static-site and executable
+  full-stack project artifacts with manifests, structural validation and
+  SHA-256 evidence
+- Authenticated artifact downloads in chat, with tenant isolation and native
+  save/share support for the iOS and Android companions
+- First-class OSS telephony for inbound and outbound conversational calls via
+  the tenant's own Twilio account, including consent records, exact
+  destination/goal approval, signed webhooks, transcripts and Activity state
+- Professional, coach, friend and romantic conversation styles; romantic tone
+  requires adult confirmation and explicit consent, stays transparent about
+  being AI, prohibits dependency tactics and can be exited immediately
+- Provider-catalog model discovery so new Anthropic, Google AI and
+  OpenAI-compatible connections select exact available quality/fast model IDs
+  instead of depending only on aging hard-coded names
+
+### Changed
+
+- Compound creation requests route through one manifest-producing tool rather
+  than loosely combining unrelated format generators
+- The chat now persists safe file references from tool results and restores
+  their download controls after a reload
+- Phone calls continue in the same conversation and appear alongside missions,
+  reminders and automations instead of introducing another primary module
+
+### Fixed
+
+- Streaming chat turns keep one request-scoped database transaction until the
+  final SSE event, so assistant replies and artifact controls remain present
+  after reload instead of silently losing the post-response writes
+- Codex CLI 0.144+ nested `item.completed` messages are parsed correctly, and
+  every invocation now runs ephemerally in an empty read-only workspace with
+  internal execution/apps disabled so it cannot bypass Edecan's tool sandbox
+- Credential setup shares one transaction between connector-account and vault
+  writes, eliminating the PostgreSQL foreign-key race seen in a real browser
+- Artifact UUIDs are converted to JSON-safe values before message history is
+  stored, preserving generated-file buttons without serialization failures
+- Model-catalog validation rejects successful HTTP responses that are not a
+  usable JSON catalog, and generic compatible providers choose a smaller model
+  for fast work when model sizes are advertised
+- Artifact responses no longer expose arbitrary tool data through SSE; only
+  validated UUID, filename and MIME references cross the public event contract
+- Phone initiation is ordered so the durable call state is visible before a
+  provider can deliver its first webhook
+
+### Security
+
+- Artifact downloads require authentication, re-check tenant ownership, stream
+  through the API and use private/no-store, attachment and no-sniff headers
+- Outbound calls require both prior recipient consent and a one-time human
+  confirmation of the exact international number and purpose; tests use an
+  injected provider and never place real calls
+- Romantic style stores no birth date, cannot be inferred from memory or
+  conversation text and clears both consent indicators on exit
+
 ## [0.3.0] - 2026-07-20
 
 ### Added
@@ -88,7 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial public release of the Apache-2.0-licensed Edecan core
 
-[Unreleased]: https://github.com/bizagencysas/edecan-oss/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/bizagencysas/edecan-oss/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bizagencysas/edecan-oss/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bizagencysas/edecan-oss/releases/tag/v0.1.0

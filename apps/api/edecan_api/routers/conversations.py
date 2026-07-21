@@ -51,13 +51,16 @@ from edecan_api.deps import (
     get_mcp_tools_for_tenant,
     get_redis,
     get_repo,
+    get_streaming_repo,
+    get_streaming_vault,
     get_tenant_session,
     get_tool_registry,
-    get_vault,
     rate_limit,
 )
+from edecan_api.persona_tools import conversation_persona_tools
 from edecan_api.repo import Repo
 from edecan_api.routers.persona import persona_from_row
+from edecan_api.routers.phone import phone_tool_dispatcher_for
 
 logger = logging.getLogger(__name__)
 
@@ -317,8 +320,10 @@ def _build_ctx(
     vault: Any,
     persona: PersonaConfig,
     request: Request,
+    repo: Repo,
     approved_tool_calls: set[str],
     flags: dict[str, Any],
+    phone_call_dispatcher: Any | None = None,
 ) -> ToolContext:
     return ToolContext(
         tenant_id=tenant_id,
@@ -332,6 +337,12 @@ def _build_ctx(
             "memory_store": _build_memory_store(session, settings, persona),
             "memory_embedder": _build_document_embedder(settings),
             "approved_tool_calls": approved_tool_calls,
+            # Callable tenant/user-scoped usado exclusivamente por las tools
+            # de estilo de conversación. No se expone a misiones ni a
+            # automatizaciones y nunca recibe credenciales.
+            "persona_updater": functools.partial(
+                repo.upsert_persona, tenant_id=tenant_id, user_id=user_id
+            ),
             # `tenant.flags` (ARCHITECTURE.md §10.7): mismo dict que ya recibe
             # `Agent.run_turn(flags=...)` para resolver el modelo del turno
             # principal. Lo repetimos acá porque una `Tool` solo recibe `ctx`
@@ -341,6 +352,9 @@ def _build_ctx(
             # — sin esta clave, `_tenant_flags(ctx)` siempre ve `{}` y el
             # downgrade a modelo "rapido" por plan nunca se aplica.
             "flags": flags,
+            # La tool de llamada delega en una transacción independiente que
+            # se cierra/committea antes de tocar Twilio (evita carrera webhook).
+            "phone_call_dispatcher": phone_call_dispatcher,
         },
     )
 
@@ -413,7 +427,10 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     if isinstance(event, dict):
         return event
     if hasattr(event, "model_dump"):
-        return event.model_dump()
+        # `mode="json"` convierte UUID/datetime de contratos Pydantic a sus
+        # representaciones JSON antes de guardar `tool_calls` en JSONB. El SSE
+        # ya toleraba esos tipos con `default=str`; la persistencia no.
+        return event.model_dump(mode="json")
     if hasattr(event, "__dict__"):
         return dict(vars(event))
     raise TypeError(f"Evento de agente con forma inesperada: {event!r}")
@@ -615,6 +632,15 @@ async def _extra_mcp_tools_or_empty(request: Request, current_user: CurrentUser)
         return []
 
 
+async def _extra_conversation_tools(request: Request, current_user: CurrentUser) -> list[Any]:
+    """Tools locales de preferencias + MCP efímeras de este tenant.
+
+    Las primeras siempre están disponibles: no dependen de conectores ni de
+    red. Las MCP conservan su aislamiento y su comportamiento fail-open.
+    """
+    return [*conversation_persona_tools(), *await _extra_mcp_tools_or_empty(request, current_user)]
+
+
 def _tool_requires_flags_satisfechos(tool: Any, flags: dict[str, Any]) -> bool:
     """`True` solo si TODOS los `requires_flags` de `tool` están presentes en
     `flags` con un valor verdadero — mismo criterio que
@@ -689,10 +715,10 @@ async def post_message(
     body: ChatMessageIn,
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
-    repo: Repo = Depends(get_repo),
-    session: Any = Depends(get_tenant_session),
+    repo: Repo = Depends(get_streaming_repo),
+    session: Any = Depends(get_tenant_session, scope="request"),
     llm_router: LLMRouter = Depends(get_llm_router),
-    vault: Any = Depends(get_vault),
+    vault: Any = Depends(get_streaming_vault),
     settings: Settings = Depends(get_settings),
     redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> StreamingResponse:
@@ -731,14 +757,22 @@ async def post_message(
         vault=vault,
         persona=persona,
         request=request,
+        repo=repo,
         approved_tool_calls=set(),
         flags=tenant.flags,
+        phone_call_dispatcher=phone_tool_dispatcher_for(
+            request=request,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            repo=repo,
+            vault=vault,
+        ),
     )
     # MCP bring-your-own (ARCHITECTURE.md §15): tools de los servidores MCP
     # que el tenant conectó, fusionadas SOLO para este turno — nunca tocan el
     # `registry` compartido (ver `Agent.run_turn`/`get_mcp_tools_for_tenant`).
     # `_extra_mcp_tools_or_empty` es fail-open con dos capas (ver su docstring).
-    extra_tools = await _extra_mcp_tools_or_empty(request, current_user)
+    extra_tools = await _extra_conversation_tools(request, current_user)
     events = agent.run_turn(
         ctx=ctx,
         persona=persona,
@@ -767,10 +801,10 @@ async def confirm_tool_call(
     body: ConfirmIn,
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
-    repo: Repo = Depends(get_repo),
-    session: Any = Depends(get_tenant_session),
+    repo: Repo = Depends(get_streaming_repo),
+    session: Any = Depends(get_tenant_session, scope="request"),
     llm_router: LLMRouter = Depends(get_llm_router),
-    vault: Any = Depends(get_vault),
+    vault: Any = Depends(get_streaming_vault),
     settings: Settings = Depends(get_settings),
     redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> StreamingResponse:
@@ -827,7 +861,7 @@ async def confirm_tool_call(
             )
 
         registry = get_tool_registry(request)
-        extra_tools = await _extra_mcp_tools_or_empty(request, current_user)
+        extra_tools = await _extra_conversation_tools(request, current_user)
         _preflight_pending_turn(
             pending=pending_turn,
             registry=registry,
@@ -849,8 +883,16 @@ async def confirm_tool_call(
             vault=vault,
             persona=persona,
             request=request,
+            repo=repo,
             approved_tool_calls={body.tool_call_id},
             flags=tenant.flags,
+            phone_call_dispatcher=phone_tool_dispatcher_for(
+                request=request,
+                tenant_id=tenant.tenant_id,
+                user_id=current_user.user_id,
+                repo=repo,
+                vault=vault,
+            ),
         )
         agent = Agent(llm_router, registry)
         events = agent.resume_turn(
@@ -887,7 +929,7 @@ async def confirm_tool_call(
         # buscando por nombre, mismo criterio "el registry base gana" que
         # aplica `Agent.run_turn` (acá no hay colisión posible: si el
         # registry ya la tenía, ni siquiera se llega a este bloque).
-        extra_tools = await _extra_mcp_tools_or_empty(request, current_user)
+        extra_tools = await _extra_conversation_tools(request, current_user)
         tool = next((t for t in extra_tools if t.name == pending["name"]), None)
     if tool is None:
         raise HTTPException(
@@ -926,8 +968,16 @@ async def confirm_tool_call(
         vault=vault,
         persona=persona,
         request=request,
+        repo=repo,
         approved_tool_calls={body.tool_call_id},
         flags=tenant.flags,
+        phone_call_dispatcher=phone_tool_dispatcher_for(
+            request=request,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            repo=repo,
+            vault=vault,
+        ),
     )
 
     return StreamingResponse(

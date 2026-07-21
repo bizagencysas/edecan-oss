@@ -66,6 +66,12 @@ LLMProviderConfig(kind="claude_cli", extra={"binary_path": "/usr/local/bin/claud
 
 - El prompt siempre viaja por **stdin**, nunca como argumento de la línea de comandos — evita inyección de argv y sus límites de longitud. Nunca se usa `shell=True`.
 - El modo "print" de ambos CLIs (`claude -p`, `codex exec`) es de **un solo turno** (sin memoria de proceso): todo el `system` + historial de la conversación se aplanan a un único prompt de texto en cada llamada (`edecan_llm.prompted_tools.render_prompt`).
+- `CodexCLIProvider` no entrega el repositorio anfitrión al agente de código:
+  cada inferencia es efímera, empieza en un directorio temporal vacío, usa
+  sandbox de solo lectura y desactiva shell, apps, navegador, computer use,
+  generación de imágenes y multiagente internos. Codex solo decide y devuelve
+  texto o una llamada JSON; el `ToolContext` de Edecan ejecuta la acción real
+  con sus permisos, confirmaciones, aislamiento y validación.
 - Timeout configurable (300s por defecto — generoso, porque un CLI puede tardar en razonar) con `asyncio.wait_for` + `kill()` del proceso si se excede.
 - Si el proceso termina con error y el mensaje sugiere que falta iniciar sesión, se traduce a un error claro: "corre `claude login`" / "corre `codex login`".
 
@@ -135,11 +141,25 @@ Mismos dos proveedores de siempre (`AnthropicProvider`/`OpenAICompatProvider`, v
 
 ## Resolución de modelo (`"principal"`/`"rapido"`)
 
-`LLMRouter.resolve("principal"|"rapido", tenant_flags)` prioriza `provider_config.model_principal`/`model_rapido` sobre cualquier variable de entorno de plataforma. Si falta alguno, cae a un default sano según el proveedor:
+Al conectar Anthropic, Google AI o un endpoint OpenAI-compatible con
+`validate=true`, la API consulta una sola vez el catálogo de modelos accesible
+con la credencial del usuario. Si la persona no fijó nombres manualmente,
+Edecan elige una pareja de calidad/rapidez, descarta modelos de embeddings,
+imagen, audio y moderación, y guarda los IDs exactos. Así una instalación nueva
+usa lo mejor que su propia cuenta ofrece sin que un alias cambie a mitad de una
+conversación. La detección no ocurre durante cada turno y nunca lee una
+credencial compartida de plataforma.
+
+`LLMRouter.resolve("principal"|"rapido", tenant_flags)` prioriza esos
+`provider_config.model_principal`/`model_rapido` fijados sobre cualquier
+variable de entorno de plataforma. Si un catálogo no está disponible, cae a un
+default sano según el proveedor:
 
 - `anthropic`: `ANTHROPIC_MODEL_PRINCIPAL`/`ANTHROPIC_MODEL_RAPIDO` de `settings`, o `claude-sonnet-4-5`/`claude-haiku-4-5` si ni eso está.
-- `vertex`: `VERTEX_MODEL_PRINCIPAL`/`VERTEX_MODEL_RAPIDO` de `settings`, o `gemini-2.5-pro`/`gemini-2.5-flash`.
-- `openai_compat`/`claude_cli`/`codex_cli`/`ollama`: no hay un default universal sensato (no existe "el modelo de OpenAI-compat" ni "el modelo de Ollama" genérico) — si falta `model_rapido`, se usa `model_principal`. Para los CLIs, un `model_principal` vacío es válido a propósito: el binario usa su propio modelo configurado por defecto en vez de que Edecán le fuerce uno con `--model`.
+- `vertex`: `VERTEX_MODEL_PRINCIPAL`/`VERTEX_MODEL_RAPIDO` de `settings`, o `gemini-3.5-flash`/`gemini-3.1-flash-lite` en el modo service-account que no puede listar el catálogo sin autenticarse primero.
+- `openai_compat`: si la detección no encuentra un modelo conversacional, la conexión pide `model_principal` explícito en vez de guardar una configuración rota; si falta solo `model_rapido`, usa el principal.
+- `claude_cli`/`codex_cli`: un `model_principal` vacío es válido a propósito: el binario usa su propio modelo configurado por defecto, que puede actualizarse con el CLI sin que Edecan le fuerce uno mediante `--model`.
+- `ollama`: el modelo se elige de los que ya están descargados localmente; si falta `model_rapido`, usa el principal.
 
 El downgrade de `"principal"` a `"rapido"` cuando el plan del tenant no tiene el flag `models.premium` (`ARCHITECTURE.md` §10.13) se mantiene igual sin importar el proveedor elegido.
 

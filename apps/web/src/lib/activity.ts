@@ -1,8 +1,9 @@
 import type { Automation } from "./api-automatizaciones";
 import type { Mission } from "./api-misiones";
 import type { Reminder } from "./types";
+import type { PhoneCall } from "./types";
 
-export type ActivityKind = "mission" | "reminder" | "automation";
+export type ActivityKind = "mission" | "reminder" | "automation" | "phone";
 export type ActivityTone = "attention" | "active" | "scheduled" | "complete" | "error";
 
 export interface ActivityEntry {
@@ -14,6 +15,7 @@ export interface ActivityEntry {
   tone: ActivityTone;
   statusLabel: string;
   timestamp: string | null;
+  phoneConfirmation?: { callId: string; toE164: string; goal: string };
 }
 
 export interface ActivityOverview {
@@ -57,11 +59,13 @@ export function buildActivityOverview({
   reminders,
   missions,
   automations,
+  calls = [],
   now = new Date(),
 }: {
   reminders: Reminder[];
   missions: Mission[];
   automations: Automation[];
+  calls?: PhoneCall[];
   now?: Date;
 }): ActivityOverview {
   const entries: ActivityEntry[] = [];
@@ -107,6 +111,40 @@ export function buildActivityOverview({
       tone: "scheduled",
       statusLabel: automation.next_run_at ? "Programada" : "Activa",
       timestamp: automation.next_run_at || automation.updated_at,
+    });
+  }
+
+  const callLabels: Record<PhoneCall["status"], string> = {
+    draft: "Confirma la llamada",
+    confirmed: "Confirmada",
+    queued: "Marcando",
+    ringing: "Sonando",
+    in_progress: "En llamada",
+    completed: "Finalizada",
+    failed: "Falló",
+    busy: "Ocupado",
+    no_answer: "Sin respuesta",
+    cancelled: "Cancelada",
+  };
+  for (const call of calls) {
+    const isAttention = call.status === "draft";
+    const isError = call.status === "failed" || call.status === "busy" || call.status === "no_answer";
+    const isActive = ["confirmed", "queued", "ringing", "in_progress"].includes(call.status);
+    const peer = call.direction === "outgoing" ? call.to_e164 : call.from_e164;
+    entries.push({
+      id: `phone:${call.id}`,
+      kind: "phone",
+      title: call.direction === "outgoing" ? `Llamada a ${peer}` : `Llamada de ${peer}`,
+      detail: call.error || call.goal,
+      href: "/app",
+      tone: isAttention ? "attention" : isError ? "error" : isActive ? "active" : "complete",
+      statusLabel: callLabels[call.status],
+      timestamp: call.updated_at || call.created_at,
+      phoneConfirmation: call.status === "draft" ? {
+        callId: call.id,
+        toE164: call.to_e164,
+        goal: call.goal,
+      } : undefined,
     });
   }
 

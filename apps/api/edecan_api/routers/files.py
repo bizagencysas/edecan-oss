@@ -12,12 +12,14 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 import aioboto3
 from edecan_core.queue import enqueue
 from edecan_schemas import UNLIMITED
 from edecan_schemas.plans import LIMIT_STORAGE_MB
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import CurrentUser, TenantCtx, get_current_user, get_repo, rate_limit
@@ -186,3 +188,73 @@ async def get_file(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archivo no encontrado.")
     return _file_out(row)
+
+
+async def _stream_s3_object(settings: Settings, s3_key: str) -> Any:
+    """Transmite el objeto manteniendo vivo el cliente S3 hasta el último chunk."""
+
+    session = aioboto3.Session()
+    async with session.client(
+        "s3", region_name=settings.AWS_REGION, endpoint_url=settings.AWS_ENDPOINT_URL
+    ) as s3:
+        response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+        body = response["Body"]
+        while chunk := await body.read(64 * 1024):
+            yield chunk
+
+
+@router.get("/{file_id}/download")
+async def download_file(
+    file_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Descarga autenticada y aislada por tenant de un archivo privado.
+
+    No expone ``s3_key`` ni una URL pública/presignada. La API conserva el
+    control de acceso durante toda la transferencia, lo que funciona igual
+    con AWS S3, LocalStack y almacenamiento compatible self-hosted.
+    """
+
+    row = await repo.get_file(tenant_id=current_user.tenant_id, file_id=file_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archivo no encontrado.")
+
+    filename = _safe_filename(row.get("filename"))
+    mime = str(row.get("mime") or "application/octet-stream")
+    s3_key = str(row.get("s3_key") or "")
+    if not s3_key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El archivo no tiene contenido descargable asociado.",
+        )
+
+    # Validación previa: evita responder 200 y fallar recién después de enviar
+    # headers si el objeto fue eliminado o el storage está indisponible.
+    session = aioboto3.Session()
+    try:
+        async with session.client(
+            "s3", region_name=settings.AWS_REGION, endpoint_url=settings.AWS_ENDPOINT_URL
+        ) as s3:
+            object_metadata = await s3.head_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+    except Exception as exc:  # noqa: BLE001 - proveedores S3 lanzan clases distintas
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El archivo existe en Edecan, pero el almacenamiento no pudo entregarlo.",
+        ) from exc
+
+    content_length = object_metadata.get("ContentLength")
+    disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    response_headers = {
+        "Content-Disposition": disposition,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    if isinstance(content_length, int) and content_length >= 0:
+        response_headers["Content-Length"] = str(content_length)
+    return StreamingResponse(
+        _stream_s3_object(settings, s3_key),
+        media_type=mime,
+        headers=response_headers,
+    )

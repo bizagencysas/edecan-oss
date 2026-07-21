@@ -1,6 +1,6 @@
 {
   "name": "edecan-web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "packageManager": "npm@10.9.8",
@@ -13,6 +13,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
+    "test": "npm run test:unit",
     "test:config": "node --test security-headers.test.mjs",
     "test:unit": "node --import ./test-register.mjs --test *.test.mjs",
     "typecheck": "tsc --noEmit"

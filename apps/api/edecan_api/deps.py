@@ -202,6 +202,21 @@ async def get_repo(
     return SqlRepo(session)
 
 
+async def get_streaming_repo(
+    session: AsyncSession = Depends(get_tenant_session, scope="request"),
+) -> Repo:
+    """Repo cuya transacción permanece abierta durante un cuerpo en streaming.
+
+    FastAPI ejecuta una dependencia ``function`` antes de empezar a iterar un
+    ``StreamingResponse``. Los turnos de chat persisten la respuesta del
+    asistente *durante* esa iteración, así que necesitan la sesión
+    ``request`` hasta que el último evento SSE haya terminado. Las rutas HTTP
+    ordinarias deben seguir usando :func:`get_repo`, que confirma antes de
+    entregar la respuesta.
+    """
+    return SqlRepo(session)
+
+
 # ---------------------------------------------------------------------------
 # Redis (rate limit, pair-codes, confirmaciones pendientes)
 # ---------------------------------------------------------------------------
@@ -348,7 +363,7 @@ async def load_tenant_llm_config(
 
 async def get_llm_router(
     current_user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_tenant_session),
+    session: AsyncSession = Depends(get_tenant_session, scope="request"),
     settings: Settings = Depends(get_settings),
 ) -> LLMRouter:
     """`LLMRouter` bring-your-own del tenant actual — NUNCA el de plataforma.
@@ -390,9 +405,21 @@ def build_key_provider(settings: Settings) -> Any:
 
 
 async def get_vault(
-    session: AsyncSession = Depends(get_tenant_session),
+    # Debe compartir exactamente la misma dependencia function-scoped que
+    # `get_repo`. Con scopes distintos FastAPI abre dos transacciones: la
+    # cuenta de conector queda sin commit en una y el vault intenta insertar
+    # su token desde la otra, violando la FK en Postgres real.
+    session: AsyncSession = Depends(get_tenant_session, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> TokenVault:
+    return TokenVault(session, build_key_provider(settings))
+
+
+async def get_streaming_vault(
+    session: AsyncSession = Depends(get_tenant_session, scope="request"),
+    settings: Settings = Depends(get_settings),
+) -> TokenVault:
+    """Vault que comparte la transacción request-scoped del turno SSE."""
     return TokenVault(session, build_key_provider(settings))
 
 

@@ -135,13 +135,22 @@ Auth: Bearer (access). Devuelve la `PersonaConfig` vigente del tenant/usuario (v
   "instrucciones": "",
   "rasgos": [],
   "memoria_activada": true,
-  "voice_id": null
+  "voice_id": null,
+  "estilo_relacion": "profesional",
+  "adulto_confirmado": false,
+  "consentimiento_romantico": false
 }
 ```
 
 ### `PUT /v1/persona`
 
-Auth: Bearer (access). Body: un `PersonaConfig` completo o parcial (según implementación de validación). Respuesta: la `PersonaConfig` resultante, con la misma forma que `GET`.
+Auth: Bearer (access). Body: un `PersonaConfig` completo o parcial. Respuesta: la `PersonaConfig` resultante, con la misma forma que `GET`.
+
+`estilo_relacion` acepta `profesional`, `coach`, `amigo` o `romantico`. Para
+activar `romantico`, la misma petición debe enviar `adulto_confirmado: true` y
+`consentimiento_romantico: true`. Elegir cualquier otro estilo limpia ambos
+indicadores. Consulta los límites de producto en
+[`estilos-de-acompanamiento.md`](./estilos-de-acompanamiento.md).
 
 ### `GET /v1/persona/preview`
 
@@ -445,32 +454,35 @@ Auth: Firma Stripe (`Stripe-Signature` verificada contra `STRIPE_WEBHOOK_SECRET`
 
 Auth: Bearer (access). **Placeholder**: todavía no llama a la API de Stripe (el proyecto no ejecuta llamadas de red reales a servicios de pago — ver reglas del repo). Respuesta actual: `{"url": "<WEB_BASE_URL>/app/facturacion?portal=pendiente-configurar-stripe"}`, un enlace de vuelta a la propia app, no al Billing Portal de Stripe. Pendiente: reemplazar el cuerpo por una llamada real a `POST https://api.stripe.com/v1/billing_portal/sessions` y devolver la `url` que retorne Stripe.
 
-## Rutas de la extensión comercial externa (solo si `edecan_premium` está instalado)
+## Telefonía OSS (`/v1/phone`)
 
-Si el paquete `edecan_premium` está presente en el entorno (`importlib.util.find_spec("edecan_premium")`), la API monta además `edecan_premium.twilio_router.router` bajo el prefijo `/v1/voice/twilio` (con el `WS /v1/twilio/media` de Media Streams "trasplantado" al mismo router, ver más abajo) y `edecan_api.routers.consents.router` bajo `/v1/consents`:
+Estas rutas se montan siempre desde `edecan_api.routers.phone`; no requieren `edecan_premium`. Las rutas autenticadas exigen el flag `voice.telephony`, la cuenta Twilio propia del tenant y, para llamadas salientes, consentimiento `voice` vigente.
 
 | Ruta | Auth | Para qué |
 |---|---|---|
-| `POST /v1/voice/twilio/incoming` | Firma Twilio | Webhook de llamada entrante. Responde TwiML con `<Say>` + `<Gather input="speech">`. |
-| `POST /v1/voice/twilio/gather` | Firma Twilio | Webhook con lo que Twilio transcribió del interlocutor. Corre un turno del agente **sin streaming** y responde con `<Say>` + `<Gather>` para continuar la llamada. |
-| `POST /v1/voice/twilio/sms` | Firma Twilio | Webhook de SMS entrante. Sin agente conversacional: solo reconoce el opt-out STOP/BAJA; si no aplica, responde TwiML vacío (sin `<Message>`). |
-| `POST /v1/voice/twilio/status` | Firma Twilio | Webhook de fin de llamada — registra duración en `usage_events`. |
-| `WS /v1/twilio/media` | Token corto firmado en el query param `t` (`media_streams.mint_media_token`/`verify_media_token`) | Media Streams (beta, `TWILIO_MEDIA_STREAMS_ENABLED`): interrupciones naturales durante la llamada — ver nota abajo. |
-| `POST /v1/consents` | Bearer (access) | Otorga consentimiento (`kind`: `sms`\|`voice`) para un `phone_e164`, vía `edecan_premium.compliance.grant_consent` — único punto de entrada auditado hacia la tabla `consents` (`docs/voz-telefonia.md`, control #1). Requiere el flag de plan `voice.telephony`. |
+| `GET /v1/phone/calls` | Bearer (access) | Lista llamadas del usuario, incluida cualquier confirmación pendiente. |
+| `GET /v1/phone/calls/{id}` | Bearer (access) | Devuelve llamada, eventos y transcripción telefónica. |
+| `POST /v1/phone/calls/prepare` | Bearer (access) | Body `{"to_e164":"+573001234567","goal":"Confirmar la entrega"}`. Crea un borrador; nunca contacta al proveedor. |
+| `POST /v1/phone/calls/{id}/confirm` | Bearer (access) | Body `{"confirmed_destination":true,"confirmed_goal":true,"expected_to_e164":"+573001234567","expected_goal":"Confirmar la entrega"}`. Revalida los valores vistos por el humano, confirma y persiste antes de pedir la llamada a Twilio. |
+| `DELETE /v1/phone/calls/{id}` | Bearer (access) | Cancela un borrador que todavía no salió a Twilio. |
+| `POST /v1/phone/twilio/incoming` | Firma Twilio | Recibe una llamada en el número conectado y abre un hilo telefónico separado. |
+| `POST /v1/phone/twilio/calls/{id}/voice` | Firma Twilio | Saludo y primer `<Gather>` de una llamada saliente. |
+| `POST /v1/phone/twilio/calls/{id}/gather` | Firma Twilio | Ejecuta el siguiente turno breve del asistente y devuelve TwiML. |
+| `POST /v1/phone/twilio/calls/{id}/status` | Firma Twilio | Actualiza estado y duración sin permitir regresiones por callbacks tardíos. |
+
+La herramienta de chat `llamar_contacto` usa el mismo dispatcher transaccional. Al ser peligrosa, el agente presenta la confirmación exacta antes de ejecutarla. La conversación telefónica mantiene nombre, idioma, tono y formalidad, pero no comparte memorias ni instrucciones privadas con el interlocutor externo. `PHONE_MAX_TURNS` (default `8`) limita los turnos. Ver [`voz-telefonia.md`](./voz-telefonia.md#telefonía-oss-funcional).
+
+### `POST /v1/consents`
+
+Auth: Bearer (access). Ruta OSS, montada siempre. Requiere flag `voice.telephony`. Body: `{"phone_e164": "+525512345678", "kind": "voice", "source": "formulario_web"}`. `kind` es `sms` o `voice`; `source` debe describir cómo se obtuvo el consentimiento. La concesión queda auditada y puede consultarse en `consents`.
+
+## Extensión opcional legada (`edecan_premium`)
+
+Si `edecan_premium` está instalado, `create_app()` conserva sus rutas antiguas `/v1/voice/twilio/*` para compatibilidad: SMS, campañas y el WebSocket de Media Streams. Las llamadas OSS nuevas usan `/v1/phone/*`; no se debe configurar un mismo número para apuntar simultáneamente a los dos webhooks de entrada.
 
 ### `WS /v1/twilio/media` — Media Streams (beta)
 
 Prefix propio `/v1/twilio` (distinto del `/v1/voice/twilio` de arriba, `ARCHITECTURE.md` §15.h) — WebSocket bidireccional de audio μ-law que reemplaza el ciclo `<Gather>`/`<Say>` síncrono por interrupciones naturales (el llamante puede cortar al bot a mitad de frase). Se monta cuando `edecan_premium` está instalado y queda gateado en runtime por `TWILIO_MEDIA_STREAMS_ENABLED` (`bool`, default `False`): `create_app()` inyecta la configuración real en `app.state`, pero el operador debe habilitar explícitamente el flag y completar la identidad/agente que exige la extensión. Si el flag está apagado o el token no valida, la conexión se cierra. Detalle completo en [`voz-telefonia.md`](./voz-telefonia.md#interrupciones-naturales-beta).
-
-### `POST /v1/consents`
-
-Auth: Bearer (access). Requiere flag `voice.telephony` (`403` si el plan no lo tiene). Body: `{"phone_e164": "+525512345678", "kind": "sms", "source": "formulario_web"}` (`kind` es `"sms"` o `"voice"` — se consienten por separado; `source` debe describir cómo se obtuvo el consentimiento). `422` si `kind` no es `"sms"`/`"voice"`; `400` si `source` viene vacío o solo espacios. Deja además una fila en `audit_log` (`compliance.grant_consent` lo hace internamente).
-
-```json
-{"phone_e164": "+525512345678", "kind": "sms", "source": "formulario_web"}
-```
-
-Ver [`voz-telefonia.md`](./voz-telefonia.md) para el detalle de cumplimiento y `ARCHITECTURE.md` §10.10.
 
 ## Rutas v2 (montaje defensivo)
 
@@ -663,7 +675,7 @@ Los tres campos son obligatorios (`400` si falta alguno). `base_url` acepta cual
 Para que la UI decida si mostrar el wizard corto de bienvenida (2–3 pasos máximo) o ir directo al chat:
 
 ```json
-{"local_mode": true, "llm_configured": true, "version": "0.3.0"}
+{"local_mode": true, "llm_configured": true, "version": "0.4.0"}
 ```
 
 `local_mode` = `EDECAN_LOCAL_MODE` del servidor; `llm_configured` = el tenant ya tiene una `connector_account` con `connector_key="llm"` y un `TokenBundle` guardado (mismo criterio que `routers/credentials.py::get_credentials`); `version` = `edecan_api.__version__`.

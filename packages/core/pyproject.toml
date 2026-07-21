@@ -1,6 +1,6 @@
 [project]
 name = "edecan-core"
-version = "0.3.0"
+version = "0.4.0"
 description = "Edecán — motor del agente: herramientas, persona, memoria y cola (edecan_core)"
 readme = "README.md"
 license = { text = "Apache-2.0" }

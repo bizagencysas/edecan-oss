@@ -207,6 +207,23 @@ async def test_put_llm_openai_compat_sin_base_url_400(client, app) -> None:
 
 
 @respx.mock
+async def test_put_llm_openai_compat_sin_validar_requiere_modelo(client, app) -> None:
+    _install_vault(app)
+    response = await client.put(
+        "/v1/credentials/llm",
+        json={
+            "kind": "openai_compat",
+            "base_url": "https://miendpoint.example.com/v1",
+            "api_key": "sk-x",
+            "validate": False,
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 400
+    assert "model_principal" in response.json()["detail"]
+
+
+@respx.mock
 async def test_put_llm_ollama_sin_model_principal_400(client, app) -> None:
     _use_local_mode(app)
     _install_vault(app)
@@ -267,7 +284,7 @@ async def test_put_llm_openai_compat_sin_validar_guarda_y_enmascara(client, app,
         "api_key": "gsk_1234567890ABCD",
         "base_url": "https://api.groq.com/openai/v1",
         "model_principal": "llama-3.3-70b",
-        "model_rapido": None,
+        "model_rapido": "llama-3.3-70b",
         "extra": {},
     }
 
@@ -278,7 +295,7 @@ async def test_put_llm_openai_compat_sin_validar_guarda_y_enmascara(client, app,
     assert get_response.json()["llm"] == {
         "kind": "openai_compat",
         "model_principal": "llama-3.3-70b",
-        "model_rapido": None,
+        "model_rapido": "llama-3.3-70b",
         "base_url": "https://api.groq.com/openai/v1",
         "masked": "…ABCD",
     }
@@ -502,7 +519,15 @@ async def test_put_llm_vertex_service_account_forma_valida_no_pega_a_la_red(
 @respx.mock
 async def test_put_llm_openai_compat_valida_endpoint_propio(client, app) -> None:
     respx.get("https://miendpoint.example.com/v1/models").mock(
-        return_value=httpx.Response(200, json={"data": []})
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "modelo-general-2", "created": 2},
+                    {"id": "modelo-general-1", "created": 1},
+                ]
+            },
+        )
     )
     fake_vault = _install_vault(app)
 
@@ -517,6 +542,36 @@ async def test_put_llm_openai_compat_valida_endpoint_propio(client, app) -> None
     )
     assert response.status_code == 204
     assert len(fake_vault.puts) == 1
+    stored = json.loads(fake_vault.puts[0][2].access_token)
+    assert stored["model_principal"] == "modelo-general-2"
+    assert stored["model_rapido"] == "modelo-general-2"
+
+
+@respx.mock
+async def test_put_llm_descubre_mejor_modelo_anthropic(client, app) -> None:
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "claude-haiku-4-6-20260601"},
+                    {"id": "claude-opus-4-6-20260501"},
+                ]
+            },
+        )
+    )
+    fake_vault = _install_vault(app)
+
+    response = await client.put(
+        "/v1/credentials/llm",
+        json={"kind": "anthropic", "api_key": "sk-ant-real-de-prueba"},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 204
+    stored = json.loads(fake_vault.puts[0][2].access_token)
+    assert stored["model_principal"] == "claude-opus-4-6-20260501"
+    assert stored["model_rapido"] == "claude-haiku-4-6-20260601"
 
 
 @respx.mock

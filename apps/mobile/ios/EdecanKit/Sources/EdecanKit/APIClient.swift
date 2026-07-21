@@ -300,6 +300,19 @@ public actor APIClient {
         }
     }
 
+    /// `GET /v1/files/{id}/download` — descarga privada, autenticada y
+    /// limitada al tenant del usuario. Devuelve bytes en memoria para que la
+    /// app decida si abrir la hoja de compartir o guardarlos en Archivos;
+    /// nunca expone una URL publica ni escribe fuera del sandbox por si sola.
+    public func descargarArtefacto(_ artifact: ArtifactRef) async throws -> DownloadedArtifact {
+        let data = try await conAutoRefresh {
+            var request = URLRequest(url: try await self.urlCompleta("/v1/files/\(artifact.fileId)/download"))
+            request.httpMethod = "GET"
+            return try await self.ejecutarAutenticadoData(request).data
+        }
+        return DownloadedArtifact(artifact: artifact, data: data)
+    }
+
     // MARK: - Negocios (`ARCHITECTURE.md` §11 ROADMAP_V2.md §7.4/§7.7 WP-V2-12,
     // `docs/negocios.md` — pantalla 4 del mockup)
 

@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Sequence
+from pathlib import PurePosixPath
 from typing import Any
+from uuid import UUID
 
 from edecan_schemas import (
     AgentEvent,
+    ArtifactRef,
     ConfirmationRequiredEvent,
     DoneEvent,
     ErrorEvent,
@@ -48,6 +51,52 @@ _LLM_ALIAS = "principal"
 _RESULT_PREVIEW_LEN = 400
 _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
+
+
+def _artifact_refs(data: Any) -> list[ArtifactRef]:
+    """Extrae solo referencias de archivo seguras de ``ToolResult.data``.
+
+    Los datos arbitrarios de una herramienta pueden contener IDs internos o
+    detalles de proveedores y nunca deben cruzar completos por SSE. Se admite
+    la forma histórica ``{file_id, filename}`` y listas ``artifacts``/``files``;
+    cada ID debe ser UUID y cada nombre se reduce a basename portable.
+    """
+
+    if not isinstance(data, dict):
+        return []
+    raw_candidates: list[Any] = []
+    if data.get("file_id") and data.get("filename"):
+        raw_candidates.append(data)
+    for key in ("artifacts", "files"):
+        value = data.get(key)
+        if isinstance(value, list):
+            raw_candidates.extend(value)
+    if isinstance(data.get("manifest"), dict):
+        raw_candidates.append(data["manifest"])
+
+    refs: list[ArtifactRef] = []
+    seen: set[UUID] = set()
+    for candidate in raw_candidates[:20]:
+        if not isinstance(candidate, dict):
+            continue
+        raw_id = candidate.get("file_id") or candidate.get("id")
+        raw_name = candidate.get("filename") or candidate.get("name")
+        try:
+            file_id = UUID(str(raw_id))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        filename = PurePosixPath(str(raw_name or "").replace("\\", "/")).name.strip()
+        if not filename or file_id in seen:
+            continue
+        raw_mime = candidate.get("mime")
+        mime = str(raw_mime).strip()[:255] if raw_mime else None
+        try:
+            ref = ArtifactRef(file_id=file_id, filename=filename[:255], mime=mime)
+        except ValueError:
+            continue
+        refs.append(ref)
+        seen.add(file_id)
+    return refs
 
 
 class PendingTurnValidationError(RuntimeError):
@@ -463,7 +512,9 @@ class Agent:
                 logger.warning("La herramienta %r lanzó una excepción", call.name, exc_info=True)
                 result = ToolResult(content=f"Error: {redact(str(exc))}")
             end = ToolEndEvent(
-                name=call.name, result_preview=result.content[:_RESULT_PREVIEW_LEN]
+                name=call.name,
+                result_preview=result.content[:_RESULT_PREVIEW_LEN],
+                artifacts=_artifact_refs(result.data),
             )
             tool_log.append(end.model_dump())
             yield end, _tool_result_block(call.id, result.content)

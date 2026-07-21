@@ -40,6 +40,8 @@ export interface MeOut {
 
 // --- Persona "nivel Dios" (§10.5) ----------------------------------------
 
+export type RelationshipStyle = "profesional" | "coach" | "amigo" | "romantico";
+
 export interface PersonaConfig {
   nombre_asistente: string;
   idioma: string;
@@ -50,6 +52,9 @@ export interface PersonaConfig {
   rasgos: string[];
   memoria_activada: boolean;
   voice_id: string | null;
+  estilo_relacion: RelationshipStyle;
+  adulto_confirmado: boolean;
+  consentimiento_romantico: boolean;
 }
 
 export const PERSONA_DEFAULT: PersonaConfig = {
@@ -62,6 +67,9 @@ export const PERSONA_DEFAULT: PersonaConfig = {
   rasgos: [],
   memoria_activada: true,
   voice_id: null,
+  estilo_relacion: "profesional",
+  adulto_confirmado: false,
+  consentimiento_romantico: false,
 };
 
 // --- Conversaciones y chat (SSE, §10.7, §9) -------------------------------
@@ -85,10 +93,16 @@ export interface MessageOut {
   created_at: string;
 }
 
+export interface ArtifactRef {
+  file_id: string;
+  filename: string;
+  mime: string | null;
+}
+
 export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_end"; name: string; result_preview: string }
+  | { type: "tool_end"; name: string; result_preview: string; artifacts?: ArtifactRef[] }
   | {
       type: "confirmation_required";
       tool_call_id: string;
@@ -151,12 +165,41 @@ export interface ConnectorListItem {
   oauth_redirect_uri?: string;
 }
 
-// --- Consentimientos (telefonía premium, §10.3, §10.10, §10.12) ------------
+// --- Consentimientos y llamadas de telefonía OSS ----------------------------
 
 export interface ConsentOut {
   phone_e164: string;
   kind: "sms" | "voice";
   source: string;
+}
+
+export type PhoneCallStatus =
+  | "draft"
+  | "confirmed"
+  | "queued"
+  | "ringing"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "busy"
+  | "no_answer"
+  | "cancelled";
+
+export interface PhoneCall {
+  id: string;
+  conversation_id: string;
+  direction: "incoming" | "outgoing";
+  from_e164: string;
+  to_e164: string;
+  goal: string;
+  status: PhoneCallStatus;
+  confirmed_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // --- Archivos (§10.14) -----------------------------------------------------

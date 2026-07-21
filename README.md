@@ -26,7 +26,7 @@
   <a href="./SECURITY.md">Security</a>
 </p>
 
-> **Developer preview (v0.3).** The source, tests, web app, API, workers,
+> **Developer preview (v0.4).** The source, tests, web app, API, workers,
 > desktop shell, and native companion clients are public. There are no signed
 > installer assets yet; build from source and do not treat this release as
 > production-ready without completing the deployment checklist.
@@ -52,6 +52,15 @@ through a hosted intermediary. Edecan follows a different model:
   documents, research, messaging, workflows, an IDE, and multi-agent missions.
 - **One intent, several actions.** The assistant selects only the capability
   families relevant to each request and can combine them in one turn.
+- **Creation that produces files.** One request can deliver private Word, PDF,
+  PowerPoint, post, website and executable app-project files with a manifest,
+  hashes and authenticated downloads instead of pretending plain text is a file.
+- **Voice in and out.** Spoken requests use the same agent path as chat, while
+  a tenant-owned Twilio number can place or receive consent-aware conversational
+  calls whose status and transcript remain attached to the conversation.
+- **A relationship style you control.** Professional, coach, friend and
+  adult-consented romantic tones are editable preferences. Edecan remains
+  explicit that it is AI and never uses dependency or exclusivity tactics.
 - **Recover instead of giving up.** When a capability is missing, Edecan can
   diagnose the failure, reuse existing configuration, create a reversible local
   skill, or — in an explicitly enabled source checkout — prepare, test and
@@ -69,18 +78,19 @@ through a hosted intermediary. Edecan follows a different model:
 
 | Surface | Current state | Evidence |
 |---|---|---|
-| Python core, API, workers, tools | Implemented | 4,190 offline tests pass locally |
-| Web application | Implemented | Next.js production build renders 36 routes |
+| Python core, API, workers, tools | Implemented | 4,302 offline tests pass locally |
+| Web application | Implemented | Next.js production build renders 35 routes |
 | Local desktop runtime | Preview | Tauri shell + packaged Python backend; source build required |
 | macOS and Windows desktop packaging | Preview | Build scripts exist; signed public installers do not yet |
 | Native iOS and Android companions | Experimental | Source clients and model tests are included |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
-| Optional commercial telephony plugin | Outside this repository | The Apache-2.0 core runs without it |
+| BYO Twilio conversational calls | Implemented | Signed webhook and injected-provider tests; no real calls in CI |
 
 Capabilities include tool-using chat, memory and profile consolidation,
 automations, reminders, document analysis, browser research, meetings,
 messaging, voice, MCP servers, skills, business workflows, travel, vehicles,
-Home Assistant, an embedded IDE, and multi-agent missions. Availability depends
+Home Assistant, private artifact creation, inbound/outbound calls, an embedded
+IDE, and multi-agent missions. Availability depends
 on configuration and feature flags; see the [documentation map](./docs/index.md)
 instead of assuming every integration is enabled by default.
 
@@ -97,6 +107,9 @@ that an unavailable action succeeded.
 - No autonomous real-money execution. Commerce is pinned to paper mode.
 - No silent device control. High-impact tools require explicit approval, and
   remote keyboard/mouse control requires a separate local opt-in.
+- No silent phone calls. Outbound calls require recipient consent and human
+  approval of the exact destination and objective; Twilio credentials and usage
+  belong to the tenant.
 - No real secrets in source, fixtures, logs, or example configuration.
 - No claim of SOC 2, ISO 27001, external audit, or production certification.
 - No silent self-modification. Local skills and source repairs require the

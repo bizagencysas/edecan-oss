@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import _stub_siblings  # noqa: F401  (efecto secundario: puebla sys.path/sys.modules)
 import pytest
@@ -69,10 +70,18 @@ def app(fake_repo: FakeRepo, fake_redis: FakeRedis, test_settings: Settings):
     application.dependency_overrides[get_settings] = lambda: test_settings
     application.dependency_overrides[edecan_deps.get_platform_repo] = lambda: fake_repo
     application.dependency_overrides[edecan_deps.get_repo] = lambda: fake_repo
+    application.dependency_overrides[edecan_deps.get_streaming_repo] = lambda: fake_repo
     application.dependency_overrides[edecan_deps.get_redis] = lambda: fake_redis
     application.dependency_overrides[edecan_deps.get_tenant_session] = lambda: None
     application.dependency_overrides[edecan_deps.get_vault] = lambda: None
+    application.dependency_overrides[edecan_deps.get_streaming_vault] = lambda: None
     application.dependency_overrides[edecan_deps.get_llm_router] = lambda: None
+
+    @asynccontextmanager
+    async def fake_phone_transaction(_tenant_id: uuid.UUID):
+        yield fake_repo
+
+    application.state.phone_repo_transaction_factory = fake_phone_transaction
 
     yield application
 

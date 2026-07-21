@@ -35,6 +35,7 @@ import type {
   MemoryImportItem,
   MemoryItem,
   PersonaConfig,
+  PhoneCall,
   Reminder,
   StripeStatus,
   StripeSyncResult,
@@ -412,14 +413,11 @@ export async function connectWhatsappCredentials(input: {
   await apiJson<void>("/v1/connectors/whatsapp/credentials", { method: "PUT", body: input });
 }
 
-// --- Consentimientos (telefonía premium, §10.3, §10.10, §10.12) ----------------
+// --- Consentimientos de telefonía OSS ----------------------------------------
 
 /**
- * `POST /v1/consents` — único invocador de `edecan_premium.compliance.grant_consent`
- * (montado solo si `edecan_premium` está instalado; requiere flag de plan
- * `voice.telephony`). Sin una fila aquí, `llamar_contacto`/`enviar_sms`/
- * `lanzar_campana` bloquean cualquier destinatario (ver docs/voz-telefonia.md,
- * control #1).
+ * `POST /v1/consents` registra evidencia verificable en el OSS. Sin una fila
+ * vigente, el asistente bloquea cualquier llamada saliente a ese número.
  */
 export async function grantConsent(input: {
   phone_e164: string;
@@ -427,6 +425,27 @@ export async function grantConsent(input: {
   source: string;
 }): Promise<ConsentOut> {
   return apiJson<ConsentOut>("/v1/consents", { method: "POST", body: input });
+}
+
+/** Llamadas del asistente, incluidas entrantes, salientes y borradores por confirmar. */
+export async function listPhoneCalls(): Promise<PhoneCall[]> {
+  return apiJson<PhoneCall[]>("/v1/phone/calls");
+}
+
+export async function confirmPhoneCall(call: PhoneCall): Promise<PhoneCall> {
+  return apiJson<PhoneCall>(`/v1/phone/calls/${call.id}/confirm`, {
+    method: "POST",
+    body: {
+      expected_to_e164: call.to_e164,
+      expected_goal: call.goal,
+      confirmed_destination: true,
+      confirmed_goal: true,
+    },
+  });
+}
+
+export async function cancelPhoneCall(id: string): Promise<PhoneCall> {
+  return apiJson<PhoneCall>(`/v1/phone/calls/${id}`, { method: "DELETE" });
 }
 
 // --- Archivos ------------------------------------------------------------------
@@ -437,6 +456,15 @@ export async function listFiles(): Promise<FileOut[]> {
 
 export async function getFile(id: string): Promise<FileOut> {
   return apiJson<FileOut>(`/v1/files/${id}`);
+}
+
+export async function downloadFile(id: string): Promise<Blob> {
+  const res = await authedFetch(`/v1/files/${id}/download`);
+  if (!res.ok) {
+    const { message, detail } = await extractErrorMessage(res);
+    throw new ApiError(res.status, message, detail);
+  }
+  return res.blob();
 }
 
 export async function uploadFile(file: File): Promise<FileOut> {

@@ -26,14 +26,15 @@ NOMBRES_PINNED = [
     "acceder_codigo_local",
     "diagnosticar_autorreparacion_local",
     "gestionar_autorreparacion_local",
+    "crear_artefactos",
 ]
 
 
 def test_get_all_tools_devuelve_las_herramientas_con_los_nombres_pinned():
     nombres = [tool.name for tool in get_all_tools()]
     assert nombres == NOMBRES_PINNED
-    assert len(nombres) == 21
-    assert len(set(nombres)) == 21  # sin duplicados
+    assert len(nombres) == 22
+    assert len(set(nombres)) == 22  # sin duplicados
 
 
 def test_cada_tool_tiene_name_description_e_input_schema_validos():

@@ -10,14 +10,11 @@ fase v2 definida en `ARCHITECTURE.md` §11; las dos de audio son de v5 (ver la s
 herramientas de `ARCHITECTURE.md` §10.14 es solo la de v1/`edecan_toolkit`; las herramientas
 nuevas de v2/v5 se fijan en `ARCHITECTURE.md` §11/§14 respectivamente, no ahí.
 
-> **Estado de integración:** el paquete está completo, probado y listo (`pytest`/`ruff`
-> en verde), pero **todavía no aparece en `[tool.uv.workspace].members`** del
-> `pyproject.toml` raíz ni en la lista de settings de `apps/api/edecan_api/config.py` —
-> ambos archivos todavía requieren integración compartida. Añadir
-> `"packages/creative"` a esa lista y correr `uv sync` es lo único que falta para que el
-> entry point `edecan.tools` lo descubra automáticamente en `apps/api`/`apps/worker`. El
-> propio código no necesita ningún cambio para eso: ya sigue el mismo patrón de
-> `packages/toolkit` en todo lo demás.
+> **Estado de integración:** el paquete forma parte del workspace raíz y de las dependencias
+> de la API. Sus herramientas se descubren automáticamente por el entry point `edecan.tools`.
+> Para solicitudes de varios formatos desde una sola frase, la ruta preferida es además
+> [`crear_artefactos`](./creador-universal.md), que reutiliza estos renderizadores y añade un
+> manifest común con evidencia por archivo.
 
 ## Las 6 herramientas
 

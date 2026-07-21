@@ -22,6 +22,7 @@ from .computadora import UsarComputadoraTool
 from .contactos import BuscarContactosTool, GestionarContactoTool
 from .contenido import GenerarContenidoTool, PublicarSocialTool
 from .correo import BuscarCorreoTool, EnviarCorreoTool
+from .creator import CrearArtefactosTool
 from .documentos import ConsultarDocumentosTool
 from .finanzas import RegistrarTransaccionTool, ResumenFinanzasTool
 from .recordatorios import CrearRecordatorioTool, ListarRecordatoriosTool
@@ -47,6 +48,7 @@ __all__ = [
     "ConfigurarCredencialTool",
     "ConsultarDocumentosTool",
     "CrearEventoTool",
+    "CrearArtefactosTool",
     "CrearRecordatorioTool",
     "EnviarCorreoTool",
     "GenerarContenidoTool",
@@ -90,4 +92,5 @@ def get_all_tools() -> list[Tool]:
         AccederCodigoLocalTool(),
         DiagnosticarAutorreparacionLocalTool(),
         GestionarAutorreparacionLocalTool(),
+        CrearArtefactosTool(),
     ]

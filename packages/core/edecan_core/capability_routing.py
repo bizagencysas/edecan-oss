@@ -387,10 +387,71 @@ _SELF_REPAIR_TOOL_NAMES = frozenset(
     }
 )
 
+_CREATION_ACTION_WORDS = frozenset(
+    {
+        "arma",
+        "construye",
+        "crea",
+        "creame",
+        "crear",
+        "genera",
+        "generar",
+        "haz",
+        "hazme",
+        "prepara",
+        "redacta",
+        "redactar",
+        "escribe",
+    }
+)
+_CREATION_FORMAT_WORDS = frozenset(
+    {
+        "app",
+        "apps",
+        "aplicacion",
+        "aplicaciones",
+        "copy",
+        "diapositivas",
+        "documento",
+        "documentos",
+        "docx",
+        "landing",
+        "pagina",
+        "paginas",
+        "pdf",
+        "post",
+        "posts",
+        "powerpoint",
+        "ppt",
+        "pptx",
+        "presentacion",
+        "presentaciones",
+        "scaffold",
+        "sitio",
+        "web",
+        "website",
+        "word",
+    }
+)
+_LEGACY_CREATOR_TOOL_NAMES = frozenset(
+    {"crear_documento", "crear_pdf", "crear_presentacion", "generar_contenido"}
+)
+_CREATION_READER_TOOL_NAMES = frozenset(
+    {
+        "comparar_precios",
+        "consultar_documentos",
+        "exportar_analisis",
+        "extraer_datos_web",
+        "extraer_tablas_pdf",
+        "navegar_web",
+    }
+)
+
 _ROUTED_TOOL_NAMES = frozenset().union(
     _ALWAYS_AVAILABLE,
     *(tool_names for _, tool_names in _FAMILIES),
     _SELF_REPAIR_TOOL_NAMES,
+    {"crear_artefactos"},
     {"configurar_credencial"},
 )
 
@@ -429,6 +490,20 @@ def select_tool_specs(
     for keywords, tool_names in _FAMILIES:
         if tokens.intersection(keywords):
             selected_names.update(tool_names)
+
+    creation_intent = bool(
+        tokens.intersection(_CREATION_ACTION_WORDS)
+        and tokens.intersection(_CREATION_FORMAT_WORDS)
+    )
+    publish_intent = bool(tokens.intersection({"publica", "publicalo", "publicar"}))
+    if creation_intent:
+        # Un único contrato produce todos los formatos y el manifest. Evita
+        # mezclar generadores legacy sin evidencia en una petición compuesta.
+        selected_names.difference_update(_LEGACY_CREATOR_TOOL_NAMES)
+        selected_names.difference_update(_CREATION_READER_TOOL_NAMES)
+        selected_names.add("crear_artefactos")
+        if not publish_intent:
+            selected_names.discard("publicar_social")
 
     create_image = bool(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})
@@ -521,6 +596,9 @@ Para peticiones compuestas, usa todas las capacidades pertinentes y conserva las
 independientes que sí puedas completar. No respondas "no puedo" antes de revisar esta escalera.
 Tampoco prometas que puedes hacer "cualquier cosa": si ningún nivel aplica, di exactamente qué
 capacidad o permiso falta. Nunca afirmes que una acción ocurrió sin un resultado real de tool.
+Al crear, no llames Word/PDF/PowerPoint/sitio/app a una respuesta de texto: usa el creador de
+artefactos y menciona solo archivos que su manifest marque como creados. Crear es privado y local;
+publicar o desplegar es un efecto externo separado y conserva su confirmación oficial.
 
 Una tool sensible se invoca una sola vez y el gate oficial debe ser la única pregunta de
 confirmación; no preguntes "¿quieres que lo haga?" justo antes de disparar ese mismo gate. Pide
@@ -553,6 +631,9 @@ For compound requests, use every relevant capability and preserve independent pa
 complete. Do not say "I can't" before checking this ladder. Do not promise "anything" either:
 state the exact missing capability or permission when no level applies. Never claim an action
 happened without a real tool result.
+For creation requests, never label plain text as Word, PDF, PowerPoint, a website, or an app. Use
+the artifact creator and mention only files marked as created by its manifest. Creation is private;
+publishing or deploying is a separate external effect that keeps its official confirmation gate.
 
 Invoke a sensitive tool once and let the official gate be the only confirmation question; do not
 ask "should I do it?" immediately before triggering the same gate. Ask for additional data only

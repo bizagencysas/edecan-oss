@@ -1,13 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Alert, Button, Card, CardBody, CardHeader, Field, Input, PageHeader } from "@/components/ui";
+import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, PageHeader } from "@/components/ui";
 import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
-import { API_BASE_URL, disableTotp, enableTotp, getCompanionPairCode, verifyTotp } from "@/lib/api";
+import {
+  API_BASE_URL,
+  disableTotp,
+  enableTotp,
+  getCompanionPairCode,
+  getPersona,
+  updatePersona,
+  verifyTotp,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDateTime } from "@/lib/format";
+import {
+  buildRelationshipPatch,
+  EXIT_ROMANTIC_PATCH,
+  RELATIONSHIP_STYLE_OPTIONS,
+} from "@/lib/relationship-style";
+import { PERSONA_DEFAULT, type RelationshipStyle } from "@/lib/types";
 
 export default function AjustesPage() {
   const { me, signOut } = useAuth();
@@ -27,6 +41,40 @@ export default function AjustesPage() {
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [pairBusy, setPairBusy] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
+
+  const [relationshipStyle, setRelationshipStyle] = useState<RelationshipStyle>(
+    PERSONA_DEFAULT.estilo_relacion,
+  );
+  const [adultConfirmed, setAdultConfirmed] = useState(false);
+  const [romanticConsent, setRomanticConsent] = useState(false);
+  const [relationshipLoading, setRelationshipLoading] = useState(true);
+  const [relationshipBusy, setRelationshipBusy] = useState(false);
+  const [relationshipError, setRelationshipError] = useState<string | null>(null);
+  const [relationshipSuccess, setRelationshipSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getPersona()
+      .then((persona) => {
+        if (!active) return;
+        setRelationshipStyle(persona.estilo_relacion);
+        setAdultConfirmed(persona.adulto_confirmado);
+        setRomanticConsent(persona.consentimiento_romantico);
+      })
+      .catch((err) => {
+        if (active) {
+          setRelationshipError(
+            err instanceof Error ? err.message : "No se pudo cargar esta preferencia.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setRelationshipLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function handleEnableTotp() {
     setTotpBusy(true);
@@ -93,11 +141,160 @@ export default function AjustesPage() {
     }
   }
 
+  function chooseRelationshipStyle(style: RelationshipStyle) {
+    setRelationshipStyle(style);
+    setRelationshipError(null);
+    setRelationshipSuccess(null);
+    if (style !== "romantico") {
+      setAdultConfirmed(false);
+      setRomanticConsent(false);
+    }
+  }
+
+  async function handleSaveRelationship(e: React.FormEvent) {
+    e.preventDefault();
+    setRelationshipBusy(true);
+    setRelationshipError(null);
+    setRelationshipSuccess(null);
+    try {
+      const patch = buildRelationshipPatch(
+        relationshipStyle,
+        adultConfirmed,
+        romanticConsent,
+      );
+      const updated = await updatePersona(patch);
+      setRelationshipStyle(updated.estilo_relacion);
+      setAdultConfirmed(updated.adulto_confirmado);
+      setRomanticConsent(updated.consentimiento_romantico);
+      setRelationshipSuccess("Guardado. Edecan usará este estilo desde tu próximo mensaje.");
+    } catch (err) {
+      setRelationshipError(
+        err instanceof Error ? err.message : "No se pudo guardar esta preferencia.",
+      );
+    } finally {
+      setRelationshipBusy(false);
+    }
+  }
+
+  async function handleExitRomantic() {
+    setRelationshipBusy(true);
+    setRelationshipError(null);
+    setRelationshipSuccess(null);
+    try {
+      const updated = await updatePersona(EXIT_ROMANTIC_PATCH);
+      setRelationshipStyle(updated.estilo_relacion);
+      setAdultConfirmed(false);
+      setRomanticConsent(false);
+      setRelationshipSuccess("Listo. El estilo romántico terminó inmediatamente.");
+    } catch (err) {
+      setRelationshipError(
+        err instanceof Error ? err.message : "No se pudo cambiar el estilo.",
+      );
+    } finally {
+      setRelationshipBusy(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader title="Ajustes" description="Cuenta, seguridad y dispositivos conectados." />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="Cómo quieres que Edecan te acompañe"
+            description="Elige un tono para el chat. Sigue siendo una IA y puedes cambiarlo o terminarlo cuando quieras."
+          />
+          <CardBody>
+            <form onSubmit={handleSaveRelationship} className="space-y-4">
+              {relationshipError && <Alert variant="error">{relationshipError}</Alert>}
+              {relationshipSuccess && <Alert variant="success">{relationshipSuccess}</Alert>}
+              <fieldset disabled={relationshipLoading || relationshipBusy}>
+                <legend className="sr-only">Estilo de acompañamiento</legend>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {RELATIONSHIP_STYLE_OPTIONS.map((option) => {
+                    const selected = relationshipStyle === option.value;
+                    return (
+                      <label
+                        key={option.value}
+                        className={`cursor-pointer rounded-xl border p-4 transition-colors ${
+                          selected
+                            ? "border-brand-500 bg-brand-50/70 ring-1 ring-brand-500 dark:bg-brand-950/30"
+                            : "border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600"
+                        }`}
+                      >
+                        <span className="flex items-start gap-3">
+                          <input
+                            type="radio"
+                            name="relationship_style"
+                            value={option.value}
+                            checked={selected}
+                            onChange={() => chooseRelationshipStyle(option.value)}
+                            className="mt-0.5 h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          <span>
+                            <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">
+                              {option.title}
+                            </span>
+                            <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">
+                              {option.description}
+                            </span>
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
+              {relationshipStyle === "romantico" && (
+                <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50/60 p-4 dark:border-rose-900 dark:bg-rose-950/20">
+                  <p className="text-sm text-slate-700 dark:text-slate-200">
+                    Este modo solo cambia el tono. Edecan no tiene conciencia, sentimientos ni amor real,
+                    no reemplaza relaciones humanas o ayuda profesional y nunca debe pedirte exclusividad.
+                  </p>
+                  <Checkbox
+                    checked={adultConfirmed}
+                    onChange={(e) => setAdultConfirmed(e.target.checked)}
+                    label="Confirmo que tengo 18 años o más."
+                  />
+                  <Checkbox
+                    checked={romanticConsent}
+                    onChange={(e) => setRomanticConsent(e.target.checked)}
+                    label="Quiero activar este tono y entiendo que Edecan es una IA."
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit"
+                  loading={relationshipBusy}
+                  disabled={
+                    relationshipLoading ||
+                    (relationshipStyle === "romantico" && (!adultConfirmed || !romanticConsent))
+                  }
+                >
+                  Guardar cómo me acompaña
+                </Button>
+                {relationshipStyle === "romantico" && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={handleExitRomantic}
+                    disabled={relationshipLoading}
+                  >
+                    Salir del estilo romántico ahora
+                  </Button>
+                )}
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Se guarda en tu perfil de Edecan; no necesita un servicio externo.
+                </p>
+              </div>
+            </form>
+          </CardBody>
+        </Card>
+
         <Card>
           <CardHeader title="Cuenta" />
           <CardBody className="space-y-2 text-sm">

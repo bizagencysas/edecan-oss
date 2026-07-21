@@ -69,6 +69,8 @@ export function SelectorLLM({
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("https://api.openai.com/v1");
   const [openaiKey, setOpenaiKey] = useState("");
+  const [openaiModelPrincipal, setOpenaiModelPrincipal] = useState("");
+  const [openaiModelRapido, setOpenaiModelRapido] = useState("");
   const [vertexKey, setVertexKey] = useState("");
   const [vertexAvanzado, setVertexAvanzado] = useState(false);
   const [vertexJson, setVertexJson] = useState("");
@@ -300,11 +302,46 @@ export function SelectorLLM({
               linkHref={ENLACE_OPENAI}
               disabled={ocupado}
             />
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Al conectar, Edecan consulta los modelos disponibles y fija automáticamente el mejor para trabajos complejos y uno rápido para tareas breves.
+            </p>
+            <details className="rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+              <summary className="cursor-pointer text-xs font-medium text-slate-600 dark:text-slate-300">
+                Elegir modelos manualmente
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Modelo principal" htmlFor="llm_openai_model_principal" hint="Déjalo vacío para elegirlo automáticamente.">
+                  <Input
+                    id="llm_openai_model_principal"
+                    value={openaiModelPrincipal}
+                    onChange={(e) => setOpenaiModelPrincipal(e.target.value)}
+                    placeholder="Automático"
+                    autoComplete="off"
+                    disabled={ocupado}
+                  />
+                </Field>
+                <Field label="Modelo rápido" htmlFor="llm_openai_model_rapido" hint="Si lo dejas vacío, Edecan elige uno disponible.">
+                  <Input
+                    id="llm_openai_model_rapido"
+                    value={openaiModelRapido}
+                    onChange={(e) => setOpenaiModelRapido(e.target.value)}
+                    placeholder="Automático"
+                    autoComplete="off"
+                    disabled={ocupado}
+                  />
+                </Field>
+              </div>
+            </details>
             <Feedback accion="openai_compat" />
             <Button
               size="sm"
               onClick={() =>
-                void conectar("openai_compat", "openai_compat", { api_key: openaiKey, base_url: openaiBaseUrl })
+                void conectar("openai_compat", "openai_compat", {
+                  api_key: openaiKey,
+                  base_url: openaiBaseUrl,
+                  model_principal: openaiModelPrincipal.trim() || undefined,
+                  model_rapido: openaiModelRapido.trim() || undefined,
+                })
               }
               loading={busyAccion === "openai_compat"}
               disabled={ocupado || !openaiKey.trim() || !openaiBaseUrl.trim()}

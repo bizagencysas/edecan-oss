@@ -133,6 +133,7 @@ from typing import Any
 
 import httpx
 from edecan_db.vault import TokenVault
+from edecan_llm import choose_discovered_models
 from edecan_schemas import TokenBundle
 from edecan_toolkit.research import BraveSearch, TavilySearch
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -350,26 +351,55 @@ async def _get_with_error_handling(
     return response
 
 
-async def _ping_anthropic(api_key: str) -> None:
-    await _get_with_error_handling(
+async def _ping_anthropic(api_key: str) -> dict[str, Any]:
+    response = await _get_with_error_handling(
         "https://api.anthropic.com/v1/models",
         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
         proveedor="Anthropic",
     )
+    return _json_object(response, "Anthropic")
 
 
-async def _ping_openai_compat(base_url: str, api_key: str | None) -> None:
+async def _ping_openai_compat(base_url: str, api_key: str | None) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     url = f"{base_url.rstrip('/')}/models"
-    await _get_with_error_handling(url, headers=headers, proveedor="el endpoint OpenAI-compatible")
+    response = await _get_with_error_handling(
+        url, headers=headers, proveedor="el endpoint OpenAI-compatible"
+    )
+    return _json_object(response, "el endpoint OpenAI-compatible")
 
 
-async def _ping_vertex_api_key(api_key: str) -> None:
-    await _get_with_error_handling(
+async def _ping_vertex_api_key(api_key: str) -> dict[str, Any]:
+    response = await _get_with_error_handling(
         "https://generativelanguage.googleapis.com/v1beta/models",
         params={"key": api_key},
         proveedor="Google AI (Gemini/Vertex)",
     )
+    return _json_object(response, "Google AI (Gemini/Vertex)")
+
+
+def _json_object(response: httpx.Response, proveedor: str) -> dict[str, Any]:
+    """Lee un catálogo de modelos validado sin aceptar HTML/JSON escalar.
+
+    Un ``200`` con una página de login no demuestra compatibilidad con el
+    contrato de modelos. Fallar aquí evita guardar una conexión que rompería
+    el primer turno; el cuerpo nunca se incluye para no filtrar datos del
+    proveedor.
+    """
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{proveedor} respondió, pero su catálogo de modelos no es JSON válido.",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{proveedor} respondió con un catálogo de modelos inválido.",
+        )
+    return payload
 
 
 async def _ping_vertex_service_account(service_account_json: str) -> None:
@@ -660,19 +690,40 @@ async def put_llm_credentials(
                 ),
             )
 
+    discovered_payload: dict[str, Any] | None = None
     if payload.validate_:
         if kind == "anthropic":
-            await _ping_anthropic(api_key)
+            discovered_payload = await _ping_anthropic(api_key)
         elif vertex_service_account:
             await _ping_vertex_service_account(payload.extra.get("service_account_json") or "")
         elif kind == "vertex":
-            await _ping_vertex_api_key(api_key)
+            discovered_payload = await _ping_vertex_api_key(api_key)
         elif kind == "openai_compat":
-            await _ping_openai_compat(base_url, api_key)
+            discovered_payload = await _ping_openai_compat(base_url, api_key)
         elif kind == "ollama":
             await _ping_ollama(base_url)
         elif kind in _CLI_BINARIES:
             await _ping_cli_binary(_CLI_BINARIES[kind])
+
+    # Si la persona no eligió IDs técnicos, fijamos una pareja exacta a partir
+    # de los modelos que SU credencial puede usar. Esto ocurre solo al conectar:
+    # no se introduce una llamada de red, ni un alias mutable, en cada turno.
+    if discovered_payload is not None and kind in {"anthropic", "openai_compat", "vertex"}:
+        choice = choose_discovered_models(kind, discovered_payload)
+        if choice is not None:
+            model_principal = model_principal or choice.principal
+            model_rapido = model_rapido or choice.rapido
+
+    if kind == "openai_compat" and not model_principal:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "El endpoint no anunció un modelo de conversación utilizable. "
+                "Indica el nombre exacto en model_principal (y, opcionalmente, "
+                "model_rapido)."
+            ),
+        )
+    model_rapido = model_rapido or model_principal
 
     config_dict = {
         "kind": kind,

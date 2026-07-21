@@ -145,6 +145,39 @@ public struct Usage: Codable, Sendable, Equatable {
     }
 }
 
+/// Un archivo creado por una herramienta durante el turno. La referencia
+/// nunca contiene una URL publica: ``APIClient/descargarArtefacto(_:)`` usa
+/// `fileId` contra el endpoint autenticado y limitado al tenant actual.
+public struct ArtifactRef: Codable, Sendable, Equatable, Identifiable {
+    public let fileId: String
+    public let filename: String
+    public let mime: String?
+
+    public var id: String { fileId }
+
+    enum CodingKeys: String, CodingKey {
+        case fileId = "file_id"
+        case filename, mime
+    }
+
+    public init(fileId: String, filename: String, mime: String? = nil) {
+        self.fileId = fileId
+        self.filename = filename
+        self.mime = mime
+    }
+}
+
+/// Bytes privados descargados para compartir/guardar con la hoja nativa.
+public struct DownloadedArtifact: Sendable, Equatable {
+    public let artifact: ArtifactRef
+    public let data: Data
+
+    public init(artifact: ArtifactRef, data: Data) {
+        self.artifact = artifact
+        self.data = data
+    }
+}
+
 /// Un evento del stream SSE de `POST /v1/conversations/{id}/messages` (y de
 /// `POST .../confirm`), decodificado por el campo `"type"` del `data:` de
 /// cada bloque SSE — exactamente el `AgentEvent` de `ARCHITECTURE.md` §10.7
@@ -155,13 +188,13 @@ public struct Usage: Codable, Sendable, Equatable {
 public enum ChatEvent: Decodable, Sendable, Equatable {
     case textDelta(text: String)
     case toolStart(name: String, args: [String: JSONValue])
-    case toolEnd(name: String, resultPreview: String)
+    case toolEnd(name: String, resultPreview: String, artifacts: [ArtifactRef])
     case confirmationRequired(toolCallId: String, name: String, args: [String: JSONValue])
     case done(usage: Usage?)
     case error(message: String)
 
     enum CodingKeys: String, CodingKey {
-        case type, text, name, args, usage, message
+        case type, text, name, args, usage, message, artifacts
         case resultPreview = "result_preview"
         case toolCallId = "tool_call_id"
     }
@@ -180,7 +213,8 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
         case "tool_end":
             self = .toolEnd(
                 name: try container.decode(String.self, forKey: .name),
-                resultPreview: try container.decode(String.self, forKey: .resultPreview)
+                resultPreview: try container.decode(String.self, forKey: .resultPreview),
+                artifacts: try container.decodeIfPresent([ArtifactRef].self, forKey: .artifacts) ?? []
             )
         case "confirmation_required":
             self = .confirmationRequired(

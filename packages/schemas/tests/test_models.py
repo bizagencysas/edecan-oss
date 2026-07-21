@@ -17,6 +17,9 @@ def test_persona_config_defaults_exactos():
     assert p.rasgos == []
     assert p.memoria_activada is True
     assert p.voice_id is None
+    assert p.estilo_relacion == "profesional"
+    assert p.adulto_confirmado is False
+    assert p.consentimiento_romantico is False
 
 
 def test_persona_config_formalidad_fuera_de_rango_falla():
@@ -34,6 +37,31 @@ def test_persona_config_rasgos_no_comparte_lista_mutable_entre_instancias():
     b = PersonaConfig()
     a.rasgos.append("curioso")
     assert b.rasgos == []
+
+
+def test_persona_config_romantica_exige_adulto_y_consentimiento():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="mayoría de edad"):
+        PersonaConfig(estilo_relacion="romantico")
+    with pytest.raises(ValidationError, match="mayoría de edad"):
+        PersonaConfig(estilo_relacion="romantico", adulto_confirmado=True)
+
+    romantica = PersonaConfig(
+        estilo_relacion="romantico",
+        adulto_confirmado=True,
+        consentimiento_romantico=True,
+    )
+    assert romantica.estilo_relacion == "romantico"
+
+
+def test_persona_config_no_conserva_consentimiento_fuera_de_romantico():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="solo se guardan"):
+        PersonaConfig(estilo_relacion="amigo", consentimiento_romantico=True)
 
 
 def test_tenant_out_roundtrip():

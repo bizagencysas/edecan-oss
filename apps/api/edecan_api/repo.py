@@ -126,6 +126,7 @@ class Repo(Protocol):
     ) -> Row: ...
     async def get_membership(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row | None: ...
     async def get_first_membership_for_user(self, user_id: uuid.UUID) -> Row | None: ...
+    async def get_first_user_id_for_tenant(self, tenant_id: uuid.UUID) -> uuid.UUID | None: ...
 
     # -- personas -----------------------------------------------------------
     async def create_persona_default(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row: ...
@@ -161,6 +162,49 @@ class Repo(Protocol):
     async def list_messages(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID, limit: int = 50
     ) -> list[Row]: ...
+
+    # -- llamadas como canal conversacional -----------------------------------
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        status: str = "draft",
+        provider_call_sid: str | None = None,
+    ) -> Row: ...
+    async def list_phone_calls(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
+    ) -> list[Row]: ...
+    async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None: ...
+    async def get_phone_call_by_provider_sid(self, *, provider_call_sid: str) -> Row | None: ...
+    async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None: ...
+    async def update_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None: ...
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Row: ...
+    async def list_phone_call_events(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> list[Row]: ...
+
+    # -- consentimiento de destinatarios --------------------------------------
+    async def has_phone_consent(
+        self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str
+    ) -> bool: ...
+    async def grant_phone_consent(
+        self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str, source: str
+    ) -> Row: ...
 
     # -- uso / cuotas ---------------------------------------------------------
     async def add_usage_event(
@@ -456,6 +500,17 @@ class SqlRepo:
             {"user_id": user_id},
         )
 
+    async def get_first_user_id_for_tenant(self, tenant_id: uuid.UUID) -> uuid.UUID | None:
+        row = await self._first(
+            """
+            SELECT user_id FROM memberships
+            WHERE tenant_id = :tenant_id
+            ORDER BY created_at ASC LIMIT 1
+            """,
+            {"tenant_id": tenant_id},
+        )
+        return row["user_id"] if row is not None else None
+
     # -- personas -------------------------------------------------------------
 
     async def create_persona_default(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
@@ -464,10 +519,11 @@ class SqlRepo:
             INSERT INTO personas (
                 id, tenant_id, user_id, nombre_asistente, idioma, tono, formalidad,
                 emojis, instrucciones, rasgos, memoria_activada, voice_id,
+                estilo_relacion, adulto_confirmado, consentimiento_romantico,
                 created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, 'Edecán', 'es', 'cálido y profesional', 1,
-                false, '', :rasgos, true, NULL,
+                false, '', :rasgos, true, NULL, 'profesional', false, false,
                 :now, :now
             )
             RETURNING *
@@ -509,6 +565,9 @@ class SqlRepo:
             "rasgos",
             "memoria_activada",
             "voice_id",
+            "estilo_relacion",
+            "adulto_confirmado",
+            "consentimiento_romantico",
         }
         clean = {k: v for k, v in fields.items() if k in allowed}
         if existing is None:
@@ -665,6 +724,176 @@ class SqlRepo:
             {"tenant_id": tenant_id, "conversation_id": conversation_id, "limit": limit},
         )
         return rows
+
+    # -- llamadas como canal conversacional -----------------------------------
+
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        status: str = "draft",
+        provider_call_sid: str | None = None,
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO phone_calls (
+                id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
+                goal, status, provider, provider_call_sid, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
+                :to_e164, :goal, :status, 'twilio', :provider_call_sid, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "direction": direction,
+                "from_e164": from_e164,
+                "to_e164": to_e164,
+                "goal": goal,
+                "status": status,
+                "provider_call_sid": provider_call_sid,
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def list_phone_calls(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
+    ) -> list[Row]:
+        return await self._all(
+            """
+            SELECT * FROM phone_calls
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+            ORDER BY created_at DESC LIMIT :limit
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id, "limit": limit},
+        )
+
+    async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None:
+        return await self._first(
+            "SELECT * FROM phone_calls WHERE tenant_id = :tenant_id AND id = :id",
+            {"tenant_id": tenant_id, "id": call_id},
+        )
+
+    async def get_phone_call_by_provider_sid(self, *, provider_call_sid: str) -> Row | None:
+        return await self._first(
+            "SELECT * FROM phone_calls WHERE provider_call_sid = :provider_call_sid",
+            {"provider_call_sid": provider_call_sid},
+        )
+
+    async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None:
+        """Lookup sin tenant solo para webhooks firmados, usando repo plataforma."""
+        return await self._first(
+            "SELECT * FROM phone_calls WHERE id = :id", {"id": call_id}
+        )
+
+    async def update_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None:
+        allowed = {
+            "status",
+            "provider_call_sid",
+            "confirmed_at",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+            "error",
+        }
+        clean = {key: value for key, value in fields.items() if key in allowed}
+        if not clean:
+            return await self.get_phone_call(tenant_id=tenant_id, call_id=call_id)
+        set_clause = ", ".join(f"{key} = :{key}" for key in clean)
+        return await self._first(
+            f"UPDATE phone_calls SET {set_clause}, updated_at = :now "
+            "WHERE tenant_id = :tenant_id AND id = :id RETURNING *",
+            {**clean, "tenant_id": tenant_id, "id": call_id, "now": _now()},
+        )
+
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO phone_call_events (
+                id, tenant_id, call_id, event_type, payload, occurred_at, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :call_id, :event_type, :payload ::jsonb, :now, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "call_id": call_id,
+                "event_type": event_type,
+                "payload": _j(payload or {}),
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def list_phone_call_events(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> list[Row]:
+        return await self._all(
+            """
+            SELECT * FROM phone_call_events
+            WHERE tenant_id = :tenant_id AND call_id = :call_id
+            ORDER BY occurred_at ASC, created_at ASC
+            """,
+            {"tenant_id": tenant_id, "call_id": call_id},
+        )
+
+    async def has_phone_consent(self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str) -> bool:
+        row = await self._first(
+            """
+            SELECT id FROM consents
+            WHERE tenant_id = :tenant_id AND phone_e164 = :phone_e164
+              AND kind = :kind AND revoked_at IS NULL
+            ORDER BY granted_at DESC LIMIT 1
+            """,
+            {"tenant_id": tenant_id, "phone_e164": phone_e164, "kind": kind},
+        )
+        return row is not None
+
+    async def grant_phone_consent(
+        self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str, source: str
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO consents (
+                id, tenant_id, phone_e164, kind, granted_at, revoked_at, source,
+                created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :phone_e164, :kind, :now, NULL, :source, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "phone_e164": phone_e164,
+                "kind": kind,
+                "source": source,
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
 
     # -- uso / cuotas -----------------------------------------------------------
 

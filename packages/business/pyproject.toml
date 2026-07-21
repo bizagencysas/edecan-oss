@@ -1,6 +1,6 @@
 [project]
 name = "edecan-business"
-version = "0.3.0"
+version = "0.4.0"
 description = "Business invoicing, PDF generation, and KPI tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

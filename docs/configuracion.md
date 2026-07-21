@@ -167,7 +167,7 @@ Bearer normal. Forma REAL de la respuesta (verificada contra `apps/api/edecan_ap
 routers/setup.py::get_setup_status`, no asumida):
 
 ```json
-{"local_mode": false, "llm_configured": false, "version": "0.3.0"}
+{"local_mode": false, "llm_configured": false, "version": "0.4.0"}
 ```
 
 - `local_mode` — `true` solo si el proceso arrancó con `EDECAN_LOCAL_MODE=true` (lo fija

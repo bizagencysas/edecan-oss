@@ -32,6 +32,31 @@ class _FakeS3Client:
             kwargs["Body"] = body.read()
         self._calls.append(kwargs)
 
+    def _object(self, key: str) -> dict:
+        for call in self._calls:
+            if call.get("Key") == key:
+                return call
+        raise RuntimeError("objeto no encontrado")
+
+    async def head_object(self, **kwargs) -> dict:
+        stored = self._object(kwargs["Key"])
+        return {"ContentLength": len(stored["Body"])}
+
+    async def get_object(self, **kwargs) -> dict:
+        stored = self._object(kwargs["Key"])
+        return {"Body": _FakeStreamingBody(stored["Body"])}
+
+
+class _FakeStreamingBody:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._offset = 0
+
+    async def read(self, size: int) -> bytes:
+        chunk = self._data[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
 
 class _FakeAioboto3Session:
     def __init__(self, calls: list[dict]) -> None:
@@ -141,6 +166,58 @@ async def test_get_unknown_file_returns_404(client) -> None:
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     response = await client.get(f"/v1/files/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 404
+
+
+async def test_download_file_streams_private_object_with_safe_headers(client, monkeypatch) -> None:
+    import edecan_api.routers.files as files_module
+
+    s3_calls: list[dict] = []
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=[])
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    uploaded = await client.post(
+        "/v1/files",
+        files={"file": ("reporte final.pdf", b"PDF-REAL", "application/pdf")},
+        headers=headers,
+    )
+    file_id = uploaded.json()["id"]
+
+    response = await client.get(f"/v1/files/{file_id}/download", headers=headers)
+
+    assert response.status_code == 200
+    assert response.content == b"PDF-REAL"
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.headers["content-disposition"] == (
+        "attachment; filename*=UTF-8''reporte%20final.pdf"
+    )
+    assert response.headers["content-length"] == str(len(b"PDF-REAL"))
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_download_file_never_crosses_tenants(client, monkeypatch) -> None:
+    import edecan_api.routers.files as files_module
+
+    s3_calls: list[dict] = []
+    _patch_s3_and_queue(monkeypatch, files_module, s3_calls=s3_calls, enqueue_calls=[])
+    tenant_a = uuid.uuid4()
+    uploaded = await client.post(
+        "/v1/files",
+        files={"file": ("privado.txt", b"secreto", "text/plain")},
+        headers=auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_a),
+    )
+
+    response = await client.get(
+        f"/v1/files/{uploaded.json()['id']}/download",
+        headers=auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4()),
+    )
+
+    assert response.status_code == 404
+
+
+async def test_download_file_requires_authentication(client) -> None:
+    response = await client.get(f"/v1/files/{uuid.uuid4()}/download")
+    assert response.status_code == 401
 
 
 async def test_upload_rejects_file_above_configured_hard_limit(

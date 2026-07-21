@@ -51,9 +51,7 @@ class _ScriptedAgent:
         self.llm_router = llm_router
         self.registry = registry
 
-    async def run_turn(
-        self, *, ctx, persona, history, user_text, flags, extra_tools=None
-    ):
+    async def run_turn(self, *, ctx, persona, history, user_text, flags, extra_tools=None):
         type(self).capturas.append(extra_tools)
         yield {"type": "text_delta", "text": "ok"}
         yield {"type": "done", "usage": {}}
@@ -91,7 +89,13 @@ async def test_extra_tool_mcp_visible_con_flag_on(client, monkeypatch) -> None:
     response = await _post_message(client, headers, conversation_id)
 
     assert response.status_code == 200
-    assert _ScriptedAgent.capturas == [[fake_tool]]
+    assert len(_ScriptedAgent.capturas) == 1
+    assert [tool.name for tool in _ScriptedAgent.capturas[0] or []] == [
+        "configurar_estilo_relacion",
+        "activar_estilo_romantico",
+        "salir_estilo_romantico",
+        fake_tool.name,
+    ]
 
 
 async def test_extra_tool_mcp_invisible_con_flag_off(client, monkeypatch) -> None:
@@ -106,9 +110,7 @@ async def test_extra_tool_mcp_invisible_con_flag_off(client, monkeypatch) -> Non
     async def _fake_get_mcp_tools_vacio(request: Any, current_user: Any) -> list[Any]:
         return []
 
-    monkeypatch.setattr(
-        conversations_module, "get_mcp_tools_for_tenant", _fake_get_mcp_tools_vacio
-    )
+    monkeypatch.setattr(conversations_module, "get_mcp_tools_for_tenant", _fake_get_mcp_tools_vacio)
 
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
@@ -116,7 +118,12 @@ async def test_extra_tool_mcp_invisible_con_flag_off(client, monkeypatch) -> Non
     response = await _post_message(client, headers, conversation_id)
 
     assert response.status_code == 200
-    assert _ScriptedAgent.capturas == [[]]
+    assert len(_ScriptedAgent.capturas) == 1
+    assert [tool.name for tool in _ScriptedAgent.capturas[0] or []] == [
+        "configurar_estilo_relacion",
+        "activar_estilo_romantico",
+        "salir_estilo_romantico",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +156,12 @@ async def test_chat_sobrevive_si_get_mcp_tools_for_tenant_lanza(client, monkeypa
     # El turno NO se cae con un 500 — sigue, sin las tools MCP de esta vuelta.
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert _ScriptedAgent.capturas == [[]]
+    assert len(_ScriptedAgent.capturas) == 1
+    assert [tool.name for tool in _ScriptedAgent.capturas[0] or []] == [
+        "configurar_estilo_relacion",
+        "activar_estilo_romantico",
+        "salir_estilo_romantico",
+    ]
     assert "event: message.done" in response.text
 
 
@@ -219,9 +231,7 @@ async def test_confirm_404_si_ni_el_registry_ni_las_extra_tools_la_tienen(
     async def _fake_get_mcp_tools_vacio(request: Any, current_user: Any) -> list[Any]:
         return []
 
-    monkeypatch.setattr(
-        conversations_module, "get_mcp_tools_for_tenant", _fake_get_mcp_tools_vacio
-    )
+    monkeypatch.setattr(conversations_module, "get_mcp_tools_for_tenant", _fake_get_mcp_tools_vacio)
 
     tenant_id = uuid.uuid4()
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")

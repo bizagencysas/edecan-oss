@@ -29,7 +29,26 @@ struct ChatEventTests {
 
     @Test func toolEnd() throws {
         let evento = try decodificar(#"{"type":"tool_end","name":"agenda_eventos","result_preview":"2 eventos encontrados"}"#)
-        #expect(evento == .toolEnd(name: "agenda_eventos", resultPreview: "2 eventos encontrados"))
+        #expect(evento == .toolEnd(name: "agenda_eventos", resultPreview: "2 eventos encontrados", artifacts: []))
+    }
+
+    @Test func toolEndConArtefactosDescargables() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_end","name":"crear_pdf","result_preview":"PDF listo","artifacts":[{"file_id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"propuesta.pdf","mime":"application/pdf"}]}"#
+        )
+        #expect(
+            evento == .toolEnd(
+                name: "crear_pdf",
+                resultPreview: "PDF listo",
+                artifacts: [
+                    ArtifactRef(
+                        fileId: "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+                        filename: "propuesta.pdf",
+                        mime: "application/pdf"
+                    )
+                ]
+            )
+        )
     }
 
     @Test func confirmationRequired() throws {

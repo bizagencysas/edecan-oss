@@ -246,8 +246,8 @@ def test_vertex_sin_modelos_en_config_ni_settings_usa_default_hardcodeado() -> N
     _, principal = router.resolve("principal", {"models.premium": True})
     _, rapido = router.resolve("rapido", {})
 
-    assert principal == "gemini-2.5-pro"
-    assert rapido == "gemini-2.5-flash"
+    assert principal == "gemini-3.5-flash"
+    assert rapido == "gemini-3.1-flash-lite"
 
 
 def test_vertex_degrada_a_rapido_sin_flag_premium() -> None:
@@ -258,7 +258,7 @@ def test_vertex_degrada_a_rapido_sin_flag_premium() -> None:
 
     _, model = router.resolve("principal", {"models.premium": False})
 
-    assert model == "gemini-2.5-flash"
+    assert model == "gemini-3.1-flash-lite"
 
 
 # --- claude_cli / codex_cli ------------------------------------------------------

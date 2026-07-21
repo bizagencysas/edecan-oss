@@ -578,7 +578,7 @@ wheels = [
 
 [[package]]
 name = "edecan-ads"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/ads" }
 dependencies = [
     { name = "edecan-core" },
@@ -609,7 +609,7 @@ dev = [
 
 [[package]]
 name = "edecan-advisory"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/advisory" }
 dependencies = [
     { name = "aioboto3" },
@@ -650,7 +650,7 @@ dev = [
 
 [[package]]
 name = "edecan-agents"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/agents" }
 dependencies = [
     { name = "edecan-core" },
@@ -681,7 +681,7 @@ dev = [
 
 [[package]]
 name = "edecan-api"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "apps/api" }
 dependencies = [
     { name = "aioboto3" },
@@ -778,7 +778,7 @@ dev = [
 
 [[package]]
 name = "edecan-automations"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/automations" }
 dependencies = [
     { name = "edecan-core" },
@@ -811,7 +811,7 @@ dev = [
 
 [[package]]
 name = "edecan-browser"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/browser" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -855,7 +855,7 @@ dev = [
 
 [[package]]
 name = "edecan-business"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/business" }
 dependencies = [
     { name = "aioboto3" },
@@ -894,7 +894,7 @@ dev = [
 
 [[package]]
 name = "edecan-commerce"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/commerce" }
 dependencies = [
     { name = "edecan-core" },
@@ -929,7 +929,7 @@ dev = [
 
 [[package]]
 name = "edecan-companion"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "apps/companion" }
 dependencies = [
     { name = "pyyaml" },
@@ -963,7 +963,7 @@ dev = [
 
 [[package]]
 name = "edecan-connectors"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/connectors" }
 dependencies = [
     { name = "edecan-schemas" },
@@ -992,7 +992,7 @@ dev = [
 
 [[package]]
 name = "edecan-core"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aioboto3" },
@@ -1027,7 +1027,7 @@ dev = [
 
 [[package]]
 name = "edecan-creative"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/creative" }
 dependencies = [
     { name = "aioboto3" },
@@ -1074,7 +1074,7 @@ dev = [
 
 [[package]]
 name = "edecan-db"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/db" }
 dependencies = [
     { name = "alembic" },
@@ -1115,7 +1115,7 @@ dev = [
 
 [[package]]
 name = "edecan-docanalysis"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/docanalysis" }
 dependencies = [
     { name = "aioboto3" },
@@ -1156,7 +1156,7 @@ dev = [
 
 [[package]]
 name = "edecan-evals"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "edecan-core" },
@@ -1189,7 +1189,7 @@ dev = [
 
 [[package]]
 name = "edecan-llm"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/llm" }
 dependencies = [
     { name = "httpx" },
@@ -1225,7 +1225,7 @@ dev = [
 
 [[package]]
 name = "edecan-local"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "apps/local" }
 dependencies = [
     { name = "alembic" },
@@ -1271,7 +1271,7 @@ dev = [
 
 [[package]]
 name = "edecan-mcp"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "edecan-core" },
@@ -1302,7 +1302,7 @@ dev = [
 
 [[package]]
 name = "edecan-meetings"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/meetings" }
 dependencies = [
     { name = "edecan-core" },
@@ -1333,7 +1333,7 @@ dev = [
 
 [[package]]
 name = "edecan-messaging"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/messaging" }
 dependencies = [
     { name = "edecan-core" },
@@ -1368,7 +1368,7 @@ dev = [
 
 [[package]]
 name = "edecan-schemas"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/schemas" }
 dependencies = [
     { name = "pydantic" },
@@ -1379,7 +1379,7 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.6,<3" }]
 
 [[package]]
 name = "edecan-skills"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/skills" }
 dependencies = [
     { name = "edecan-core" },
@@ -1410,7 +1410,7 @@ dev = [
 
 [[package]]
 name = "edecan-smarthome"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/smarthome" }
 dependencies = [
     { name = "edecan-core" },
@@ -1439,11 +1439,12 @@ dev = [
 
 [[package]]
 name = "edecan-toolkit"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/toolkit" }
 dependencies = [
     { name = "edecan-connectors" },
     { name = "edecan-core" },
+    { name = "edecan-creative" },
     { name = "edecan-db" },
     { name = "edecan-llm" },
     { name = "edecan-schemas" },
@@ -1462,6 +1463,7 @@ dev = [
 requires-dist = [
     { name = "edecan-connectors", editable = "packages/connectors" },
     { name = "edecan-core", editable = "packages/core" },
+    { name = "edecan-creative", editable = "packages/creative" },
     { name = "edecan-db", editable = "packages/db" },
     { name = "edecan-llm", editable = "packages/llm" },
     { name = "edecan-schemas", editable = "packages/schemas" },
@@ -1478,7 +1480,7 @@ dev = [
 
 [[package]]
 name = "edecan-travel"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/travel" }
 dependencies = [
     { name = "edecan-core" },
@@ -1509,7 +1511,7 @@ dev = [
 
 [[package]]
 name = "edecan-vehicles"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/vehicles" }
 dependencies = [
     { name = "edecan-core" },
@@ -1540,7 +1542,7 @@ dev = [
 
 [[package]]
 name = "edecan-voice"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/voice" }
 dependencies = [
     { name = "aioboto3" },
@@ -1559,7 +1561,7 @@ requires-dist = [
 
 [[package]]
 name = "edecan-worker"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "aioboto3" },
@@ -1646,7 +1648,7 @@ dev = [
 
 [[package]]
 name = "edecan-workspace"
-version = "0.3.0"
+version = "0.4.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

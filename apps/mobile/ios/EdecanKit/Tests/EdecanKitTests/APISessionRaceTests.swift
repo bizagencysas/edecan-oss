@@ -4,6 +4,30 @@ import Testing
 
 @Suite(.serialized)
 struct APISessionRaceTests {
+    @Test func descargaArtefactoUsaRutaPrivadaYBearerSinRedReal() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-privado", refresh: "refresh-privado")
+        let bytes = Data("contenido-pdf-sintetico".utf8)
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/files/018f7f4c-07f4-7ed0-93c8-cf0525d1092b/download")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-privado")
+            return (200, bytes)
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+        let artifact = ArtifactRef(
+            fileId: "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+            filename: "propuesta.pdf",
+            mime: "application/pdf"
+        )
+
+        let downloaded = try await api.descargarArtefacto(artifact)
+
+        #expect(downloaded == DownloadedArtifact(artifact: artifact, data: bytes))
+    }
+
     @Test func refreshAusenteTambienNotificaExpiracionSinTocarLaRed() async throws {
         let tokens = LockedAuthTokenStore(access: "access-sin-refresh", refresh: nil)
         let expiration = AsyncFlag()

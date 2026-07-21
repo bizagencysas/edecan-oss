@@ -63,12 +63,18 @@ from sqlalchemy import text as sql_text
 from edecan_voice import cloning
 from edecan_voice.base import TTSProvider
 from edecan_voice.stubs import StubTTS
+from edecan_voice.telephony import (
+    TelephonyError,
+    normalize_e164,
+    normalize_goal,
+)
 from edecan_voice.tenant import resolver_config_tts_del_tenant, resolver_tts_del_tenant
 
 logger = logging.getLogger(__name__)
 
 # Ver docstring del módulo: misma capacidad que `/v1/voice/{transcribe,speak}`.
 _FLAG_VOICE_WEB = "voice.web"
+_FLAG_VOICE_TELEPHONY = "voice.telephony"
 
 # Cuota de plan de esa MISMA capacidad — ver docstring del módulo ("Cuota
 # mensual de voz"). String/sentinel locales en vez de
@@ -382,8 +388,67 @@ class SintetizarVozTool(Tool):
         )
 
 
+class LlamarContactoTool(Tool):
+    """Llama solo después del gate `dangerous` del turno y del consentimiento vigente."""
+
+    name = "llamar_contacto"
+    description = (
+        "Prepara y realiza una llamada telefónica real desde el número Twilio conectado por "
+        "el usuario. Requiere mostrar y confirmar explícitamente el número internacional y "
+        "el objetivo exacto antes de ejecutarse; también exige consentimiento de voz vigente "
+        "del destinatario. La llamada y su transcripción continúan en la misma conversación."
+    )
+    requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
+    dangerous = True
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "telefono_e164": {
+                "type": "string",
+                "description": "Destino internacional exacto, por ejemplo +573001234567.",
+            },
+            "objetivo": {
+                "type": "string",
+                "description": "Qué debe conseguir Edecan durante la llamada.",
+            },
+        },
+        "required": ["telefono_e164", "objetivo"],
+    }
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        try:
+            destination = normalize_e164(args.get("telefono_e164"))
+            goal = normalize_goal(args.get("objetivo"))
+        except ValueError as exc:
+            return ToolResult(content=str(exc))
+
+        extras = ctx.extras if isinstance(ctx.extras, dict) else {}
+        dispatcher = extras.get("phone_call_dispatcher")
+        if not callable(dispatcher):
+            return ToolResult(
+                content=(
+                    "La telefonía todavía no está conectada a este proceso de Edecan. "
+                    "Reinicia la app después de configurar Twilio."
+                )
+            )
+        try:
+            data = await dispatcher(to_e164=destination, goal=goal)
+        except TelephonyError as exc:
+            return ToolResult(content=f"No pude iniciar la llamada: {exc}")
+        return ToolResult(
+            content=(
+                f"La llamada a {destination} quedó iniciada con el objetivo confirmado: {goal}. "
+                "Puedes seguir su estado y transcripción en Actividad."
+            ),
+            data={
+                key: str(value) if isinstance(value, uuid.UUID) else value
+                for key, value in data.items()
+            },
+        )
+
+
 def get_all_tools() -> list[Tool]:
-    """Instancia las 2 herramientas de voz avanzada. Consumido por
+    """Instancia las herramientas de voz y llamada. Consumido por
     `edecan_voice.__init__.get_all_tools` — entry point
     `[project.entry-points."edecan.tools"]` en `pyproject.toml`."""
-    return [ListarVocesTool(), SintetizarVozTool()]
+    return [ListarVocesTool(), SintetizarVozTool(), LlamarContactoTool()]

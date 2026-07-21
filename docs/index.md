@@ -7,6 +7,7 @@ Esta carpeta es la documentación extendida del proyecto. La experiencia visible
 | Documento | Para qué sirve |
 |---|---|
 | [`producto-assistant-first.md`](./producto-assistant-first.md) | Contrato de producto: Edecan, Actividad y Ajustes; órdenes compuestas; recuperación conversacional; skills locales y autorreparación reversible. |
+| [`estilos-de-acompanamiento.md`](./estilos-de-acompanamiento.md) | Estilos profesional, coach, amigo y romántico; transparencia de IA, consentimiento adulto y salida inmediata. |
 | [`autorreparacion-local.md`](./autorreparacion-local.md) | Cómo Edecan diagnostica un límite, crea una skill local o prepara una reparación Git aislada, probada y reversible. |
 | [`primeros-pasos.md`](./primeros-pasos.md) | Guía corta para pasar de cero a una primera tarea real. |
 | [`roadmap.md`](./roadmap.md) | Estado público actual, prioridades, criterios de salida y límites deliberados. |
@@ -62,6 +63,7 @@ de montaje defensivo para capacidades opcionales.
 | [`analista.md`](./analista.md) | Analista total: XLSX/CSV/PDF/DOCX/PPTX, estadística, gráficos, visión (OCR/descripción de imágenes), predicción de series y detección de anomalías; desde v6 también como pantalla propia (`/v1/analista`, sin LLM). | fase v2 |
 | [`navegador.md`](./navegador.md) | Navegador de investigación: fetch headless, extracción legible, comparación de precios. Jamás compra ni llena formularios. | fase v2 |
 | [`creatividad.md`](./creatividad.md) | Generación de imágenes y documentos de oficina (DOCX/PPTX/PDF), más podcasts y efectos de sonido con el TTS bring-your-own del tenant. | fase v2 |
+| [`creador-universal.md`](./creador-universal.md) | Una frase produce posts, Word, PDF, PowerPoint, páginas y scaffolds de apps reales con workspace, manifest y SHA-256. | v0.4 |
 | [`mensajeria.md`](./mensajeria.md) | Telegram, Slack y Discord oficiales por tenant; por qué WhatsApp/Signal quedan fuera por ahora. | fase v2 |
 | [`agentes.md`](./agentes.md) | Orchestrator + misiones: los 3 sub-agentes reales y los 13 perfiles declarados del ecosistema. | fase v2 |
 | [`automatizaciones.md`](./automatizaciones.md) | Reglas disparador→acción (agenda/webhook → instrucción de agente). | fase v2 |

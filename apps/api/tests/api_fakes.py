@@ -32,6 +32,9 @@ class FakeRepo:
         self.personas: dict[tuple[uuid.UUID, uuid.UUID], Row] = {}
         self.conversations: dict[uuid.UUID, Row] = {}
         self.messages: dict[uuid.UUID, list[Row]] = {}
+        self.phone_calls: dict[uuid.UUID, Row] = {}
+        self.phone_call_events: dict[uuid.UUID, list[Row]] = {}
+        self.phone_consents: list[Row] = []
         self.usage_events: list[Row] = []
         self.memory_items: dict[uuid.UUID, Row] = {}
         self.connector_accounts: dict[uuid.UUID, Row] = {}
@@ -146,6 +149,13 @@ class FakeRepo:
         )
         return dict(matches[0]) if matches else None
 
+    async def get_first_user_id_for_tenant(self, tenant_id: uuid.UUID) -> uuid.UUID | None:
+        matches = sorted(
+            (row for row in self.memberships if row["tenant_id"] == tenant_id),
+            key=lambda row: row["created_at"],
+        )
+        return matches[0]["user_id"] if matches else None
+
     # -- personas -----------------------------------------------------------
 
     async def create_persona_default(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
@@ -162,6 +172,9 @@ class FakeRepo:
             "rasgos": [],
             "memoria_activada": True,
             "voice_id": None,
+            "estilo_relacion": "profesional",
+            "adulto_confirmado": False,
+            "consentimiento_romantico": False,
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -208,6 +221,136 @@ class FakeRepo:
         ]
         rows.sort(key=lambda r: r["created_at"], reverse=True)
         return [dict(r) for r in rows]
+
+    # -- llamadas como canal conversacional -----------------------------------
+
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        status: str = "draft",
+        provider_call_sid: str | None = None,
+    ) -> Row:
+        row: Row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "direction": direction,
+            "from_e164": from_e164,
+            "to_e164": to_e164,
+            "goal": goal,
+            "status": status,
+            "provider": "twilio",
+            "provider_call_sid": provider_call_sid,
+            "confirmed_at": None,
+            "started_at": None,
+            "ended_at": None,
+            "duration_seconds": None,
+            "error": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.phone_calls[row["id"]] = row
+        self.phone_call_events[row["id"]] = []
+        return dict(row)
+
+    async def list_phone_calls(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
+    ) -> list[Row]:
+        rows = [
+            row
+            for row in self.phone_calls.values()
+            if row["tenant_id"] == tenant_id and row["user_id"] == user_id
+        ]
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        return [dict(row) for row in rows[:limit]]
+
+    async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None:
+        row = self.phone_calls.get(call_id)
+        return dict(row) if row is not None and row["tenant_id"] == tenant_id else None
+
+    async def get_phone_call_by_provider_sid(self, *, provider_call_sid: str) -> Row | None:
+        for row in self.phone_calls.values():
+            if row.get("provider_call_sid") == provider_call_sid:
+                return dict(row)
+        return None
+
+    async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None:
+        row = self.phone_calls.get(call_id)
+        return dict(row) if row is not None else None
+
+    async def update_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None:
+        row = self.phone_calls.get(call_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return None
+        row.update(fields)
+        row["updated_at"] = _now()
+        return dict(row)
+
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Row:
+        row: Row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "call_id": call_id,
+            "event_type": event_type,
+            "payload": payload or {},
+            "occurred_at": _now(),
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.phone_call_events.setdefault(call_id, []).append(row)
+        return dict(row)
+
+    async def list_phone_call_events(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> list[Row]:
+        return [
+            dict(row)
+            for row in self.phone_call_events.get(call_id, [])
+            if row["tenant_id"] == tenant_id
+        ]
+
+    async def has_phone_consent(self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str) -> bool:
+        return any(
+            row["tenant_id"] == tenant_id
+            and row["phone_e164"] == phone_e164
+            and row["kind"] == kind
+            and row.get("revoked_at") is None
+            for row in self.phone_consents
+        )
+
+    async def grant_phone_consent(
+        self, *, tenant_id: uuid.UUID, phone_e164: str, kind: str, source: str
+    ) -> Row:
+        row: Row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "phone_e164": phone_e164,
+            "kind": kind,
+            "source": source,
+            "granted_at": _now(),
+            "revoked_at": None,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.phone_consents.append(row)
+        return dict(row)
 
     async def get_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID

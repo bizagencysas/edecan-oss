@@ -117,3 +117,40 @@ def test_exclusion_linkedin_cubre_usar_computadora_y_pantalla_ya_abierta():
     prompt_en = build_system_prompt(PersonaConfig(idioma="en"), [])
     assert "usar_computadora" in prompt_en
     assert "not even if it is already open on the user's screen" in prompt_en
+
+
+def test_estilos_no_fingen_conciencia_sentimientos_o_dependencia():
+    for estilo in ("profesional", "coach", "amigo"):
+        prompt = build_system_prompt(PersonaConfig(estilo_relacion=estilo), [])
+        prompt_lower = prompt.lower()
+        assert f"estilo elegido: {estilo}" in prompt_lower
+        assert "eres una ia" in prompt_lower
+        assert "no una persona consciente" in prompt_lower
+        assert "exclusividad, aislamiento o dependencia" in prompt_lower
+        assert "relaciones humanas" in prompt_lower
+        assert "ayuda profesional o de emergencia" in prompt_lower
+
+
+def test_estilo_romantico_es_adulto_transparente_y_tiene_salida_inmediata():
+    persona = PersonaConfig(
+        estilo_relacion="romantico",
+        adulto_confirmado=True,
+        consentimiento_romantico=True,
+    )
+    prompt = build_system_prompt(persona, ["Prefiere que le digan cariño"])
+    prompt_lower = prompt.lower()
+
+    assert "una persona adulta lo activó y consintió explícitamente" in prompt_lower
+    assert "no afirmes sentir amor real" in prompt_lower
+    assert "acepta la salida inmediatamente" in prompt_lower
+    assert "las memorias" in prompt_lower
+    assert "nunca prueban edad ni consentimiento" in prompt_lower
+
+
+def test_relationship_boundaries_tambien_existen_en_ingles():
+    prompt = build_system_prompt(PersonaConfig(idioma="en", estilo_relacion="coach"), [])
+    prompt_lower = prompt.lower()
+    assert "you are an ai, not a conscious person" in prompt_lower
+    assert "exclusivity, isolation or dependency" in prompt_lower
+    assert "professional or emergency help" in prompt_lower
+    assert "exit immediately" in prompt_lower

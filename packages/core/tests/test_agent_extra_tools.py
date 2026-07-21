@@ -203,6 +203,53 @@ async def test_extra_tool_no_dangerous_se_ejecuta_de_punta_a_punta() -> None:
     assert isinstance(events[-1], DoneEvent)
 
 
+async def test_tool_end_expone_solo_referencias_seguras_de_archivos() -> None:
+    file_id = uuid4()
+    manifest_id = uuid4()
+    extra = ExtraTool(
+        result=ToolResult(
+            content="archivo creado",
+            data={
+                "file_id": str(file_id),
+                "filename": "../reporte privado.pdf",
+                "mime": "application/pdf",
+                "secret": "nunca sale en el evento",
+                "manifest": {
+                    "file_id": str(manifest_id),
+                    "filename": "manifest.json",
+                    "mime": "application/json",
+                },
+            },
+        )
+    )
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("call-archivo", "mcp_acme_buscar", {})],
+            [text_chunk("Aquí tienes el archivo.")],
+        ]
+    )
+    agent = Agent(FakeLLMRouter(provider), ToolRegistry())
+
+    events = await _collect(
+        agent,
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="crea el reporte",
+        flags={},
+        extra_tools=[extra],
+    )
+
+    tool_end = next(e for e in events if isinstance(e, ToolEndEvent))
+    assert len(tool_end.artifacts) == 2
+    assert tool_end.artifacts[0].file_id == file_id
+    assert tool_end.artifacts[0].filename == "reporte privado.pdf"
+    assert tool_end.artifacts[0].mime == "application/pdf"
+    assert tool_end.artifacts[1].file_id == manifest_id
+    assert tool_end.artifacts[1].filename == "manifest.json"
+    assert "secret" not in tool_end.model_dump_json()
+
+
 # ---------------------------------------------------------------------------
 # dangerous pide confirmación, y la reanudación (segunda llamada a run_turn
 # con approved_tool_calls) la ejecuta — igual que cualquier tool del registry.

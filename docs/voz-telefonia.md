@@ -1,19 +1,19 @@
 # Voz y telefonía
 
-Edecán separa dos capacidades distintas, con distinto costo de operación y distinto riesgo legal: **voz web** (núcleo, gratuita) y **telefonía** (extensión comercial externa `edecan_premium`, no incluida en este repositorio). Este documento explica la diferencia técnica y, sobre todo, el checklist de cumplimiento **obligatorio** antes de que cualquier instancia (self-host o hosted) haga una sola llamada o envíe un solo SMS saliente de verdad.
+Edecán incluye dos canales OSS del mismo asistente: **voz web** y **telefonía real con Twilio**. La telefonía entrante y saliente, su herramienta de chat, la confirmación humana, los webhooks y el historial de actividad viven en este repositorio. La extensión opcional `edecan_premium` queda como integración legada para SMS, campañas y Media Streams; no es necesaria para las llamadas OSS descritas aquí.
 
 > Este documento describe el diseño técnico y una lista de controles legales conocidos, **no es asesoría legal**. Las leyes de telemarketing, protección al consumidor y grabación de llamadas varían por país y por estado/provincia, y cambian con el tiempo. Antes de operar campañas reales de voz/SMS —especialmente salientes y a escala— consulta a un abogado en cada jurisdicción donde tengas destinatarios.
 
 ## Voz web vs. telefonía — comparación rápida
 
-| | Voz web (`voice.web`) | Telefonía (`voice.telephony`, extensión externa) |
+| | Voz web (`voice.web`) | Telefonía OSS (`voice.telephony`) |
 |---|---|---|
-| Paquete | Núcleo (`edecan_voice`, Apache-2.0) | `edecan_premium` (licencia comercial, distribución separada) |
-| Qué es | Push-to-talk en el navegador: hablas, se transcribe, el agente responde, se sintetiza en audio | Llamadas y SMS reales por teléfono, con número propio del tenant |
+| Paquete | Núcleo (`edecan_voice`, Apache-2.0) | Núcleo (`edecan_voice.telephony` + router `/v1/phone`) |
+| Qué es | Push-to-talk en el navegador: hablas, se transcribe, el agente responde, se sintetiza en audio | Llamadas entrantes y salientes por teléfono, con número propio del tenant |
 | Credenciales | **Del propio tenant** (Deepgram/ElevenLabs), conectadas en `/v1/credentials/voice/{stt,tts}` y cifradas en el `TokenVault` — sin credencial propia cae directo a `stub` offline, NUNCA a una clave de plataforma en `.env` (ver [`credenciales.md`](./credenciales.md), fase v3). Polly es la excepción: no tiene credencial propia del tenant (se autentica con la identidad AWS del proceso), así que solo se acepta con `EDECAN_LOCAL_MODE=true` (self-host de un único tenant) — ver `credenciales.md`. | Cuenta de Twilio **del propio tenant**, conectada vía el panel, cifrada en el `TokenVault` |
-| Endpoints | `POST /v1/voice/transcribe`, `POST /v1/voice/speak` | `POST /v1/voice/twilio/{incoming,gather,sms,status}` (webhooks TwiML) + `WS /v1/twilio/media` (Media Streams, beta opt-in — ver "Interrupciones naturales (beta)" más abajo) |
+| Endpoints | `POST /v1/voice/transcribe`, `POST /v1/voice/speak` | API autenticada `/v1/phone/calls/*` + webhooks firmados `/v1/phone/twilio/*` |
 | Riesgo legal | Bajo — el usuario inicia la interacción voluntariamente en su propia sesión | Alto si no hay consentimiento/horario/opt-out — puede implicar sanciones regulatorias (ver checklist abajo) |
-| Disponible en | Todos los planes (incluido `free_selfhost`) | Solo `hosted_pro`/`hosted_business` (u operadores self-host que instalen `edecan_premium` bajo su propia licencia comercial) |
+| Disponible en | Planes con `voice.web` | Planes con `voice.telephony`; el costo del proveedor va a la cuenta Twilio del tenant |
 
 ## Voz web (núcleo)
 
@@ -81,17 +81,38 @@ Si el paso 4 del flujo de arriba falla (el tenant no tenía ElevenLabs conectado
 - **Registro operativo, no evidencia legal**: a diferencia de `voice_consents` (arriba, nunca se pierde en un rollback), la fila `podcasts` no necesita ese mismo cuidado — si `POST /v1/voz/podcasts` falla encolando el job justo después de insertar la fila, el rollback automático se lleva la fila entera (todo o nada): nunca queda una fila `'pending'` huérfana que ningún job vaya a procesar.
 - **Limitación conocida**: si la síntesis/ensamblado y la subida a S3 tienen éxito pero la escritura de Postgres que sigue (`INSERT INTO files`/marcar `'done'`) falla por un blip de conectividad, el handler intenta un best-effort de borrar el objeto de S3 recién subido (nunca bloquea el `status='error'` ni la excepción real si el propio borrado también falla) — pero un reintento del job de todas formas vuelve a sintetizar TODO el guion desde cero (gasto real si el proveedor es de pago): no hay una clave de idempotencia por segmento. Detalle en el docstring de `generate_podcast.py`, sección "Audio huérfano en S3...".
 
-## Telefonía (premium)
+## Telefonía OSS funcional
 
-La telefonía real —llamadas y SMS a números de teléfono, entrantes o salientes— pertenece a la extensión comercial externa `edecan_premium` y usa **Twilio por tenant** (`ARCHITECTURE.md` §4 y §10.10):
+La implementación actual usa **la cuenta Twilio del propio tenant**: Account SID, Auth Token y número se guardan cifrados en `TokenVault` bajo el conector `twilio`. No existe una cuenta Twilio compartida de plataforma.
 
-- Cada tenant conecta **su propia cuenta de Twilio** (Account SID + Auth Token) desde el panel; nunca hay una cuenta de Twilio compartida de la plataforma. Se guarda cifrada en el `TokenVault` bajo el connector key `"twilio"` (`TokenBundle.access_token` = Auth Token, `scopes` = `[ACCOUNT_SID]`).
-- `edecan_premium.telephony.TwilioTenantClient.start_call(...)` y `.send_sms(...)` son el **único** punto de salida de llamadas/SMS del sistema, y **exigen** los controles del checklist de abajo antes de ejecutar nada — no hay una vía alterna que los salte.
-- Los webhooks entrantes de Twilio (`POST /v1/voice/twilio/incoming`, `/gather`, `/sms`, `/status`) validan estrictamente el header `X-Twilio-Signature` para descartar solicitudes falsificadas.
-- Las **campañas** (`campaigns` + `campaign_targets`, flag de plan `campaigns`) las procesa `edecan_premium.campaigns.handle(...)`: hasta 10 destinatarios por paso del job, re-encolando el resto — cada destinatario individual sigue pasando por los mismos controles de consentimiento/horario que una llamada o SMS suelto.
-- Toda llamada y SMS deja rastro en `audit_log` (quién/qué/cuándo) y en `usage_events` (para medición de plan y facturación).
+### Llamada saliente desde una frase
+
+1. El agente invoca la herramienta peligrosa `llamar_contacto` con número E.164 y objetivo.
+2. Edecán valida el flag `voice.telephony`, la conexión Twilio y el consentimiento `voice` vigente del número.
+3. Se crea un borrador en `phone_calls`; **todavía no se contacta a Twilio**.
+4. La app muestra el número y el objetivo exactos. El humano debe confirmar ambos. También puede cancelar el borrador desde **Actividad**.
+5. La confirmación y el evento de auditoría se confirman en PostgreSQL antes del primer efecto externo. Solo entonces se solicita la llamada a Twilio.
+6. Los callbacks firmados actualizan `queued`, `ringing`, `in_progress` y el estado terminal. Las transiciones son monótonas: un callback tardío nunca revive una llamada terminada.
+
+La API equivalente es `POST /v1/phone/calls/prepare` y luego `POST /v1/phone/calls/{id}/confirm` con `confirmed_destination=true` y `confirmed_goal=true`. `GET /v1/phone/calls` y `GET /v1/phone/calls/{id}` exponen estado, eventos y transcripción; `DELETE /v1/phone/calls/{id}` cancela solo borradores.
+
+### Llamadas entrantes y continuidad segura
+
+Configura en el número Twilio el webhook de voz `POST {PUBLIC_BASE_URL}/v1/phone/twilio/incoming`. Los demás callbacks se construyen desde `PUBLIC_BASE_URL`:
+
+- `POST /v1/phone/twilio/calls/{id}/voice` — saludo de una llamada saliente.
+- `POST /v1/phone/twilio/calls/{id}/gather` — turnos conversacionales con `<Gather input="speech">`.
+- `POST /v1/phone/twilio/calls/{id}/status` — estado y duración.
+
+Todos validan `X-Twilio-Signature`. La conversación telefónica conserva el nombre, idioma, tono y formalidad configurados del asistente, pero usa un hilo `channel="phone"` separado: un interlocutor externo no recibe memorias, instrucciones privadas, rasgos ni el estilo de relación del propietario. Los turnos y errores seguros quedan en `phone_call_events` y se consultan desde **Actividad**. `PHONE_MAX_TURNS` (default `8`) acota cada llamada. No se activa grabación.
+
+### Límites actuales
+
+El núcleo OSS usa TwiML `<Say>` + `<Gather>`: conversa por turnos y no permite interrumpir al asistente mientras habla. SMS, campañas y Media Streams con *barge-in* siguen perteneciendo a la extensión opcional legada `edecan_premium`. Ninguna prueba automatizada realiza llamadas reales.
 
 ## Interrupciones naturales (beta)
+
+> Esta sección documenta la extensión opcional legada `edecan_premium`. No forma parte del flujo OSS `/v1/phone/*`.
 
 **Qué hace.** El ciclo de voz de siempre (`/incoming` → `<Say>` + `<Gather input="speech">` → `/gather` → turno del agente → nuevo `<Gather>`) es estrictamente por turnos: mientras Twilio reproduce la respuesta del bot, no escucha nada — si quien llama empieza a hablar encima, Twilio lo descarta. **Interrupciones naturales** cambia esto usando [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams) en vez de `<Gather>`: un WebSocket bidireccional (`WS /v1/twilio/media`, módulo externo `edecan_premium.media_streams`) por el que Twilio manda el audio del llamante en vivo (μ-law 8 kHz, 20 ms por mensaje) y nosotros mandamos de vuelta la voz del bot en el mismo formato. Un detector de actividad de voz por energía (`VadEnergia`, puro Python, sin ML) decide cuándo el llamante terminó de hablar (para transcribir y responder) y, más importante: si detecta que el llamante **vuelve a hablar mientras el bot todavía está reproduciendo su respuesta**, corta esa reproducción al instante (evento `clear` del protocolo de Twilio) — el llamante puede interrumpir al bot igual que interrumpiría a una persona, en vez de tener que esperar a que termine de hablar.
 
@@ -162,6 +183,8 @@ aunque con su propia credencial) no se mide en `usage_events` —
 apto para esto sin una migración nueva.
 
 ## Checklist legal para operar llamadas y SMS
+
+> Las referencias de esta sección a `TwilioTenantClient`, SMS y campañas corresponden a la extensión opcional legada. El núcleo OSS actual no ofrece SMS ni campañas: solo llamadas individuales con consentimiento previo y doble confirmación. Antes de usar esas llamadas con fines comerciales, el operador sigue siendo responsable de aplicar los controles jurisdiccionales de horario, identificación y baja que correspondan.
 
 Estos seis controles son condiciones **obligatorias** de diseño, no opcionales de configuración. Aplican tanto a llamadas/SMS individuales como a pasos de campaña.
 

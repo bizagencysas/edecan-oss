@@ -31,6 +31,10 @@ const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
     "local del repo. No va a hacer 'git push' ni tocar GitHub por su cuenta -- pero revisa " +
     "igual el comando/contenido exacto de abajo antes de aprobar, sobre todo si es " +
     "'ejecutar_comando' o 'git_commit'.",
+  llamar_contacto:
+    "Esto iniciará una llamada real y puede tener costo en tu cuenta de Twilio. " +
+    "Comprueba el número internacional y el objetivo exacto que aparecen abajo. " +
+    "Aprueba solo si reconoces a la persona y tienes su consentimiento para recibir la llamada.",
 };
 
 export function ConfirmationCard({

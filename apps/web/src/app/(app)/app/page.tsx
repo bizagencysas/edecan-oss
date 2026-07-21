@@ -31,6 +31,7 @@ type SpeakState = "loading" | "playing" | null;
 
 const STARTER_REQUESTS = [
   "Organiza mis pendientes para hoy",
+  "Crea un PDF, un Word y una presentación desde esta idea",
   "Revisa este documento y dime lo importante",
   "Recuérdame pagar mañana",
 ];
@@ -275,6 +276,7 @@ export default function ChatPage() {
     let text = "";
     let counter = 0;
     const events: ToolEvent[] = [];
+    const toolLog: AgentEvent[] = [];
     return (event: AgentEvent) => {
       switch (event.type) {
         case "text_delta":
@@ -282,14 +284,21 @@ export default function ChatPage() {
           setStreamingText(text);
           break;
         case "tool_start": {
+          toolLog.push(event);
           events.push({ callKey: `${event.name}-${counter++}`, name: event.name, args: event.args, status: "running" });
           setToolEvents([...events]);
           break;
         }
         case "tool_end": {
+          toolLog.push(event);
           const idx = events.findIndex((e) => e.name === event.name && e.status === "running");
           if (idx !== -1) {
-            events[idx] = { ...events[idx], status: "done", resultPreview: event.result_preview };
+            events[idx] = {
+              ...events[idx],
+              status: "done",
+              resultPreview: event.result_preview,
+              artifacts: event.artifacts ?? [],
+            };
             setToolEvents([...events]);
           }
           break;
@@ -305,7 +314,7 @@ export default function ChatPage() {
                 id: `local-${Date.now()}`,
                 role: "assistant",
                 content: { text },
-                tool_calls: null,
+                tool_calls: toolLog.length > 0 ? toolLog : null,
                 tokens_in: event.usage.input_tokens ?? 0,
                 tokens_out: event.usage.output_tokens ?? 0,
                 created_at: new Date().toISOString(),

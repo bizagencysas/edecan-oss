@@ -92,6 +92,9 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test
+
       - name: Test security-header configuration
         run: npm run test:config
 

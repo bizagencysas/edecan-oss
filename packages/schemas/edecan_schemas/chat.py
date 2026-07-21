@@ -9,6 +9,7 @@ SSE (`message.delta`, `tool.start`, `tool.end`, `confirmation.required`,
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
@@ -30,10 +31,19 @@ class ToolStartEvent(BaseModel):
     args: dict
 
 
+class ArtifactRef(BaseModel):
+    """Archivo privado creado por una tool y descargable por su dueño."""
+
+    file_id: UUID
+    filename: str = Field(min_length=1, max_length=255)
+    mime: str | None = Field(default=None, max_length=255)
+
+
 class ToolEndEvent(BaseModel):
     type: Literal["tool_end"] = "tool_end"
     name: str
     result_preview: str
+    artifacts: list[ArtifactRef] = Field(default_factory=list, max_length=20)
 
 
 class PendingToolCall(BaseModel):

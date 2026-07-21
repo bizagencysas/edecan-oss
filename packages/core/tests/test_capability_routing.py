@@ -35,6 +35,11 @@ ALL_SPECS = [
     _spec("crear_factura"),
     _spec("registrar_salud"),
     _spec("preparar_pago", "Prepara un borrador de pago."),
+    _spec("crear_artefactos", "Crea archivos y proyectos reales con manifest."),
+    _spec("crear_pdf", "Crea un PDF."),
+    _spec("crear_presentacion", "Crea PowerPoint."),
+    _spec("generar_contenido", "Redacta texto."),
+    _spec("publicar_social", "Publica contenido en una red conectada."),
 ]
 
 
@@ -144,3 +149,25 @@ def test_guidance_english_preserva_los_mismos_limites():
     assert "never ask them to choose a module" in guidance
     assert 'Do not promise "anything"' in guidance
     assert "official gate be the only confirmation" in guidance
+
+
+def test_creacion_compuesta_usa_un_solo_creator_con_manifest() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea un post, Word, PDF, PowerPoint, página web y una app completa.",
+    )
+    names = {spec.name for spec in selected}
+    assert "crear_artefactos" in names
+    assert {
+        "crear_documento",
+        "crear_pdf",
+        "crear_presentacion",
+        "generar_contenido",
+    }.isdisjoint(names)
+    assert "publicar_social" not in names
+
+
+def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
+    selected = select_tool_specs(ALL_SPECS, "Crea un post y publícalo en X.")
+    names = {spec.name for spec in selected}
+    assert {"crear_artefactos", "publicar_social", "configurar_credencial"} <= names

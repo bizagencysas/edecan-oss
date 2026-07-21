@@ -100,6 +100,10 @@ private data class SessionSnapshot(val epoch: Long, val accessToken: String?)
 
 private data class LogoutCredentials(val accessToken: String?, val refreshToken: String?)
 
+/** Bytes privados listos para guardar temporalmente y compartir con Android.
+ * La capa shared no escribe archivos ni conoce `Context`. */
+data class DownloadedArtifact(val artifact: ArtifactRef, val bytes: ByteArray)
+
 // --- Misiones (`/v1/missions/*`, WP-V5-07) ---------------------------------
 
 @Serializable
@@ -398,6 +402,14 @@ class EdecanApi private constructor(
     /** `POST /v1/conversations`. `titulo` es opcional, igual que en la API. */
     suspend fun createConversation(titulo: String? = null): Conversation =
         conAutoRefresh { enviar("/v1/conversations", CrearConversacionBody(titulo)) }
+
+    /** `GET /v1/files/{id}/download` autenticado. Conserva los bytes en
+     * memoria; `androidApp` decide cuando escribirlos en su cache privado y
+     * abrir el share intent. */
+    suspend fun downloadArtifact(artifact: ArtifactRef): DownloadedArtifact {
+        val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/download") }
+        return DownloadedArtifact(artifact, bytes)
+    }
 
     // -------------------------------------------------------------------
     // Negocios (`/v1/negocios/*` — pestaña Negocios)
@@ -817,6 +829,16 @@ class EdecanApi private constructor(
             http.get(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
         }
         return manejarRespuestaAutenticada(response)
+    }
+
+    private suspend fun descargarBytes(path: String): ByteArray {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.get(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+        return response.body()
     }
 
     private suspend inline fun <reified B, reified R> enviar(path: String, body: B): R {

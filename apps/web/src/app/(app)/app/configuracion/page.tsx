@@ -287,7 +287,7 @@ export default function ConfiguracionPage() {
                   Telefonía (Twilio)
                 </span>
               }
-              description="Cuenta de Twilio propia (Account SID + Auth Token) para llamadas y SMS — telefonía premium por tenant."
+              description="Tu propia cuenta de Twilio (Account SID + Auth Token) para llamadas del asistente; las credenciales se cifran por cuenta."
             />
             <CardBody>
               <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">

@@ -134,3 +134,33 @@ test("omite recordatorios cancelados y limita el historial reciente", () => {
   assert.equal(overview.recent[0].title, "Misión 11");
   assert.equal(overview.recent.some((item) => item.title === "Cancelado"), false);
 });
+
+test("integra llamadas pendientes, activas y terminadas en la misma actividad", () => {
+  const common = {
+    conversation_id: "conversation",
+    direction: "outgoing",
+    from_e164: "+573001111111",
+    to_e164: "+573002222222",
+    goal: "Confirmar la cita",
+    confirmed_at: null,
+    started_at: null,
+    ended_at: null,
+    duration_seconds: null,
+    error: null,
+    created_at: "2026-07-20T10:00:00Z",
+    updated_at: "2026-07-20T10:00:00Z",
+  };
+  const overview = buildActivityOverview({
+    missions: [],
+    reminders: [],
+    automations: [],
+    calls: [
+      { ...common, id: "draft", status: "draft" },
+      { ...common, id: "active", status: "in_progress" },
+      { ...common, id: "done", status: "completed" },
+    ],
+  });
+  assert.equal(overview.attention[0].statusLabel, "Confirma la llamada");
+  assert.equal(overview.current[0].statusLabel, "En llamada");
+  assert.equal(overview.recent[0].statusLabel, "Finalizada");
+});

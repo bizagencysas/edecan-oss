@@ -21,6 +21,7 @@ import json
 import logging
 import shutil
 from collections.abc import AsyncIterator
+from tempfile import TemporaryDirectory
 
 from .base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
 from .errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
@@ -31,6 +32,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 300
 INSTALL_URL = "https://github.com/openai/codex"
 _AUTH_HINTS = ("login", "auth", "api key")
+_ISOLATION_PROMPT = (
+    "Estás actuando únicamente como el motor de decisión de Edecan. "
+    "No inspecciones archivos, no ejecutes comandos, no uses herramientas internas "
+    "de Codex y no intentes producir artefactos por tu cuenta. Si la solicitud "
+    "necesita una herramienta de Edecan, devuelve solamente la llamada JSON que "
+    "aparece en las instrucciones siguientes; Edecan la ejecutará y validará fuera "
+    "de este proceso."
+)
+
+# `codex exec` es un agente de código completo, no un endpoint de inferencia
+# desnudo. Sin estos límites puede obedecer una petición como "crea un PDF"
+# escribiendo directamente en el repositorio del servidor, saltándose el
+# ToolContext, las confirmaciones y el workspace aislado de Edecan.
+_ISOLATION_ARGS = (
+    "--ephemeral",
+    "--ignore-user-config",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--disable",
+    "shell_tool",
+    "--disable",
+    "unified_exec",
+    "--disable",
+    "apps",
+    "--disable",
+    "browser_use",
+    "--disable",
+    "computer_use",
+    "--disable",
+    "image_generation",
+    "--disable",
+    "multi_agent",
+)
 
 
 class CodexCLIProvider(LLMProvider):
@@ -85,33 +120,40 @@ class CodexCLIProvider(LLMProvider):
         return args
 
     async def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise CLINotInstalledError(
-                f"Codex CLI no está instalado en {self._binary_path!r}. "
-                f"Instálalo (ver {INSTALL_URL}).",
-                provider=self.name,
-            ) from exc
+        # Un directorio vacío evita que Codex cargue AGENTS.md/código del repo
+        # anfitrión. El sandbox read-only es una segunda barrera: aunque el
+        # modelo ignore la instrucción, no puede escribir fuera del protocolo.
+        with TemporaryDirectory(prefix="edecan-codex-") as isolated_workdir:
+            isolated_args = [*args, *_ISOLATION_ARGS, "-C", isolated_workdir]
+            isolated_prompt = f"{_ISOLATION_PROMPT}\n\n{prompt}"
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *isolated_args,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError as exc:
+                raise CLINotInstalledError(
+                    f"Codex CLI no está instalado en {self._binary_path!r}. "
+                    f"Instálalo (ver {INSTALL_URL}).",
+                    provider=self.name,
+                ) from exc
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(prompt.encode("utf-8")), timeout=self._timeout_seconds
-            )
-        except TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise LLMError(
-                f"Codex CLI no respondió en {self._timeout_seconds}s. Si tu "
-                "máquina o el modelo elegido son lentos, sube "
-                "LLM_CLI_TIMEOUT_SECONDS.",
-                provider=self.name,
-            ) from exc
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(isolated_prompt.encode("utf-8")),
+                    timeout=self._timeout_seconds,
+                )
+            except TimeoutError as exc:
+                process.kill()
+                await process.wait()
+                raise LLMError(
+                    f"Codex CLI no respondió en {self._timeout_seconds}s. Si tu "
+                    "máquina o el modelo elegido son lentos, sube "
+                    "LLM_CLI_TIMEOUT_SECONDS.",
+                    provider=self.name,
+                ) from exc
 
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -209,7 +251,14 @@ def _extract_last_agent_message(stdout: str) -> tuple[str, Usage, bool]:
             )
 
         event_type = str(event.get("type", "")).lower()
-        type_hints_message = "message" in event_type or "agent" in event_type
+        item = event.get("item")
+        item_type = str(item.get("type", "")).lower() if isinstance(item, dict) else ""
+        type_hints_message = (
+            "message" in event_type
+            or "agent" in event_type
+            or "message" in item_type
+            or "agent" in item_type
+        )
         has_message_field = bool(event.get("message"))
         if not type_hints_message and not has_message_field:
             continue
@@ -248,4 +297,17 @@ def _extract_text(event: dict) -> str | None:
                 )
                 if joined:
                     return joined
+
+    # Codex CLI 0.144+ envuelve los mensajes finales así:
+    # {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+    # Solo aceptamos el item si su propio tipo confirma que es un mensaje;
+    # errores/progreso no deben terminar como texto visible del asistente.
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_type = str(item.get("type", "")).lower()
+        if "message" in item_type or "agent" in item_type:
+            for key in ("text", "content"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return value
     return None

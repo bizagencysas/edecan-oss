@@ -2,6 +2,10 @@
 
 package cc.edecan.app.ui
 
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,21 +41,30 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.FileProvider
 import cc.edecan.app.ui.components.EmptyState
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.ChatViewModel
 import cc.edecan.app.vm.ConfirmacionPendiente
 import cc.edecan.app.vm.MensajeUi
 import cc.edecan.app.vm.SessionViewModel
+import cc.edecan.shared.ArtifactRef
+import cc.edecan.shared.DownloadedArtifact
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Superficie principal "Edecan" — lista de mensajes, input y envío hacia
@@ -70,6 +83,10 @@ fun ChatScreen(
     val sessionState by sessionViewModel.uiState.collectAsState()
     val chatState by chatViewModel.uiState.collectAsState()
     var textoActual by remember { mutableStateOf("") }
+    var artefactoDescargandoId by remember { mutableStateOf<String?>(null) }
+    var errorArtefacto by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     LaunchedEffect(chatState.mensajes.size, chatState.mensajes.lastOrNull()?.texto) {
@@ -108,7 +125,32 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(chatState.mensajes, key = { it.id }) { mensaje -> BurbujaMensaje(mensaje) }
+                        items(chatState.mensajes, key = { it.id }) { mensaje ->
+                            BurbujaMensaje(
+                                mensaje = mensaje,
+                                artefactoDescargandoId = artefactoDescargandoId,
+                                onAbrirArtefacto = { artefacto ->
+                                    val api = sessionViewModel.api ?: return@BurbujaMensaje
+                                    if (artefactoDescargandoId != null) return@BurbujaMensaje
+                                    artefactoDescargandoId = artefacto.fileId
+                                    errorArtefacto = null
+                                    coroutineScope.launch {
+                                        try {
+                                            val descarga = api.downloadArtifact(artefacto)
+                                            val uri = withContext(Dispatchers.IO) {
+                                                guardarArtefactoEnCache(context, descarga)
+                                            }
+                                            compartirArtefacto(context, descarga.artifact, uri)
+                                        } catch (error: Exception) {
+                                            errorArtefacto = "No se pudo descargar ${artefacto.filename}: " +
+                                                (error.message ?: "error desconocido")
+                                        } finally {
+                                            artefactoDescargandoId = null
+                                        }
+                                    }
+                                },
+                            )
+                        }
                         chatState.herramientaActiva?.let { nombre ->
                             item(key = "herramienta-activa") { IndicadorHerramienta(nombre) }
                         }
@@ -128,7 +170,7 @@ fun ChatScreen(
                 )
             }
 
-            chatState.errorMensaje?.let { error ->
+            (errorArtefacto ?: chatState.errorMensaje)?.let { error ->
                 Text(
                     error,
                     color = MaterialTheme.colorScheme.error,
@@ -258,10 +300,15 @@ internal fun TarjetaConfirmacion(
 }
 
 @Composable
-private fun BurbujaMensaje(mensaje: MensajeUi) {
+private fun BurbujaMensaje(
+    mensaje: MensajeUi,
+    artefactoDescargandoId: String?,
+    onAbrirArtefacto: (ArtifactRef) -> Unit,
+) {
     val esUsuario = mensaje.rol == MensajeUi.Rol.USUARIO
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (esUsuario) Arrangement.End else Arrangement.Start) {
-        Box(
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier
                 .widthIn(max = 300.dp)
                 .clip(RoundedCornerShape(18.dp))
@@ -274,11 +321,29 @@ private fun BurbujaMensaje(mensaje: MensajeUi) {
                     color = if (esUsuario) Color.White else MaterialTheme.colorScheme.primary,
                     strokeWidth = 2.dp,
                 )
-            } else {
+            } else if (mensaje.texto.isNotEmpty()) {
                 Text(
                     mensaje.texto,
                     color = if (esUsuario) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (!esUsuario) {
+                mensaje.artefactos.forEach { artefacto ->
+                    OutlinedButton(
+                        onClick = { onAbrirArtefacto(artefacto) },
+                        enabled = artefactoDescargandoId == null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (artefactoDescargandoId == artefacto.fileId) {
+                            CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.padding(start = 7.dp))
+                        } else {
+                            Text("↓ ")
+                        }
+                        Text(artefacto.filename, maxLines = 1, modifier = Modifier.weight(1f))
+                        Text(" ↗")
+                    }
+                }
             }
         }
     }
@@ -336,4 +401,35 @@ private fun BarraDeEntrada(
             )
         }
     }
+}
+
+/** Escribe solo en `cacheDir/shared_artifacts` (expuesto en modo lectura por
+ * el `FileProvider`) y devuelve un `content://`; ninguna app recibe una ruta
+ * privada `file://`. */
+private fun guardarArtefactoEnCache(context: Context, descarga: DownloadedArtifact): Uri {
+    val idSeguro = descarga.artifact.fileId
+        .filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        .take(80)
+        .ifBlank { "archivo" }
+    val carpeta = File(context.cacheDir, "shared_artifacts/$idSeguro").apply { mkdirs() }
+    val archivo = File(carpeta, nombreSeguro(descarga.artifact.filename))
+    archivo.outputStream().use { it.write(descarga.bytes) }
+    return FileProvider.getUriForFile(context, "${context.packageName}.files", archivo)
+}
+
+private fun nombreSeguro(filename: String): String {
+    val ultimo = filename.replace('\\', '/').substringAfterLast('/').trim()
+    val limpio = ultimo.filterNot { it.isISOControl() || it == ':' }.take(180)
+    return limpio.ifBlank { "archivo" }
+}
+
+private fun compartirArtefacto(context: Context, artifact: ArtifactRef, uri: Uri) {
+    val mime = artifact.mime?.takeIf { it.count { char -> char == '/' } == 1 } ?: "*/*"
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = mime
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = ClipData.newRawUri(artifact.filename, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Compartir ${artifact.filename}"))
 }

@@ -65,6 +65,8 @@ web-check:
 	cd apps/web && npm audit --audit-level=high
 	cd apps/web && npm run lint
 	cd apps/web && npm run typecheck
+	cd apps/web && npm test
+	cd apps/web && npm run test:config
 	cd apps/web && npm run build
 
 # El sidecar Python real se construye durante el empaquetado. Para compilar y

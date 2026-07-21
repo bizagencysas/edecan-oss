@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import stat
 import sys
@@ -191,6 +192,44 @@ def test_mobile_public_url_prefiere_override_explicito(
     monkeypatch.setattr(rt.socket, "gethostname", lambda: "ignorado")
 
     assert rt._mobile_public_url(8765) == "https://mi-edecan.example"
+
+
+def test_mobile_public_url_lee_url_https_persistida_para_el_relay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    (tmp_path / "remote-access.json").write_text(
+        json.dumps({"public_url": "https://equipo-opaco.edecan.example/"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.1.25")
+
+    assert rt._mobile_public_url(8765, tmp_path) == "https://equipo-opaco.edecan.example"
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    (
+        "http://edecan.example",
+        "https://usuario:clave@edecan.example",
+        "https://edecan.example?token=no-va-en-url",
+        "https://edecan.example/ruta",
+        "https://[",
+        "javascript:alert(1)",
+    ),
+)
+def test_mobile_public_url_ignora_configuracion_persistida_insegura(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    public_url: str,
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    (tmp_path / "remote-access.json").write_text(
+        json.dumps({"public_url": public_url}), encoding="utf-8"
+    )
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.1.25")
+
+    assert rt._mobile_public_url(8765, tmp_path) == "http://192.168.1.25:8765"
 
 
 def test_mobile_public_url_prefiere_ip_privada_que_resuelve_android(

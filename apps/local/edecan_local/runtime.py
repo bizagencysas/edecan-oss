@@ -85,6 +85,7 @@ import socket
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,51 @@ def _build_env(
     return env
 
 
-def _mobile_public_url(port: int) -> str:
+_REMOTE_ACCESS_CONFIG_FILE = "remote-access.json"
+_MAX_REMOTE_ACCESS_CONFIG_BYTES = 4_096
+
+
+def _remote_access_url_from_file(data_dir: Path | None) -> str | None:
+    """Lee la URL pública provisionada por desktop/Relay sin leer secretos.
+
+    El token del túnel nunca vive aquí ni entra al QR. El archivo solo contiene
+    la URL HTTPS que los teléfonos deben usar y puede persistir entre reinicios.
+    """
+    if data_dir is None:
+        return None
+    path = data_dir / _REMOTE_ACCESS_CONFIG_FILE
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_REMOTE_ACCESS_CONFIG_BYTES:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        logger.warning("Configuración de acceso remoto inválida en %s; se ignora.", path)
+        return None
+    value = payload.get("public_url") if isinstance(payload, dict) else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError:
+        logger.warning("public_url de acceso remoto no es una URL HTTPS segura; se ignora.")
+        return None
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        logger.warning("public_url de acceso remoto no es una URL HTTPS segura; se ignora.")
+        return None
+    return value
+
+
+def _mobile_public_url(port: int, data_dir: Path | None = None) -> str:
     """Origen que se incrusta en el QR móvil.
 
     Un override explícito cubre dominios/relays propios. En una instalación
@@ -287,6 +332,10 @@ def _mobile_public_url(port: int) -> str:
     configured = os.environ.get("EDECAN_MOBILE_PUBLIC_URL", "").strip().rstrip("/")
     if configured:
         return configured
+
+    persisted = _remote_access_url_from_file(data_dir)
+    if persisted:
+        return persisted
 
     address = _primary_lan_ipv4()
     if address:
@@ -548,7 +597,9 @@ async def run(
                 database_url=database_url,
                 serve_web_dir=serve_web_dir,
                 local_secrets=local_secrets,
-                public_base_url=_mobile_public_url(port) if mobile_access else None,
+                public_base_url=(
+                    _mobile_public_url(port, resolved_data_dir) if mobile_access else None
+                ),
             )
         )
         logger.info(

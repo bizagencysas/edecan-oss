@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Solo los permisos que la app realmente usa (ROADMAP_V2.md §6.1):
-    `INTERNET` para hablar con `/v1/*`, `RECORD_AUDIO` para el push-to-talk
+    `INTERNET` para hablar con `/v1/*`, `CAMERA` únicamente para el escáner
+    QR iniciado por la persona y `RECORD_AUDIO` para el push-to-talk
     del botón de micrófono dentro de Chat (`POST /v1/voice/transcribe`) — pedido en
     tiempo de ejecución desde `VozScreen`, este `<uses-permission>` solo lo
-    declara. Nada de contactos/ubicación/cámara/notificaciones todavía.
+    declara. Nada de contactos/ubicación/notificaciones todavía.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Visibilidad de paquetes exigida desde Android 11 para descubrir los

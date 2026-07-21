@@ -77,6 +77,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSMicrophoneUsageDescription: "Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat."
+        NSCameraUsageDescription: "Edecán usa la cámara únicamente para escanear el QR de conexión que muestra tu computador."
         NSLocalNetworkUsageDescription: "Edecán usa tu red local para conectarse de forma directa y privada con tu computador después de escanear su QR."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

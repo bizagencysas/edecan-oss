@@ -2,6 +2,8 @@
 /// especializadas viven dentro de una de ellas, no como productos separados.
 public enum AssistantDestination: String, CaseIterable, Sendable {
     case edecan
+    case studio
+    case remote
     case activity
     case settings
 }

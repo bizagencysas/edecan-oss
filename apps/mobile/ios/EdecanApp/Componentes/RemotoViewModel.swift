@@ -38,11 +38,9 @@ final class RemotoViewModel {
     /// `didSet`, mismo criterio explícito que el resto de la app).
     var autoActualizar = false
 
-    /// Intervalo del *polling* automático — SIEMPRE ≥
-    /// `REMOTE_FRAME_MIN_INTERVAL_SECONDS` (~1s server-side, ver el
-    /// docstring de `routers/remote.py`); 2s es el mismo valor que ya usa el
-    /// panel web (`AUTO_REFRESH_INTERVAL_MS`).
-    private let intervaloPollingFrame: Duration = .seconds(2)
+    /// Vista interactiva comprimida: ~2.8 FPS, por encima del límite
+    /// server-side de 0.25s y sin solapar solicitudes.
+    private let intervaloPollingFrame: Duration = .milliseconds(350)
     private var tareaPollingFrame: Task<Void, Never>?
 
     // MARK: - Historial

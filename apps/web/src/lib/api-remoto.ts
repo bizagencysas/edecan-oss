@@ -43,10 +43,13 @@ export interface RemoteSession {
 }
 
 export interface RemoteFrame {
-  /** PNG codificado en base64, listo para `data:image/png;base64,${image_b64}`. */
+  /** PNG/JPEG codificado en base64. */
   image_b64: string;
   width: number;
   height: number;
+  mime?: "image/png" | "image/jpeg";
+  origin_x?: number;
+  origin_y?: number;
   /** Copia de `frames_count` de la sesión al momento de este frame. */
   seq: number;
 }
@@ -57,7 +60,9 @@ export interface RemoteFrame {
 // `edecan_companion.actions._POINTER_ACTIONS`/`_MOUSE_BUTTONS`/`_SPECIAL_KEYS`.
 // ---------------------------------------------------------------------------
 
-export type PointerAccion = "move" | "click" | "double_click" | "right_click";
+export type PointerAccion =
+  | "move" | "click" | "double_click" | "right_click"
+  | "mouse_down" | "mouse_up" | "drag" | "scroll";
 export type MouseButton = "left" | "right" | "middle";
 export type SpecialKey =
   | "enter"
@@ -67,7 +72,11 @@ export type SpecialKey =
   | "arrow_up"
   | "arrow_down"
   | "arrow_left"
-  | "arrow_right";
+  | "arrow_right"
+  | "delete_forward"
+  | "home" | "end" | "page_up" | "page_down" | "space"
+  | "a" | "c" | "v" | "x" | "z" | "s";
+export type KeyModifier = "command" | "control" | "option" | "shift";
 
 export interface PointerInputPayload {
   tipo: "pointer";
@@ -75,13 +84,17 @@ export interface PointerInputPayload {
   y: number;
   accion: PointerAccion;
   button?: MouseButton;
+  start_x?: number;
+  start_y?: number;
+  delta_x?: number;
+  delta_y?: number;
 }
 
 /** Exactamente uno de `texto`/`tecla` — el backend (`KeyInputIn`) rechaza con
  * 422 si vienen ambos o ninguno; estos dos tipos lo reflejan en TypeScript. */
 export type KeyInputPayload =
   | { tipo: "key"; texto: string; tecla?: undefined }
-  | { tipo: "key"; tecla: SpecialKey; texto?: undefined };
+  | { tipo: "key"; tecla: SpecialKey; texto?: undefined; modifiers?: KeyModifier[] };
 
 export type RemoteInputPayload = PointerInputPayload | KeyInputPayload;
 

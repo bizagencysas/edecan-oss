@@ -78,6 +78,8 @@ fun mapPointToRemoteCoords(
     elementHeight: Double,
     frameWidth: Int,
     frameHeight: Int,
+    originX: Int = 0,
+    originY: Int = 0,
 ): RemotePoint? {
     if (frameWidth <= 0 || frameHeight <= 0) return null
 
@@ -93,7 +95,7 @@ fun mapPointToRemoteCoords(
     val x = ((relX / contained.width) * frameWidth).roundToInt()
     val y = ((relY / contained.height) * frameHeight).roundToInt()
     return RemotePoint(
-        x = x.coerceIn(0, frameWidth - 1),
-        y = y.coerceIn(0, frameHeight - 1),
+        x = x.coerceIn(0, frameWidth - 1) + originX,
+        y = y.coerceIn(0, frameHeight - 1) + originY,
     )
 }

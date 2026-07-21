@@ -152,7 +152,16 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     ),
     (
         frozenset({"imagen", "imagenes", "foto", "fotos"}),
-        frozenset({"analizar_imagen"}),
+        frozenset({"analizar_imagen", "generar_imagen", "crear_contenido_social"}),
+    ),
+    (
+        frozenset(
+            {
+                "linkedin", "tweet", "tweets", "post", "posts", "instagram",
+                "facebook", "threads", "tiktok", "contenido", "social",
+            }
+        ),
+        frozenset({"crear_contenido_social", "generar_imagen"}),
     ),
     (
         frozenset({"video", "videos"}),

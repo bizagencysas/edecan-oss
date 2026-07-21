@@ -578,7 +578,7 @@ wheels = [
 
 [[package]]
 name = "edecan-ads"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/ads" }
 dependencies = [
     { name = "edecan-core" },
@@ -609,7 +609,7 @@ dev = [
 
 [[package]]
 name = "edecan-advisory"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/advisory" }
 dependencies = [
     { name = "aioboto3" },
@@ -650,7 +650,7 @@ dev = [
 
 [[package]]
 name = "edecan-agents"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/agents" }
 dependencies = [
     { name = "edecan-core" },
@@ -681,7 +681,7 @@ dev = [
 
 [[package]]
 name = "edecan-api"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "apps/api" }
 dependencies = [
     { name = "aioboto3" },
@@ -778,7 +778,7 @@ dev = [
 
 [[package]]
 name = "edecan-automations"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/automations" }
 dependencies = [
     { name = "edecan-core" },
@@ -811,7 +811,7 @@ dev = [
 
 [[package]]
 name = "edecan-browser"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/browser" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -855,7 +855,7 @@ dev = [
 
 [[package]]
 name = "edecan-business"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/business" }
 dependencies = [
     { name = "aioboto3" },
@@ -894,7 +894,7 @@ dev = [
 
 [[package]]
 name = "edecan-commerce"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/commerce" }
 dependencies = [
     { name = "edecan-core" },
@@ -929,14 +929,21 @@ dev = [
 
 [[package]]
 name = "edecan-companion"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "apps/companion" }
 dependencies = [
     { name = "pyyaml" },
+    { name = "send2trash" },
     { name = "websockets" },
 ]
 
 [package.optional-dependencies]
+remote-control = [
+    { name = "mss", marker = "sys_platform != 'darwin'" },
+    { name = "pillow" },
+    { name = "pynput", marker = "sys_platform != 'darwin'" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
+]
 remote-input = [
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
 ]
@@ -949,11 +956,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mss", marker = "sys_platform != 'darwin' and extra == 'remote-control'", specifier = ">=10.0" },
+    { name = "pillow", marker = "extra == 'remote-control'", specifier = ">=10.4" },
+    { name = "pynput", marker = "sys_platform != 'darwin' and extra == 'remote-control'", specifier = ">=1.7.7" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'remote-control'", specifier = ">=10.3.1" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'remote-input'", specifier = ">=10.3.1" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "send2trash", specifier = ">=1.8.3" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["remote-input"]
+provides-extras = ["remote-input", "remote-control"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -963,7 +975,7 @@ dev = [
 
 [[package]]
 name = "edecan-connectors"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/connectors" }
 dependencies = [
     { name = "edecan-schemas" },
@@ -992,7 +1004,7 @@ dev = [
 
 [[package]]
 name = "edecan-core"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aioboto3" },
@@ -1027,7 +1039,7 @@ dev = [
 
 [[package]]
 name = "edecan-creative"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/creative" }
 dependencies = [
     { name = "aioboto3" },
@@ -1074,7 +1086,7 @@ dev = [
 
 [[package]]
 name = "edecan-db"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/db" }
 dependencies = [
     { name = "alembic" },
@@ -1115,7 +1127,7 @@ dev = [
 
 [[package]]
 name = "edecan-docanalysis"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/docanalysis" }
 dependencies = [
     { name = "aioboto3" },
@@ -1156,7 +1168,7 @@ dev = [
 
 [[package]]
 name = "edecan-evals"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "edecan-core" },
@@ -1189,7 +1201,7 @@ dev = [
 
 [[package]]
 name = "edecan-llm"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/llm" }
 dependencies = [
     { name = "httpx" },
@@ -1225,7 +1237,7 @@ dev = [
 
 [[package]]
 name = "edecan-local"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "apps/local" }
 dependencies = [
     { name = "alembic" },
@@ -1271,7 +1283,7 @@ dev = [
 
 [[package]]
 name = "edecan-mcp"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "edecan-core" },
@@ -1302,7 +1314,7 @@ dev = [
 
 [[package]]
 name = "edecan-meetings"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/meetings" }
 dependencies = [
     { name = "edecan-core" },
@@ -1333,7 +1345,7 @@ dev = [
 
 [[package]]
 name = "edecan-messaging"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/messaging" }
 dependencies = [
     { name = "edecan-core" },
@@ -1368,7 +1380,7 @@ dev = [
 
 [[package]]
 name = "edecan-schemas"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/schemas" }
 dependencies = [
     { name = "pydantic" },
@@ -1379,7 +1391,7 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.6,<3" }]
 
 [[package]]
 name = "edecan-skills"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/skills" }
 dependencies = [
     { name = "edecan-core" },
@@ -1410,7 +1422,7 @@ dev = [
 
 [[package]]
 name = "edecan-smarthome"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/smarthome" }
 dependencies = [
     { name = "edecan-core" },
@@ -1439,7 +1451,7 @@ dev = [
 
 [[package]]
 name = "edecan-toolkit"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/toolkit" }
 dependencies = [
     { name = "edecan-connectors" },
@@ -1480,7 +1492,7 @@ dev = [
 
 [[package]]
 name = "edecan-travel"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/travel" }
 dependencies = [
     { name = "edecan-core" },
@@ -1511,7 +1523,7 @@ dev = [
 
 [[package]]
 name = "edecan-vehicles"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/vehicles" }
 dependencies = [
     { name = "edecan-core" },
@@ -1542,7 +1554,7 @@ dev = [
 
 [[package]]
 name = "edecan-voice"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/voice" }
 dependencies = [
     { name = "aioboto3" },
@@ -1561,7 +1573,7 @@ requires-dist = [
 
 [[package]]
 name = "edecan-worker"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "aioboto3" },
@@ -1648,7 +1660,7 @@ dev = [
 
 [[package]]
 name = "edecan-workspace"
-version = "0.4.0"
+version = "0.5.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
@@ -1683,6 +1695,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
 ]
+
+[[package]]
+name = "evdev"
+version = "1.9.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/f5/397b61091120a9ca5001041dd7bf76c385b3bfd67a0e5bcb74b852bd22a4/evdev-1.9.3.tar.gz", hash = "sha256:2c140e01ac8437758fa23fe5c871397412461f42d421aa20241dc8fe8cfccbc9", size = 32723, upload-time = "2026-02-05T21:54:24.987Z" }
 
 [[package]]
 name = "fakeredis"
@@ -2240,6 +2258,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/df/5bd7a48c256faecd1d36edc13133e51397e41b73bb77e1a69deab746ebac/markupsafe-3.0.3-cp314-cp314t-win32.whl", hash = "sha256:915c04ba3851909ce68ccc2b8e2cd691618c4dc4c4232fb7982bca3f41fd8c3d", size = 14819, upload-time = "2025-09-27T18:37:26.285Z" },
     { url = "https://files.pythonhosted.org/packages/1a/8a/0402ba61a2f16038b48b39bccca271134be00c5c9f0f623208399333c448/markupsafe-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4faffd047e07c38848ce017e8725090413cd80cbc23d86e55c587bf979e579c9", size = 15426, upload-time = "2025-09-27T18:37:27.316Z" },
     { url = "https://files.pythonhosted.org/packages/70/bc/6f1c2f612465f5fa89b95bead1f44dcb607670fd42891d8fdcd5d039f4f4/markupsafe-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:32001d6a8fc98c8cb5c947787c5d08b0a50663d139f1305bac5885d98d9b40fa", size = 14146, upload-time = "2025-09-27T18:37:28.327Z" },
+]
+
+[[package]]
+name = "mss"
+version = "10.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/5d/eee782a6d674f562c946ae6a026f4c595ea2b7b031f290bf9fbf60da09b5/mss-10.2.0.tar.gz", hash = "sha256:ab271860775545e62f29d7b11f82f279ac1048f5bbdd26cfad84830208dbd393", size = 200317, upload-time = "2026-04-23T10:44:57.305Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/c3/313e14f245c79b4c05bd0f3a84a4813aa26fa10f8993aebd91d04c5fad3f/mss-10.2.0-py3-none-any.whl", hash = "sha256:e79f428899280e7e64e38365b5bfed683851ebea807eeaeadaf06eb8e0d67197", size = 67106, upload-time = "2026-04-23T10:44:56.266Z" },
 ]
 
 [[package]]
@@ -2824,6 +2851,21 @@ wheels = [
 ]
 
 [[package]]
+name = "pynput"
+version = "1.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "evdev", marker = "'linux' in sys_platform" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
+    { name = "python-xlib", marker = "'linux' in sys_platform" },
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/c6/e2d415610cfbc78308bee44218a46124aaa3301b1df08814df819b2254a1/pynput-1.8.2.tar.gz", hash = "sha256:f493c87157cd3861b4468f7f896857051762f44ed26f1b641e7cc5840a457087", size = 82818, upload-time = "2026-05-12T19:11:39.464Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/98/bbeb760852adb27f166ce1617f0e51aabb15f21b1e60ea703f2aed3c78ac/pynput-1.8.2-py2.py3-none-any.whl", hash = "sha256:8cc38cf13a6ab2749cb375678be8a0fd705d7ce49c8001ff5db4007a723bbef1", size = 92028, upload-time = "2026-05-12T19:11:37.89Z" },
+]
+
+[[package]]
 name = "pyobjc-core"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2981,6 +3023,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-xlib"
+version = "0.33"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32", size = 269068, upload-time = "2022-12-25T18:53:00.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/b8/ff33610932e0ee81ae7f1269c890f697d56ff74b9f5b2ee5d9b7fa2c5355/python_xlib-0.33-py2.py3-none-any.whl", hash = "sha256:c3534038d42e0df2f1392a1b30a15a4ff5fdc2b86cfa94f072bf11b10a164398", size = 182185, upload-time = "2022-12-25T18:52:58.662Z" },
+]
+
+[[package]]
 name = "pytz"
 version = "2026.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3100,6 +3154,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/62/74/8d69dcb7a9efe8baa2046891735e5dfe433ad558ae23d9e3c14c633d1d58/s3transfer-0.14.0.tar.gz", hash = "sha256:eff12264e7c8b4985074ccce27a3b38a485bb7f7422cc8046fee9be4983e4125", size = 151547, upload-time = "2025-09-09T19:23:31.089Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/48/f0/ae7ca09223a81a1d890b2557186ea015f6e0502e9b8cb8e1813f1d8cfa4e/s3transfer-0.14.0-py3-none-any.whl", hash = "sha256:ea3b790c7077558ed1f02a3072fb3cb992bbbd253392f4b6e9e8976941c7d456", size = 85712, upload-time = "2025-09-09T19:23:30.041Z" },
+]
+
+[[package]]
+name = "send2trash"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/f0/184b4b5f8d00f2a92cf96eec8967a3d550b52cf94362dad1100df9e48d57/send2trash-2.1.0.tar.gz", hash = "sha256:1c72b39f09457db3c05ce1d19158c2cbef4c32b8bedd02c155e49282b7ea7459", size = 17255, upload-time = "2026-01-14T06:27:36.056Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/78/504fdd027da3b84ff1aecd9f6957e65f35134534ccc6da8628eb71e76d3f/send2trash-2.1.0-py3-none-any.whl", hash = "sha256:0da2f112e6d6bb22de6aa6daa7e144831a4febf2a87261451c4ad849fe9a873c", size = 17610, upload-time = "2026-01-14T06:27:35.218Z" },
 ]
 
 [[package]]

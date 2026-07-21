@@ -42,8 +42,8 @@ apps/mobile/android/
         │   ├── res/                # iconos, tema Material 3 (claro/oscuro), network security config
         │   └── kotlin/cc/edecan/app/
         │       ├── MainActivity.kt, App.kt
-        │       ├── nav/RootNav.kt  # 3 destinos: Edecan, Actividad y Ajustes; capacidades secundarias
-        │       ├── ui/             # Onboarding, Inicio, Chat, IDE, Negocios, Voz, Perfil, Remoto
+        │       ├── nav/RootNav.kt  # 5 destinos: Edecan, Crear, Remoto, Actividad y Ajustes
+        │       ├── ui/             # Chat, Crear, Remoto, Actividad, Ajustes y capacidades avanzadas
         │       │   └── components/ # EmptyState, DonutChart (Canvas puro)
         │       └── vm/             # Session/Chat/Negocios/Voz/Perfil/Ide/Remoto ViewModel (StateFlow)
         └── test/kotlin/cc/edecan/app/vm/
@@ -109,7 +109,7 @@ Corre, todo en verde (verificado real, `BUILD SUCCESSFUL`):
   `apps/api/edecan_api/routers/remote.py`/`SqlRepo._REMOTE_SESSION_COLUMNS`,
   más `remoteFramePollDelayMillis` — función pura del intervalo de *polling*)
   y `AssistantDestinationTest` (la barra primaria queda limitada por contrato
-  a Edecan, Actividad y Ajustes).
+  a Edecan, Crear, Remoto, Actividad y Ajustes).
   y `RemoteCoordsTest` (mapeo de coordenadas toque→frame con letterbox,
   puerto de `apps/web/src/components/remoto/coords.ts`, sin Compose/Android).
 - **`:androidApp:testDebugUnitTest`**: `LlmKindTest` (vocabulario/campos del
@@ -197,12 +197,12 @@ mismo criterio que las deprecaciones ya existentes de
 - Sin dependencias externas nuevas ni cambios en `gradle/libs.versions.toml`:
   el visor usa solo lo ya declarado (`compose.foundation` para
   `Image`/`detectTapGestures`/`transformable`, `android.graphics.BitmapFactory`/
-  `android.util.Base64` del SDK de Android para decodificar el frame PNG,
+  `android.util.Base64` del SDK de Android para decodificar el frame JPEG/PNG,
   cero librerías de carga de imágenes de terceros).
 - `AndroidManifest.xml` sin cambios: `/v1/remote/*` reutiliza el mismo
   `INTERNET` ya declarado, ninguna acción nueva pide un permiso de Android
   distinto (la captura de pantalla y el permiso de Accesibilidad son del
-  lado del companion en macOS, no de esta app móvil).
+  lado del companion en macOS/Windows/Linux, no de esta app móvil).
 
 ## Firma release
 

@@ -167,14 +167,16 @@ en la sesión) sigue diseñado en [`control-remoto.md`](./control-remoto.md)
   implementaciones nativas por ahora, con la puerta abierta a converger en
   este módulo compartido el día que se decida.
 - **`androidApp/`**: el APK — Compose Multiplatform puro (sin
-  `androidx.navigation`, sin Material Icons Extended): tres destinos
-  assistant-first — **Edecan**, **Actividad** y **Ajustes** — conmutados con
-  estado local simple e iconos emoji. Encima de esos tres destinos,
+  `androidx.navigation`, sin Material Icons Extended): cinco destinos
+  assistant-first — **Edecan**, **Crear**, **Remoto**, **Actividad** y
+  **Ajustes** — conmutados con estado local simple e iconos emoji. **Crear**
+  prepara el pedido y lo ejecuta en el mismo chat, nunca en un producto
+  paralelo. Encima de esos cinco destinos,
   `nav/RootNav.kt` agrega un segundo nivel de navegación de un solo paso
   (mismo `remember { mutableStateOf(...) }` local, sin `androidx.navigation`
   tampoco) para "Misiones"/"Automatizaciones"/"Recordatorios" (`Pantallas
-  v5`, fase v5) y "Remoto" (fase v6, ver ["Pantalla Remoto"](#pantalla-remoto)
-  más abajo), Voz desde el micrófono de Chat e IDE/Negocios desde el modo
+  v5`, fase v5), Voz desde el micrófono de Chat e IDE/Negocios/Capacidades
+  desde el modo
   avanzado de Ajustes; no son pestañas nuevas. `ViewModel`s con `StateFlow`, uno por
   pantalla con lógica real: `SessionViewModel` (emparejamiento/sesión,
   registro, `POST`/`DELETE /v1/devices`), `ChatViewModel` (chat SSE +
@@ -266,7 +268,7 @@ Tres pantallas conectadas a la API real. Las tres se llegan desde
 **Actividad** (`InicioScreen`, tarjetas "Trabajo delegado"/"Rutinas"/
 "Recordatorios") — no son pestañas nuevas de la barra
 inferior: `RootNav.kt` las cubre como una pantalla propia (con su propio
-botón "atrás" que vuelve a Actividad) encima de los 3 destinos existentes, sin
+botón "atrás" que vuelve a Actividad) encima de los 5 destinos existentes, sin
 tocarlas. Mismo criterio de "push" de un solo nivel que usaría
 `NavigationStack` desde `InicioView.swift` en iOS (que todavía no las
 construye).
@@ -337,10 +339,8 @@ Control remoto del Mac/PC del tenant desde el teléfono — aplica el guardrail
 de [`control-remoto.md`](./control-remoto.md): consentimiento explícito en
 el teléfono MÁS una segunda aprobación
 LOCAL en el companion antes de que salga un solo *frame* o se mueva un solo
-píxel. Se llega **solo** desde el acceso directo "Remoto" de Actividad
-(`InicioScreen.kt`), mismo criterio de pantalla secundaria de `RootNav.kt`
-(`PantallaSecundaria.REMOTO`) que Misiones/Automatizaciones/Recordatorios de
-arriba — espejo Android de fase v6 en iOS.
+píxel. Se llega desde la pestaña primaria **Remoto** — espejo Android de la
+experiencia nativa de iOS.
 
 - `ui/RemotoScreen.kt` + `vm/RemotoViewModel.kt` (`shared/RemoteModels.kt`/
   `RemoteCoords.kt`) contra `/v1/remote` (`ARCHITECTURE.md` §13.c/§14,
@@ -351,8 +351,9 @@ arriba — espejo Android de fase v6 en iOS.
   opción "Controlar" (sin él, solo se puede pedir "Ver").
 - El indicador "Sesión remota activa" y el botón "Terminar" están SIEMPRE
   visibles mientras haya una sesión pendiente o activa — nunca ocultables.
-- Transporte: ***polling* HTTP** (`GET /v1/remote/sessions/{id}/frame`, PNG
-  en base64) — decisión deliberada del prototipo P1
+- Transporte actual: ***polling* HTTP adaptativo**
+  (`GET /v1/remote/sessions/{id}/frame`, JPEG comprimido o PNG en base64,
+  alrededor de 3 fps sin solapar peticiones) — decisión deliberada de v0.5
   ([`control-remoto.md`](./control-remoto.md) §1.1), no un *stub* a medio
   terminar. El transporte WebRTC de baja latencia sigue siendo el objetivo a
   futuro, ver "Roadmap" justo abajo.

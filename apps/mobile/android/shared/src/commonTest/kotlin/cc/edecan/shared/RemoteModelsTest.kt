@@ -119,14 +119,20 @@ class RemoteModelsTest {
 
     @Test
     fun vocabulario_de_pointer_accion_y_mouse_button_es_exacto() {
-        assertEquals(setOf("move", "click", "double_click", "right_click"), REMOTE_POINTER_ACCIONES)
+        assertEquals(
+            setOf("move", "click", "double_click", "right_click", "mouse_down", "mouse_up", "drag", "scroll"),
+            REMOTE_POINTER_ACCIONES,
+        )
         assertEquals(setOf("left", "right", "middle"), REMOTE_MOUSE_BUTTONS)
     }
 
     @Test
-    fun vocabulario_de_teclas_especiales_tiene_las_8_en_orden() {
+    fun vocabulario_de_teclas_especiales_es_exacto() {
         assertEquals(
-            listOf("enter", "tab", "escape", "backspace", "arrow_up", "arrow_down", "arrow_left", "arrow_right"),
+            listOf(
+                "enter", "tab", "escape", "backspace", "arrow_up", "arrow_down", "arrow_left", "arrow_right",
+                "delete_forward", "home", "end", "page_up", "page_down", "space", "a", "c", "v", "x", "z", "s",
+            ),
             REMOTE_SPECIAL_KEYS,
         )
     }
@@ -136,17 +142,17 @@ class RemoteModelsTest {
     // -------------------------------------------------------------------
 
     @Test
-    fun pollDelay_con_el_default_real_del_backend_da_2000ms_como_el_panel_web() {
-        // REMOTE_FRAME_MIN_INTERVAL_SECONDS default = 1.0 (config.py/.env.example);
-        // AUTO_REFRESH_INTERVAL_MS del panel web = 2000 -- deben coincidir.
-        assertEquals(2000L, remoteFramePollDelayMillis(DEFAULT_REMOTE_FRAME_MIN_INTERVAL_SECONDS))
-        assertEquals(2000L, remoteFramePollDelayMillis()) // mismo default sin pasar nada.
+    fun pollDelay_con_el_default_real_del_backend_da_350ms_como_el_panel_web() {
+        // REMOTE_FRAME_MIN_INTERVAL_SECONDS default = 0.25; el margen 1.4x
+        // produce los mismos 350 ms del panel web/iOS.
+        assertEquals(350L, remoteFramePollDelayMillis(DEFAULT_REMOTE_FRAME_MIN_INTERVAL_SECONDS))
+        assertEquals(350L, remoteFramePollDelayMillis())
     }
 
     @Test
-    fun pollDelay_siempre_es_al_menos_el_doble_del_minimo_del_servidor() {
-        assertEquals(4000L, remoteFramePollDelayMillis(2.0))
-        assertEquals(1000L, remoteFramePollDelayMillis(0.5))
+    fun pollDelay_mantiene_un_margen_de_cuarenta_por_ciento() {
+        assertEquals(2800L, remoteFramePollDelayMillis(2.0))
+        assertEquals(700L, remoteFramePollDelayMillis(0.5))
     }
 
     @Test
@@ -154,8 +160,8 @@ class RemoteModelsTest {
         // 0.05s (REMOTE_INPUT_MIN_INTERVAL_SECONDS, no el de frames, pero
         // sirve para probar el piso) * 2 = 100ms, muy por debajo de un
         // polling razonable -- el piso evita una ráfaga cerrada.
-        assertTrue(remoteFramePollDelayMillis(0.05) >= 500L)
-        assertTrue(remoteFramePollDelayMillis(0.0) >= 500L)
-        assertTrue(remoteFramePollDelayMillis(-1.0) >= 500L)
+        assertTrue(remoteFramePollDelayMillis(0.05) >= 300L)
+        assertTrue(remoteFramePollDelayMillis(0.0) >= 300L)
+        assertTrue(remoteFramePollDelayMillis(-1.0) >= 300L)
     }
 }

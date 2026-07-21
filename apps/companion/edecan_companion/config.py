@@ -42,8 +42,8 @@ _CONFIG_TEMPLATE = """\
 # No lo compartas ni lo edites a la ligera: quien controle este archivo
 # controla lo que el companion puede hacer en tu equipo.
 
-# Carpeta a la que se restringe TODO acceso a archivos (read_dir, read_file,
-# write_file). Cualquier ruta que intente salir de esta carpeta —con "..",
+# Carpeta a la que se restringe TODO acceso a archivos (leer, escribir,
+# editar y enviar a la papelera). Cualquier ruta que intente salir de esta carpeta —con "..",
 # con una ruta absoluta, o con un enlace simbólico que apunte afuera— se
 # rechaza automáticamente, sin excepción.
 sandbox_dir: "{sandbox_dir}"
@@ -72,7 +72,7 @@ auto_approve: []
 remember_approvals_minutes: 0
 
 # Activa las acciones del IDE embebido (list_tree, search_files, apply_edit,
-# screenshot). true por defecto porque, igual que cualquier otra acción,
+# trash_path, screenshot). true por defecto porque, igual que cualquier otra acción,
 # cada una sigue pidiendo tu aprobación explícita (o pasando por
 # remember_approvals_minutes/auto_approve como cualquier otra) -- ponlo en
 # false solo si quieres bloquearlas del todo en esta máquina sin tener que
@@ -87,9 +87,8 @@ ide_enabled: true
 # EXPLÍCITO del dueño de esta máquina, no basta con que el asistente lo pida
 # y tú apruebes una vez en la terminal. Aunque lo actives aquí, cada acción
 # input_* SIGUE pidiendo aprobación local (ver remote_input_remember_minutes
-# abajo) y además requiere el permiso de Accesibilidad de macOS, que solo un
-# clic humano en Ajustes del Sistema puede conceder -- este archivo nunca lo
-# evade ni lo automatiza.
+# abajo) y además requiere el permiso de Accesibilidad/entrada que exija el
+# sistema operativo. Edecán nunca evade ni automatiza esos permisos.
 remote_input_enabled: false
 
 # Minutos que se recuerda una aprobación de input_pointer/input_key después

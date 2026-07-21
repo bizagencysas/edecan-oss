@@ -46,12 +46,14 @@ Si se cae la conexión (red, servidor reiniciando, etc.), el companion reintenta
 ## Configuración — `~/.edecan/companion.yaml`
 
 ```yaml
-sandbox_dir: "~/EdecanSandbox"   # única carpeta a la que se restringe read_dir/read_file/write_file/list_tree/search_files/apply_edit
+sandbox_dir: "~/EdecanSandbox"   # única carpeta a la que se restringen archivos/IDE
 allowed_apps: []                  # apps que "open_app" puede abrir (open -a / xdg-open)
 allowed_commands: []              # ejecutables que "run_command" puede correr (sin shell)
 auto_approve: []                  # nombres de acción que se aprueban SIN preguntar (¡ojo!)
 remember_approvals_minutes: 0     # minutos que se recuerda un "sí" para la MISMA acción (0 = siempre pregunta)
-ide_enabled: true                 # activa/desactiva de un tirón las 4 acciones del IDE embebido
+ide_enabled: true                 # activa/desactiva archivos, IDE y captura
+remote_input_enabled: false       # opt-in para mouse/teclado remoto
+remote_input_remember_minutes: 10 # aprobación recordada solo dentro de la misma sesión
 ```
 
 Todas las listas empiezan vacías a propósito. Edítalas a mano, con cuidado, solo con lo que de verdad quieras habilitar. `auto_approve` es la más delicada: cualquier acción ahí corre sin que te pregunten nada — solo agrégala si confías plenamente en cómo tu asistente va a usarla. `allowed_commands` también es lo que decide qué puede correr `POST /v1/ide/run` (la terminal del IDE embebido, ver `docs/ide.md`) — **tú** decides qué binarios permitir ahí, incluidos `git`/`docker` si quieres: el companion no los trae permitidos por defecto.
@@ -64,14 +66,17 @@ Todas las listas empiezan vacías a propósito. Edítalas a mano, con cuidado, s
 | `read_dir` | Lista una carpeta | dentro de `sandbox_dir` |
 | `read_file` | Lee un archivo (texto o base64 si es binario) | dentro de `sandbox_dir`, máx. 256 KB |
 | `write_file` | Escribe un archivo (crea carpetas padre si hacen falta) | dentro de `sandbox_dir` |
+| `trash_path` | Mueve un archivo/carpeta a la papelera recuperable | dentro de `sandbox_dir`; nunca la raíz; siempre pregunta aunque esté en `auto_approve` |
 | `clipboard_get` / `clipboard_set` | Lee/escribe el portapapeles (`pbpaste`/`pbcopy`, o `xclip` en Linux) | — |
 | `run_command` | Corre un ejecutable con argumentos, sin shell, timeout 30s | ejecutable base ∈ `allowed_commands` |
 | `list_tree` | Árbol recursivo de una carpeta (`{path?, max_depth≤5, max_entries≤500}`) | dentro de `sandbox_dir`; ignora `.git`/`node_modules`/`__pycache__`/`.venv`; `ide_enabled` |
 | `search_files` | Busca texto línea por línea (`{query, path?}`), máx. 2000 archivos / 200 coincidencias | dentro de `sandbox_dir`, solo archivos de texto < 256 KB; `ide_enabled` |
 | `apply_edit` | Reemplaza `old_string` por `new_string` en un archivo (`{path, old_string, new_string, replace_all?}`), escritura atómica | dentro de `sandbox_dir`; `old_string` único salvo `replace_all`; `ide_enabled` |
-| `screenshot` | Captura la pantalla a PNG en base64 (`{display?}`) vía `screencapture` | **solo macOS**; exige permiso de Grabación de Pantalla; `ide_enabled` |
+| `screenshot` | Captura y comprime la pantalla (`{display?, format?, quality?, max_width?}`) | macOS vía `screencapture`; Windows/Linux con el extra `remote-control`; `ide_enabled` |
+| `input_pointer` | Mueve, hace clic/doble clic/clic derecho, arrastra y desplaza | extra `remote-control`; `remote_input_enabled`; aprobación por sesión |
+| `input_key` | Escribe Unicode, teclas especiales y atajos con modificadores | extra `remote-control`; `remote_input_enabled`; aprobación por sesión |
 
-Cualquier otra acción responde `"acción no soportada"` sin pedir aprobación (no existe, así que no hay nada que aprobar). Las 4 acciones del IDE embebido (`list_tree`, `search_files`, `apply_edit`, `screenshot`) además respetan `ide_enabled`: si está en `false`, se rechazan ANTES de pedir aprobación (ver `docs/ide.md` en la raíz del repo para el flujo completo vía `/v1/ide/*` y la página web).
+Cualquier otra acción responde `"acción no soportada"` sin pedir aprobación. Las acciones de archivos/IDE/captura respetan `ide_enabled`; el control de mouse/teclado exige además `remote_input_enabled: true` y los permisos del sistema operativo.
 
 ### Recordar aprobaciones (`remember_approvals_minutes`)
 

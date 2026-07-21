@@ -9,6 +9,8 @@ class AssistantDestinationTest {
         assertEquals(
             listOf(
                 AssistantDestination.EDECAN,
+                AssistantDestination.STUDIO,
+                AssistantDestination.REMOTE,
                 AssistantDestination.ACTIVITY,
                 AssistantDestination.SETTINGS,
             ),

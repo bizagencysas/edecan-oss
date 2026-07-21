@@ -10,6 +10,22 @@ import EdecanKit
 @Observable
 final class TabRouter {
     var seleccion: AssistantDestination = .edecan
+    var solicitudPendiente: SolicitudRapida?
+
+    struct SolicitudRapida: Identifiable, Equatable {
+        let id = UUID()
+        let texto: String
+    }
+
+    func pedir(_ texto: String) {
+        solicitudPendiente = SolicitudRapida(texto: texto)
+        seleccion = .edecan
+    }
+
+    func consumirSolicitud() -> SolicitudRapida? {
+        defer { solicitudPendiente = nil }
+        return solicitudPendiente
+    }
 }
 
 /// Navegación assistant-first: Edecan es la conversación universal,
@@ -35,6 +51,14 @@ struct RootTabView: View {
             ChatView()
                 .tabItem { Label("Edecan", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag(AssistantDestination.edecan)
+
+            ContentStudioView()
+                .tabItem { Label("Crear", systemImage: "wand.and.stars") }
+                .tag(AssistantDestination.studio)
+
+            NavigationStack { RemotoView() }
+                .tabItem { Label("Remoto", systemImage: "display.and.arrow.down") }
+                .tag(AssistantDestination.remote)
 
             InicioView()
                 .tabItem { Label("Actividad", systemImage: "clock.arrow.circlepath") }

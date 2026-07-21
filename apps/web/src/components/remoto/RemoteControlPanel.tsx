@@ -23,6 +23,21 @@ const SPECIAL_KEYS: Array<{ value: SpecialKey; label: string; title: string }> =
   { value: "arrow_down", label: "↓", title: "Flecha abajo" },
   { value: "arrow_left", label: "←", title: "Flecha izquierda" },
   { value: "arrow_right", label: "→", title: "Flecha derecha" },
+  { value: "delete_forward", label: "Del", title: "Borrar hacia delante" },
+  { value: "home", label: "Home", title: "Inicio" },
+  { value: "end", label: "End", title: "Fin" },
+  { value: "page_up", label: "Pg↑", title: "Página arriba" },
+  { value: "page_down", label: "Pg↓", title: "Página abajo" },
+  { value: "space", label: "Espacio", title: "Espacio" },
+];
+
+const SHORTCUTS: Array<{ value: SpecialKey; label: string }> = [
+  { value: "a", label: "⌘/Ctrl A" },
+  { value: "c", label: "⌘/Ctrl C" },
+  { value: "v", label: "⌘/Ctrl V" },
+  { value: "x", label: "⌘/Ctrl X" },
+  { value: "z", label: "⌘/Ctrl Z" },
+  { value: "s", label: "⌘/Ctrl S" },
 ];
 
 export function RemoteControlPanel({
@@ -91,6 +106,28 @@ export function RemoteControlPanel({
               onClick={() => onSendKey({ tipo: "key", tecla: key.value })}
             >
               {key.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-200">
+          Atajos
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {SHORTCUTS.map((shortcut) => (
+            <Button
+              key={shortcut.value}
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={inputsDisabled}
+              onClick={() => onSendKey({
+                tipo: "key", tecla: shortcut.value, modifiers: ["command"],
+              })}
+            >
+              {shortcut.label}
             </Button>
           ))}
         </div>

@@ -57,6 +57,22 @@ async def test_action_not_in_auto_approve_still_prompts(companion_config, monkey
     assert approved is False
 
 
+async def test_trash_path_ignores_auto_approve_and_approval_memory(companion_config, monkeypatch):
+    companion_config.auto_approve.append("trash_path")
+    companion_config.remember_approvals_minutes = 10
+    prompts: list[str] = []
+
+    def _approve(prompt=""):
+        prompts.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _approve)
+    assert await approval.default_approver("trash_path", {"path": "a.txt"}, companion_config)
+    assert await approval.default_approver("trash_path", {"path": "a.txt"}, companion_config)
+    assert len(prompts) == 2
+    assert all("PAPELERA" in prompt for prompt in prompts)
+
+
 async def test_prompt_times_out_and_rejects(companion_config, monkeypatch):
     def _never_returns_in_time(prompt=""):
         time.sleep(0.3)

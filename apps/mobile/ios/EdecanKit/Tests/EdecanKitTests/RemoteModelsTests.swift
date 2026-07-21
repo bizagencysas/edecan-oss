@@ -173,9 +173,27 @@ struct RemoteInputModelsTests {
         let esperadas: Set<String> = [
             "enter", "tab", "escape", "backspace",
             "arrow_up", "arrow_down", "arrow_left", "arrow_right",
+            "delete_forward", "home", "end", "page_up", "page_down", "space",
+            "a", "c", "v", "x", "z", "s",
         ]
         let codificadas = Set(RemoteSpecialKey.allCases.map(\.rawValue))
         #expect(codificadas == esperadas)
+    }
+
+    @Test func codificaDragScrollYAtajosSinPerderSnakeCase() throws {
+        let drag = try codificarComoDiccionario(
+            RemotePointerInput(x: 100, y: 120, accion: .drag, startX: 10, startY: 20)
+        )
+        #expect(drag["start_x"] == .number(10))
+        #expect(drag["start_y"] == .number(20))
+        let scroll = try codificarComoDiccionario(
+            RemotePointerInput(x: 100, y: 120, accion: .scroll, deltaY: -420)
+        )
+        #expect(scroll["delta_y"] == .number(-420))
+        let shortcut = try codificarComoDiccionario(
+            RemoteKeyInput.tecla(.c, modifiers: [.command, .shift])
+        )
+        #expect(shortcut["modifiers"] == .array([.string("command"), .string("shift")]))
     }
 
     /// Compara CONTENIDO decodificado, no bytes crudos: `JSONEncoder` no

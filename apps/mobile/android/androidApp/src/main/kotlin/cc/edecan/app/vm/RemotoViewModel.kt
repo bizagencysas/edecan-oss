@@ -35,7 +35,7 @@ private val ApiException.statusOrNull: Int?
  * (`RemotoTeclasTest.kt` lo fija). */
 data class TeclaEspecialUi(val valor: String, val etiqueta: String, val titulo: String)
 
-/** Mismo orden y mismas 8 teclas que `RemoteControlPanel.tsx` (panel web). */
+/** Mismo orden que `RemoteControlPanel.tsx` (panel web). */
 val TECLAS_ESPECIALES: List<TeclaEspecialUi> = listOf(
     TeclaEspecialUi("enter", "Enter", "Enter"),
     TeclaEspecialUi("tab", "Tab", "Tab"),
@@ -45,6 +45,12 @@ val TECLAS_ESPECIALES: List<TeclaEspecialUi> = listOf(
     TeclaEspecialUi("arrow_down", "↓", "Flecha abajo"),
     TeclaEspecialUi("arrow_left", "←", "Flecha izquierda"),
     TeclaEspecialUi("arrow_right", "→", "Flecha derecha"),
+    TeclaEspecialUi("delete_forward", "Del", "Borrar hacia delante"),
+    TeclaEspecialUi("home", "Home", "Inicio"),
+    TeclaEspecialUi("end", "End", "Fin"),
+    TeclaEspecialUi("page_up", "Pg↑", "Página arriba"),
+    TeclaEspecialUi("page_down", "Pg↓", "Página abajo"),
+    TeclaEspecialUi("space", "Espacio", "Espacio"),
 )
 // La lista de arriba está a mano (no derivada de `REMOTE_SPECIAL_KEYS`) para
 // poder darle una etiqueta/título propios a cada una — `RemotoTeclasTest.kt`
@@ -268,13 +274,25 @@ class RemotoViewModel : ViewModel() {
      * [x]/[y] YA deben venir mapeadas a coordenadas reales del frame (ver
      * `RemoteCoords.kt::mapPointToRemoteCoords`, usado por `RemotoScreen`
      * ANTES de llamar esto) — este método nunca vuelve a escalar nada. */
-    fun enviarPointer(api: EdecanApi, x: Int, y: Int, accion: String, button: String? = null) {
+    fun enviarPointer(
+        api: EdecanApi,
+        x: Int,
+        y: Int,
+        accion: String,
+        button: String? = null,
+        startX: Int? = null,
+        startY: Int? = null,
+        deltaX: Int = 0,
+        deltaY: Int = 0,
+    ) {
         val sesionId = _uiState.value.sesionActual?.id ?: return
         if (_uiState.value.enviandoInput) return
         viewModelScope.launch {
             _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
             try {
-                api.sendRemotePointerInput(sesionId, x, y, accion, button)
+                api.sendRemotePointerInput(
+                    sesionId, x, y, accion, button, startX, startY, deltaX, deltaY
+                )
             } catch (e: ApiException) {
                 manejarErrorInput(api, sesionId, e)
             } finally {
@@ -302,13 +320,13 @@ class RemotoViewModel : ViewModel() {
 
     /** Barra de teclado: botón de tecla especial -> `input_key {tecla}`.
      * [tecla] debe ser una de `RemoteModels.kt::REMOTE_SPECIAL_KEYS`. */
-    fun enviarTecla(api: EdecanApi, tecla: String) {
+    fun enviarTecla(api: EdecanApi, tecla: String, modifiers: List<String> = emptyList()) {
         val sesionId = _uiState.value.sesionActual?.id ?: return
         if (_uiState.value.enviandoInput) return
         viewModelScope.launch {
             _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
             try {
-                api.sendRemoteKeyTecla(sesionId, tecla)
+                api.sendRemoteKeyTecla(sesionId, tecla, modifiers)
             } catch (e: ApiException) {
                 manejarErrorInput(api, sesionId, e)
             } finally {

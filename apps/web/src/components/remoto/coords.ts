@@ -12,6 +12,8 @@
 export interface RemoteFrameSize {
   width: number;
   height: number;
+  origin_x?: number;
+  origin_y?: number;
 }
 
 export interface ContainedRect {
@@ -82,7 +84,7 @@ export function mapClientPointToRemoteCoords(
   const x = Math.round((relX / contained.width) * frame.width);
   const y = Math.round((relY / contained.height) * frame.height);
   return {
-    x: Math.min(Math.max(x, 0), frame.width - 1),
-    y: Math.min(Math.max(y, 0), frame.height - 1),
+    x: Math.min(Math.max(x, 0), frame.width - 1) + (frame.origin_x ?? 0),
+    y: Math.min(Math.max(y, 0), frame.height - 1) + (frame.origin_y ?? 0),
   };
 }

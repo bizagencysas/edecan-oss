@@ -45,7 +45,9 @@ const val REMOTE_STATUS_DENIED = "denied"
 
 /** `edecan_api.routers.remote.PointerAccion` — usado por `RemotoViewModel`
  * para validar antes de mandar, y por los tests de este módulo. */
-val REMOTE_POINTER_ACCIONES: Set<String> = setOf("move", "click", "double_click", "right_click")
+val REMOTE_POINTER_ACCIONES: Set<String> = setOf(
+    "move", "click", "double_click", "right_click", "mouse_down", "mouse_up", "drag", "scroll",
+)
 
 /** `edecan_api.routers.remote.MouseButton`. */
 val REMOTE_MOUSE_BUTTONS: Set<String> = setOf("left", "right", "middle")
@@ -63,7 +65,21 @@ val REMOTE_SPECIAL_KEYS: List<String> = listOf(
     "arrow_down",
     "arrow_left",
     "arrow_right",
+    "delete_forward",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "space",
+    "a",
+    "c",
+    "v",
+    "x",
+    "z",
+    "s",
 )
+
+val REMOTE_KEY_MODIFIERS: Set<String> = setOf("command", "control", "option", "shift")
 
 /**
  * Fila pública de `remote_sessions` (`RemoteSessionOut` en
@@ -96,7 +112,7 @@ val RemoteSession.isControl: Boolean get() = kind == REMOTE_KIND_CONTROL
 val RemoteSession.haTerminado: Boolean get() = status == REMOTE_STATUS_ENDED || status == REMOTE_STATUS_DENIED
 
 /** `GET /v1/remote/sessions/{id}/frame` — el frame más reciente. `imageB64`
- * es un PNG en base64, listo para `android.graphics.BitmapFactory.decodeByteArray`
+ * es un JPEG o PNG en base64, listo para `android.graphics.BitmapFactory.decodeByteArray`
  * tras un `android.util.Base64.decode` (ver `RemotoViewModel`, `androidApp`:
  * este módulo `commonMain` no depende de `android.*`, así que el decode a
  * `ImageBitmap` vive en la capa de UI, no acá). */
@@ -105,6 +121,9 @@ data class RemoteFrame(
     @SerialName("image_b64") val imageB64: String = "",
     val width: Int = 0,
     val height: Int = 0,
+    val mime: String = "image/png",
+    @SerialName("origin_x") val originX: Int = 0,
+    @SerialName("origin_y") val originY: Int = 0,
     val seq: Int = 0,
 )
 
@@ -127,19 +146,18 @@ data class RemoteInputResult(val ok: Boolean = true, val result: JsonElement? = 
  * hay endpoint que lo exponga), así que asume el default real documentado,
  * igual que hace el panel web (`AUTO_REFRESH_INTERVAL_MS` en
  * `apps/web/src/app/(app)/app/remoto/page.tsx`). */
-const val DEFAULT_REMOTE_FRAME_MIN_INTERVAL_SECONDS: Double = 1.0
+const val DEFAULT_REMOTE_FRAME_MIN_INTERVAL_SECONDS: Double = 0.25
 
-private const val MIN_REMOTE_POLL_DELAY_MILLIS = 500L
+private const val MIN_REMOTE_POLL_DELAY_MILLIS = 300L
 
 /**
  * Intervalo real (ms) que debe usar el *polling* automático del visor entre
  * cada `GET /v1/remote/sessions/{id}/frame` — SIEMPRE por encima de
  * [minIntervalSeconds] (el `REMOTE_FRAME_MIN_INTERVAL_SECONDS` real del
  * backend, `apps/api/edecan_api/routers/remote.py::DEFAULT_FRAME_MIN_INTERVAL_SECONDS`,
- * default 1.0s) para no pisar su rate limit (`429`) con el *polling* normal
- * — mismo margen 2× que ya usa el panel web
- * (`apps/web/src/app/(app)/app/remoto/page.tsx::AUTO_REFRESH_INTERVAL_MS`,
- * fijo en 2000ms = 2 × 1.0s). Un [minIntervalSeconds] de 0 (o negativo, por
+ * default 0.25s) para no pisar su rate limit (`429`) con el *polling* normal.
+ * Usa margen 1.4×, alineado con los 350 ms de web/iOS. Un
+ * [minIntervalSeconds] de 0 (o negativo, por
  * si algún día llega mal configurado) nunca produce un *polling* a ráfaga
  * cerrada: cae al piso de [MIN_REMOTE_POLL_DELAY_MILLIS].
  */
@@ -147,5 +165,5 @@ fun remoteFramePollDelayMillis(
     minIntervalSeconds: Double = DEFAULT_REMOTE_FRAME_MIN_INTERVAL_SECONDS,
 ): Long {
     val minMillis = (minIntervalSeconds * 1000).toLong().coerceAtLeast(0L)
-    return (minMillis * 2).coerceAtLeast(MIN_REMOTE_POLL_DELAY_MILLIS)
+    return (minMillis * 14 / 10).coerceAtLeast(MIN_REMOTE_POLL_DELAY_MILLIS)
 }

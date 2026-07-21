@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-20
+
+### Added
+
+- Native five-tab iOS and Android experiences centered on Edecan, Create,
+  Remote, Activity and Settings; Create turns a short brief into a normal chat
+  request instead of exposing another technical product
+- A social content studio for LinkedIn, X, Instagram, Facebook, Threads and
+  TikTok that creates copy, accessible image direction, manifests and optional
+  original visual cards while always leaving publication to the person
+- First-class Skills and MCP discovery in the advanced mobile settings, with
+  human-readable status and no internal implementation details in the primary
+  assistant flow
+- Cross-platform companion backends for screen capture and keyboard/mouse
+  control on Windows and Linux, complementing the native Quartz implementation
+  on macOS
+- Recoverable `trash_path` computer action, confined to the configured sandbox
+  and protected by an unavoidable local approval
+
+### Changed
+
+- Remote viewing now requests compressed, width-bounded JPEG frames roughly
+  three times per second without overlapping requests; PNG remains supported
+- Web, iOS and Android remote clients understand MIME type and multi-monitor
+  origins and expose drag, right click, scroll, extended keys and shortcuts
+- The companion's optional `remote-control` dependency installs only the
+  platform backend it needs and keeps non-remote installations lightweight
+- Every public Python package, web, desktop and native client now reports
+  version 0.5.0
+
+### Fixed
+
+- Remote frame and input routes use their dedicated high-frequency limits
+  instead of inheriting the administrative 60-requests-per-minute limiter
+- Remote clients prevent concurrent frame polls, avoiding stale frame races and
+  runaway requests on slow networks
+- Social creation remains compatible with the registry's hard prohibition on
+  automatic social-network publishing
+
+### Security
+
+- Remote input remains opt-in, session-bound, locally approved and visibly
+  terminable; operating-system accessibility and capture permissions are never
+  bypassed
+- Deletion is recoverable, cannot target the sandbox root or escape it through
+  path traversal/symlinks, and cannot inherit auto-approval or remembered
+  approval
+- Generated social artifacts carry a `requires_human_confirmation` manifest
+  and no publishing connector or platform credential is invoked
+
 ## [0.4.0] - 2026-07-20
 
 ### Added

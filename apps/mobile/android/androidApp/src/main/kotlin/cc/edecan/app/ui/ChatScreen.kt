@@ -79,6 +79,8 @@ fun ChatScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     chatViewModel: ChatViewModel = viewModel(),
     onOpenVoice: () -> Unit = {},
+    solicitudInicial: String? = null,
+    onSolicitudConsumida: () -> Unit = {},
 ) {
     val sessionState by sessionViewModel.uiState.collectAsState()
     val chatState by chatViewModel.uiState.collectAsState()
@@ -91,6 +93,15 @@ fun ChatScreen(
 
     LaunchedEffect(chatState.mensajes.size, chatState.mensajes.lastOrNull()?.texto) {
         if (chatState.mensajes.isNotEmpty()) listState.animateScrollToItem(chatState.mensajes.lastIndex)
+    }
+
+    LaunchedEffect(solicitudInicial) {
+        val solicitud = solicitudInicial?.trim().orEmpty()
+        val api = sessionViewModel.api
+        if (solicitud.isNotEmpty() && api != null) {
+            onSolicitudConsumida()
+            chatViewModel.enviar(solicitud, api)
+        }
     }
 
     Scaffold(

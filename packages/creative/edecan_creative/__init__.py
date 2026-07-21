@@ -21,6 +21,7 @@ from .providers import (
     get_image_provider,
     get_tenant_image_provider,
 )
+from .social import CrearContenidoSocialTool
 from .tools import (
     CrearDocumentoTool,
     CrearPdfTool,
@@ -34,6 +35,7 @@ __all__ = [
     "DEFAULT_SIZE",
     "IMAGES_CONNECTOR_KEY",
     "CrearDocumentoTool",
+    "CrearContenidoSocialTool",
     "CrearPdfTool",
     "CrearPodcastTool",
     "CrearPresentacionTool",
@@ -53,12 +55,13 @@ __all__ = [
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las herramientas de creatividad: las 4 de imágenes/documentos
+    """Instancia las herramientas de creatividad: imágenes, contenido social y documentos
     de oficina (nombres exactos: `ROADMAP_V2.md` §7.7) más las 2 de podcasts
     y efectos de sonido (`ARCHITECTURE.md` §14, WP-V5-11) — ambas gateadas
     por el flag de plan `tools.podcast`, ver `edecan_creative.tools`."""
     return [
         GenerarImagenTool(),
+        CrearContenidoSocialTool(),
         CrearDocumentoTool(),
         CrearPresentacionTool(),
         CrearPdfTool(),

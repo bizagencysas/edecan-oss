@@ -18,13 +18,13 @@ import kotlin.test.assertTrue
 class RemotoTeclasTest {
 
     @Test
-    fun teclasEspeciales_valores_coinciden_exacto_con_REMOTE_SPECIAL_KEYS_en_el_mismo_orden() {
-        assertEquals(REMOTE_SPECIAL_KEYS, TECLAS_ESPECIALES.map { it.valor })
+    fun teclasEspeciales_visibles_pertenecen_al_vocabulario_del_backend() {
+        assertTrue(REMOTE_SPECIAL_KEYS.containsAll(TECLAS_ESPECIALES.map { it.valor }))
     }
 
     @Test
-    fun teclasEspeciales_son_exactamente_8_sin_duplicados() {
-        assertEquals(8, TECLAS_ESPECIALES.size)
+    fun teclasEspeciales_no_tienen_duplicados() {
+        assertEquals(14, TECLAS_ESPECIALES.size)
         assertEquals(TECLAS_ESPECIALES.size, TECLAS_ESPECIALES.map { it.valor }.toSet().size)
     }
 
@@ -41,7 +41,10 @@ class RemotoTeclasTest {
         // Sanity check adicional (no específico de la UI): estos dos sets se
         // usan directo en `RemotoViewModel.enviarPointer` — un cambio de
         // vocabulario en el backend debe hacer fallar ESTE test primero.
-        assertEquals(setOf("move", "click", "double_click", "right_click"), REMOTE_POINTER_ACCIONES)
+        assertEquals(
+            setOf("move", "click", "double_click", "right_click", "mouse_down", "mouse_up", "drag", "scroll"),
+            REMOTE_POINTER_ACCIONES,
+        )
         assertEquals(setOf("left", "right", "middle"), REMOTE_MOUSE_BUTTONS)
     }
 }

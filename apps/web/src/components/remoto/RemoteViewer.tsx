@@ -80,6 +80,8 @@ export function RemoteViewer({
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   const imgRef = useRef<HTMLImageElement>(null);
   const pendingClickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragStartRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null);
+  const draggedRef = useRef(false);
 
   useEffect(() => {
     if (session.status !== "active") return;
@@ -113,8 +115,19 @@ export function RemoteViewer({
     onPointerInput({ tipo: "pointer", x: point.x, y: point.y, accion });
   }
 
+  function remotePoint(clientX: number, clientY: number) {
+    if (!frame || !imgRef.current) return null;
+    return mapClientPointToRemoteCoords(
+      clientX, clientY, imgRef.current.getBoundingClientRect(), frame,
+    );
+  }
+
   function handleImageClick(e: React.MouseEvent<HTMLImageElement>) {
     if (!inputInteractive) return;
+    if (draggedRef.current) {
+      draggedRef.current = false;
+      return;
+    }
     const { clientX, clientY } = e;
     if (pendingClickRef.current) clearTimeout(pendingClickRef.current);
     pendingClickRef.current = setTimeout(() => {
@@ -136,6 +149,39 @@ export function RemoteViewer({
     if (!inputInteractive) return;
     e.preventDefault();
     sendPointer(e.clientX, e.clientY, "right_click");
+  }
+
+  function handlePointerDown(e: React.PointerEvent<HTMLImageElement>) {
+    if (!inputInteractive || e.button !== 0) return;
+    const point = remotePoint(e.clientX, e.clientY);
+    if (!point) return;
+    dragStartRef.current = { clientX: e.clientX, clientY: e.clientY, ...point };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handlePointerUp(e: React.PointerEvent<HTMLImageElement>) {
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
+    if (!start || !onPointerInput) return;
+    const end = remotePoint(e.clientX, e.clientY);
+    const distance = Math.hypot(e.clientX - start.clientX, e.clientY - start.clientY);
+    if (!end || distance < 6) return;
+    draggedRef.current = true;
+    onPointerInput({
+      tipo: "pointer", accion: "drag", x: end.x, y: end.y,
+      start_x: start.x, start_y: start.y,
+    });
+  }
+
+  function handleWheel(e: React.WheelEvent<HTMLImageElement>) {
+    if (!inputInteractive || !onPointerInput) return;
+    const point = remotePoint(e.clientX, e.clientY);
+    if (!point) return;
+    e.preventDefault();
+    const deltaY = Math.max(-1200, Math.min(1200, Math.round(-e.deltaY * 3)));
+    if (deltaY !== 0) {
+      onPointerInput({ tipo: "pointer", accion: "scroll", ...point, delta_y: deltaY });
+    }
   }
 
   return (
@@ -194,11 +240,15 @@ export function RemoteViewer({
             {frame ? (
               <img
                 ref={imgRef}
-                src={`data:image/png;base64,${frame.image_b64}`}
+                src={`data:${frame.mime ?? "image/png"};base64,${frame.image_b64}`}
                 alt="Última captura de la pantalla remota"
                 onClick={handleImageClick}
                 onDoubleClick={handleImageDoubleClick}
                 onContextMenu={handleImageContextMenu}
+                onPointerDown={handlePointerDown}
+                onPointerUp={handlePointerUp}
+                onWheel={handleWheel}
+                draggable={false}
                 className={`max-h-[70vh] w-full object-contain ${inputInteractive ? "cursor-crosshair" : ""}`}
               />
             ) : (
@@ -231,7 +281,7 @@ export function RemoteViewer({
                 onClick={onToggleAuto}
                 disabled={sessionDone}
               >
-                {auto ? "Auto: activado (2s)" : "Auto: apagado"}
+                {auto ? "En vivo: activado" : "En vivo: apagado"}
               </Button>
               {!isControl && (
                 <Button size="sm" variant="danger" onClick={onEnd} loading={ending}>

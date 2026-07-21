@@ -42,6 +42,7 @@ _YES_ANSWERS = frozenset({"y", "yes", "s", "si", "sí"})
 # para el resto de acciones (el gate de `ide_enabled` vive solo en
 # `actions.execute`, este módulo no necesita saber qué acciones son "de IDE").
 _INPUT_ACTIONS = frozenset({"input_pointer", "input_key"})
+_ALWAYS_PROMPT_ACTIONS = frozenset({"trash_path"})
 
 
 async def _prompt_yes_no(prompt: str, *, timeout: float) -> bool:
@@ -185,6 +186,12 @@ async def default_approver(
     """
     if action in _INPUT_ACTIONS:
         return await _approve_input_action(action, params, config, timeout=timeout)
+
+    if action in _ALWAYS_PROMPT_ACTIONS:
+        shown_params = sanitize_params(params)
+        return await _prompt_yes_no(
+            f"¿Mover a la PAPELERA «{action}» con {shown_params}? [y/N] ", timeout=timeout
+        )
 
     if action in config.auto_approve:
         logger.info("Acción %r auto-aprobada por configuración (auto_approve).", action)

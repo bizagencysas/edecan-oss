@@ -57,6 +57,7 @@ fun PerfilScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     perfilViewModel: PerfilViewModel = viewModel(),
     onAbrirIde: () -> Unit = {},
+    onAbrirCapacidades: () -> Unit = {},
     onAbrirNegocios: () -> Unit = {},
 ) {
     val uiState by sessionViewModel.uiState.collectAsState()
@@ -131,6 +132,10 @@ fun PerfilScreen(
                             Button(onClick = onAbrirIde, modifier = Modifier.weight(1f)) { Text("IDE") }
                             Button(onClick = onAbrirNegocios, modifier = Modifier.weight(1f)) { Text("Negocios") }
                         }
+                        Button(
+                            onClick = onAbrirCapacidades,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        ) { Text("Capacidades") }
                     }
                 }
             }

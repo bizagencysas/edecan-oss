@@ -93,6 +93,45 @@ async def test_failed_tool_end_never_enqueues_notification(monkeypatch) -> None:
     )
 
 
+async def test_fydesign_completion_notifies_mobile_without_listing_every_tool(monkeypatch) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    queued = []
+
+    async def fake_enqueue(settings, job_type, payload, queued_tenant_id):  # noqa: ANN001
+        queued.append((job_type, payload, queued_tenant_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(conversations_module, "enqueue", fake_enqueue)
+    await conversations_module._enqueue_tool_notification(
+        settings=object(),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        event={
+            "type": "tool_end",
+            "tool_call_id": "studio-call-1",
+            "name": "fydesign_video_ad",
+            "result_preview": "Video listo",
+            "artifacts": [],
+        },
+    )
+
+    assert queued[0][0] == "notify_important_event"
+    assert queued[0][1]["kind"] == "design_ready"
+    assert queued[0][1]["chat_id"] == str(conversation_id)
+    assert queued[0][2] == tenant_id
+
+
+def test_fydesign_health_does_not_emit_completion_notification() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    assert conversations_module._notification_kind_for_tool("fydesign_health") is None
+
+
 async def _create_conversation(client, headers: dict[str, str]) -> str:
     response = await client.post("/v1/conversations", json={"channel": "web"}, headers=headers)
     assert response.status_code == 201

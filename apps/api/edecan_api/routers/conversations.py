@@ -119,6 +119,23 @@ _IMPORTANT_TOOL_NOTIFICATIONS: dict[str, str] = {
 }
 
 
+def _notification_kind_for_tool(name: str) -> str | None:
+    """Clasifica herramientas terminadas sin mantener 36 entradas duplicadas.
+
+    El motor completo de Studio conserva el prefijo ``fydesign_`` como
+    contrato estable. Cualquier capacidad que produzca o transforme un
+    entregable visual debe avisar al teléfono igual que el editor nativo.
+    ``fydesign_health`` es diagnóstico y no representa trabajo terminado.
+    """
+
+    explicit = _IMPORTANT_TOOL_NOTIFICATIONS.get(name)
+    if explicit is not None:
+        return explicit
+    if name.startswith("fydesign_") and name != "fydesign_health":
+        return "design_ready"
+    return None
+
+
 class ConversationIn(BaseModel):
     title: str | None = None
     channel: Literal["web", "voice", "phone", "api"] = "web"
@@ -891,7 +908,7 @@ async def _enqueue_tool_notification(
     event: dict[str, Any],
 ) -> None:
     name = str(event.get("name") or "")
-    kind = _IMPORTANT_TOOL_NOTIFICATIONS.get(name)
+    kind = _notification_kind_for_tool(name)
     preview = str(event.get("result_preview") or "").lstrip().lower()
     if kind is None or preview.startswith(("error:", "falló", "no se pudo")):
         return

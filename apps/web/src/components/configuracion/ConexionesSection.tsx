@@ -313,7 +313,7 @@ export function ConexionesSection({
             <div className="mt-4"><ICloudConnectionCard /></div>
           </ConnectionCategory>
 
-          <ConnectionCategory title="Viajes y entregas" description="Amadeus para vuelos y hoteles; AfterShip para paquetes.">
+          <ConnectionCategory title="Viajes y entregas" description="Vuelos y hoteles funcionan sin configurar una API. AfterShip es opcional para rastrear paquetes.">
             <TravelConnectionsPanel />
           </ConnectionCategory>
 

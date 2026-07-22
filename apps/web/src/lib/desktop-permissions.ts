@@ -91,3 +91,26 @@ export function readyPermissionCount(state: DesktopPermissionsState): number {
     (permission) => permission.status === "granted" || permission.status === "not_required",
   ).length;
 }
+
+const REMOTE_ENGINE_PERMISSION_IDS = ["screen_recording", "accessibility"] as const;
+
+function remoteEngineReady(state: DesktopPermissionsState | null): boolean {
+  if (!state || state.platform !== "macos") return false;
+  return REMOTE_ENGINE_PERMISSION_IDS.every((permissionId) =>
+    state.permissions.some(
+      (permission) => permission.id === permissionId && permission.status === "granted",
+    ),
+  );
+}
+
+/**
+ * macOS aplica Grabación de pantalla y Accesibilidad a procesos. El sidecar
+ * que ya estaba vivo antes de concederlos debe reiniciarse una única vez para
+ * heredar la decisión nueva de TCC.
+ */
+export function remoteEngineBecameReady(
+  previous: DesktopPermissionsState | null,
+  next: DesktopPermissionsState,
+): boolean {
+  return !remoteEngineReady(previous) && remoteEngineReady(next);
+}

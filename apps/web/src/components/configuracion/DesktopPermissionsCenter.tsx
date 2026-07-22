@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert, Button, Card, CardBody, CardHeader } from "@/components/ui";
 import {
@@ -8,6 +8,7 @@ import {
   mergePermissionAction,
   PERMISSION_STATUS_COPY,
   readyPermissionCount,
+  remoteEngineBecameReady,
   type DesktopPermission,
   type DesktopPermissionsState,
   type PermissionActionResult,
@@ -35,6 +36,8 @@ function DesktopPermissionsCenterNative() {
   const [busyPermission, setBusyPermission] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const lastState = useRef<DesktopPermissionsState | null>(null);
+  const restartingRemoteEngine = useRef(false);
 
   const loadState = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -44,11 +47,22 @@ function DesktopPermissionsCenterNative() {
         tauriInvoke<DesktopPermissionsState>("desktop_permissions_get_state"),
         tauriInvoke<StartupState>("startup_get_state"),
       ]);
+      const shouldRestartRemoteEngine =
+        !showLoading &&
+        !restartingRemoteEngine.current &&
+        remoteEngineBecameReady(lastState.current, next);
+      lastState.current = next;
       setState(next);
       setStartup(startupState);
+      if (shouldRestartRemoteEngine) {
+        restartingRemoteEngine.current = true;
+        setMessage("Permisos listos. Reiniciando el motor remoto para aplicarlos…");
+        await tauriInvoke<void>("retry_backend");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudieron comprobar los permisos.");
     } finally {
+      restartingRemoteEngine.current = false;
       if (showLoading) setLoading(false);
     }
   }, []);

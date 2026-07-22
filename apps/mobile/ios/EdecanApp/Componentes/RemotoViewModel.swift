@@ -39,6 +39,11 @@ final class RemotoViewModel {
     /// server-side de 0.25s y sin solapar solicitudes.
     private let intervaloPollingFrame: Duration = .milliseconds(350)
     private var tareaPollingFrame: Task<Void, Never>?
+    /// Cola FIFO de input remoto. Antes, `enviandoInput == true` descartaba
+    /// silenciosamente cualquier toque/tecla que llegara mientras el comando
+    /// anterior seguía en vuelo. En control remoto eso se siente como clics o
+    /// letras perdidas. Cada comando espera al anterior y conserva el orden.
+    private var tareaInputAnterior: Task<Void, Never>?
 
     // MARK: - Iniciar sesión / pedir frame
 
@@ -80,6 +85,10 @@ final class RemotoViewModel {
             errorMensaje = nil
             if sesion?.id == sesionActual.id {
                 sesion = sesionActual.conFrame(nuevoFrame)
+            }
+            if !autoActualizar {
+                autoActualizar = true
+                iniciarPollingFrame(client: client)
             }
         } catch APIClient.APIError.servidor(let status, let mensaje) {
             if status == 429 { return }
@@ -158,7 +167,20 @@ final class RemotoViewModel {
     /// *polling*, mismo criterio que ``pedirFrame(client:)`` (ver `status`
     /// documentado en `APIClient.sendRemoteInput`).
     private func enviarInput(_ input: RemoteInput, client: APIClient?) async {
-        guard let client, let sesionActual = sesion, !enviandoInput else { return }
+        guard let client, let sesionActual = sesion else { return }
+        let anterior = tareaInputAnterior
+        let actual = Task { @MainActor [weak self] in
+            _ = await anterior?.value
+            guard let self, self.sesion?.id == sesionActual.id else { return }
+            await self.ejecutarInput(input, client: client, sesionActual: sesionActual)
+        }
+        tareaInputAnterior = actual
+        await actual.value
+    }
+
+    private func ejecutarInput(
+        _ input: RemoteInput, client: APIClient, sesionActual: RemoteSession
+    ) async {
         enviandoInput = true
         errorMensaje = nil
         defer { enviandoInput = false }
@@ -191,5 +213,7 @@ final class RemotoViewModel {
     /// propósito).
     func limpiar() {
         detenerPollingFrame()
+        tareaInputAnterior?.cancel()
+        tareaInputAnterior = nil
     }
 }

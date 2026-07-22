@@ -689,9 +689,12 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
     let url = tauri::Url::parse(&local_ui_url(port, &capability)).map_err(|e| e.to_string())?;
 
     if let Some(existing) = app.get_webview_window("main") {
-        // No debería pasar en el flujo normal (retry_backend solo se llama
-        // antes de que "main" exista), pero por las dudas no se duplica la
-        // ventana — solo se enfoca la que ya está.
+        // También se usa después de conceder permisos de macOS: el sidecar
+        // anterior debe morir para que el proceso nuevo herede la decisión de
+        // TCC. El reinicio genera otra capacidad efímera (y eventualmente otro
+        // puerto), por lo que no basta con enfocar la ventana existente: hay
+        // que navegarla al origen recién creado.
+        existing.navigate(url).map_err(|e| e.to_string())?;
         if !start_hidden {
             existing.show().map_err(|e| e.to_string())?;
             existing.set_focus().map_err(|e| e.to_string())?;

@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** `(this as? ApiException.Servidor)?.status` — las otras variantes de
  * [ApiException] (sin conexión, sesión expirada, etc.) no traen un status
@@ -109,6 +111,9 @@ class RemotoViewModel : ViewModel() {
     val uiState: StateFlow<RemotoUiState> = _uiState.asStateFlow()
 
     private var pollingJob: Job? = null
+    /** Cola FIFO para no perder toques o teclas rápidos mientras el comando
+     * anterior sigue viajando al companion. */
+    private val inputMutex = Mutex()
 
     /** Llamada desde `LaunchedEffect(api)` en `RemotoScreen`. Si ya hay una
      * sesión `active` en curso, reanuda el *polling*. */
@@ -253,17 +258,19 @@ class RemotoViewModel : ViewModel() {
         deltaY: Int = 0,
     ) {
         val sesionId = _uiState.value.sesionActual?.id ?: return
-        if (_uiState.value.enviandoInput) return
         viewModelScope.launch {
-            _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
-            try {
-                api.sendRemotePointerInput(
-                    sesionId, x, y, accion, button, startX, startY, deltaX, deltaY
-                )
-            } catch (e: ApiException) {
-                manejarErrorInput(api, sesionId, e)
-            } finally {
-                _uiState.update { it.copy(enviandoInput = false) }
+            inputMutex.withLock {
+                if (_uiState.value.sesionActual?.id != sesionId) return@withLock
+                _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
+                try {
+                    api.sendRemotePointerInput(
+                        sesionId, x, y, accion, button, startX, startY, deltaX, deltaY
+                    )
+                } catch (e: ApiException) {
+                    manejarErrorInput(api, sesionId, e)
+                } finally {
+                    _uiState.update { it.copy(enviandoInput = false) }
+                }
             }
         }
     }
@@ -272,15 +279,17 @@ class RemotoViewModel : ViewModel() {
     fun enviarTexto(api: EdecanApi, texto: String) {
         if (texto.isEmpty()) return
         val sesionId = _uiState.value.sesionActual?.id ?: return
-        if (_uiState.value.enviandoInput) return
         viewModelScope.launch {
-            _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
-            try {
-                api.sendRemoteKeyTexto(sesionId, texto)
-            } catch (e: ApiException) {
-                manejarErrorInput(api, sesionId, e)
-            } finally {
-                _uiState.update { it.copy(enviandoInput = false) }
+            inputMutex.withLock {
+                if (_uiState.value.sesionActual?.id != sesionId) return@withLock
+                _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
+                try {
+                    api.sendRemoteKeyTexto(sesionId, texto)
+                } catch (e: ApiException) {
+                    manejarErrorInput(api, sesionId, e)
+                } finally {
+                    _uiState.update { it.copy(enviandoInput = false) }
+                }
             }
         }
     }
@@ -289,15 +298,17 @@ class RemotoViewModel : ViewModel() {
      * [tecla] debe ser una de `RemoteModels.kt::REMOTE_SPECIAL_KEYS`. */
     fun enviarTecla(api: EdecanApi, tecla: String, modifiers: List<String> = emptyList()) {
         val sesionId = _uiState.value.sesionActual?.id ?: return
-        if (_uiState.value.enviandoInput) return
         viewModelScope.launch {
-            _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
-            try {
-                api.sendRemoteKeyTecla(sesionId, tecla, modifiers)
-            } catch (e: ApiException) {
-                manejarErrorInput(api, sesionId, e)
-            } finally {
-                _uiState.update { it.copy(enviandoInput = false) }
+            inputMutex.withLock {
+                if (_uiState.value.sesionActual?.id != sesionId) return@withLock
+                _uiState.update { it.copy(enviandoInput = true, errorFrame = null) }
+                try {
+                    api.sendRemoteKeyTecla(sesionId, tecla, modifiers)
+                } catch (e: ApiException) {
+                    manejarErrorInput(api, sesionId, e)
+                } finally {
+                    _uiState.update { it.copy(enviandoInput = false) }
+                }
             }
         }
     }

@@ -6,6 +6,7 @@ import {
   mergePermissionAction,
   PERMISSION_STATUS_COPY,
   readyPermissionCount,
+  remoteEngineBecameReady,
 } from "./src/lib/desktop-permissions.ts";
 
 test("desktop platform copy never presents Linux or Windows as macOS", () => {
@@ -61,4 +62,36 @@ test("actualiza solo el permiso devuelto por el sistema operativo", () => {
 test("cuenta como listos los concedidos y los que no requieren permiso", () => {
   assert.equal(readyPermissionCount(state), 2);
   assert.equal(PERMISSION_STATUS_COPY.needs_action.label, "Requiere atención");
+});
+
+test("reinicia el motor remoto solo al quedar listos ambos permisos de macOS", () => {
+  const missingScreenRecording = {
+    ...state,
+    permissions: [
+      ...state.permissions,
+      {
+        id: "screen_recording",
+        title: "Grabación de pantalla",
+        description: "Vista remota",
+        level: "essential",
+        status: "needs_action",
+        action_label: "Permitir",
+      },
+    ],
+  };
+  const ready = {
+    ...missingScreenRecording,
+    permissions: missingScreenRecording.permissions.map((permission) =>
+      permission.id === "screen_recording"
+        ? { ...permission, status: "granted" }
+        : permission,
+    ),
+  };
+
+  assert.equal(remoteEngineBecameReady(missingScreenRecording, ready), true);
+  assert.equal(remoteEngineBecameReady(ready, ready), false);
+  assert.equal(
+    remoteEngineBecameReady(null, { ...ready, platform: "windows" }),
+    false,
+  );
 });

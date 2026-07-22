@@ -42,31 +42,46 @@ struct RemotoView: View {
     @State private var consentido = false
     @State private var escala: CGFloat = 1
     @State private var escalaBase: CGFloat = 1
+    @State private var mostrarTeclado = false
+    @State private var ultimoPuntoRemoto: CGPoint?
+
+    private var sesionInmersiva: RemoteSession? {
+        guard let sesion = viewModel.sesion, !sesion.esTerminal else { return nil }
+        return sesion
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let error = viewModel.errorMensaje {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
-                }
+        Group {
+            if let sesion = sesionInmersiva {
+                visorInmersivo(sesion: sesion)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if let error = viewModel.errorMensaje {
+                            Text(error)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                        }
 
-                if let sesion = viewModel.sesion {
-                    visor(sesion: sesion)
-                } else {
-                    consentimiento
+                        if let sesion = viewModel.sesion {
+                            visorTerminado(sesion: sesion)
+                        } else {
+                            consentimiento
+                        }
+                    }
+                    .padding()
                 }
-
+                .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
             }
-            .padding()
         }
-        .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-        .navigationTitle("Remoto")
+        .navigationTitle(sesionInmersiva == nil ? "Remoto" : "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(sesionInmersiva == nil ? .visible : .hidden, for: .navigationBar)
+        .toolbar(sesionInmersiva == nil ? .visible : .hidden, for: .tabBar)
+        .statusBarHidden(sesionInmersiva != nil)
         .onDisappear { viewModel.limpiar() }
     }
 
@@ -133,89 +148,152 @@ struct RemotoView: View {
         .background(EdecanTheme.azul.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    // MARK: - Visor (con sesión)
+    // MARK: - Visor inmersivo
 
     @ViewBuilder
-    private func visor(sesion: RemoteSession) -> some View {
+    private func visorInmersivo(sesion: RemoteSession) -> some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            imagenInmersiva(sesion: sesion)
+                .ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                barraSuperiorInmersiva(sesion)
+                Spacer(minLength: 12)
+
+                if let error = viewModel.errorMensaje {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .lineLimit(3)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.88), in: Capsule())
+                        .padding(.horizontal)
+                }
+
+                if sesion.esControl {
+                    if mostrarTeclado {
+                        tecladoFlotante
+                    }
+                    dockDeControl
+                } else {
+                    Text("Solo vista")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .background(Color.black)
+    }
+
+    private func barraSuperiorInmersiva(_ sesion: RemoteSession) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(sesion.status == "active" ? Color.green : Color.orange)
+                    .frame(width: 9, height: 9)
+                Text(sesion.status == "active" ? "En vivo" : "Conectando")
+                    .font(.caption.weight(.semibold))
+                if viewModel.enviandoInput {
+                    ProgressView().controlSize(.mini).tint(.white)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.ultraThinMaterial, in: Capsule())
+
+            Spacer()
+
+            Button(role: .destructive) {
+                Task { await viewModel.terminar(client: session.client) }
+            } label: {
+                Label("Terminar", systemImage: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(viewModel.terminando)
+        }
+    }
+
+    private var dockDeControl: some View {
+        HStack(spacing: 8) {
+            botonDock("Teclado", icono: mostrarTeclado ? "keyboard.chevron.compact.down" : "keyboard") {
+                withAnimation(.snappy) { mostrarTeclado.toggle() }
+            }
+            botonDock("Derecho", icono: "cursorarrow.click.2") { enviarAccionDock(.rightClick) }
+            botonDock("Subir", icono: "arrow.up") { enviarAccionDock(.scroll, deltaY: 520) }
+            botonDock("Bajar", icono: "arrow.down") { enviarAccionDock(.scroll, deltaY: -520) }
+            botonDock("Actualizar", icono: "arrow.clockwise") {
+                Task { await viewModel.pedirFrame(client: session.client) }
+            }
+        }
+        .padding(8)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    private func botonDock(
+        _ titulo: String, icono: String, accion: @escaping () -> Void
+    ) -> some View {
+        Button(action: accion) {
+            VStack(spacing: 3) {
+                Image(systemName: icono).font(.body.weight(.semibold))
+                Text(titulo).font(.system(size: 9, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(.white)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.enviandoInput && titulo != "Teclado")
+    }
+
+    private var tecladoFlotante: some View {
+        TecladoRemotoView(
+            deshabilitado: viewModel.enviandoInput,
+            compacto: true,
+            onEnviarTexto: { texto in
+                Task { await viewModel.enviarKey(.texto(texto), client: session.client) }
+            },
+            onEnviarTecla: { tecla in
+                Task { await viewModel.enviarKey(.tecla(tecla), client: session.client) }
+            },
+            onEnviarAtajo: { tecla, modifiers in
+                Task { await viewModel.enviarKey(.tecla(tecla, modifiers: modifiers), client: session.client) }
+            }
+        )
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func enviarAccionDock(_ accion: RemotePointerAccion, deltaY: Int = 0) {
+        guard let frame = viewModel.frame else { return }
+        let punto = ultimoPuntoRemoto ?? CGPoint(x: frame.width / 2, y: frame.height / 2)
+        Task {
+            await viewModel.enviarPointer(
+                RemotePointerInput(
+                    x: Int(punto.x), y: Int(punto.y), accion: accion, deltaY: deltaY
+                ),
+                client: session.client
+            )
+        }
+    }
+
+    private func visorTerminado(sesion: RemoteSession) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             bannerDeSesion(sesion)
-            imagenOReserva(sesion: sesion)
-
-            HStack {
-                Text("\(sesion.framesCount) frame(s)")
-                Spacer()
-                EtiquetaEstadoSesionRemota(status: sesion.status)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 10) {
-                Button {
-                    Task { await viewModel.pedirFrame(client: session.client) }
-                } label: {
-                    if viewModel.actualizandoFrame {
-                        ProgressView()
-                    } else {
-                        Label("Actualizar", systemImage: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(sesion.esTerminal || viewModel.actualizandoFrame)
-
-                Toggle(isOn: Binding(
-                    get: { viewModel.autoActualizar },
-                    set: { nuevo in
-                        viewModel.autoActualizar = nuevo
-                        if nuevo {
-                            viewModel.iniciarPollingFrame(client: session.client)
-                        } else {
-                            viewModel.detenerPollingFrame()
-                        }
-                    }
-                )) {
-                    Text("Vista en vivo")
-                }
-                .toggleStyle(.button)
-                .disabled(sesion.esTerminal)
-            }
-            .font(.footnote)
+            reservaSinFrame(sesion: sesion)
+                .frame(maxWidth: .infinity, minHeight: 260)
+                .background(Color.black, in: RoundedRectangle(cornerRadius: 14))
         }
         .padding(14)
         .tarjetaVidrio(esquina: 16)
-
-        if sesion.esControl && !sesion.esTerminal {
-            ControlesPunteroView(
-                deshabilitado: viewModel.enviandoInput,
-                onAccion: { accion, deltaY in
-                    guard let frame = viewModel.frame else { return }
-                    Task {
-                        await viewModel.enviarPointer(
-                            RemotePointerInput(
-                                x: frame.width / 2, y: frame.height / 2,
-                                accion: accion, deltaY: deltaY
-                            ),
-                            client: session.client
-                        )
-                    }
-                }
-            )
-            TecladoRemotoView(
-                deshabilitado: viewModel.enviandoInput,
-                onEnviarTexto: { texto in
-                    Task { await viewModel.enviarKey(.texto(texto), client: session.client) }
-                },
-                onEnviarTecla: { tecla in
-                    Task { await viewModel.enviarKey(.tecla(tecla), client: session.client) }
-                },
-                onEnviarAtajo: { tecla, modifiers in
-                    Task {
-                        await viewModel.enviarKey(
-                            .tecla(tecla, modifiers: modifiers), client: session.client
-                        )
-                    }
-                }
-            )
-        }
     }
 
     /// Indicador visible PERMANENTE + botón Terminar SIEMPRE alcanzable
@@ -264,13 +342,13 @@ struct RemotoView: View {
                 : "Pidiendo aprobación de vista remota…"
         default:
             return sesion.esControl
-                ? "Sesión de control activa — se está controlando tu equipo"
-                : "Sesión de vista activa — solo lectura"
+                ? "Sesión de control activa: se está controlando tu equipo"
+                : "Sesión de vista activa: solo lectura"
         }
     }
 
     @ViewBuilder
-    private func imagenOReserva(sesion: RemoteSession) -> some View {
+    private func imagenInmersiva(sesion: RemoteSession) -> some View {
         GeometryReader { geo in
             Group {
                 if let frame = viewModel.frame, let imagen = decodificarImagen(frame) {
@@ -296,10 +374,8 @@ struct RemotoView: View {
                 }
             }
         }
-        .frame(height: 320)
-        .frame(maxWidth: .infinity)
-        .background(Color.black, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
     }
 
     /// Clic (`SpatialTapGesture(count: 1)`) → `input_pointer {accion: "click"}`,
@@ -336,6 +412,7 @@ struct RemotoView: View {
                     puntoLocalX: Double(valor.location.x), puntoLocalY: Double(valor.location.y),
                     anchoElemento: Double(tamano.width), altoElemento: Double(tamano.height), frame: frame
                 ) else { return }
+                ultimoPuntoRemoto = CGPoint(x: fin.x, y: fin.y)
                 Task {
                     await viewModel.enviarPointer(
                         RemotePointerInput(
@@ -356,6 +433,7 @@ struct RemotoView: View {
             anchoElemento: Double(tamanoElemento.width), altoElemento: Double(tamanoElemento.height),
             frame: frame
         ) else { return }
+        ultimoPuntoRemoto = CGPoint(x: punto.x, y: punto.y)
         Task {
             await viewModel.enviarPointer(
                 RemotePointerInput(x: punto.x, y: punto.y, accion: accion), client: session.client
@@ -378,7 +456,7 @@ struct RemotoView: View {
                 .foregroundStyle(.white.opacity(0.7))
             } else {
                 ProgressView().tint(.white)
-                Text("Esperando aprobación en tu Mac — puede tardar hasta 30 segundos.")
+                Text("Esperando aprobación en tu Mac. Puede tardar hasta 30 segundos.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
@@ -458,6 +536,7 @@ private struct ControlesPunteroView: View {
 
 private struct TecladoRemotoView: View {
     let deshabilitado: Bool
+    var compacto = false
     let onEnviarTexto: (String) -> Void
     let onEnviarTecla: (RemoteSpecialKey) -> Void
     let onEnviarAtajo: (RemoteSpecialKey, [RemoteKeyModifier]) -> Void
@@ -468,7 +547,7 @@ private struct TecladoRemotoView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Escribir en el equipo remoto")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(compacto ? Color.white : Color.secondary)
 
             HStack {
                 TextField("Escribe aquí y pulsa Enviar…", text: $texto)
@@ -481,9 +560,10 @@ private struct TecladoRemotoView: View {
                     .disabled(deshabilitado || texto.isEmpty)
             }
 
-            Text("Teclas especiales")
+            if !compacto { Text("Teclas especiales")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(RemoteSpecialKey.allCases, id: \.self) { tecla in
@@ -494,7 +574,7 @@ private struct TecladoRemotoView: View {
                 }
             }
 
-            Text("Atajos").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if !compacto { Text("Atajos").font(.caption2.weight(.semibold)).foregroundStyle(.secondary) }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button("⌘A") { onEnviarAtajo(.a, [.command]) }
@@ -509,12 +589,26 @@ private struct TecladoRemotoView: View {
             }
         }
         .padding(14)
-        .tarjetaVidrio(esquina: 16)
+        .background(compacto ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 16))
+        .modifier(TecladoTarjetaModifier(compacto: compacto))
     }
 
     private func enviarTexto() {
         guard !texto.isEmpty else { return }
         onEnviarTexto(texto)
         texto = ""
+    }
+}
+
+private struct TecladoTarjetaModifier: ViewModifier {
+    let compacto: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if compacto {
+            content
+        } else {
+            content.tarjetaVidrio(esquina: 16)
+        }
     }
 }

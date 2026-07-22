@@ -126,9 +126,11 @@ try {
     Assert-InstalledPayload $MsiExtract | Out-Null
 
     Write-Host "==> Instalando NSIS en un perfil efimero..."
-    # NSIS exige que /D sea el ultimo argumento. Las comillas embebidas
-    # conservan rutas temporales con espacios en perfiles Windows reales.
-    $NsisProcess = Start-Process $Nsis -ArgumentList @("/S", "/D=`"$NsisInstall`"") -Wait -PassThru
+    # NSIS exige que /D sea el ultimo argumento y que el valor NO lleve
+    # comillas, incluso si contiene espacios: todo lo que sigue a `/D=` es la
+    # ruta. SmokeRoot usa RUNNER_TEMP + un nombre corto, así que Start-Process
+    # no necesita reconstruir un argumento con espacios en CI.
+    $NsisProcess = Start-Process $Nsis -ArgumentList @("/S", "/D=$NsisInstall") -Wait -PassThru
     if ($NsisProcess.ExitCode -ne 0) {
         throw "la instalacion silenciosa NSIS fallo (codigo $($NsisProcess.ExitCode))."
     }

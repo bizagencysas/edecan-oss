@@ -32,6 +32,12 @@ internal fun markdownParaChat(markdown: String): AnnotatedString = buildAnnotate
         if (index != lineas.lastIndex && !lineaRecortada.startsWith("```")) append('\n')
     }
 }
+
+/** Texto que puede salir del dispositivo sin formatos enriquecidos ni
+ * marcadores Markdown. `ClipData.newPlainText` garantiza además que Android
+ * no agregue una representación HTML o RTF al portapapeles. */
+internal fun textoPlanoParaCopiar(markdown: String): String = markdownParaChat(markdown).text
+
 private fun AnnotatedString.Builder.appendBloqueMarkdown(linea: String) {
     val trimmed = linea.trimStart()
     val indentacion = linea.take(linea.length - trimmed.length)

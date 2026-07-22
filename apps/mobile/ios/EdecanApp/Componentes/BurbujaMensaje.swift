@@ -28,10 +28,13 @@ struct BurbujaMensaje: View {
                         .tint(mensaje.rol == .usuario ? .white : .primary)
                 } else if !mensaje.texto.isEmpty {
                     Text(textoMarkdown(mensaje.texto))
-                        .textSelection(.enabled)
                         .contextMenu {
                             Button {
-                                UIPasteboard.general.string = mensaje.texto
+                                // `Text` con selección nativa puede poner una
+                                // representación RTFD en el portapapeles. Esta
+                                // ruta escribe únicamente texto plano y quita
+                                // los marcadores Markdown ya renderizados.
+                                UIPasteboard.general.string = textoPlanoParaCopiar(mensaje.texto)
                             } label: {
                                 Label("Copiar texto", systemImage: "doc.on.doc")
                             }
@@ -217,6 +220,10 @@ private func textoMarkdown(_ texto: String) -> AttributedString {
         failurePolicy: .returnPartiallyParsedIfPossible
     )
     return (try? AttributedString(markdown: texto, options: opciones)) ?? AttributedString(texto)
+}
+
+private func textoPlanoParaCopiar(_ texto: String) -> String {
+    String(textoMarkdown(texto).characters)
 }
 
 /// Render allowlisted de los bloques del contrato v1. Ningun bloque decide

@@ -36,6 +36,14 @@ class ChatMarkdownTest {
     }
 
     @Test
+    fun copiaComoTextoPlanoSinMarcadoresMarkdown() {
+        assertEquals(
+            "Resumen\n• Listo y seguro",
+            textoPlanoParaCopiar("# Resumen\n- **Listo** y `seguro`"),
+        )
+    }
+
+    @Test
     fun autoScrollSigueDeltasSoloCercaDelFinalYSinArrastre() {
         assertTrue(debeSeguirDelta(ultimoVisible = 8, totalMensajes = 10, usuarioArrastrando = false))
         assertTrue(!debeSeguirDelta(ultimoVisible = 3, totalMensajes = 10, usuarioArrastrando = false))

@@ -447,9 +447,10 @@ fun ChatScreen(
 private val ADVERTENCIAS_POR_HERRAMIENTA: Map<String, String> = mapOf(
     "usar_computadora" to (
         "Esto va a mover el mouse, escribir o mirar la pantalla de tu computadora de verdad. " +
-            "Revisa qué hay en pantalla antes de aprobar: Edecán nunca debe navegar, hacer clic, " +
-            "escribir ni leer contenido de LinkedIn, ni completar un pago, cobro o inicio de sesión " +
-            "por ti. Si eso es lo que está a punto de hacer, rechaza."
+            "Revisa la app, el destino y el contenido exactos antes de aprobar. Puede continuar una " +
+            "tarea en una sesión que ya abriste, incluida una publicación en LinkedIn, pero no debe " +
+            "capturar contraseñas, hacer scraping o contacto masivo, ni completar un pago sin el flujo " +
+            "específico que tú revisaste."
         ),
 )
 
@@ -567,7 +568,7 @@ private fun BurbujaMensaje(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(
-                            ClipData.newPlainText("Mensaje de Edecán", mensaje.texto),
+                            ClipData.newPlainText("Mensaje de Edecán", textoPlanoParaCopiar(mensaje.texto)),
                         )
                     },
                     contentPadding = PaddingValues(horizontal = 0.dp),
@@ -835,7 +836,13 @@ private fun BarraDeEntrada(
                 },
             ),
         )
-        IconButton(onClick = onEnviar, enabled = habilitado) {
+        IconButton(
+            onClick = {
+                onEnviar()
+                focusManager.clearFocus()
+            },
+            enabled = habilitado,
+        ) {
             // Emoji en vez de `androidx.compose.material.icons` a propósito
             // — cero dependencias adicionales por un solo glifo (ver
             // libs.versions.toml: este módulo no declara material-icons).

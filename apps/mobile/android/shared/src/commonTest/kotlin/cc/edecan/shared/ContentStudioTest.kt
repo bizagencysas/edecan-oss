@@ -7,8 +7,12 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -98,6 +102,84 @@ class ContentStudioTest {
         assertEquals(400, error.status)
         assertEquals("Conecta un modelo antes de crear.", error.detalle)
         assertEquals(280, SocialContentPlatform.X.characterLimit)
+    }
+
+    @Test
+    fun createsVersionedStudioProjectThroughPrivateFacade() = runTest {
+        val http = HttpClient(MockEngine { request ->
+            assertEquals("/v1/content/studio/actions", request.url.encodedPath)
+            assertEquals("Bearer studio-access", request.headers[HttpHeaders.Authorization])
+            val body = (request.body as TextContent).text
+            val encoded = edecanJson.parseToJsonElement(body).jsonObject
+            assertEquals("create", encoded["action"]?.jsonPrimitive?.content)
+            assertEquals("landing", encoded["mode"]?.jsonPrimitive?.content)
+            assertEquals("file-1", encoded["files"]?.jsonArray?.first()?.jsonPrimitive?.content)
+            respond(
+                """
+                {
+                  "status":"ready","action":"create","message":"Proyecto listo",
+                  "result":{
+                    "project":{"id":"proj_1","name":"Café Norte","mode":"landing"},
+                    "revision":"rev_1","revisions":["rev_1","rev_2"]
+                  },
+                  "artifacts":[
+                    {"file_id":"html-1","filename":"proj_1.html","mime":"text/html"},
+                    {"file_id":"png-1","filename":"proj_1.png","mime":"image/png"}
+                  ],
+                  "presentation":[]
+                }
+                """.trimIndent(),
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }) {
+            install(ContentNegotiation) { json(edecanJson) }
+            expectSuccess = false
+        }
+        val api = EdecanApi.paraPruebas(
+            "https://edecan.test",
+            ContentTokenStore(access = "studio-access", refresh = "studio-refresh"),
+            http,
+        )
+
+        val response = api.studioAction(
+            StudioActionRequest(
+                action = "create",
+                prompt = "Una landing humana",
+                projectName = "Café Norte",
+                mode = StudioProjectMode.LANDING,
+                quality = StudioProjectQuality.MAX,
+                count = 2,
+                files = listOf("file-1"),
+            ),
+        )
+
+        assertEquals("proj_1", response.project?.id)
+        assertEquals("rev_1", response.revisionId)
+        assertEquals("png-1", response.artifacts.last().fileId)
+    }
+
+    @Test
+    fun decodesProjectHistoryForMobileParity() {
+        val response = edecanJson.decodeFromString<StudioActionResponse>(
+            """
+            {
+              "status":"ready","action":"history","message":"Listo",
+              "result":{
+                "project":{"id":"proj_2","name":"App","mode":"mockup"},
+                "revisions":[
+                  {"id":"rev_a","label":"Principal","width":390,"height":844,
+                   "instruction":"Inicial","createdAt":"2026-07-22T09:00:00Z"},
+                  {"id":"rev_b","label":"Revisión","width":390,"height":844,
+                   "instruction":"Más clara","createdAt":"2026-07-22T10:00:00Z"}
+                ]
+              },"artifacts":[],"presentation":[]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(2, response.project?.revisionCount)
+        assertEquals("Más clara", response.revisions.last().instruction)
     }
 }
 

@@ -32,6 +32,7 @@ import { buildChatMessageInput } from "./chat-attachments";
 import { parseAgentEvent } from "./chat-blocks";
 import { SseDataParser } from "./sse";
 import type { DevicePairingOut } from "./device-pairing";
+import type { StudioActionInput, StudioActionResponse } from "./studio";
 import type {
   AgentEvent,
   Contact,
@@ -552,6 +553,16 @@ export async function uploadFile(file: File, signal?: AbortSignal): Promise<File
   formData.append("file", file);
   const res = await authedFetch("/v1/files", { method: "POST", body: formData, signal });
   return parseJsonOrThrow<FileOut>(res);
+}
+
+// --- Studio visual -------------------------------------------------------------
+
+/** Contrato autenticado y tenant-isolated del editor visual avanzado. */
+export async function runStudioAction(input: StudioActionInput): Promise<StudioActionResponse> {
+  return apiJson<StudioActionResponse>("/v1/content/studio/actions", {
+    method: "POST",
+    body: input,
+  });
 }
 
 // --- Recordatorios ---------------------------------------------------------------

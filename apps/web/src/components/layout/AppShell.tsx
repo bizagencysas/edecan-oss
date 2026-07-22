@@ -14,6 +14,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const isChatRoute = pathname === "/app" || pathname === "/app/";
+  const isWorkspaceRoute = pathname === "/app/studio" || Boolean(pathname?.startsWith("/app/studio/"));
+  const isFullHeightRoute = isChatRoute || isWorkspaceRoute;
 
   return (
     <div className="flex h-dvh min-h-0 min-w-0 max-w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
@@ -70,12 +72,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
         <main
           className={
-            isChatRoute
-              ? "flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden p-2 sm:p-3 lg:p-4"
+            isFullHeightRoute
+              ? `flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden ${isWorkspaceRoute ? "p-2" : "p-2 sm:p-3 lg:p-4"}`
               : "flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-x-hidden overflow-y-auto p-4 md:p-6"
           }
         >
-          <div className={isChatRoute ? "h-full min-h-0 min-w-0 max-w-full" : "min-w-0 max-w-full"}>
+          <div className={isFullHeightRoute ? "h-full min-h-0 min-w-0 max-w-full" : "min-w-0 max-w-full"}>
             {children}
           </div>
         </main>

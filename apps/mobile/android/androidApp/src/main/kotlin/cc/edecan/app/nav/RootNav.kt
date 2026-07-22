@@ -113,7 +113,14 @@ fun RootNav(
     if (secundaria != null) {
         val volver = { pantallaSecundaria = null }
         when (secundaria) {
-            PantallaSecundaria.CREAR -> ContentStudioScreen(onVolver = volver)
+            PantallaSecundaria.CREAR -> ContentStudioScreen(
+                onVolver = volver,
+                onOpenChat = { request ->
+                    solicitudChat = request
+                    pantallaSecundaria = null
+                    seleccion = AssistantDestination.EDECAN
+                },
+            )
             PantallaSecundaria.MISIONES -> MisionesScreen(onVolver = volver)
             PantallaSecundaria.AUTOMATIZACIONES -> AutomatizacionesScreen(onVolver = volver)
             PantallaSecundaria.RECORDATORIOS -> RecordatoriosScreen(onVolver = volver)

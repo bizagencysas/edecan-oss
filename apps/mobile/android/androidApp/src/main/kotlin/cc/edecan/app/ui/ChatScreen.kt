@@ -871,7 +871,7 @@ private val PRESETS_CREACION = listOf(
     PresetCreacion("✨", "Post", "Ayúdame a crear una publicación. Pregúntame la red, el tema, el tono y el objetivo."),
 )
 
-private fun prepararArchivoSeleccionado(context: Context, uri: Uri): ArchivoSubidaLocal {
+internal fun prepararArchivoSeleccionado(context: Context, uri: Uri): ArchivoSubidaLocal {
     val resolver = context.contentResolver
     var filename = "archivo"
     var declaredSize: Long? = null

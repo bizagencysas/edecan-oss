@@ -53,4 +53,62 @@ struct ContentStudioModelsTests {
         #expect(SocialContentPlatform.x.characterLimit == 280)
         #expect(SocialContentPlatform.linkedin.characterLimit == 3_000)
     }
+
+    @Test("decodifica proyectos, historial y artefactos privados de Studio")
+    func decodeStudioWorkspace() throws {
+        let response = try JSONDecoder().decode(
+            StudioActionResponse.self,
+            from: Data(
+                """
+                {
+                  "status":"ready",
+                  "action":"history",
+                  "message":"Listo",
+                  "result":{
+                    "project":{
+                      "id":"proj_1","name":"Café Norte","mode":"landing",
+                      "brandName":"Norte","updatedAt":"2026-07-22T10:00:00Z"
+                    },
+                    "revisions":[
+                      {"id":"rev_1","label":"Principal","width":1440,"height":1000,
+                       "instruction":"Primera versión","createdAt":"2026-07-22T09:00:00Z"},
+                      {"id":"rev_2","label":"Revisión","width":1440,"height":1000,
+                       "instruction":"Más humana","createdAt":"2026-07-22T10:00:00Z"}
+                    ]
+                  },
+                  "artifacts":[{"file_id":"png-1","filename":"preview.png","mime":"image/png"}],
+                  "presentation":[]
+                }
+                """.utf8
+            )
+        )
+
+        #expect(response.project?.id == "proj_1")
+        #expect(response.project?.revisionCount == 2)
+        #expect(response.revisions.last?.instruction == "Más humana")
+        #expect(response.artifacts.first?.fileId == "png-1")
+    }
+
+    @Test("codifica la acción estable sin rutas ni secretos del motor")
+    func encodeStudioAction() throws {
+        let input = StudioActionRequest(
+            action: "create",
+            prompt: "Una landing humana",
+            projectName: "Demo",
+            mode: .landing,
+            count: 3,
+            quality: .max,
+            files: ["file-1", "file-2"]
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(input)) as? [String: Any]
+        )
+
+        #expect(object["action"] as? String == "create")
+        #expect(object["projectName"] as? String == "Demo")
+        #expect(object["mode"] as? String == "landing")
+        #expect(object["quality"] as? String == "max")
+        #expect(object["files"] as? [String] == ["file-1", "file-2"])
+        #expect(object["brandTokens"] == nil)
+    }
 }

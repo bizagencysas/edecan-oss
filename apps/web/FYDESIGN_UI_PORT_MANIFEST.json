@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "source": "owner-supplied FyDesign working-tree snapshot",
+    "baseCommit": "4e5d6a8d21ef81a2daae921c70abf2d52c7a5cf7",
+    "sourceWorkingTreeWasDirty": true,
+    "claim": "These hashes describe the reviewed owner-supplied working-tree files. They do not claim that the complete snapshot, or unrelated dirty files, belonged to the base commit.",
+    "authorization": "The repository owner explicitly requested this local UI adaptation for Edecan."
+  },
+  "rules": [
+    "No FyDesign authentication, database, SaaS API route, secret, credential, environment file, or host path was copied.",
+    "All project operations use Edecan's authenticated /v1/content/studio/actions contract.",
+    "Untrusted HTML is downloaded through Edecan file authorization and rendered with a no-script CSP and an empty iframe sandbox."
+  ],
+  "inventory": [
+    {
+      "source": "design/src/app/components/MasterCanvas.tsx",
+      "sourceSha256": "9df07128f4346c97a661b0a7fd247366d308283ae20a9c9cbe506d1d2899cd05",
+      "target": "apps/web/src/components/studio/MasterCanvas.tsx",
+      "targetSha256": "73eb0a1dea3091aa0ef10086631bc3ca05ea225a3490804c405b7b398c280d81",
+      "adaptation": "Rebuilt as a responsive secure canvas with fit/zoom, point selection, annotations, fullscreen, authenticated artifact download, and variant switching supplied by the workspace. Removed inline HTML, clipboard/source exposure, new-tab blobs, allow-scripts, and allow-same-origin."
+    },
+    {
+      "source": "design/src/app/components/CanvasAnnotations.tsx",
+      "sourceSha256": "67c37d15c473dee6ec1e165d946e36988046505900cc7b0074ddd2083aa1eb6f",
+      "target": "apps/web/src/components/studio/CanvasAnnotations.tsx",
+      "targetSha256": "653e7d4216f5eb5915bd151a6487ac6796d32cc3365aec115dcf8a57d400273e",
+      "adaptation": "Preserved freehand, rectangle, circle, arrow, colors, clearing, pointer/touch drawing, and natural-language annotation summaries; kept all annotation state local."
+    },
+    {
+      "source": "design/src/app/components/InlineInspector.tsx",
+      "sourceSha256": "9b466aecb4b530490b208a48c1533ec42c0bbca7b69cf3046f683b414c9ef35f",
+      "target": "apps/web/src/components/studio/InlineInspector.tsx",
+      "targetSha256": "947164587f3c0af07d47bb471993f57f9e59f9f4de976fc79f6e39c6d6aa98f6",
+      "adaptation": "Converted direct DOM editing into coordinate-based contextual requests that create a reversible backend revision without weakening iframe isolation."
+    },
+    {
+      "source": "design/src/app/components/TweaksPanel.tsx",
+      "sourceSha256": "4d01ff3f680b045cb53e7084019911f23c607317bafbd2caa26f2f1731aa4d15",
+      "target": "apps/web/src/components/studio/TweaksPanel.tsx",
+      "targetSha256": "2b7892ef3e5eba84b51162e879049bd4e3854d644c92986266d1eae1723bd6f8",
+      "adaptation": "Preserved dynamic toggle, slider, color, and select controls; values compile into one natural edit instruction and are applied as a new revision."
+    },
+    {
+      "source": "design/src/app/components/WorkspacePanel.tsx",
+      "sourceSha256": "bf8fc14e7ecdb352fb5ba535e579754cec11e72d455b497096c2d5ca4a800c34",
+      "target": "apps/web/src/components/studio/WorkspacePanel.tsx",
+      "targetSha256": "0ed4ec1960b43fc68523545b89efecec834bec8e6433fe732f643441ca5aca87",
+      "adaptation": "Replaced browser-only database models with tenant-scoped API projects and revisions; replaced deletion with explicitly confirmed archive/restore."
+    },
+    {
+      "source": "design/src/app/components/ClarifyPanel.tsx",
+      "sourceSha256": "2b8b5bd73b3350d0ddf48380ba1bcf0c31daf58c15bc8d049bcbad68c8a101a8",
+      "target": "apps/web/src/components/studio/ClarifyPanel.tsx",
+      "targetSha256": "9ed92bb515858279ba144c3db3e7d4587c545733b54e4f5ed4aecb4d829ea293",
+      "adaptation": "Reduced preflight to three human decisions plus dimensions, with Spanish labels and direct mapping to the stable Studio contract."
+    },
+    {
+      "source": "design/src/app/components/CommandPalette.tsx",
+      "sourceSha256": "b5782d6e8384848d73a518d9cca670b6dcf9be27cbe740de1bb8872aa8d2d932",
+      "target": "apps/web/src/components/studio/CommandPalette.tsx",
+      "targetSha256": "846f78b6f35abf7db68b07c63f02121ad087edb1e13b34c61154fae019d2dc4c",
+      "adaptation": "Preserved Cmd/Ctrl+K, search, groups, keyboard navigation, shortcuts, and accessible dialog semantics; commands call Edecan actions only."
+    },
+    {
+      "source": "design/src/app/components/TemplateGallery.tsx",
+      "sourceSha256": "d7ccd89443795a16a29e3ce8146adb73426c307e45bd8fc900c06cf1682f293f",
+      "target": "apps/web/src/components/studio/TemplateGallery.tsx",
+      "targetSha256": "c5c6be6e1e75a19ffaf34cc3f4151bc5caf2d5c86f25aaa88cd41aacb4b35108",
+      "adaptation": "Removed the original /api/templates dependency and thumbnail URLs; lists and instantiates private Edecan templates through the Studio API."
+    },
+    {
+      "source": "design/src/app/components/HistoryNav.tsx",
+      "sourceSha256": "764dd88275d2dc63ddc8c443b41b5db10a5a57a520fd5cebd3093d88472fcb2b",
+      "target": "apps/web/src/components/studio/HistoryNav.tsx",
+      "targetSha256": "f75877e9e6ab0c387ec1f6b4f2ff01ca1b373f2852708df245cd1e92180111fc",
+      "adaptation": "Preserved previous/next/version navigation and mapped branching to an explicit reversible duplicate operation."
+    },
+    {
+      "source": "design/src/app/project/[slug]/page.tsx",
+      "sourceSha256": "5ffda95cfdd0947fed36ec40f9e3f26b5a117a509f20efc41717e0256a868459",
+      "targets": [
+        { "path": "apps/web/src/components/studio/StudioWorkspace.tsx", "sha256": "2cfcd99bf2519acf1f27a119d75cb99c56391814f5afea7cbf10962af62418c3" },
+        { "path": "apps/web/src/app/(app)/app/studio/page.tsx", "sha256": "b683a3092ee9a84d1dba867b08f6cdc72420674cfd5d9df7f709ebb419ae0723" }
+      ],
+      "adaptation": "Recomposed the interaction model under /app/studio with natural creative intents, private attachments, project/template sidebars, artifact progress, responsive drawers, and the authenticated Edecan API. Original auth, SaaS database, design-system API, and server routes were not ported."
+    }
+  ]
+}

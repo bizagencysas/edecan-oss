@@ -1,10 +1,9 @@
-"""Mini estudio de contenido social para los clientes móviles.
+"""Studio creativo completo para web, escritorio y clientes móviles.
 
-Este endpoint no publica ni conecta cuentas sociales. Convierte una idea breve
-en un borrador editable y crea artefactos privados (Markdown, manifiesto e
-imagen opcional) usando la misma herramienta que el chat. Tener una ruta
-dedicada permite que iOS y Android muestren progreso y entreguen el resultado
-sin obligar a la persona a entender herramientas, prompts o conversaciones.
+La ruta social no publica ni conecta cuentas: crea borradores privados para
+revisión manual. La ruta de proyectos expone el mismo motor versionado que usa
+el chat para que web, escritorio, iOS y Android puedan mostrar lienzo,
+variantes, historial y exportaciones sin revelar herramientas ni rutas locales.
 """
 
 from __future__ import annotations
@@ -13,14 +12,20 @@ import json
 import logging
 import re
 from typing import Any, Literal
+from uuid import UUID, uuid4
 
 from edecan_core import ToolContext
 from edecan_core.queue import enqueue
 from edecan_creative.social import CrearContenidoSocialTool
+from edecan_design_studio.studio_tools import (
+    AdministrarProyectoCreativoTool,
+    CrearEditarProyectoCreativoTool,
+    VerProyectosCreativosTool,
+)
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
@@ -86,6 +91,143 @@ class SocialContentOut(BaseModel):
     requires_human_confirmation: bool = True
 
 
+_STUDIO_READ_ACTIONS = frozenset(VerProyectosCreativosTool.allowed_actions)
+_STUDIO_WRITE_ACTIONS = frozenset(CrearEditarProyectoCreativoTool.allowed_actions)
+_STUDIO_ADMIN_ACTIONS = frozenset(AdministrarProyectoCreativoTool.allowed_actions)
+_STUDIO_ACTIONS = _STUDIO_READ_ACTIONS | _STUDIO_WRITE_ACTIONS | _STUDIO_ADMIN_ACTIONS
+_STUDIO_PROJECT_ACTIONS = _STUDIO_ACTIONS - {
+    "health",
+    "list",
+    "create",
+    "template-list",
+    "template-create",
+    "design-system-list",
+    "corpus-ingest",
+    "corpus-search",
+}
+
+
+class StudioProjectActionIn(BaseModel):
+    """Contrato estable para que el editor y las apps controlen Studio.
+
+    Las rutas privadas y los nombres internos de herramientas nunca forman
+    parte de la API. Los adjuntos siguen llegando como UUIDs opacos de Edecán.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    action: Literal[
+        "health",
+        "list",
+        "create",
+        "edit",
+        "read",
+        "render",
+        "history",
+        "variants",
+        "duplicate",
+        "brand-health",
+        "tidy",
+        "archive",
+        "restore",
+        "export",
+        "template-list",
+        "template-save",
+        "template-create",
+        "design-system-list",
+        "design-system-generate",
+        "corpus-ingest",
+        "corpus-search",
+        "share-package",
+    ]
+    project_id: str | None = Field(default=None, alias="projectId", max_length=80)
+    revision_id: str | None = Field(default=None, alias="revisionId", max_length=80)
+    template_id: str | None = Field(default=None, alias="templateId", max_length=80)
+    prompt: str | None = Field(default=None, max_length=80_000)
+    instruction: str | None = Field(default=None, max_length=80_000)
+    project_name: str | None = Field(default=None, alias="projectName", max_length=160)
+    brand_name: str | None = Field(default=None, alias="brandName", max_length=160)
+    brand_tokens: str | None = Field(default=None, alias="brandTokens", max_length=80_000)
+    mode: Literal[
+        "mockup",
+        "carousel",
+        "ad",
+        "post",
+        "landing",
+        "email",
+        "deck",
+        "general",
+    ] | None = None
+    width: int | None = Field(default=None, ge=320, le=4096)
+    height: int | None = Field(default=None, ge=320, le=4096)
+    count: int | None = Field(default=None, ge=1, le=4)
+    quality: Literal["fast", "balanced", "max"] | None = None
+    files: list[str] = Field(default_factory=list, max_length=12)
+    export_format: Literal["html", "png", "pdf"] | None = Field(
+        default=None, alias="exportFormat"
+    )
+    include_archived: bool | None = Field(default=None, alias="includeArchived")
+    template_name: str | None = Field(default=None, alias="templateName", max_length=160)
+    template_description: str | None = Field(
+        default=None, alias="templateDescription", max_length=500
+    )
+    template_category: Literal[
+        "prototype", "deck", "landing", "marketing", "other"
+    ] | None = Field(default=None, alias="templateCategory")
+    repos: list[str] = Field(default_factory=list, max_length=25)
+    corpus_limit: int | None = Field(default=None, alias="corpusLimit", ge=1, le=20)
+    screen_briefs: list[dict[str, Any]] = Field(
+        default_factory=list, alias="screenBriefs", max_length=8
+    )
+    languages: list[Literal["en", "es", "pt", "fr"]] = Field(
+        default_factory=list, max_length=4
+    )
+    theme: dict[str, Any] | None = None
+    tidy_actions: list[dict[str, Any]] = Field(
+        default_factory=list, alias="tidyActions", max_length=100
+    )
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_action_requirements(self) -> StudioProjectActionIn:
+        if self.action not in _STUDIO_ACTIONS:
+            raise ValueError("Acción de Studio no admitida.")
+        if self.action in _STUDIO_PROJECT_ACTIONS and not self.project_id:
+            raise ValueError("Esta acción necesita projectId.")
+        if self.action == "create" and not (self.prompt or "").strip():
+            raise ValueError("Describe qué quieres crear en prompt.")
+        if self.action == "edit" and not (self.instruction or "").strip():
+            raise ValueError("Describe el cambio en instruction.")
+        if self.action == "template-create" and not self.template_id:
+            raise ValueError("template-create necesita templateId.")
+        if self.action == "corpus-ingest" and not self.repos:
+            raise ValueError("corpus-ingest necesita al menos un repositorio owner/repo.")
+        if self.action in _STUDIO_ADMIN_ACTIONS and not self.confirmed:
+            raise ValueError("Confirma explícitamente esta organización reversible.")
+        return self
+
+    def tool_arguments(self) -> dict[str, Any]:
+        payload = self.model_dump(by_alias=True, exclude_none=True)
+        payload.pop("action", None)
+        payload.pop("confirmed", None)
+        files = payload.pop("files", [])
+        for key in ("repos", "screenBriefs", "languages", "tidyActions"):
+            if payload.get(key) == []:
+                payload.pop(key, None)
+        if files:
+            payload["archivos"] = files
+        return {"accion": self.action, **payload}
+
+
+class StudioProjectActionOut(BaseModel):
+    status: Literal["ready"] = "ready"
+    action: str
+    message: str
+    result: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    presentation: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def _json_object(text: str) -> dict[str, Any] | None:
     """Acepta JSON limpio o cercado sin confiar en texto fuera del objeto."""
 
@@ -148,6 +290,25 @@ def _generated_args(text: str, body: SocialContentCreateIn) -> dict[str, Any]:
     }
 
 
+def _tool_context(
+    *,
+    current_user: CurrentUser,
+    session: AsyncSession,
+    settings: Settings,
+    llm_router: LLMRouter,
+    vault: Any,
+) -> ToolContext:
+    return ToolContext(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        session=session,
+        settings=settings,
+        llm=llm_router,
+        vault=vault,
+        extras={"flags": current_user.tenant.flags},
+    )
+
+
 @router.post("/social", response_model=SocialContentOut)
 async def create_social_content(
     body: SocialContentCreateIn,
@@ -189,14 +350,12 @@ async def create_social_content(
     tool = CrearContenidoSocialTool()
     try:
         result = await tool.run(
-            ToolContext(
-                tenant_id=current_user.tenant_id,
-                user_id=current_user.user_id,
+            _tool_context(
+                current_user=current_user,
                 session=session,
                 settings=settings,
-                llm=llm_router,
+                llm_router=llm_router,
                 vault=vault,
-                extras={"flags": current_user.tenant.flags},
             ),
             args,
         )
@@ -250,6 +409,109 @@ async def create_social_content(
         alt_text=str(data.get("alt_text") or args["alt_text"]),
         offline_visual=bool(data.get("offline_visual", False)),
         artifacts=[SocialContentArtifactOut.model_validate(item) for item in artifacts],
+    )
+
+
+@router.post("/studio/actions", response_model=StudioProjectActionOut)
+async def run_studio_project_action(
+    body: StudioProjectActionIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+    settings: Settings = Depends(get_settings),
+    vault: Any = Depends(get_vault),
+    llm_router: LLMRouter = Depends(get_llm_router),
+) -> StudioProjectActionOut:
+    """Ejecuta una operación del Studio completo desde cualquier cliente.
+
+    Esta ruta no acepta rutas del host ni secretos. Las imágenes llegan como
+    ``file_id`` privados y las operaciones sensibles requieren confirmación
+    explícita en el cuerpo.
+    """
+
+    if body.action in _STUDIO_READ_ACTIONS:
+        tool = VerProyectosCreativosTool()
+    elif body.action in _STUDIO_WRITE_ACTIONS:
+        tool = CrearEditarProyectoCreativoTool()
+    else:
+        tool = AdministrarProyectoCreativoTool()
+    try:
+        result = await tool.run(
+            _tool_context(
+                current_user=current_user,
+                session=session,
+                settings=settings,
+                llm_router=llm_router,
+                vault=vault,
+            ),
+            body.tool_arguments(),
+        )
+    except Exception as exc:
+        logger.exception(
+            "studio_project_action_failed",
+            extra={"action": body.action, "tenant_id": str(current_user.tenant_id)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Studio no pudo completar esa operación. Inténtalo nuevamente.",
+        ) from exc
+
+    data = result.data or {}
+    nested = data.get("result")
+    if not isinstance(nested, dict):
+        detail = result.content or "Studio no devolvió un resultado utilizable."
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if "app local" in detail.lower()
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(status_code=status_code, detail=detail)
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, list):
+        artifacts = []
+    presentation = result.presentation if isinstance(result.presentation, list) else []
+
+    if body.action in {"create", "edit", "duplicate", "export", "share-package"}:
+        artifact_id: str | None = None
+        if artifacts and isinstance(artifacts[0], dict):
+            candidate = str(artifacts[0].get("file_id") or "")
+            try:
+                artifact_id = str(UUID(candidate))
+            except ValueError:
+                artifact_id = None
+        event_id = artifact_id or str(uuid4())
+        notification_kind = (
+            "design_export_ready"
+            if body.action in {"export", "share-package"}
+            else "design_ready"
+        )
+        notification_payload = {
+            "user_id": str(current_user.user_id),
+            "kind": notification_kind,
+            "event_id": event_id,
+        }
+        if artifact_id is not None:
+            notification_payload["artifact_id"] = artifact_id
+        try:
+            await enqueue(
+                settings,
+                "notify_important_event",
+                notification_payload,
+                current_user.tenant_id,
+            )
+        except Exception:
+            logger.warning(
+                "No se pudo encolar el aviso de Studio (tenant_id=%s user_id=%s)",
+                current_user.tenant_id,
+                current_user.user_id,
+                exc_info=True,
+            )
+
+    return StudioProjectActionOut(
+        action=body.action,
+        message=result.content,
+        result=nested,
+        artifacts=[item for item in artifacts if isinstance(item, dict)],
+        presentation=[item for item in presentation if isinstance(item, dict)],
     )
 
 

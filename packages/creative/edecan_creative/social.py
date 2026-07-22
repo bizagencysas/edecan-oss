@@ -66,30 +66,48 @@ def _clean_hashtags(raw: Any) -> list[str]:
 
 
 def _split_x_thread(text: str, limit: int = 280) -> list[str]:
-    """Divide sin cortar palabras; reserva espacio para ``1/N`` estable."""
+    """Divide sin cortar palabras y reserva el sufijo real ``N/N``.
+
+    El cálculo converge según la cantidad de dígitos del total. Así incluso
+    un texto directo de 100+ partes nunca produce piezas de 281 caracteres
+    al pasar de ``99/99`` a ``100/100``.
+    """
 
     compact = re.sub(r"[ \t]+", " ", text).strip()
     if len(compact) <= limit:
         return [compact]
-    payload_limit = limit - 7
-    words = compact.split()
-    chunks: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= payload_limit:
-            current = candidate
-            continue
+
+    def split_payload(payload_limit: int) -> list[str]:
+        words = compact.split()
+        chunks: list[str] = []
+        current = ""
+        for original_word in words:
+            word = original_word
+            candidate = f"{current} {word}".strip()
+            if len(candidate) <= payload_limit:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+            while len(word) > payload_limit:
+                chunks.append(word[:payload_limit])
+                word = word[payload_limit:]
+            current = word
         if current:
             chunks.append(current)
-        while len(word) > payload_limit:
-            chunks.append(word[:payload_limit])
-            word = word[payload_limit:]
-        current = word
-    if current:
-        chunks.append(current)
-    total = len(chunks)
-    return [f"{chunk} {index}/{total}" for index, chunk in enumerate(chunks, start=1)]
+        return chunks
+
+    total_digits = 1
+    while True:
+        suffix_width = 2 * total_digits + 2  # espacio + N + '/' + N
+        chunks = split_payload(max(1, limit - suffix_width))
+        required_digits = len(str(len(chunks)))
+        if required_digits == total_digits:
+            total = len(chunks)
+            return [
+                f"{chunk} {index}/{total}" for index, chunk in enumerate(chunks, start=1)
+            ]
+        total_digits = required_digits
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -332,7 +350,7 @@ class CrearContenidoSocialTool(Tool):
                 "platform": platform_key,
                 "offline_visual": offline_visual,
                 # El chat solo necesita los artefactos, pero superficies
-                # dedicadas como el mini estudio móvil necesitan pintar el
+                # dedicadas como el Studio creativo móvil necesitan pintar el
                 # borrador inmediatamente sin volver a descargar y parsear
                 # el manifiesto privado.
                 "copy": copy,

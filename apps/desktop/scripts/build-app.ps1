@@ -35,7 +35,8 @@ Write-Host "==> [1/2] Empaquetando backend y web..."
 & (Join-Path $ScriptDir "build-backend.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-backend.ps1 fallo (codigo $LASTEXITCODE)." }
 
-$TauriArgs = @("tauri", "build")
+$ExternalBin = @("binaries/edecan-local", "binaries/fydesign-node")
+$Resources = @{ "../packaging/studio-engine" = "studio-engine" }
 if ($env:EDECAN_BUNDLE_OLLAMA -eq "1") {
     Write-Host "    (EDECAN_BUNDLE_OLLAMA=1: agregando Ollama verificado al instalador)"
     $OllamaLibDir = Join-Path $DesktopDir "src-tauri\binaries\ollama-lib"
@@ -44,11 +45,16 @@ if ($env:EDECAN_BUNDLE_OLLAMA -eq "1") {
             throw "bundle Ollama incompleto: falta $required en $OllamaLibDir."
         }
     }
-    $TauriArgs += @(
-        "--config",
-        '{"bundle":{"externalBin":["binaries/edecan-local","binaries/ollama"],"resources":{"binaries/ollama-lib":"lib/ollama"}}}'
-    )
+    $ExternalBin += "binaries/ollama"
+    $Resources["binaries/ollama-lib"] = "lib/ollama"
 }
+$BundleOverride = @{
+    bundle = @{
+        externalBin = $ExternalBin
+        resources = $Resources
+    }
+} | ConvertTo-Json -Depth 5 -Compress
+$TauriArgs = @("tauri", "build", "--config", $BundleOverride)
 $TauriArgs += @("--", "--locked")
 
 Write-Host "==> [2/2] cargo tauri build..."

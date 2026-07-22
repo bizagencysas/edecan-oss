@@ -76,6 +76,9 @@ def mission_ref_from_tool_data(data: Any) -> UUID | None:
         return None
 
 
+_MAX_TOOL_ARTIFACT_REFS = 64
+
+
 def artifact_refs_from_tool_data(data: Any) -> list[ArtifactRef]:
     """Extrae solo referencias de archivo seguras de ``ToolResult.data``.
 
@@ -99,7 +102,7 @@ def artifact_refs_from_tool_data(data: Any) -> list[ArtifactRef]:
 
     refs: list[ArtifactRef] = []
     seen: set[UUID] = set()
-    for candidate in raw_candidates[:20]:
+    for candidate in raw_candidates[:_MAX_TOOL_ARTIFACT_REFS]:
         if not isinstance(candidate, dict):
             continue
         raw_id = candidate.get("file_id") or candidate.get("id")
@@ -173,7 +176,7 @@ def rich_blocks_from_tool_data(
         candidates = data_map.get(key)
         if not isinstance(candidates, list):
             continue
-        for candidate in candidates[:20]:
+        for candidate in candidates[:_MAX_TOOL_ARTIFACT_REFS]:
             if not isinstance(candidate, dict):
                 continue
             try:

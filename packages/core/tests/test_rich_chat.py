@@ -93,3 +93,25 @@ def test_tarjeta_de_vuelo_tiene_fuente_unknown_por_defecto() -> None:
 
     assert isinstance(blocks[0], FlightCardBlock)
     assert blocks[0].source_mode == "unknown"
+
+
+def test_coleccion_creativa_de_26_piezas_no_pierde_artefactos() -> None:
+    data = {
+        "artifacts": [
+            {
+                "file_id": str(uuid4()),
+                "filename": f"pieza-{index + 1}.png",
+                "mime": "image/png",
+            }
+            for index in range(26)
+        ]
+    }
+
+    artifacts = artifact_refs_from_tool_data(data)
+    blocks = rich_blocks_from_tool_data(data, artifacts=artifacts)
+
+    assert len(artifacts) == 26
+    assert len(blocks) == 26
+    assert {artifact.filename for artifact in artifacts} == {
+        f"pieza-{index + 1}.png" for index in range(26)
+    }

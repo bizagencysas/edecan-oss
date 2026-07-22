@@ -60,6 +60,7 @@ _LLM_KEY = "llm"
 _IMAGES_KEY = "images"
 _SEARCH_KEY = "search"
 _ALPACA_PAPER_KEY = "alpaca_paper"
+_STUDIO_KEY = "fydesign"
 _STRIPE_KEY = "stripe"
 _TWILIO_KEY = "twilio"
 _WHATSAPP_KEY = "whatsapp"
@@ -115,6 +116,7 @@ _TIPOS_VALIDOS = (
     "oauth_app",
     "search",
     "alpaca_paper",
+    "studio",
 )
 
 
@@ -187,7 +189,7 @@ class ConfigurarCredencialTool(Tool):
         "Ajustes/Conectores a pegarla él mismo. Cubre: inteligencia (LLM), imágenes, "
         "voz (voice_stt=Deepgram, voice_tts=ElevenLabs/Polly), Stripe, Twilio, "
         "WhatsApp Business, bots de "
-        "Telegram/Discord, búsqueda Brave/Tavily y apps OAuth propias "
+        "Telegram/Discord, búsqueda Brave/Tavily, proveedores de Studio y apps OAuth propias "
         "(Google/Microsoft/Meta/X/YouTube/Slack). "
         "Requiere confirmación porque persiste un secreto de verdad."
     )
@@ -219,7 +221,9 @@ class ConfigurarCredencialTool(Tool):
                     "phone_number_id}. bot_token: {bot_token}. oauth_app: {client_id, "
                     "client_secret?}. search: {provider: 'brave'|'tavily', api_key}."
                     " alpaca_paper: {api_key_id, secret_key}. llm: {provider, api_key}. "
-                    "images: {provider: 'openai', api_key, model?}."
+                    "images: {provider: 'openai', api_key, model?}. "
+                    "studio: {provider: 'fal'|'muapi'|'openai'|'gemini'|'github', api_key}. "
+                    "Las cuentas de servicio Google JSON solo se agregan desde Ajustes."
                 ),
             },
         },
@@ -256,11 +260,64 @@ class ConfigurarCredencialTool(Tool):
             "oauth_app": self._oauth_app,
             "search": self._search,
             "alpaca_paper": self._alpaca_paper,
+            "studio": self._studio,
         }[tipo]
         try:
             return await handler(ctx, campos, conector)
         except _CampoInvalido as exc:
             return ToolResult(content=str(exc))
+
+    async def _studio(
+        self, ctx: ToolContext, campos: dict[str, Any], _conector: str
+    ) -> ToolResult:
+        if not getattr(ctx.settings, "EDECAN_LOCAL_MODE", False):
+            raise _CampoInvalido("Las credenciales de Studio solo se configuran en la app local.")
+        provider = str(campos.get("provider") or "").strip().lower()
+        env_key = {
+            "fal": "FAL_KEY",
+            "muapi": "MUAPI_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "github": "GITHUB_TOKEN",
+        }.get(provider)
+        if env_key is None:
+            raise _CampoInvalido("Studio admite fal.ai, Muapi, OpenAI, Gemini o GitHub.")
+        api_key = _requerido(campos, "api_key")
+        account = await _find_or_create_connector_account(
+            ctx, _STUDIO_KEY, _STUDIO_KEY, "Proveedores de Studio"
+        )
+        config: dict[str, Any] = {"env": {}}
+        try:
+            previous = await ctx.vault.get(ctx.tenant_id, account["id"])
+            parsed = json.loads(previous.access_token) if previous is not None else {}
+            if isinstance(parsed, dict) and isinstance(parsed.get("env"), dict):
+                config["env"].update(
+                    {
+                        str(key): str(value)
+                        for key, value in parsed["env"].items()
+                        if isinstance(value, str)
+                    }
+                )
+        except Exception:  # noqa: BLE001 - un registro previo roto se reemplaza sin reflejarlo
+            config = {"env": {}}
+        config["env"][env_key] = api_key
+        await ctx.vault.put(
+            ctx.tenant_id,
+            account["id"],
+            TokenBundle(
+                access_token=_json(config),
+                token_type="studio_config",
+                scopes=sorted(config["env"]),
+            ),
+        )
+        return ToolResult(
+            content=(
+                f"Listo, conecté {provider} a Studio. La clave quedó cifrada y no "
+                "permanece visible en el chat. La validaré en su primera operación "
+                "porque el proveedor no ofrece una comprobación gratuita estable."
+            ),
+            data={"tipo": "studio", "provider": provider},
+        )
 
     async def _llm(
         self, ctx: ToolContext, campos: dict[str, Any], _conector: str

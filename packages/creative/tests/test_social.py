@@ -4,7 +4,7 @@ import io
 import json
 from uuid import uuid4
 
-from edecan_creative.social import CrearContenidoSocialTool
+from edecan_creative.social import CrearContenidoSocialTool, _split_x_thread
 from PIL import Image
 
 
@@ -76,3 +76,12 @@ async def test_non_x_copy_over_limit_is_rejected_without_upload(make_ctx):
 
     assert "excede" in result.content
     assert uploader.calls == []
+
+
+def test_hilo_x_de_mas_de_cien_partes_respeta_limite_real() -> None:
+    parts = _split_x_thread("palabra " * 8_000)
+
+    assert len(parts) >= 100
+    assert all(len(part) <= 280 for part in parts)
+    assert parts[0].endswith(f"1/{len(parts)}")
+    assert parts[-1].endswith(f"{len(parts)}/{len(parts)}")

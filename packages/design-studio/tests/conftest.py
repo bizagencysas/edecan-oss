@@ -58,6 +58,16 @@ class FakeRenderer:
         )
 
 
+@dataclass
+class FakeLLM:
+    text: str = "contenido de prueba"
+    llamadas: list[tuple[str, dict[str, Any], Any]] = field(default_factory=list)
+
+    async def complete(self, alias: str, flags: dict[str, Any], request: Any):
+        self.llamadas.append((alias, flags, request))
+        return SimpleNamespace(text=self.text)
+
+
 @pytest.fixture
 def studio_deps():
     store = MemoryStore()
@@ -74,7 +84,7 @@ def make_ctx():
             user_id=uuid4(),
             settings=SimpleNamespace(),
             session=SimpleNamespace(),
-            llm=None,
+            llm=FakeLLM(),
             vault=None,
             extras={},
         )

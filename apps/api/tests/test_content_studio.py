@@ -45,6 +45,34 @@ class FakeSocialTool:
         )
 
 
+class FakeProjectTool:
+    calls = []
+
+    async def run(self, ctx, args):  # noqa: ANN001
+        self.calls.append((ctx, args))
+        action = args["accion"]
+        if action == "list":
+            payload = {"ok": True, "projects": [{"id": "proj_1", "name": "Demo"}]}
+            artifacts = []
+        else:
+            payload = {
+                "ok": True,
+                "action": action,
+                "project": {"id": args.get("projectId", "proj_new"), "name": "Demo"},
+                "revision": "rev_1",
+            }
+            artifacts = [
+                {"file_id": str(uuid.uuid4()), "filename": "preview.png", "mime": "image/png"}
+            ]
+        return ToolResult(
+            content="Studio terminó la operación.",
+            data={"action": action, "result": payload, "artifacts": artifacts},
+            presentation=[{"media_kind": "image", "file_id": artifacts[0]["file_id"]}]
+            if artifacts
+            else None,
+        )
+
+
 async def test_content_studio_creates_private_editable_package(
     client, app, fake_repo, monkeypatch
 ):
@@ -138,3 +166,99 @@ async def test_content_studio_rejects_unsupported_network_and_requires_auth(clie
         json={"platform": "instagram", "topic": "Una idea"},
     )
     assert response.status_code == 422
+
+
+async def test_full_studio_api_lists_and_creates_private_projects(
+    client, app, monkeypatch
+):
+    user_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    FakeProjectTool.calls = []
+    queued = []
+
+    async def fake_enqueue(settings, job_type, payload, tenant_id):  # noqa: ANN001
+        queued.append((job_type, payload, tenant_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(content_studio, "VerProyectosCreativosTool", FakeProjectTool)
+    monkeypatch.setattr(content_studio, "CrearEditarProyectoCreativoTool", FakeProjectTool)
+    monkeypatch.setattr(content_studio, "enqueue", fake_enqueue)
+
+    listed = await client.post(
+        "/v1/content/studio/actions",
+        headers=auth_headers(user_id=user_id, tenant_id=tenant_id),
+        json={"action": "list", "includeArchived": False},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["result"]["projects"][0]["name"] == "Demo"
+    assert FakeProjectTool.calls[0][1] == {
+        "accion": "list",
+        "includeArchived": False,
+    }
+
+    created = await client.post(
+        "/v1/content/studio/actions",
+        headers=auth_headers(user_id=user_id, tenant_id=tenant_id),
+        json={
+            "action": "create",
+            "prompt": "Crea una app financiera elegante",
+            "projectName": "Fynory",
+            "mode": "mockup",
+            "count": 3,
+            "quality": "max",
+            "files": [str(uuid.uuid4())],
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["action"] == "create"
+    assert body["result"]["project"]["id"] == "proj_new"
+    assert body["artifacts"][0]["mime"] == "image/png"
+    assert body["presentation"][0]["media_kind"] == "image"
+    create_args = FakeProjectTool.calls[1][1]
+    assert create_args["accion"] == "create"
+    assert create_args["projectName"] == "Fynory"
+    assert create_args["archivos"]
+    assert "files" not in create_args
+    assert queued[0][0] == "notify_important_event"
+    assert queued[0][1]["kind"] == "design_ready"
+    assert uuid.UUID(queued[0][1]["event_id"])
+    assert queued[0][1]["artifact_id"] == body["artifacts"][0]["file_id"]
+    assert queued[0][2] == tenant_id
+
+
+async def test_full_studio_api_requires_confirmation_and_rejects_host_paths(
+    client, monkeypatch
+):
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+    FakeProjectTool.calls = []
+    monkeypatch.setattr(content_studio, "AdministrarProyectoCreativoTool", FakeProjectTool)
+
+    unconfirmed = await client.post(
+        "/v1/content/studio/actions",
+        headers=headers,
+        json={"action": "archive", "projectId": "proj_1"},
+    )
+    assert unconfirmed.status_code == 422
+    assert FakeProjectTool.calls == []
+
+    confirmed = await client.post(
+        "/v1/content/studio/actions",
+        headers=headers,
+        json={"action": "archive", "projectId": "proj_1", "confirmed": True},
+    )
+    assert confirmed.status_code == 200
+    assert FakeProjectTool.calls[0][1] == {
+        "accion": "archive",
+        "projectId": "proj_1",
+    }
+
+    unsafe_shape = await client.post(
+        "/v1/content/studio/actions",
+        headers=headers,
+        json={
+            "action": "create",
+            "prompt": "copia archivos",
+            "assetPaths": ["/etc/passwd"],
+        },
+    )
+    assert unsafe_shape.status_code == 422

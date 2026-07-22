@@ -19,6 +19,9 @@ packaging/web/*
 # --distpath/--workpath en vez de a los defaults dist/ y build/ sueltos).
 packaging/dist/
 packaging/build/
+# Motor TypeScript, node_modules y Chromium generados por
+# scripts/build-studio-engine.sh|.ps1. Nunca se versionan.
+packaging/studio-engine/
 *.spec.bak
 
 # Salida de `cargo tauri build` (instaladores .dmg/.app/.msi/.nsis) y de

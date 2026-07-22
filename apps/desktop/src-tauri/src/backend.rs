@@ -277,10 +277,101 @@ fn build_command(
             .args(backend_args)
     };
 
+    let cmd = with_studio_env(cmd, app, source_command)?;
     Ok(
         with_expanded_path(with_ollama_env(cmd))
             .env("LOCAL_DESKTOP_CAPABILITY", desktop_capability),
     )
+}
+
+/// Conecta el backend Python con el motor TypeScript sin depender del checkout,
+/// Node ni Chrome del usuario. En desarrollo apunta al paquete del monorepo y
+/// permite overrides explícitos; en release exige el recurso y externalBin que
+/// `build-studio-engine.sh|.ps1` entregan a Tauri.
+fn with_studio_env(
+    cmd: tauri_plugin_shell::process::Command,
+    app: &AppHandle,
+    source_command: bool,
+) -> Result<tauri_plugin_shell::process::Command, String> {
+    let engine_dir = match std::env::var_os("EDECAN_STUDIO_ENGINE_DIR") {
+        Some(value) => PathBuf::from(value),
+        None if source_command => repo_root_dir().join("packages/fydesign-engine"),
+        None => app
+            .path()
+            .resource_dir()
+            .map_err(|err| format!("No se pudo resolver el recurso de Studio: {err}"))?
+            .join("studio-engine"),
+    };
+    if !engine_dir.join("mcp/fydesign-mcp.mjs").is_file() {
+        return Err(format!(
+            "El motor de Studio no está instalado correctamente ({}).",
+            engine_dir.display()
+        ));
+    }
+
+    let node_binary = match std::env::var_os("EDECAN_STUDIO_NODE_BINARY") {
+        Some(value) => PathBuf::from(value),
+        None if source_command => PathBuf::from("node"),
+        None => resolve_bundled_studio_node().ok_or_else(|| {
+            "No se encontró el runtime Node empaquetado de Studio junto a Edecán.".to_string()
+        })?,
+    };
+    if !source_command && !node_binary.is_file() {
+        return Err(format!(
+            "El runtime Node empaquetado de Studio no existe ({}).",
+            node_binary.display()
+        ));
+    }
+
+    let mut cmd = cmd
+        .env(
+            "EDECAN_STUDIO_ENGINE_DIR",
+            engine_dir.to_string_lossy().to_string(),
+        )
+        .env(
+            "EDECAN_STUDIO_NODE_BINARY",
+            node_binary.to_string_lossy().to_string(),
+        );
+    let browsers_dir = engine_dir.join("playwright-browsers");
+    if browsers_dir.is_dir() {
+        cmd = cmd.env(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            browsers_dir.to_string_lossy().to_string(),
+        );
+    }
+    let tools_dir = engine_dir.join("tools");
+    let executable_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    for (key, name) in [
+        ("FFMPEG_PATH", "ffmpeg"),
+        ("FFPROBE_PATH", "ffprobe"),
+        ("YTDLP_PATH", "yt-dlp"),
+    ] {
+        let binary = tools_dir.join(format!("{name}{executable_suffix}"));
+        if binary.is_file() {
+            cmd = cmd.env(key, binary.to_string_lossy().to_string());
+        } else if !source_command {
+            return Err(format!(
+                "Studio está incompleto: falta la herramienta empaquetada {}.",
+                binary.display()
+            ));
+        }
+    }
+    Ok(cmd)
+}
+
+fn resolve_bundled_studio_node() -> Option<PathBuf> {
+    let exe_name = if cfg!(target_os = "windows") {
+        "fydesign-node.exe"
+    } else {
+        "fydesign-node"
+    };
+    let executable = std::env::current_exe().ok()?;
+    let candidate = executable.parent()?.join(exe_name);
+    candidate.is_file().then_some(candidate)
 }
 
 /// Directorios donde suelen vivir CLIs bring-your-own que este backend

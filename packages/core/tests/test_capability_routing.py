@@ -38,6 +38,7 @@ ALL_SPECS = [
     _spec("registrar_salud"),
     _spec("preparar_pago", "Prepara un borrador de pago."),
     _spec("crear_artefactos", "Crea archivos y proyectos reales con manifest."),
+    _spec("crear_coleccion_visual", "Crea carruseles, campañas y presentaciones visuales."),
     _spec("crear_diseno_visual", "Crea un diseño visual HTML con vista previa segura."),
     _spec("obtener_diseno_visual", "Recupera el HTML actual de un diseño visual."),
     _spec("refinar_diseno_visual", "Refina un diseño visual como versión nueva."),
@@ -49,6 +50,12 @@ ALL_SPECS = [
     _spec("publicar_social", "Publica contenido en una red conectada."),
     _spec("crear_contenido_social", "Crea posts e imágenes para redes."),
     _spec("generar_imagen", "Genera una imagen original."),
+    _spec("usar_estudio_creativo", "Usa Studio para trabajos creativos locales."),
+    _spec("usar_estudio_creativo_premium", "Usa Studio para imagen, video y producto."),
+    _spec("ver_estudio_creativo", "Muestra las capacidades de Studio."),
+    _spec("ver_proyectos_creativos", "Abre proyectos creativos editables."),
+    _spec("crear_editar_proyecto_creativo", "Crea o edita un proyecto creativo."),
+    _spec("administrar_proyecto_creativo", "Organiza un proyecto creativo."),
     _spec("usar_computadora", "Opera mouse y teclado con confirmación."),
 ]
 
@@ -194,6 +201,7 @@ def test_landing_visual_usa_design_studio_versionado_en_vez_del_creator_generico
     )
     names = {spec.name for spec in selected}
     assert {
+        "crear_coleccion_visual",
         "crear_diseno_visual",
         "obtener_diseno_visual",
         "refinar_diseno_visual",
@@ -201,6 +209,20 @@ def test_landing_visual_usa_design_studio_versionado_en_vez_del_creator_generico
         "exportar_diseno_visual",
     } <= names
     assert "crear_artefactos" not in names
+
+
+def test_carrusel_visual_expone_coleccion_y_edicion_versionada() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea un carrusel visual de 5 lienzos y luego deja que pueda pedir cambios.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "crear_coleccion_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+        "historial_diseno_visual",
+    } <= names
 
 
 def test_refinamiento_corto_hereda_la_intencion_de_design_studio() -> None:
@@ -211,6 +233,31 @@ def test_refinamiento_corto_hereda_la_intencion_de_design_studio() -> None:
     )
     names = {spec.name for spec in selected}
     assert {"obtener_diseno_visual", "refinar_diseno_visual"} <= names
+
+
+def test_video_publicitario_es_alcanzable_desde_lenguaje_normal() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Créame un video publicitario para este producto y dame dos versiones.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "usar_estudio_creativo_premium",
+        "ver_estudio_creativo",
+    } <= names
+
+
+def test_imagen_y_edicion_de_foto_exponen_studio_sin_ocultar_vision() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Edita esta foto, mejora el producto y genera otra imagen para el post.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "usar_estudio_creativo_premium",
+        "analizar_imagen",
+        "generar_imagen",
+    } <= names
 
 
 def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
@@ -226,7 +273,12 @@ def test_linkedin_crea_paquete_multimedia_y_publica_por_sesion_local_aprobada() 
     )
     names = {spec.name for spec in selected}
 
-    assert {"crear_artefactos", "crear_contenido_social", "generar_imagen"} <= names
+    assert {
+        "crear_contenido_social",
+        "generar_imagen",
+        "usar_estudio_creativo_premium",
+    } <= names
+    assert "crear_artefactos" not in names
     assert "usar_computadora" in names
     assert "publicar_social" not in names
     assert "configurar_credencial" not in names

@@ -94,3 +94,33 @@ def test_detects_multiple_llm_provider_families() -> None:
         assert intent.tool_args["tipo"] == "llm"
         assert intent.tool_args["campos"]["provider"] == provider
         assert secret not in intent.redacted_text
+
+
+def test_detects_studio_provider_credentials_and_redacts() -> None:
+    for provider, secret in (
+        ("fal.ai", "fal_example_1234567890abcdef"),
+        ("Muapi", "mu_example_1234567890abcdef"),
+        ("GitHub", "github_pat_example_1234567890abcdef"),
+    ):
+        intent = detect_inline_credential_intent(
+            f"Conecta mi API key de {provider} a Studio: {secret}"
+        )
+        assert intent is not None
+        assert intent.tool_args["tipo"] == "studio"
+        assert intent.tool_args["campos"]["api_key"] == secret
+        assert secret not in intent.redacted_text
+
+
+def test_openai_and_gemini_route_to_studio_when_user_says_studio() -> None:
+    for provider, secret in (
+        ("OpenAI", "sk-studio-example-1234567890"),
+        ("Gemini", "AIzaStudioExample1234567890"),
+    ):
+        intent = detect_inline_credential_intent(
+            f"Configura mi API key de {provider} para Studio: {secret}"
+        )
+        assert intent is not None
+        assert intent.tool_args == {
+            "tipo": "studio",
+            "campos": {"provider": provider.lower(), "api_key": secret},
+        }

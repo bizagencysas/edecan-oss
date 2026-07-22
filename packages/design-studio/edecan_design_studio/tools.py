@@ -12,6 +12,7 @@ from edecan_core import Tool, ToolContext, ToolResult
 from edecan_creative import subir_archivo
 
 from .models import DesignVersion, RenderBundle
+from .presets import CANVAS_PRESETS, canvas_dimensions
 from .render import BrowserFirstRenderer, DesignRenderer, validate_dimensions
 from .sanitize import HtmlValidationError, sanitize_html
 from .storage import DesignNotFoundError, DesignStore, S3DesignStore
@@ -24,6 +25,7 @@ _MAX_SUMMARY_CHARS = 500
 _DEFAULT_WIDTH = 1200
 _DEFAULT_HEIGHT = 800
 _EXPORT_FORMATS = frozenset({"html", "png", "pdf"})
+_MAX_COLLECTION_CANVASES = 8
 
 
 class _RenderableTool(Protocol):
@@ -42,6 +44,11 @@ def _title(value: Any) -> str:
 
 def _summary(value: Any, fallback: str) -> str:
     return " ".join(str(value or fallback).split())[:_MAX_SUMMARY_CHARS]
+
+
+def _format_name(value: Any) -> str:
+    candidate = str(value or "libre").strip().lower()
+    return candidate if candidate in CANVAS_PRESETS else "libre"
 
 
 def _slug(value: str) -> str:
@@ -123,8 +130,14 @@ class CrearDisenoVisualTool(Tool):
         "properties": {
             "titulo": {"type": "string"},
             "html": {"type": "string", "description": "Documento HTML completo con CSS inline."},
-            "ancho": {"type": "integer", "minimum": 240, "maximum": 2400, "default": 1200},
-            "alto": {"type": "integer", "minimum": 240, "maximum": 2400, "default": 800},
+            "formato": {
+                "type": "string",
+                "enum": list(CANVAS_PRESETS),
+                "default": "libre",
+                "description": "Formato humano; evita que la persona tenga que indicar píxeles.",
+            },
+            "ancho": {"type": "integer", "minimum": 240, "maximum": 2400},
+            "alto": {"type": "integer", "minimum": 240, "maximum": 2400},
             "resumen": {"type": "string", "description": "Qué contiene esta primera versión."},
         },
         "required": ["titulo", "html"],
@@ -146,9 +159,15 @@ class CrearDisenoVisualTool(Tool):
         if not title:
             return ToolResult(content="Necesito un título para crear el diseño.")
         try:
+            format_name = _format_name(args.get("formato"))
+            default_width, default_height = canvas_dimensions(
+                format_name,
+                width=None,
+                height=None,
+            )
             width, height = validate_dimensions(
-                int(args.get("ancho") or _DEFAULT_WIDTH),
-                int(args.get("alto") or _DEFAULT_HEIGHT),
+                int(args.get("ancho") or default_width or _DEFAULT_WIDTH),
+                int(args.get("alto") or default_height or _DEFAULT_HEIGHT),
             )
             safe_html = sanitize_html(str(args.get("html") or ""))
         except (ValueError, TypeError, HtmlValidationError) as exc:
@@ -162,8 +181,16 @@ class CrearDisenoVisualTool(Tool):
             height=height,
             summary=_summary(args.get("resumen"), "Versión inicial"),
         )
+        try:
+            artifacts, preview, engine = await _upload_version_preview(self, ctx, version)
+        except Exception:  # noqa: BLE001 - no persiste una versión imposible de entregar
+            return ToolResult(
+                content=(
+                    "No pude generar y guardar la vista previa del diseño. "
+                    "No añadí ninguna versión; inténtalo de nuevo."
+                )
+            )
         await self._store_factory(ctx).save(ctx.tenant_id, version)
-        artifacts, preview, engine = await _upload_version_preview(self, ctx, version)
         return ToolResult(
             content=(
                 f"Creé «{title}» y guardé su primera versión. Te muestro una vista previa segura; "
@@ -172,10 +199,124 @@ class CrearDisenoVisualTool(Tool):
             data={
                 "artifact_id": str(version.artifact_id),
                 "version_id": str(version.version_id),
+                "format": format_name,
                 "renderer": engine,
                 "artifacts": artifacts,
             },
             presentation=[_preview_block(preview, title)],
+        )
+
+
+class CrearColeccionVisualTool(Tool):
+    name = "crear_coleccion_visual"
+    description = (
+        "Crea en una sola petición una colección privada de hasta 8 lienzos, como un carrusel, "
+        "una campaña o una presentación. Cada lienzo recibe HTML completo, vista previa PNG y "
+        "su propio historial editable; si uno falla, informa el resultado parcial sin inventarlo."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "titulo": {"type": "string"},
+            "lienzos": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": _MAX_COLLECTION_CANVASES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "titulo": {"type": "string"},
+                        "html": {"type": "string"},
+                        "formato": {
+                            "type": "string",
+                            "enum": list(CANVAS_PRESETS),
+                            "default": "post_cuadrado",
+                        },
+                        "ancho": {"type": "integer", "minimum": 240, "maximum": 2400},
+                        "alto": {"type": "integer", "minimum": 240, "maximum": 2400},
+                        "resumen": {"type": "string"},
+                    },
+                    "required": ["titulo", "html"],
+                },
+            },
+        },
+        "required": ["titulo", "lienzos"],
+    }
+
+    def __init__(
+        self,
+        *,
+        store_factory: StoreFactory | None = None,
+        uploader: Uploader | None = None,
+        renderer: DesignRenderer | None = None,
+    ) -> None:
+        self._single = CrearDisenoVisualTool(
+            store_factory=store_factory,
+            uploader=uploader,
+            renderer=renderer,
+        )
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        title = _title(args.get("titulo"))
+        raw_canvases = args.get("lienzos")
+        if not title:
+            return ToolResult(content="Necesito un título para la colección.")
+        if not isinstance(raw_canvases, list) or not raw_canvases:
+            return ToolResult(content="Necesito al menos un lienzo para crear la colección.")
+        if len(raw_canvases) > _MAX_COLLECTION_CANVASES:
+            return ToolResult(
+                content=f"La colección admite hasta {_MAX_COLLECTION_CANVASES} lienzos por vez."
+            )
+
+        designs: list[dict[str, Any]] = []
+        artifacts: list[dict[str, str]] = []
+        presentation: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for index, raw in enumerate(raw_canvases, start=1):
+            if not isinstance(raw, dict):
+                failures.append(f"Lienzo {index}")
+                continue
+            canvas_title = _title(raw.get("titulo")) or f"{title} {index}"
+            result = await self._single.run(
+                ctx,
+                {
+                    "titulo": canvas_title,
+                    "html": raw.get("html"),
+                    "formato": raw.get("formato") or "post_cuadrado",
+                    "ancho": raw.get("ancho"),
+                    "alto": raw.get("alto"),
+                    "resumen": raw.get("resumen") or f"Lienzo {index} de {title}",
+                },
+            )
+            if not result.data:
+                failures.append(canvas_title)
+                continue
+            designs.append(
+                {
+                    "artifact_id": result.data["artifact_id"],
+                    "version_id": result.data["version_id"],
+                    "title": canvas_title,
+                    "format": result.data["format"],
+                }
+            )
+            artifacts.extend(result.data["artifacts"])
+            presentation.extend(result.presentation or [])
+
+        status = "completed" if not failures else ("partial" if designs else "failed")
+        summary = f"Creé {len(designs)} de {len(raw_canvases)} lienzo(s) para «{title}»."
+        if failures:
+            summary += " No pude materializar: " + ", ".join(failures) + "."
+        if designs:
+            summary += " Cada lienzo quedó privado, versionado y listo para refinar por chat."
+        return ToolResult(
+            content=summary,
+            data={
+                "collection_title": title,
+                "status": status,
+                "designs": designs,
+                "artifacts": artifacts,
+            },
+            presentation=presentation or None,
         )
 
 
@@ -270,8 +411,16 @@ class RefinarDisenoVisualTool(CrearDisenoVisualTool):
             height=height,
             summary=_summary(args.get("resumen"), "Refinamiento"),
         )
+        try:
+            artifacts, preview, engine = await _upload_version_preview(self, ctx, version)
+        except Exception:  # noqa: BLE001 - mantiene intacta la versión actual
+            return ToolResult(
+                content=(
+                    "No pude generar y guardar la vista previa del cambio. "
+                    "La versión actual sigue intacta; inténtalo de nuevo."
+                )
+            )
         await store.save(ctx.tenant_id, version)
-        artifacts, preview, engine = await _upload_version_preview(self, ctx, version)
         return ToolResult(
             content=(
                 f"Apliqué el cambio a «{version.title}» como una versión nueva y reversible. "
@@ -377,6 +526,22 @@ class ExportarDisenoVisualTool(Tool):
             include_png="png" in formats,
             include_pdf="pdf" in formats,
         )
+        missing = [
+            label
+            for label, expected, value in (
+                ("PNG", "png" in formats, rendered.png),
+                ("PDF", "pdf" in formats, rendered.pdf),
+            )
+            if expected and not value
+        ]
+        if missing:
+            return ToolResult(
+                content=(
+                    "No pude completar la exportación porque el renderer no produjo: "
+                    + ", ".join(missing)
+                    + ". No guardé una exportación incompleta."
+                )
+            )
         stem = f"{_slug(version.title)}-{str(version.version_id)[:8]}"
         payloads: list[tuple[str, bytes, str]] = []
         if "html" in formats:

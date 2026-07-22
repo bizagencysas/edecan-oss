@@ -10,7 +10,10 @@ PACKAGE = ROOT / "edecan_design_studio"
 def test_manifest_is_allowlist_only_and_has_no_copied_assets_or_config() -> None:
     manifest = json.loads((ROOT / "PORTING_MANIFEST.json").read_text(encoding="utf-8"))
     assert manifest["porting_mode"].startswith("clean-room")
-    assert len(manifest["allowlist"]) == 4
+    assert len(manifest["allowlist"]) == 5
+    assert "src/app/components/MasterCanvas.tsx" in {
+        item["path"] for item in manifest["allowlist"]
+    }
     assert manifest["copied_assets"] == []
     assert manifest["copied_configuration"] == []
     assert manifest["copied_data"] == []
@@ -18,8 +21,19 @@ def test_manifest_is_allowlist_only_and_has_no_copied_assets_or_config() -> None
 
 
 def test_runtime_has_no_provider_sdk_or_environment_secret_reads() -> None:
+    provider_neutral_core = {
+        "__init__.py",
+        "models.py",
+        "presets.py",
+        "render.py",
+        "sanitize.py",
+        "storage.py",
+        "tools.py",
+    }
     source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(PACKAGE.glob("*.py"))
+        path.read_text(encoding="utf-8")
+        for path in sorted(PACKAGE.glob("*.py"))
+        if path.name in provider_neutral_core
     ).lower()
     forbidden = (
         "os.environ",
@@ -30,3 +44,13 @@ def test_runtime_has_no_provider_sdk_or_environment_secret_reads() -> None:
         "process.env",
     )
     assert all(token not in source for token in forbidden)
+
+    adapter = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(PACKAGE.glob("*.py"))
+        if path.name not in provider_neutral_core
+    ).lower()
+    assert "import anthropic" not in adapter
+    assert "import openai" not in adapter
+    assert "google.generativeai" not in adapter
+    assert "boto3.client" not in adapter

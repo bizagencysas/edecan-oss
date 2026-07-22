@@ -61,11 +61,14 @@ fi
 # (opcional)"). Sin esta variable (el default), este script no cambia en
 # nada respecto de antes.
 if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
-  echo "==> [0/4] EDECAN_BUNDLE_OLLAMA=1: descargando Ollama (scripts/download-ollama.sh)…"
+  echo "==> [0/5] EDECAN_BUNDLE_OLLAMA=1: descargando Ollama (scripts/download-ollama.sh)…"
   "$SCRIPT_DIR/download-ollama.sh"
 fi
 
-echo "==> [1/4] Construyendo la web estática (apps/web, export estático)…"
+echo "==> [1/5] Empaquetando FyDesign Studio (Node 22 + Chromium + npm ci)…"
+"$SCRIPT_DIR/build-studio-engine.sh"
+
+echo "==> [2/5] Construyendo la web estática (apps/web, export estático)…"
 (
   cd "$WEB_DIR"
   if [[ ! -d node_modules ]]; then
@@ -88,12 +91,12 @@ if [[ ! -d "$WEB_DIR/out" ]]; then
   exit 1
 fi
 
-echo "==> [2/4] Copiando apps/web/out/ -> packaging/web/…"
+echo "==> [3/5] Copiando apps/web/out/ -> packaging/web/…"
 rm -rf "$WEB_DEST_DIR"
 mkdir -p "$WEB_DEST_DIR"
 cp -R "$WEB_DIR/out/." "$WEB_DEST_DIR/"
 
-echo "==> [3/4] Congelando edecan_local con PyInstaller (uv run, workspace completo)…"
+echo "==> [4/5] Congelando edecan_local con PyInstaller (uv run, workspace completo)…"
 # PyInstaller vive fijado en el grupo `release` de la raíz y en `uv.lock`.
 # `uv run --frozen --group release --all-packages` desde cualquier carpeta
 # del workspace resuelve el entorno COMPARTIDO de todos los
@@ -142,7 +145,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   done
 fi
 
-echo "==> [4/4] Instalando el sidecar en src-tauri/binaries/…"
+echo "==> [5/5] Instalando el sidecar en src-tauri/binaries/…"
 TARGET_TRIPLE="$(rustc -Vv | awk '/^host:/ { print $2 }')"
 if [[ -z "$TARGET_TRIPLE" ]]; then
   echo "error: no se pudo determinar el target triple ('rustc -Vv' no imprimió 'host:')." >&2

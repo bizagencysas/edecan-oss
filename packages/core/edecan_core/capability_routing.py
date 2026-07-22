@@ -71,27 +71,72 @@ _LEXICAL_STOPWORDS = frozenset(
 
 _DESIGN_STUDIO_KEYWORDS = frozenset(
     {
+        "ad",
+        "ads",
+        "anuncio",
+        "anuncios",
         "artefacto",
+        "avatar",
+        "banner",
+        "brand",
+        "branding",
+        "campana",
         "canvas",
+        "carrusel",
+        "carruseles",
+        "coleccion",
+        "colecciones",
+        "corpus",
+        "deck",
         "design",
         "disena",
         "disenar",
         "diseno",
+        "edicion",
+        "edita",
+        "editar",
+        "foto",
+        "fotos",
+        "fotografia",
         "html",
+        "imagen",
+        "imagenes",
         "landing",
+        "logo",
         "maqueta",
         "mockup",
+        "moodboard",
+        "paleta",
+        "plantilla",
+        "plantillas",
+        "producto",
+        "productos",
         "prototipo",
+        "reel",
+        "reels",
+        "storyboard",
+        "tipografia",
+        "tokens",
+        "tiktok",
+        "video",
+        "videos",
         "visual",
     }
 )
 _DESIGN_STUDIO_TOOL_NAMES = frozenset(
     {
+        "administrar_proyecto_creativo",
+        "crear_coleccion_visual",
+        "crear_editar_proyecto_creativo",
         "crear_diseno_visual",
         "exportar_diseno_visual",
         "historial_diseno_visual",
         "obtener_diseno_visual",
         "refinar_diseno_visual",
+        "usar_estudio_creativo",
+        "usar_estudio_creativo_premium",
+        "ver_estudio_creativo",
+        "ver_proyectos_creativos",
     }
 )
 
@@ -479,6 +524,11 @@ _CREATION_FORMAT_WORDS = frozenset(
         "aplicacion",
         "aplicaciones",
         "copy",
+        "carrusel",
+        "carruseles",
+        "coleccion",
+        "colecciones",
+        "deck",
         "diapositivas",
         "documento",
         "documentos",
@@ -592,9 +642,14 @@ def select_tool_specs(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})
         and tokens.intersection({"foto", "imagen", "ilustracion", "dibujo"})
     )
+    edit_image = bool(
+        tokens.intersection({"edita", "editar", "mejora", "retoca", "retocar"})
+        and tokens.intersection({"foto", "fotos", "imagen", "imagenes"})
+    )
     if create_image:
         selected_names.add("generar_imagen")
-        selected_names.discard("analizar_imagen")
+        if not edit_image:
+            selected_names.discard("analizar_imagen")
 
     # Extensiones MCP y futuras tools no aparecen necesariamente en la tabla
     # anterior. Un match por nombre (una palabra distintiva) o por al menos

@@ -1136,6 +1136,8 @@ dependencies = [
     { name = "aioboto3" },
     { name = "edecan-core" },
     { name = "edecan-creative" },
+    { name = "edecan-docanalysis" },
+    { name = "edecan-llm" },
     { name = "fpdf2" },
     { name = "pillow" },
 ]
@@ -1156,6 +1158,8 @@ requires-dist = [
     { name = "aioboto3", specifier = ">=13.0" },
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-creative", editable = "packages/creative" },
+    { name = "edecan-docanalysis", editable = "packages/docanalysis" },
+    { name = "edecan-llm", editable = "packages/llm" },
     { name = "fpdf2", specifier = ">=2.7" },
     { name = "pillow", specifier = ">=10.1" },
     { name = "playwright", marker = "extra == 'browser-render'", specifier = ">=1.40" },

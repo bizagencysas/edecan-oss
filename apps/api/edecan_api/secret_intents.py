@@ -94,6 +94,10 @@ def _llm(provider: str, secret: str) -> dict[str, Any]:
     return {"tipo": "llm", "campos": {"provider": provider, "api_key": secret}}
 
 
+def _studio(provider: str, secret: str) -> dict[str, Any]:
+    return {"tipo": "studio", "campos": {"provider": provider, "api_key": secret}}
+
+
 _PROVIDERS: tuple[_ProviderRule, ...] = (
     _ProviderRule(
         key="anthropic",
@@ -159,6 +163,27 @@ _PROVIDERS: tuple[_ProviderRule, ...] = (
         tool_args_factory=lambda secret: _llm("kimi", secret),
     ),
     _ProviderRule(
+        key="fal",
+        display_name="fal.ai Studio",
+        aliases=(r"fal(?:\.ai)?",),
+        preferred_prefixes=("fal_",),
+        tool_args_factory=lambda secret: _studio("fal", secret),
+    ),
+    _ProviderRule(
+        key="muapi",
+        display_name="Muapi Studio",
+        aliases=(r"muapi(?:\.ai)?", r"mu\s*api"),
+        preferred_prefixes=("mu_",),
+        tool_args_factory=lambda secret: _studio("muapi", secret),
+    ),
+    _ProviderRule(
+        key="github",
+        display_name="GitHub para Studio",
+        aliases=(r"github", r"git\s*hub"),
+        preferred_prefixes=("github_pat_", "ghp_"),
+        tool_args_factory=lambda secret: _studio("github", secret),
+    ),
+    _ProviderRule(
         key="elevenlabs",
         display_name="ElevenLabs",
         aliases=(r"elevenlabs", r"eleven\s+labs"),
@@ -221,6 +246,9 @@ def _candidate_for_rule(text: str, rule: _ProviderRule) -> str | None:
             "xai",
             "mistral",
             "kimi",
+            "fal",
+            "muapi",
+            "github",
         }:
             return candidate
 
@@ -293,6 +321,12 @@ def detect_inline_credential_intent(text: str) -> InlineCredentialIntent | None:
             "tipo": "images",
             "campos": {"provider": "openai", "api_key": secret},
         }
+    if rule.key in {"openai", "gemini"} and re.search(
+        r"\b(?:studio|fydesign|dise[nñ]o|video|campa[nñ]a|editor\s+visual)\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        tool_args = _studio(rule.key, secret)
     return InlineCredentialIntent(
         provider=rule.key,
         display_name=rule.display_name,

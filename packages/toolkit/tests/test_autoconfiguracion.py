@@ -207,6 +207,110 @@ async def test_voice_tts_polly_en_modo_local_se_acepta(
     assert json.loads(bundle.access_token)["provider"] == "polly"
 
 
+async def test_studio_guarda_fal_en_vault_local(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "fal", "api_key": "fal-test-secret"},
+        },
+    )
+
+    assert "conecté fal" in resultado.content
+    assert session.llamadas[-1][1]["connector_key"] == "fydesign"
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {"env": {"FAL_KEY": "fal-test-secret"}}
+    assert vault.puts[0][2].token_type == "studio_config"
+
+
+async def test_studio_mezcla_proveedores_sin_borrar_el_anterior(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    previous = SimpleNamespace(
+        access_token=json.dumps({"env": {"FAL_KEY": "fal-existing"}})
+    )
+    session = make_session([[{"id": "acc-studio", "external_account_id": "fydesign"}]])
+    vault = make_vault(bundle=previous)
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "muapi", "api_key": "muapi-test-secret"},
+        },
+    )
+
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "env": {
+            "FAL_KEY": "fal-existing",
+            "MUAPI_API_KEY": "muapi-test-secret",
+        }
+    }
+
+
+async def test_studio_guarda_github_para_aprender_repositorios(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "github", "api_key": "github-test-secret"},
+        },
+    )
+
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {"env": {"GITHUB_TOKEN": "github-test-secret"}}
+
+
+async def test_studio_no_se_configura_fuera_de_la_app_local(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=False),
+    )
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "openai", "api_key": "sk-test-secret"},
+        },
+    )
+
+    assert "app local" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []
+
+
 async def test_stripe_rechaza_secret_key(make_ctx, make_session, make_vault):
     session = make_session([])
     vault = make_vault()

@@ -9,6 +9,8 @@ dependencies = [
     "aioboto3>=13.0",
     "edecan-core",
     "edecan-creative",
+    "edecan-docanalysis",
+    "edecan-llm",
     "fpdf2>=2.7",
     "Pillow>=10.1",
 ]
@@ -28,6 +30,8 @@ dev = [
 [tool.uv.sources]
 edecan-core = { workspace = true }
 edecan-creative = { workspace = true }
+edecan-docanalysis = { workspace = true }
+edecan-llm = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import os
+import shutil
+import signal
+import subprocess
+import tempfile
 import textwrap
+import time
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from fpdf import FPDF
@@ -17,6 +25,108 @@ logger = logging.getLogger(__name__)
 
 MIN_DIMENSION = 240
 MAX_DIMENSION = 2400
+_CHROMIUM_TIMEOUT_SECONDS = 25
+
+
+def _find_chromium_executable(preferred: str | None = None) -> str | None:
+    """Encuentra un Chromium local sin depender de Playwright ni descargar nada.
+
+    ``preferred`` permite inyectar una ruta en instalaciones poco comunes.
+    Después se consultan los nombres de PATH y las ubicaciones estándar de
+    macOS/Windows. Linux normalmente resuelve por PATH.
+    """
+
+    candidates = [str(preferred).strip()] if preferred else []
+    for name in (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ):
+        if resolved := shutil.which(name):
+            candidates.append(resolved)
+    candidates.extend(
+        [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            str(Path.home() / "Applications/Chromium.app/Contents/MacOS/Chromium"),
+            str(Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"),
+            str(Path.home() / "AppData/Local/Chromium/Application/chrome.exe"),
+            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files/Chromium/Application/chrome.exe",
+            "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        ]
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _stop_browser(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=2)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=2)
+
+
+def _run_browser(command: list[str], output_path: Path) -> subprocess.CompletedProcess[bytes]:
+    """Ejecuta Chrome y corta procesos residuales cuando el archivo ya quedó estable.
+
+    Algunas versiones macOS de Chrome escriben correctamente ``--print-to-pdf``
+    pero mantienen procesos auxiliares vivos. Esperar el timeout completo haría
+    lento cada diseño; se acepta el resultado solo después de observar tamaño
+    estable y las firmas se validan de nuevo al volver al renderer.
+    """
+
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    deadline = time.monotonic() + _CHROMIUM_TIMEOUT_SECONDS
+    last_size = -1
+    stable_since: float | None = None
+    try:
+        while time.monotonic() < deadline:
+            returncode = process.poll()
+            if returncode is not None:
+                stdout, stderr = process.communicate()
+                return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+            try:
+                size = output_path.stat().st_size
+            except OSError:
+                size = 0
+            if size > 0 and size == last_size:
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= 0.35:
+                    _stop_browser(process)
+                    stdout, stderr = process.communicate()
+                    return subprocess.CompletedProcess(command, 0, stdout, stderr)
+            else:
+                last_size = size
+                stable_since = None
+            time.sleep(0.05)
+        raise subprocess.TimeoutExpired(command, _CHROMIUM_TIMEOUT_SECONDS)
+    finally:
+        _stop_browser(process)
 
 
 @runtime_checkable
@@ -120,10 +230,15 @@ def _pdf_from_png(png: bytes, width: int, height: int) -> bytes:
 class BrowserFirstRenderer:
     """Usa Chromium si está instalado; si no, produce exports portables reales.
 
-    Chromium corre con JavaScript deshabilitado y todas las solicitudes de red
-    abortadas. El fallback conserva texto, dimensiones y un layout legible; no
-    promete fidelidad CSS pixel-perfect y lo declara mediante ``engine``.
+    Primero intenta Playwright. Si el módulo no está instalado pero Chrome o
+    Chromium sí existen en el sistema, usa su CLI headless con un perfil
+    efímero, resolución DNS anulada y la CSP ya insertada por el saneador. El
+    fallback final conserva texto, dimensiones y un layout legible; no promete
+    fidelidad CSS pixel-perfect y lo declara mediante ``engine``.
     """
+
+    def __init__(self, *, chromium_path: str | None = None) -> None:
+        self._chromium_path = chromium_path
 
     async def render(
         self,
@@ -148,11 +263,123 @@ class BrowserFirstRenderer:
         except (ImportError, RuntimeError, OSError) as exc:
             logger.info("Chromium no disponible; usando renderer portable: %s", exc)
         except Exception:
-            logger.warning("Falló el renderer Chromium; usando fallback seguro", exc_info=True)
+            logger.warning("Falló el renderer Playwright", exc_info=True)
+
+        try:
+            return await self._render_chromium_cli(
+                html,
+                width=width,
+                height=height,
+                include_png=include_png,
+                include_pdf=include_pdf,
+            )
+        except (FileNotFoundError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            logger.info("Chrome/Chromium headless no disponible; usando renderer portable: %s", exc)
+        except Exception:
+            logger.warning("Falló Chrome/Chromium headless; usando fallback seguro", exc_info=True)
 
         png = _portable_png(html, width, height)
         pdf = _pdf_from_png(png, width, height) if include_pdf else None
         return RenderBundle(png=png if include_png else None, pdf=pdf, engine="portable")
+
+    async def _render_chromium_cli(
+        self,
+        html: str,
+        *,
+        width: int,
+        height: int,
+        include_png: bool,
+        include_pdf: bool,
+    ) -> RenderBundle:
+        executable = _find_chromium_executable(self._chromium_path)
+        if executable is None:
+            raise FileNotFoundError("No encontré Chrome/Chromium ejecutable")
+
+        with tempfile.TemporaryDirectory(prefix="edecan-design-render-") as temp_name:
+            temp = Path(temp_name)
+            html_path = temp / "design.html"
+            png_path = temp / "preview.png"
+            pdf_path = temp / "export.pdf"
+            # Asegura que imprimir preserve fondos y use las dimensiones del
+            # artefacto, sin cambiar el layout de pantalla usado por PNG.
+            print_style = (
+                "<style id=\"edecan-print\">"
+                f"@page{{size:{width}px {height}px;margin:0}}"
+                "html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact}"
+                "</style>"
+            )
+            printable_html = html.replace("</head>", f"{print_style}</head>", 1)
+            html_path.write_text(printable_html, encoding="utf-8")
+
+            base_command = [
+                executable,
+                "--headless=new",
+                "--disable-background-networking",
+                "--disable-breakpad",
+                "--disable-component-update",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-features=Translate,MediaRouter,OptimizationHints",
+                "--disable-gpu",
+                "--disable-sync",
+                "--hide-scrollbars",
+                "--host-resolver-rules=MAP * 0.0.0.0",
+                "--metrics-recording-only",
+                "--mute-audio",
+                "--no-default-browser-check",
+                "--no-first-run",
+                "--no-proxy-server",
+                "--run-all-compositor-stages-before-draw",
+                f"--window-size={width},{height}",
+            ]
+            document_url = html_path.as_uri()
+
+            if include_png:
+                completed = await asyncio.to_thread(
+                    _run_browser,
+                    [
+                        *base_command,
+                        f"--user-data-dir={temp / 'profile-png'}",
+                        f"--screenshot={png_path}",
+                        document_url,
+                    ],
+                    png_path,
+                )
+                if completed.returncode != 0 or not png_path.is_file():
+                    raise RuntimeError(
+                        f"Chrome no produjo PNG (exit={completed.returncode})"
+                    )
+
+            if include_pdf:
+                completed = await asyncio.to_thread(
+                    _run_browser,
+                    [
+                        *base_command,
+                        f"--user-data-dir={temp / 'profile-pdf'}",
+                        f"--print-to-pdf={pdf_path}",
+                        "--print-to-pdf-no-header",
+                        document_url,
+                    ],
+                    pdf_path,
+                )
+                if completed.returncode != 0 or not pdf_path.is_file():
+                    raise RuntimeError(
+                        f"Chrome no produjo PDF (exit={completed.returncode})"
+                    )
+
+            png = png_path.read_bytes() if include_png else None
+            pdf = pdf_path.read_bytes() if include_pdf else None
+            if png is not None:
+                if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise RuntimeError("Chrome devolvió una vista previa PNG inválida")
+                with Image.open(io.BytesIO(png)) as image:
+                    if image.size != (width, height):
+                        raise RuntimeError(
+                            "Chrome devolvió una vista previa con dimensiones inesperadas"
+                        )
+            if pdf is not None and not pdf.startswith(b"%PDF-"):
+                raise RuntimeError("Chrome devolvió un PDF inválido")
+            return RenderBundle(png=png, pdf=pdf, engine="chrome-headless")
 
     async def _render_chromium(
         self,

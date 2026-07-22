@@ -40,9 +40,11 @@ apps/desktop/
 │   ├── edecan_local.spec        # spec de PyInstaller para edecan_local
 │   ├── edecan_local_entry.py    # entry point mínimo que usa ese spec
 │   ├── web/                     # export estático de apps/web (gitignored)
+│   ├── studio-engine/           # FyDesign + deps + Chromium (gitignored)
 │   └── dist/ · build/           # salida de PyInstaller (gitignored)
 ├── scripts/
 │   ├── build-backend.sh|.ps1    # web estática + PyInstaller -> sidecar
+│   ├── build-studio-engine.sh|.ps1 # npm ci + Node 22 + Chromium -> Tauri
 │   ├── download-ollama.sh|.ps1  # OPCIONAL: descarga Ollama -> sidecar (fase v4)
 │   ├── dev.sh                   # cargo tauri dev, backend desde fuente
 │   ├── build-app.sh             # build-backend + cargo tauri build
@@ -52,7 +54,9 @@ apps/desktop/
     └── icon-source.png          # placeholder — reemplazalo por el logo real
 ```
 
-`binaries/`, `packaging/web/`, `packaging/dist/`, `packaging/build/`, `src-tauri/target/` y `src-tauri/gen/` están en `.gitignore` de este directorio — son artefactos de build, nunca se commitean.
+`binaries/`, `packaging/web/`, `packaging/studio-engine/`, `packaging/dist/`,
+`packaging/build/`, `src-tauri/target/` y `src-tauri/gen/` están en `.gitignore`
+de este directorio — son artefactos de build, nunca se commitean.
 
 ## Quick start
 
@@ -62,9 +66,20 @@ apps/desktop/
 ./scripts/dev.sh
 
 # Build de producción completo para ESTA plataforma (web estática + backend
-# congelado con PyInstaller + instalador nativo):
+# congelado + Studio autosuficiente + instalador nativo):
 ./scripts/build-app.sh
 ```
+
+El build de producción ejecuta `npm ci` contra el lockfile de
+`packages/fydesign-engine`, descarga el Chromium fijado por Playwright y un
+Node 22 oficial verificado por SHA-256. También incorpora ffmpeg, ffprobe y
+yt-dlp con versiones reproducibles y verifica los binarios descargados antes
+de empaquetar. Los empaqueta como recurso/sidecar de Tauri: la persona que
+instala Edecán no necesita tener Node, npm, Chrome ni esas herramientas
+multimedia globales. Sus licencias separadas se documentan en
+[`packages/fydesign-engine/NOTICE`](../../packages/fydesign-engine/NOTICE).
+Esta fase sí requiere red en la máquina de build y aumenta de forma importante
+el tamaño del artefacto; nada de `node_modules` o Chromium entra en Git.
 
 En Windows x64, el equivalente es `scripts\build-app.ps1`. En Linux x64 el
 mismo `build-app.sh` produce AppImage, `.deb` y `.rpm`; el CI además arranca el

@@ -96,7 +96,9 @@ echo "==> [1/2] Empaquetando el backend (scripts/build-backend.sh)…"
 echo "==> [2/2] cargo tauri build (instalador nativo de esta plataforma)…"
 cd "$DESKTOP_DIR/src-tauri"
 # `tauri.conf.json` -> `bundle.externalBin` SOLO lista `binaries/edecan-local`
-# por defecto (Ollama es opcional, ver `download-ollama.sh`/
+# por defecto. Esta build siempre suma `binaries/fydesign-node` y el recurso
+# `../packaging/studio-engine`, ambos creados por build-studio-engine.sh.
+# Ollama es opcional (ver `download-ollama.sh`/
 # `EDECAN_BUNDLE_OLLAMA` arriba y docs/desktop.md) — Tauri exige que TODOS
 # los binarios listados en `externalBin` existan para el target triple de
 # esta build, así que si acá se pidió el binario de Ollama (mismo
@@ -105,11 +107,10 @@ cd "$DESKTOP_DIR/src-tauri"
 # particular — nunca al archivo base, para que la build sin Ollama (la que
 # corre por defecto) no lo exija. El override se pasa explícitamente al CLI
 # con `cargo tauri build --config <json>`.
-TAURI_BUILD_ARGS=()
-TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local"]'
+TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node"]'
 if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
   echo "    (EDECAN_BUNDLE_OLLAMA=1: sumando binaries/ollama a externalBin para esta build)"
-  TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/ollama"]'
+  TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node","binaries/ollama"]'
 fi
 
 # Hardened Runtime exige que todas las librerías cargadas compartan el Team ID
@@ -120,23 +121,10 @@ fi
 # solo el build local ad-hoc recibe este override explícito y verificable.
 if [[ "$PLATFORM" == "Darwin" && "${APPLE_SIGNING_IDENTITY:-}" == "-" ]]; then
   echo "    (firma ad-hoc: Hardened Runtime desactivado para el sidecar PyInstaller local)"
-  TAURI_BUILD_ARGS+=(
-    --config
-    "{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"macOS\":{\"hardenedRuntime\":false}}}"
-  )
-elif [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
-  TAURI_BUILD_ARGS+=(
-    --config
-    "{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON}}"
-  )
-fi
-if (( ${#TAURI_BUILD_ARGS[@]} )); then
-  cargo tauri build "${TAURI_BUILD_ARGS[@]}" -- --locked
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"},\"macOS\":{\"hardenedRuntime\":false}}}"
 else
-  # Bash 3.2 (incluido por macOS) trata la expansión de un array vacío como
-  # variable no definida cuando `set -u` está activo. Ejecutar la variante sin
-  # argumentos evita que el instalador de doble clic falle al final del build.
-  cargo tauri build -- --locked
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"}}}"
 fi
+cargo tauri build --config "$TAURI_BUNDLE_CONFIG" -- --locked
 
 echo "==> Listo. Instaladores de $PLATFORM_LABEL en src-tauri/target/release/bundle/."

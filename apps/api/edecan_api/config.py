@@ -165,6 +165,12 @@ class Settings(BaseSettings):
     # deriva a `$DATA_DIR/creator`; una ruta explícita sirve para inspeccionar
     # los proyectos directamente en instalaciones locales.
     CREATOR_WORKSPACE_DIR: str | None = None
+    # Studio creativo completo. En fuente se autodetecta el paquete hermano;
+    # el instalador nativo fija ambas rutas a sus recursos empaquetados.
+    EDECAN_STUDIO_ENGINE_DIR: str | None = None
+    EDECAN_STUDIO_NODE_BINARY: str | None = None
+    EDECAN_STUDIO_TIMEOUT_SECONDS: int = 1_200
+    EDECAN_STUDIO_MAX_OUTPUT_BYTES: int = 16 * 1024 * 1024
     SERVE_WEB_DIR: str | None = None
     LOCAL_API_PORT: int = 8765
 

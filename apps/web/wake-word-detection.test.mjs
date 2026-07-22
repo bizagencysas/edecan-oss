@@ -5,6 +5,7 @@ import {
   SPEECH_RECOGNITION_LOCALE,
   normalizeWakePhrase,
   transcriptContainsWakePhrase,
+  transcriptRequestsSleep,
 } from "./src/lib/wake-word-detection.ts";
 
 test("usa español de Venezuela y normaliza acentos", () => {
@@ -22,4 +23,12 @@ test("una palabra personalizada corta exige coincidencia real", () => {
   assert.equal(transcriptContainsWakePhrase("Tío, revisa el correo", "Tío"), true);
   assert.equal(transcriptContainsWakePhrase("mío, revisa el correo", "Tío"), false);
   assert.equal(transcriptContainsWakePhrase("ruido de fondo", ""), false);
+});
+
+test("la conversación continua solo duerme con una orden completa", () => {
+  assert.equal(transcriptRequestsSleep("Descansa, Edecán."), true);
+  assert.equal(transcriptRequestsSleep("puedes dormir"), true);
+  assert.equal(transcriptRequestsSleep("deja de escuchar Edecán"), true);
+  assert.equal(transcriptRequestsSleep("recuérdame dormir a las diez"), false);
+  assert.equal(transcriptRequestsSleep("¿puedes dormir poco?"), false);
 });

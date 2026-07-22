@@ -1,13 +1,15 @@
 # Analista de documentos
 
-`edecan_docanalysis` (`ARCHITECTURE.md` §11 y §14.e) le da al agente ocho herramientas para leer y analizar de verdad los archivos y series numéricas que el usuario trae: estadística sobre tablas (CSV/XLSX), extracción heurística de tablas de PDF, visión sobre imágenes (OCR/descripción), análisis de video por frames, gráficos SVG, exportación de reportes XLSX, predicción de series (forecast) y detección de anomalías. Todas viven en `packages/docanalysis/edecan_docanalysis/`, se registran vía el entry point `edecan.tools` (`ARCHITECTURE.md` §10.7) y ninguna es `dangerous` ni requiere un flag de plan — están disponibles siempre, en todos los planes.
+`edecan_docanalysis` le da al agente diez herramientas para leer, editar y analizar de verdad los archivos y series numéricas que la persona trae. Incluye lectura universal, edición reversible de PDF, tablas, visión, video, gráficos, reportes, predicción y anomalías. Todas se registran vía `edecan.tools`; ninguna requiere un plan específico.
 
 > **Los análisis son informativos, no una auditoría.** La estadística, la detección de outliers, la lectura de tablas de PDF, las descripciones de imágenes/video y las predicciones de series las genera código determinista o un modelo de lenguaje: son un punto de partida útil, no un reemplazo de una revisión humana (mucho menos de un(a) contador(a), auditor(a) o analista profesional) antes de tomar una decisión importante con esos datos. En particular, la detección de outliers (IQR o z-score) y de rachas es una heurística estadística general, no un modelo de detección de fraude con aprendizaje automático, que permanece fuera de alcance; la predicción de series es una proyección estadística a partir de los datos dados, nunca asesoría financiera ni garantía de resultados futuros (ver sección ["Predicción y anomalías"](#predicción-y-anomalías) más abajo).
 
-## Las 8 herramientas
+## Las 10 herramientas
 
 | Tool | Qué hace | Entrada mínima |
 |---|---|---|
+| `leer_archivo` | Abre PDF, Word, PowerPoint, Excel, CSV, JSON, Markdown, código, texto e imágenes. | `file_id` del adjunto |
+| `editar_pdf` | Reconstruye texto, anexa contenido, conserva/rota páginas y crea un PDF nuevo sin tocar el original. | `file_id`, `modo` |
 | `analizar_tabla` | Estadística descriptiva de un CSV/XLSX: tipo de columna (numérica/texto), media/mediana/min/max/desviación estándar/nulos por columna numérica, top-5 categorías por columna de texto, outliers por rango intercuartílico (IQR). Puede responder una `pregunta` en lenguaje natural sobre esas estadísticas (nunca sobre las filas crudas). | `file_id` de un CSV o XLSX ya subido (`POST /v1/files`) |
 | `extraer_tablas_pdf` | Extrae el texto de un PDF por página (`pypdf`) y detecta tablas por alineación de columnas (espacios múltiples o tabs), devueltas como CSV. | `file_id` de un PDF ya subido; `paginas` opcional |
 | `analizar_imagen` | Describe una imagen y transcribe el texto visible (OCR), o responde una pregunta puntual sobre ella. | `file_id` de una imagen ya subida; `pregunta` opcional |
@@ -21,7 +23,7 @@
 
 ## Video
 
-`analizar_video` implementa análisis visual por lotes. No existe ningún modelo de video-a-texto en el flujo: la técnica es tomar una **muestra de frames** (imágenes fijas) con `ffmpeg` y mandarlos, en una sola tanda con etiquetas `"Frame i de N"` (y un timestamp aproximado `~MM:SS` cuando se puede estimar la duración con `ffprobe`), al mismo proveedor de visión que ya usa `analizar_imagen` — mismo requisito de proveedor Anthropic (ver arriba) y mismo error explícito si el proveedor configurado no procesa imágenes.
+`analizar_video` toma una muestra de frames con `ffmpeg` y los manda al mismo contrato multimodal de `analizar_imagen`. Funciona con Anthropic, OpenAI-compatible, Gemini, Ollama, Codex CLI o Claude CLI siempre que el modelo concreto tenga visión.
 
 **ffmpeg es una dependencia del SISTEMA, no de Python.** A diferencia del resto del paquete (que solo usa librerías Python: `openpyxl`, `pypdf`, `edecan-llm`, `aioboto3`), `analizar_video` invoca el binario `ffmpeg` como subproceso (`asyncio.create_subprocess_exec`, nunca `shell=True`) — no se agregó ninguna dependencia Python nueva (nada de `moviepy`/`opencv`) a propósito, para no inflar el empaquetado de la app de escritorio Tauri con librerías pesadas de procesamiento de video cuando el binario del sistema alcanza.
 
@@ -29,7 +31,7 @@
 - **Instalación por el cliente**: en la app de escritorio, `ffmpeg` NO viene incluido — el cliente lo instala aparte en su máquina (`brew install ffmpeg` en macOS, `apt install ffmpeg` en Linux/Debian/Ubuntu, o el binario oficial en Windows). Si no está instalado, la tool nunca revienta con un traceback: devuelve un `ToolResult` con instrucciones claras de instalación en español.
 - **Límites**: video de hasta **80 MB** (rechazado con un mensaje claro ANTES de escribir nada a disco si lo excede), hasta **16 frames** por análisis (`max_frames`, 8 por defecto), timeout duro de **120 segundos** para la extracción. Si algún límite se alcanza de forma que impide el análisis (video demasiado grande, timeout, ffmpeg terminó con error, o no generó ningún frame), la tool lo dice explícitamente en vez de fallar en silencio o con un stacktrace.
 - **No transcribe audio.** `analizar_video` es puramente visual (frames fijos, sin pista de audio). Si el usuario necesita lo que se dice en el video, la alternativa hoy es extraer/subir el audio por separado a la transcripción de voz del asistente (`POST /v1/voice/transcribe`, ARCHITECTURE.md §10.12) — una transcripción de audio integrada directo en `analizar_video` queda como posible mejora futura, no construida en este WP.
-- **Privacidad**: los frames extraídos viajan al proveedor LLM que tenga **configurado el tenant** (bring-your-own, `ARCHITECTURE.md` §12.b) — hoy, en la práctica, Anthropic (es el único proveedor que entiende bloques de visión, ver arriba). Ningún frame se guarda en el S3 del tenant ni en ninguna tabla: se extraen a un directorio temporal que se borra al terminar la llamada (`tempfile.TemporaryDirectory`) y se descartan de memoria apenas vuelve la respuesta del modelo.
+- **Privacidad**: los frames extraídos viajan únicamente al proveedor LLM configurado por la persona. Ningún frame se guarda en el almacén ni en una tabla: vive en un directorio temporal y se descarta al terminar.
 
 ## Predicción y anomalías
 
@@ -79,8 +81,8 @@ Cada atípico devuelve su posición (`indice`, o la `etiqueta` correspondiente s
 
 - **Archivos de entrada**: los tres tools que leen un `file_id` (`analizar_tabla`, `extraer_tablas_pdf`, `analizar_imagen`), más `analizar_video` (que usa la misma resolución/descarga pero con la propiedad `archivo` en su schema), descargan el contenido de `s3://$S3_BUCKET/tenants/{tenant_id}/files/{file_id}/{filename}` (ARCHITECTURE.md §10.14) — el mismo archivo que subió el usuario con `POST /v1/files`.
 - **Archivos de salida**: `generar_grafico` y `exportar_analisis` suben su resultado al mismo layout S3 y crean una fila nueva en `files` con `status='ready'` directo (a diferencia de una subida de usuario, que nace `status='uploaded'` y el worker la promueve a `ready` tras el job `ingest_file` — aquí no hace falta: el archivo generado ya está completo en el momento de subirlo). El resultado queda visible en `GET /v1/files` como cualquier otro archivo del tenant, y se puede volver a pasar a `consultar_documentos`/`analizar_tabla`/etc. como cualquier `file_id`.
-- **Visión requiere el proveedor Anthropic**: `analizar_imagen` (y la auto-descripción de imágenes en la ingesta, ver abajo) le mandan al modelo un bloque de contenido `{"type": "image", ...}` (formato común de `edecan_llm`, que sigue la convención de Anthropic). Esto solo lo entiende el proveedor Anthropic — si el tenant tiene configurado únicamente un proveedor OpenAI-compatible (`OPENAI_COMPAT_BASE_URL`), la tool lo detecta ANTES de llamar (`ctx.llm.resolve(...)`) y devuelve un mensaje de error explícito en vez de mandar la imagen a un proveedor que la ignoraría en silencio. Configura `ANTHROPIC_API_KEY` (ver `configuracion.md`) para usar visión.
-- **Auto-descripción de imágenes en la ingesta**: `apps/worker/edecan_worker/handlers/ingest_file.py` (el job que se encola en cada `POST /v1/files`) ahora reconoce imágenes (`png`/`jpeg`/`webp`/`gif`, hasta 5&nbsp;MB): si hay un proveedor de visión configurado, genera una descripción breve (1-2 frases, incluye OCR del texto visible) y la guarda como `file_chunks` `seq=0` — así `consultar_documentos` (`edecan_toolkit.documentos`) también encuentra imágenes por texto o por similitud semántica, no solo tablas/PDFs/Word. Usa el alias de modelo `"rapido"` a propósito (es un job automático que corre en cada imagen subida, así que se prioriza costo/latencia sobre la profundidad que sí tiene la tool interactiva `analizar_imagen`). Si NO hay proveedor de visión configurado, el comportamiento es idéntico al de cualquier archivo de un tipo no soportado: el archivo queda `status='error'` sin chunks — ninguna imagen se pierde ni rompe el job, simplemente no queda indexada por texto hasta que se configure Anthropic.
+- **Visión agnóstica de proveedor**: Edecán traduce un bloque común al formato nativo de Anthropic, OpenAI-compatible, Gemini, Ollama, Codex CLI y Claude CLI. La diferencia la marca el modelo elegido, no el proveedor.
+- **Auto-descripción de imágenes en la ingesta**: el worker intenta indexarlas con el modelo rápido. Si ese modelo no tiene visión, conserva el archivo como `ready` con un índice neutro para que `analizar_imagen` pueda abrirlo después; una limitación del modelo nunca convierte una subida válida en un archivo roto.
 
 ## Límites (tamaños y formatos)
 
@@ -102,12 +104,12 @@ Todos son límites duros en código, pensados para que un archivo grande o adver
 | | Filas por tabla detectada | 200 |
 | `analizar_imagen` | Formatos soportados | PNG, JPEG, WEBP, GIF |
 | | Tamaño máximo | 5&nbsp;MB |
-| | Proveedor requerido | Anthropic (`ANTHROPIC_API_KEY`) — con otro proveedor, error explícito |
+| | Modelo requerido | Cualquier modelo configurado que tenga visión |
 | `analizar_video` | Requisito de sistema | binario `ffmpeg` instalado — si falta, mensaje instructivo de instalación (ver sección ["Video"](#video)) |
 | | Tamaño máximo | 80&nbsp;MB |
 | | Frames extraídos | 1 a 16 (por defecto 8) |
 | | Timeout de extracción | 120&nbsp;s |
-| | Proveedor requerido | Anthropic (`ANTHROPIC_API_KEY`) — con otro proveedor, error explícito |
+| | Modelo requerido | Cualquier modelo configurado que tenga visión |
 | | Audio | Nunca se transcribe |
 | `generar_grafico` | Tipos soportados | `barras`, `lineas`, `dona` |
 | | Valores | Solo no negativos (decisión de alcance: barras/líneas bidireccionales alrededor de cero quedan fuera) |
@@ -145,7 +147,7 @@ Hasta v5, todo lo de arriba (estadística, forecast, anomalías, gráficos) solo
 
 ### Endpoints (`apps/api/edecan_api/routers/analista.py`, prefix `/v1/analista`)
 
-Los 4 son de **solo lectura** (`GET`/`POST` que nunca escriben nada — ni siquiera un archivo nuevo, a diferencia de `generar_grafico`/`exportar_analisis` por chat, que sí crean una fila en `files`), exigen `get_current_user` + `rate_limit` estándar, y **ninguno declara un flag de plan** — paridad deliberada con las 8 tools de este mismo paquete, que tampoco requieren uno (ver "Las 8 herramientas" arriba; `ARCHITECTURE.md` §15 pinnea el prefix con este mismo criterio).
+Los 4 son de **solo lectura**, exigen sesión y límites de uso estándar, y ninguno declara un flag de plan; mantienen paridad con las diez tools del paquete.
 
 | Endpoint | Body | Qué hace |
 |---|---|---|
@@ -158,7 +160,7 @@ Errores: `404` si el archivo no existe o es de otro tenant. `400` con el mensaje
 
 ### Superficie pública nueva de `edecan_docanalysis` (para este router, no para el chat)
 
-Este WP no cambió ninguna de las 8 tools de chat — les agregó, al lado, un puñado de funciones **puras** (sin `ToolContext`, sin LLM) que el router consume directo, documentadas en el docstring de `edecan_docanalysis/__init__.py`:
+Este WP no cambió las herramientas de chat existentes. Les agregó, al lado, un puñado de funciones **puras** (sin `ToolContext`, sin LLM) que el router consume directo, documentadas en el docstring de `edecan_docanalysis/__init__.py`:
 
 - `descargar_archivo_de_tenant(session, settings, tenant_id, file_id)` (`_s3.py`) — misma descarga S3 tenant-scoped que usa `analizar_tabla`/`generar_grafico`, con `session`/`settings` explícitos en vez de un `ToolContext` (un router HTTP no arma uno — eso solo existe dentro del loop de `Agent.run_turn`).
 - `extraer_columnas_bytes` / `analizar_tabla_bytes` (`tablas.py`) — filas crudas y estadística/outliers de un CSV/XLSX ya descargado.
@@ -167,13 +169,13 @@ Este WP no cambió ninguna de las 8 tools de chat — les agregó, al lado, un p
 
 ### El chat sigue siendo la vía con LLM
 
-Esta pantalla es **puro Python determinista y offline** — ninguno de sus 4 endpoints llama jamás a `ctx.llm`/`edecan_llm` (verificado con un test de regresión que recorre el AST del router buscando cualquier `import` de `edecan_llm`). La única forma de **preguntar en lenguaje natural** sobre una tabla ("¿cuál mes vendió más?", "resume esto") sigue siendo exclusivamente el chat, vía `analizar_tabla(pregunta=...)` (que sí usa `ctx.llm.complete`, ver "Las 8 herramientas" arriba) — la pantalla Analista no tiene (ni tendrá) un cuadro de texto libre; es un dashboard determinista, no un chat alternativo.
+Esta pantalla es **puro Python determinista y offline** — ninguno de sus 4 endpoints llama jamás a `ctx.llm`/`edecan_llm` (verificado con un test de regresión que recorre el AST del router buscando cualquier `import` de `edecan_llm`). La forma de **preguntar en lenguaje natural** sobre una tabla ("¿cuál mes vendió más?", "resume esto") sigue siendo el chat, vía `analizar_tabla(pregunta=...)` (que sí usa `ctx.llm.complete`) — la pantalla Analista es un dashboard determinista, no un chat alternativo.
 
 ## Ver también
 
-- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §10.7 — contrato `Tool`/`ToolContext`/`ToolResult` que implementan las 8 herramientas.
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §10.7 — contrato `Tool`/`ToolContext`/`ToolResult` que implementan las herramientas.
 - [`roadmap.md`](./roadmap.md) — estado público y evolución prevista de las capacidades de análisis.
-- [`conectores.md`](./conectores.md) y [`configuracion.md`](./configuracion.md) — cómo configurar `ANTHROPIC_API_KEY` (requerido por `analizar_imagen`/`analizar_video` y por la auto-descripción de imágenes en la ingesta; `predecir_serie`/`detectar_anomalias` no requieren ningún proveedor externo, son puro Python).
+- [`conectores.md`](./conectores.md) y [`configuracion.md`](./configuracion.md) — cómo seleccionar un proveedor y modelo. `analizar_imagen`/`analizar_video` y la auto-descripción usan el proveedor elegido siempre que su modelo tenga visión; `predecir_serie`/`detectar_anomalias` no requieren ningún proveedor externo, son puro Python.
 - [`personalizacion-nivel-dios.md`](./personalizacion-nivel-dios.md) — cómo `consultar_documentos` usa los `file_chunks` que genera tanto la ingesta normal como la auto-descripción de imágenes.
 - [`asesores.md`](./asesores.md) — el paquete `edecan_advisory`, cuyo criterio de "disclaimer exacto verificado por test" replica `predecir_serie` (cada paquete con su propia copia del disclaimer, ARCHITECTURE.md §10.1, en vez de importar `edecan_advisory`).
 - `apps/api/edecan_api/routers/analista.py` y `apps/api/tests/test_analista_router.py` — los 4 endpoints REST de la Pantalla Analista (fase v6) y sus tests (`FakeRepo` + un `aioboto3` falso en `sys.modules`, mismo criterio que `packages/docanalysis/tests/test_s3.py`).

@@ -224,9 +224,11 @@ def _extract_text(content: Any) -> str:
 
 
 def _attachment_context_line(item: dict[str, Any]) -> str:
+    file_id = item.get("file_id")
     return (
-        f"- file_id={item.get('file_id')} · {item.get('filename') or 'archivo'}"
+        f"- file_id={file_id} · {item.get('filename') or 'archivo'}"
         f" · {item.get('mime') or 'application/octet-stream'}"
+        f" · usa leer_archivo(file_id={file_id}) para ver su contenido antes de responder"
     )
 
 

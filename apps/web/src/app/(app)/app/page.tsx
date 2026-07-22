@@ -46,6 +46,8 @@ const STARTER_REQUESTS = [
   "Recuérdame pagar mañana",
 ];
 
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 90_000;
+
 /** Payload de `edecan://wake-detected` (evento nativo, Tauri): el listener
  * en segundo plano ya detectó la wake word entrenada Y ya grabó -- con corte
  * por silencio -- el comando de voz que siguió, ver
@@ -91,6 +93,7 @@ export default function ChatPage() {
   const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const uploadControllersRef = useRef(new Map<string, AbortController>());
+  const uploadFilesRef = useRef(new Map<string, File>());
   const [sending, setSending] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
@@ -141,6 +144,7 @@ export default function ChatPage() {
     () => () => {
       for (const controller of uploadControllersRef.current.values()) controller.abort();
       uploadControllersRef.current.clear();
+      uploadFilesRef.current.clear();
     },
     [],
   );
@@ -461,13 +465,25 @@ export default function ChatPage() {
 
     selected.forEach((file, index) => {
       const draft = drafts[index];
-      const controller = new AbortController();
-      uploadControllersRef.current.set(draft.localId, controller);
-      uploadFile(file, controller.signal)
+      uploadFilesRef.current.set(draft.localId, file);
+      startAttachmentUpload(draft.localId, file);
+    });
+  }
+
+  function startAttachmentUpload(localId: string, file: File) {
+    uploadControllersRef.current.get(localId)?.abort();
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, ATTACHMENT_UPLOAD_TIMEOUT_MS);
+    uploadControllersRef.current.set(localId, controller);
+    uploadFile(file, controller.signal)
         .then((uploaded) => {
           setAttachments((current) =>
             current.map((attachment) =>
-              attachment.localId === draft.localId
+              attachment.localId === localId
                 ? {
                     ...attachment,
                     status: "ready",
@@ -479,25 +495,52 @@ export default function ChatPage() {
                 : attachment,
             ),
           );
+          uploadFilesRef.current.delete(localId);
         })
         .catch((reason: unknown) => {
-          if (controller.signal.aborted) return;
-          const message = reason instanceof Error ? reason.message : "No se pudo subir el archivo.";
+          if (controller.signal.aborted && !timedOut) return;
+          const message = timedOut
+            ? "La carga tardó demasiado. Reintenta; el archivo no se perdió."
+            : reason instanceof Error
+              ? reason.message
+              : "No se pudo subir el archivo.";
           setAttachments((current) =>
             current.map((attachment) =>
-              attachment.localId === draft.localId
+              attachment.localId === localId
                 ? { ...attachment, status: "error", error: message }
                 : attachment,
             ),
           );
         })
-        .finally(() => uploadControllersRef.current.delete(draft.localId));
-    });
+        .finally(() => {
+          window.clearTimeout(timeoutId);
+          if (uploadControllersRef.current.get(localId) === controller) {
+            uploadControllersRef.current.delete(localId);
+          }
+        });
+  }
+
+  function handleRetryAttachment(localId: string) {
+    const file = uploadFilesRef.current.get(localId);
+    if (!file) {
+      setAttachmentError("Vuelve a elegir el archivo para reintentar la carga.");
+      return;
+    }
+    setAttachmentError(null);
+    setAttachments((current) =>
+      current.map((attachment) =>
+        attachment.localId === localId
+          ? { ...attachment, status: "uploading", error: null }
+          : attachment,
+      ),
+    );
+    startAttachmentUpload(localId, file);
   }
 
   function handleRemoveAttachment(localId: string) {
     uploadControllersRef.current.get(localId)?.abort();
     uploadControllersRef.current.delete(localId);
+    uploadFilesRef.current.delete(localId);
     setAttachments((current) => current.filter((attachment) => attachment.localId !== localId));
     setAttachmentError(null);
   }
@@ -796,6 +839,7 @@ export default function ChatPage() {
               attachments={attachments}
               attachmentError={attachmentError}
               onSelectFiles={handleSelectFiles}
+              onRetryAttachment={handleRetryAttachment}
               onRemoveAttachment={handleRemoveAttachment}
             />
           </>

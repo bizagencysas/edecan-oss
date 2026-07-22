@@ -8,7 +8,7 @@ reportes XLSX, predicción de series (forecast) y detección de anomalías.
 `get_all_tools()` es el entry point que consume
 `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`
 (ARCHITECTURE.md §10.7) vía el `[project.entry-points."edecan.tools"]` de
-`pyproject.toml`. Ninguna de las 8 herramientas es `dangerous` ni requiere un
+`pyproject.toml`. Ninguna de las 10 herramientas es `dangerous` ni requiere un
 flag de plan (ROADMAP_V2.md §7.7: "ninguna dangerous" — `analizar_video`,
 `predecir_serie` y `detectar_anomalias` siguen el mismo criterio que las 5
 originales) — todas son de solo-lectura/generación, nunca modifican datos del
@@ -16,7 +16,7 @@ usuario fuera de crear archivos nuevos (`files`) que él mismo puede borrar.
 
 ## Superficie pública pura (WP-V6-06, "Pantalla Analista" — `docs/analista.md`)
 
-Además de las 8 tools de chat de arriba, este paquete expone un puñado de
+Además de las 10 tools de chat de arriba, este paquete expone un puñado de
 funciones PURAS (sin `ToolContext`, sin LLM) para consumidores fuera del loop
 de un agente — hoy, el único consumidor real es el router HTTP de solo
 lectura `apps/api/edecan_api/routers/analista.py`, que necesita la MISMA
@@ -45,6 +45,7 @@ from __future__ import annotations
 from edecan_core import Tool
 
 from ._s3 import ArchivoDescargado, descargar_archivo_de_tenant
+from .archivos import EditarPdfTool, LeerArchivoTool
 from .forecast import (
     DISCLAIMER_FORECAST,
     DetectarAnomaliasTool,
@@ -66,9 +67,11 @@ __all__ = [
     "ArchivoDescargado",
     "DISCLAIMER_FORECAST",
     "DetectarAnomaliasTool",
+    "EditarPdfTool",
     "ExportarAnalisisTool",
     "ExtraerTablasPdfTool",
     "GenerarGraficoTool",
+    "LeerArchivoTool",
     "PredecirSerieTool",
     "analizar_tabla_bytes",
     "descargar_archivo_de_tenant",
@@ -81,10 +84,12 @@ __all__ = [
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las 8 herramientas del paquete (nombres exactos: ROADMAP_V2.md
+    """Instancia las 10 herramientas del paquete (nombres exactos: ROADMAP_V2.md
     §7.7 para las 5 originales; `analizar_video` es WP-V3-14; `predecir_serie`/
     `detectar_anomalias` son WP-V5-12)."""
     return [
+        LeerArchivoTool(),
+        EditarPdfTool(),
         AnalizarTablaTool(),
         ExtraerTablasPdfTool(),
         AnalizarImagenTool(),

@@ -2,7 +2,7 @@
 
 import { type KeyboardEvent, useRef } from "react";
 
-import { CheckIcon, FileIcon, MicIcon, PlusIcon, SendIcon, SquareIcon, XIcon } from "@/components/icons";
+import { CheckIcon, FileIcon, MicIcon, PlusIcon, RetryIcon, SendIcon, SquareIcon, XIcon } from "@/components/icons";
 import { Button, Spinner, Textarea } from "@/components/ui";
 import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
 import type { ChatAttachmentDraft } from "@/lib/types";
@@ -20,6 +20,7 @@ export function ChatComposer({
   attachments,
   attachmentError,
   onSelectFiles,
+  onRetryAttachment,
   onRemoveAttachment,
 }: {
   value: string;
@@ -36,6 +37,7 @@ export function ChatComposer({
   attachments: ChatAttachmentDraft[];
   attachmentError: string | null;
   onSelectFiles: (files: File[]) => void;
+  onRetryAttachment: (localId: string) => void;
   onRemoveAttachment: (localId: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -95,6 +97,17 @@ export function ChatComposer({
               <span className="shrink-0 text-[10px] opacity-70">
                 {attachment.status === "uploading" ? "Subiendo" : attachment.status === "ready" ? "Listo" : "Falló"}
               </span>
+              {attachment.status === "error" && (
+                <button
+                  type="button"
+                  className="ml-0.5 rounded p-0.5 hover:bg-rose-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 dark:hover:bg-rose-900"
+                  onClick={() => onRetryAttachment(attachment.localId)}
+                  aria-label={`Reintentar carga de ${attachment.filename}`}
+                  title="Reintentar"
+                >
+                  <RetryIcon className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button
                 type="button"
                 className="ml-0.5 rounded p-0.5 hover:bg-slate-200/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 dark:hover:bg-slate-700"

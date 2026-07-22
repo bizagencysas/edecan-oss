@@ -41,7 +41,7 @@ async def test_rechaza_formato_no_soportado(make_ctx, fake_s3, make_archivo):
     assert "no es una imagen soportada" in resultado.content
 
 
-async def test_proveedor_no_anthropic_devuelve_error_claro_y_no_llama_al_llm(
+async def test_proveedor_openai_compatible_recibe_la_imagen_por_contrato_comun(
     make_ctx, fake_s3, make_archivo, make_llm
 ):
     fake_s3.archivo = make_archivo(contenido=_PNG_1PX, filename="captura.png", mime="image/png")
@@ -50,9 +50,9 @@ async def test_proveedor_no_anthropic_devuelve_error_claro_y_no_llama_al_llm(
 
     resultado = await AnalizarImagenTool().run(ctx, {"file_id": str(uuid4())})
 
-    assert "proveedor LLM con soporte de visión" in resultado.content
-    assert "openai_compat" in resultado.content
-    assert llm.llamadas == []  # nunca se envía la imagen a un proveedor que la ignoraría
+    assert resultado.content == "respuesta de prueba"
+    assert len(llm.llamadas) == 1
+    assert llm.llamadas[0][2].messages[0].content[0]["type"] == "image"
 
 
 async def test_analiza_imagen_con_proveedor_anthropic_y_pregunta_por_defecto(

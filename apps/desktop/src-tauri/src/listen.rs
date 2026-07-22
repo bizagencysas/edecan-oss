@@ -258,6 +258,16 @@ pub async fn record_sample(app: AppHandle, index: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// Dispara la solicitud nativa de micrófono y verifica el resultado con una
+/// captura mínima que se descarta. La usa el Centro de permisos: no guarda
+/// audio, no entrena la palabra clave y no altera el estado de escucha.
+pub async fn request_microphone_access() -> Result<(), String> {
+    let capture = tauri::async_runtime::spawn_blocking(|| capture_wav_sample(0.12))
+        .await
+        .map_err(|err| format!("Fallo interno comprobando el micrófono: {err}"))?;
+    capture.map(|_| ())
+}
+
 /// Entrena el modelo de wake word a partir de las 3 muestras grabadas y lo
 /// deja guardado en `wake_model.rpw`. Si ya había un modelo entrenado antes
 /// y `enabled:true`, lo vuelve a dejar en `false` a propósito — reentrenar

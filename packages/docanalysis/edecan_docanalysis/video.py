@@ -13,11 +13,8 @@ sección "Video", para la alternativa de transcripción de voz).
 
 Flujo de `AnalizarVideoTool.run`: resolver el archivo (mismo mecanismo que
 `analizar_imagen`: `_s3.descargar_archivo` sobre un id UUID) → validar que el
-mime sea `video/*` → resolver el proveedor LLM (igual patrón que
-`analizar_imagen`: solo Anthropic entiende bloques `{"type": "image", ...}` —
-se revisa AQUÍ, antes de tocar ffmpeg, para fallar rápido si el proveedor
-configurado no sirve, en vez de gastar hasta 120s de extracción para nada) →
-confirmar que `ffmpeg` está instalado (`ffmpeg_disponible()`; si no, un mensaje
+mime sea `video/*` → confirmar que `ffmpeg` está instalado
+(`ffmpeg_disponible()`; si no, un mensaje
 instructivo, nunca un traceback) → `extraer_frames` (subproceso `ffmpeg`, JAMÁS
 `shell=True`) → una sola llamada al LLM con los frames + una pregunta.
 
@@ -372,9 +369,8 @@ class AnalizarVideoTool(Tool):
         "Analiza un video ya subido: extrae hasta 16 frames representativos con "
         "ffmpeg (no el video completo) y los envía a un modelo con visión para "
         "describir los eventos clave, o para responder una pregunta puntual. NO "
-        "transcribe audio. Requiere ffmpeg instalado en esta máquina y un "
-        "proveedor LLM con soporte de visión (Anthropic) — con cualquiera de los "
-        "dos ausentes devuelve un error claro en vez de fallar a ciegas."
+        "transcribe audio. Requiere ffmpeg instalado en esta máquina y que el "
+        "modelo elegido tenga visión; si falta algo devuelve un error claro."
     )
     input_schema = {
         "type": "object",
@@ -419,22 +415,7 @@ class AnalizarVideoTool(Tool):
                 )
             )
 
-        # Se revisa el proveedor ANTES de tocar ffmpeg (a diferencia del orden
-        # "extraer → revisar proveedor"): así una configuración sin visión falla
-        # rápido en vez de pagar hasta 120s de extracción de frames para nada.
         flags = tenant_flags(ctx)
-        proveedor, _modelo = ctx.llm.resolve("principal", flags)
-        nombre_proveedor = getattr(proveedor, "name", "")
-        if nombre_proveedor != "anthropic":
-            return ToolResult(
-                content=(
-                    "analizar_video necesita un proveedor LLM con soporte de visión "
-                    "(Anthropic, vía ANTHROPIC_API_KEY) — el proveedor configurado "
-                    f"ahora mismo ('{nombre_proveedor or 'desconocido'}') no procesa "
-                    "imágenes, así que no puedo analizar este video."
-                )
-            )
-
         if ffmpeg_disponible() is None:
             return ToolResult(content=FFMPEG_INSTALL_HINT)
 
@@ -454,16 +435,25 @@ class AnalizarVideoTool(Tool):
         pregunta = str(args.get("pregunta") or "").strip() or _PREGUNTA_DEFECTO
         bloques = construir_bloques_video(frames, pregunta, duracion_estimada_s=duracion)
 
-        respuesta = await ctx.llm.complete(
-            "principal",
-            flags,
-            CompletionRequest(
-                model="principal",
-                system=_SYSTEM_PROMPT,
-                messages=[ChatMessage(role="user", content=bloques)],
-                max_tokens=1536,
-            ),
-        )
+        try:
+            respuesta = await ctx.llm.complete(
+                "principal",
+                flags,
+                CompletionRequest(
+                    model="principal",
+                    system=_SYSTEM_PROMPT,
+                    messages=[ChatMessage(role="user", content=bloques)],
+                    max_tokens=1536,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - proveedores/modelos heterogéneos
+            return ToolResult(
+                content=(
+                    "Pude extraer los frames, pero el modelo elegido no pudo procesarlos. "
+                    "Elige un modelo con visión o intenta de nuevo. "
+                    f"Detalle: {type(exc).__name__}."
+                )
+            )
 
         texto = respuesta.text.strip()
         if not texto:

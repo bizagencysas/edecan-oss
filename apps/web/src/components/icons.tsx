@@ -148,6 +148,15 @@ export const XIcon = (p: IconProps) => base(<path d="M18 6 6 18M6 6l12 12" />, p
 
 export const CheckIcon = (p: IconProps) => base(<path d="M20 6 9 17l-5-5" />, p);
 
+export const RetryIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M20 7v5h-5" />
+      <path d="M19 12a7 7 0 1 0-2 5" />
+    </>,
+    p,
+  );
+
 export const PhoneIcon = (p: IconProps) =>
   base(
     <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c1 .3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z" />,

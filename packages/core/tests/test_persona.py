@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+
+from edecan_core.cognitive_architecture import CORE_IDENTITY_ES
 from edecan_core.persona import build_system_prompt
 from edecan_schemas import PersonaConfig
 
@@ -90,7 +93,7 @@ def test_sin_extra_context_no_agrega_seccion():
 def test_idioma_en_usa_plantilla_en_ingles():
     persona = PersonaConfig(idioma="en", nombre_asistente="Ada", tono="warm and direct")
     prompt = build_system_prompt(persona, ["Likes espresso"])
-    assert "You are Ada" in prompt
+    assert "- Name: Ada" in prompt
     assert "warm and direct" in prompt
     assert "- Likes espresso" in prompt
     assert "Follow them with high priority" in prompt
@@ -123,7 +126,7 @@ def test_mision_es_assistant_first_multimodal_creadora_y_autorreparable():
     prompt = build_system_prompt(PersonaConfig(), [])
     prompt_lower = prompt.lower()
 
-    assert "la conversación es la interfaz principal" in prompt_lower
+    assert "la conversación es únicamente una interfaz" in prompt_lower
     assert "texto, voz, imágenes, audio, video" in prompt_lower
     assert "word, pdf, hojas de cálculo" in prompt_lower
     assert "sitios web, código y aplicaciones completas" in prompt_lower
@@ -190,7 +193,7 @@ def test_prompt_compone_core_identity_y_motores_cognitivos_separados():
     prompt = build_system_prompt(PersonaConfig(), ["Construye productos escalables"])
 
     for section in (
-        "# Edecán Core Identity",
+        "# EDecán Core Identity",
         "## Persona Engine",
         "## Memory Engine",
         "## Planning Engine",
@@ -204,8 +207,19 @@ def test_prompt_compone_core_identity_y_motores_cognitivos_separados():
         assert section in prompt
 
     assert "No eres un chatbot" in prompt
-    assert "optimizas su trayectoria" in prompt
+    assert "Optimizas su trayectoria" in prompt
     assert "- Construye productos escalables" in prompt
+
+
+def test_core_identity_es_el_texto_canonico_entregado_sin_reescrituras():
+    """Una edición accidental del núcleo debe romper la prueba de snapshot."""
+
+    assert len(CORE_IDENTITY_ES.splitlines()) == 404
+    assert hashlib.sha256(CORE_IDENTITY_ES.encode()).hexdigest() == (
+        "9dc6efd04521f01f4672082c82062065fc0cedd779dd1a18b769b82d1e3f897c"
+    )
+    assert build_system_prompt(PersonaConfig(), []).startswith(CORE_IDENTITY_ES)
+    assert build_system_prompt(PersonaConfig(idioma="en"), []).startswith(CORE_IDENTITY_ES)
 
 
 def test_arquitectura_cognitiva_separa_nucleo_de_modulos_versionables():

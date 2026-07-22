@@ -59,6 +59,17 @@ def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:
         assert f"pgserver/pginstall/lib/postgresql/{module}" in build_script
 
 
+def test_sidecar_preserves_workspace_tool_entry_points() -> None:
+    spec = (REPO_ROOT / "apps" / "desktop" / "packaging" / "edecan_local.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert "copy_metadata" in spec
+    assert 'distribution_name = pkg.replace("_", "-")' in spec
+    assert "datas.extend(copy_metadata(distribution_name))" in spec
+    assert 'if pkg.startswith("edecan_")' in spec
+
+
 def test_linux_smoke_uses_a_real_window_manager_and_waits_for_main_window() -> None:
     verify_script = (
         REPO_ROOT / "apps" / "desktop" / "scripts" / "verify-linux-bundles.sh"

@@ -25,9 +25,11 @@ import json
 import logging
 import shutil
 from collections.abc import AsyncIterator
+from tempfile import TemporaryDirectory
 
 from .base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
 from .errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
+from .multimodal import cli_image_context, materialize_request_images
 from .output_safety import VISIBLE_OUTPUT_CONTRACT_ES, sanitize_visible_assistant_text
 from .prompted_tools import parse_tool_call, render_prompt
 
@@ -59,10 +61,14 @@ class ClaudeCLIProvider(LLMProvider):
         self._timeout_seconds = timeout_seconds
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
-        args = self._base_args("json")
-        if req.model:
-            args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, _render_cli_prompt(req))
+        with TemporaryDirectory(prefix="edecan-claude-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            args = self._base_args("json", image_dir=image_dir if image_paths else None)
+            if req.model:
+                args += ["--model", req.model]
+            stdout, _stderr = await self._run(
+                args, _render_cli_prompt(req, image_paths=image_paths)
+            )
         return _parse_response(stdout, req)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
@@ -72,10 +78,16 @@ class ClaudeCLIProvider(LLMProvider):
         chunk `text` + `usage` + `stop` — documentado en el punto 3 del
         paquete WP-V3-03.
         """
-        args = self._base_args("stream-json", verbose=True)
-        if req.model:
-            args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, _render_cli_prompt(req))
+        with TemporaryDirectory(prefix="edecan-claude-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            args = self._base_args(
+                "stream-json", verbose=True, image_dir=image_dir if image_paths else None
+            )
+            if req.model:
+                args += ["--model", req.model]
+            stdout, _stderr = await self._run(
+                args, _render_cli_prompt(req, image_paths=image_paths)
+            )
 
         chunks = _parse_stream_json(stdout, tools_requested=bool(req.tools))
         if chunks is None:
@@ -88,10 +100,25 @@ class ClaudeCLIProvider(LLMProvider):
         for chunk in chunks:
             yield chunk
 
-    def _base_args(self, output_format: str, *, verbose: bool = False) -> list[str]:
+    def _base_args(
+        self, output_format: str, *, verbose: bool = False, image_dir: str | None = None
+    ) -> list[str]:
         args = [self._binary_path, "-p", "--output-format", output_format]
         if verbose:
             args.append("--verbose")
+        if image_dir:
+            # Solo Read y solo sobre el directorio temporal de este turno.
+            # Claude ve la imagen sin recibir acceso general al computador.
+            args += [
+                "--tools",
+                "Read",
+                "--allowedTools",
+                "Read",
+                "--permission-mode",
+                "dontAsk",
+                "--add-dir",
+                image_dir,
+            ]
         return args
 
     async def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
@@ -153,8 +180,10 @@ def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:
     return chunks
 
 
-def _render_cli_prompt(req: CompletionRequest) -> str:
-    return f"{VISIBLE_OUTPUT_CONTRACT_ES}\n\n{render_prompt(req)}"
+def _render_cli_prompt(req: CompletionRequest, *, image_paths: list[str] | None = None) -> str:
+    image_context = cli_image_context(image_paths or [])
+    pieces = [VISIBLE_OUTPUT_CONTRACT_ES, render_prompt(req), image_context]
+    return "\n\n".join(piece for piece in pieces if piece)
 
 
 def _parse_response(stdout: str, req: CompletionRequest) -> CompletionResponse:

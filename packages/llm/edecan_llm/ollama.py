@@ -33,6 +33,7 @@ from .base import (
     Usage,
 )
 from .errors import LLMError
+from .multimodal import image_sources, text_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,12 @@ def _to_ollama_messages(req: CompletionRequest) -> list[dict]:
             messages.extend(_tool_result_messages(message.content))
         elif message.role == "assistant" and isinstance(message.content, list):
             messages.append(_assistant_blocks_to_ollama(message.content))
+        elif message.role == "user" and isinstance(message.content, list):
+            entry = {"role": "user", "content": text_blocks(message.content)}
+            images = [data for _mime, data in image_sources(message.content)]
+            if images:
+                entry["images"] = images
+            messages.append(entry)
         else:
             content = (
                 message.content if isinstance(message.content, str) else _text_of(message.content)

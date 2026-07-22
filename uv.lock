@@ -1135,9 +1135,12 @@ dependencies = [
     { name = "edecan-db" },
     { name = "edecan-llm" },
     { name = "edecan-schemas" },
+    { name = "fpdf2" },
     { name = "httpx" },
     { name = "openpyxl" },
     { name = "pypdf" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
@@ -1154,9 +1157,12 @@ requires-dist = [
     { name = "edecan-db", editable = "packages/db" },
     { name = "edecan-llm", editable = "packages/llm" },
     { name = "edecan-schemas", editable = "packages/schemas" },
+    { name = "fpdf2", specifier = ">=2.7" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pypdf", specifier = ">=4.0" },
+    { name = "python-docx", specifier = ">=1.1" },
+    { name = "python-pptx", specifier = ">=1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
 ]
 

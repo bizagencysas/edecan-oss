@@ -7,21 +7,23 @@ PDF, visión sobre imágenes, análisis de video por frames, gráficos SVG
 deterministas, exportación de reportes XLSX, predicción de series (forecast)
 y detección de anomalías. Cada tool implementa el contrato `Tool` de
 `edecan_core` (ARCHITECTURE.md §10.7): `name`, `description`, `input_schema`,
-`requires_flags` (vacío en las 8), `dangerous` (`False` en las 8) y
+`requires_flags` (vacío en las 10), `dangerous` (`False` en las 10) y
 `async run(ctx, args)`.
 
 `get_all_tools() -> list[Tool]` (en `edecan_docanalysis/__init__.py`) es el
 entry point que consume `edecan_core.ToolRegistry.load_entry_points(group="edecan.tools")`,
 declarado en `pyproject.toml` como `[project.entry-points."edecan.tools"]`.
 
-## Las 8 herramientas (5 nombres exactos pinned en `ARCHITECTURE.md` §11 + `analizar_video` de v3 + `predecir_serie`/`detectar_anomalias` de v5)
+## Las 10 herramientas
 
 | Módulo | Tool | Qué hace |
 |---|---|---|
+| `archivos.py` | `leer_archivo` | Lee PDF, Word, PowerPoint, Excel, CSV, JSON, Markdown, código y texto; deriva imágenes a visión. |
+| `archivos.py` | `editar_pdf` | Reconstruye texto, anexa contenido, selecciona o rota páginas y entrega un PDF nuevo sin destruir el original. |
 | `tablas.py` | `analizar_tabla` | Estadística descriptiva de un CSV/XLSX: tipo de columna, media/mediana/min/max/std/nulos, top-5 categorías, outliers por IQR. Responde `pregunta` opcional vía LLM sobre esas estadísticas. |
 | `pdf.py` | `extraer_tablas_pdf` | Extrae texto de un PDF por página (`pypdf`) y detecta tablas por alineación de columnas (heurística de espacios/tabs), devueltas como CSV. |
-| `vision.py` | `analizar_imagen` | Describe/transcribe (OCR) una imagen, o responde una pregunta puntual sobre ella, vía bloques de visión del proveedor LLM. Requiere Anthropic (ver más abajo). |
-| `video.py` | `analizar_video` | Extrae hasta 16 frames de un video con `ffmpeg` (subproceso, binario del sistema) y los envía en una sola tanda a los mismos bloques de visión que `analizar_imagen` (reutiliza `vision._bloque_imagen`). No transcribe audio; requiere Anthropic y `ffmpeg` instalado (ver `docs/analista.md` sección "Video"). |
+| `vision.py` | `analizar_imagen` | Describe/transcribe (OCR) una imagen, o responde una pregunta puntual sobre ella, vía el contrato multimodal común del proveedor. |
+| `video.py` | `analizar_video` | Extrae hasta 16 frames con `ffmpeg` y los envía al contrato multimodal común. No transcribe audio. |
 | `graficos.py` | `generar_grafico` | Genera un SVG determinista (barras/líneas/dona, paleta accesible Okabe-Ito) puro Python, sin matplotlib, y lo guarda como archivo. |
 | `reportes.py` | `exportar_analisis` | Arma un XLSX (`openpyxl`) con hoja "Resumen" + una hoja por sección con tabla, y lo guarda como archivo. |
 | `forecast.py` | `predecir_serie` | Predice `periodos` puntos futuros de una serie numérica probando media móvil/regresión lineal/SES/Holt vía un backtest interno (menor MAE gana), con intervalo aproximado. Puro Python, sin S3 ni LLM. |
@@ -48,14 +50,10 @@ contrato público del paquete).
   Un archivo generado por una tool (gráfico, reporte) nace `status='ready'`
   directo — a diferencia de una subida de usuario, no hay nada que extraer
   después, así que no se encola `ingest_file` para él.
-- **Visión requiere Anthropic**: `edecan_llm.anthropic._to_anthropic_messages`
-  reenvía bloques de contenido tipo lista tal cual al wire de
-  `/v1/messages` (incluido `{"type": "image", ...}`), pero
-  `edecan_llm.openai_compat._to_openai_messages` solo extrae los bloques
-  `type="text"` y descarta el resto en silencio. Para no mandar una imagen a
-  un proveedor que la va a ignorar sin avisar, `analizar_imagen` resuelve el
-  proveedor con `ctx.llm.resolve("principal", flags)` ANTES de llamar y
-  devuelve un error explícito si `provider.name != "anthropic"`.
+- **Visión agnóstica de proveedor**: el bloque interno se traduce a Anthropic,
+  OpenAI-compatible, Gemini, Ollama, Codex CLI o Claude CLI. La capacidad final
+  depende del modelo elegido; si ese modelo no tiene visión, la tool devuelve
+  un error claro sin perder el archivo.
 - **`generar_contenido`-style downgrade de modelo**: `tablas.py` (si viene
   `pregunta`), `vision.py` y `video.py` llaman a `ctx.llm.complete`/
   `ctx.llm.resolve` directo, así que las tres leen `ctx.extras["flags"]`

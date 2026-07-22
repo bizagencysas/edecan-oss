@@ -16,6 +16,8 @@ ALL_SPECS = [
     _spec("buscar_correo", "Busca correos en Gmail u Outlook."),
     _spec("enviar_correo", "Envía un correo real."),
     _spec("consultar_documentos", "Revisa documentos ya subidos."),
+    _spec("leer_archivo", "Abre y lee cualquier archivo adjunto."),
+    _spec("editar_pdf", "Edita un PDF sin destruir el original."),
     _spec("crear_documento", "Crea un documento nuevo."),
     _spec("analizar_imagen", "Revisa una imagen ya subida."),
     _spec("crear_recordatorio", "Crea un recordatorio."),
@@ -58,6 +60,7 @@ def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_
         "buscar_correo",
         "enviar_correo",
         "consultar_documentos",
+        "leer_archivo",
         "crear_recordatorio",
         "configurar_credencial",
     } <= names
@@ -67,6 +70,15 @@ def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_
     assert "acceder_codigo_local" not in names
     assert "preparar_pago" not in names
     assert len(names) < len(ALL_SPECS)
+
+
+def test_pdf_adjunto_ofrece_lectura_y_edicion_reversible():
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Lee este PDF adjunto, corrige el texto y entrégame la versión editada.",
+    )
+    names = {spec.name for spec in selected}
+    assert {"leer_archivo", "editar_pdf"} <= names
 
 
 def test_autorreparacion_explicita_habilita_codigo_local_y_escalera_de_skills():

@@ -45,6 +45,24 @@ ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 
 Nada de esto pide un `.env`, una terminal ni una base de datos propia — ver §9.
 
+### Centro de permisos
+
+En la aplicación instalada, abre **Ajustes → Permisos de esta computadora**.
+La pantalla consulta estados nativos y ofrece una acción por capacidad:
+
+- En macOS comprueba Accesibilidad y Grabación de pantalla; puede disparar
+  el consentimiento nativo de pantalla y micrófono, y abre directamente las
+  secciones de Accesibilidad, Notificaciones, Automatización o Acceso total
+  al disco cuando Apple exige que la persona active el interruptor.
+- En Windows abre las páginas exactas de Micrófono y Notificaciones. Mouse,
+  teclado, captura y archivos normales no tienen un permiso global; Windows
+  conserva UAC para cualquier acción administrativa puntual.
+
+La pantalla nunca simula que concedió un permiso. El sistema operativo toma
+la decisión final y Edecán actualiza el estado al recuperar el foco o pulsar
+**Actualizar estados**. Acceso total al disco aparece como opcional porque no
+es necesario para el chat ni debe pedirse por defecto.
+
 ## 3. Requisitos para compilar
 
 Solo hacen falta si vos mismo vas a **generar** el instalador (no para usarlo ya generado):

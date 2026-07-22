@@ -92,7 +92,7 @@ async def test_ingest_txt_produce_chunks_correctos(monkeypatch) -> None:
     assert all(len(batch) <= 32 for batch in deps.embedder.calls)
 
 
-async def test_ingest_mime_no_soportado_marca_status_error(monkeypatch) -> None:
+async def test_ingest_mime_no_soportado_se_conserva_ready(monkeypatch) -> None:
     fake_repo = FakeRepo()
     monkeypatch.setattr(ingest_file_module, "SqlRepo", lambda session: fake_repo)
 
@@ -116,8 +116,9 @@ async def test_ingest_mime_no_soportado_marca_status_error(monkeypatch) -> None:
     )
     await ingest_file_module.handle(env, deps)
 
-    assert fake_repo.files[file_id]["status"] == "error"
-    assert fake_repo.file_chunks == []
+    assert fake_repo.files[file_id]["status"] == "ready"
+    assert len(fake_repo.file_chunks) == 1
+    assert "audio.mp3" in fake_repo.file_chunks[0]["text"]
     assert fake_repo.usage_events == []
 
 

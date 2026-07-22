@@ -24,6 +24,7 @@ from .base import (
     Usage,
 )
 from .errors import LLMError, ProviderDownError, RateLimitedError
+from .multimodal import image_source, text_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -192,12 +193,32 @@ def _to_openai_messages(req: CompletionRequest) -> list[dict]:
             messages.extend(_tool_result_messages(message.content))
         elif message.role == "assistant" and isinstance(message.content, list):
             messages.append(_assistant_blocks_to_openai(message.content))
+        elif message.role == "user" and isinstance(message.content, list):
+            messages.append({"role": "user", "content": _user_blocks_to_openai(message.content)})
         else:
             content = (
                 message.content if isinstance(message.content, str) else _text_of(message.content)
             )
             messages.append({"role": message.role, "content": content})
     return messages
+
+
+def _user_blocks_to_openai(blocks: list[dict]) -> list[dict]:
+    content: list[dict] = []
+    for block in blocks:
+        if block.get("type") == "text" and block.get("text"):
+            content.append({"type": "text", "text": str(block["text"])})
+            continue
+        source = image_source(block)
+        if source is not None:
+            mime, data = source
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data}", "detail": "auto"},
+                }
+            )
+    return content or [{"type": "text", "text": text_blocks(blocks)}]
 
 
 def _assistant_blocks_to_openai(blocks: list[dict]) -> dict:

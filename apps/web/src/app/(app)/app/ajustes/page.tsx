@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { ConexionesSection } from "@/components/configuracion/ConexionesSection";
+import { DesktopPermissionsCenter } from "@/components/configuracion/DesktopPermissionsCenter";
 import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, PageHeader } from "@/components/ui";
 import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
 import {
@@ -203,6 +204,8 @@ export default function AjustesPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ConexionesSection onLocalModeDetected={setLocalMode} />
+
+        <DesktopPermissionsCenter />
 
         <Card className="lg:col-span-2">
           <CardHeader

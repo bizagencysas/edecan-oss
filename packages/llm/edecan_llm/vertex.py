@@ -41,6 +41,7 @@ from .base import (
 )
 from .config import LLMProviderConfig
 from .errors import LLMError, ProviderDownError
+from .multimodal import image_source
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +296,7 @@ def _to_gemini_contents(req: CompletionRequest) -> tuple[dict | None, list[dict]
             if text:
                 system_parts.append(text)
         elif message.role == "user":
-            contents.append({"role": "user", "parts": [{"text": _text_of(message.content)}]})
+            contents.append({"role": "user", "parts": _user_parts(message.content)})
         elif message.role == "assistant":
             contents.append(
                 {"role": "model", "parts": _assistant_parts(message.content, call_names)}
@@ -307,6 +308,21 @@ def _to_gemini_contents(req: CompletionRequest) -> tuple[dict | None, list[dict]
 
     system_instruction = {"parts": [{"text": "\n\n".join(system_parts)}]} if system_parts else None
     return system_instruction, contents
+
+
+def _user_parts(content: str | list[dict]) -> list[dict]:
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts: list[dict] = []
+    for block in content:
+        if block.get("type") == "text" and block.get("text"):
+            parts.append({"text": str(block["text"])})
+            continue
+        source = image_source(block)
+        if source is not None:
+            mime, data = source
+            parts.append({"inlineData": {"mimeType": mime, "data": data}})
+    return parts or [{"text": ""}]
 
 
 def _text_of(content: str | list[dict]) -> str:

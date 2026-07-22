@@ -4,6 +4,7 @@ script ejecutable fake (`tmp_path`) como `binary_path`.
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -114,6 +115,47 @@ async def test_complete_prompt_viaja_por_stdin(tmp_path: Path) -> None:
     assert "No muestres analisis, razonamiento" in stdin_content
     assert "Eres Edecán, un mayordomo de IA." in stdin_content
     assert "Usuario: ¿Qué hora es?" in stdin_content
+
+
+@pytest.mark.asyncio
+async def test_complete_materializa_imagen_y_habilita_solo_read(tmp_path: Path) -> None:
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=json.dumps({"result": "Veo una captura."}),
+        stdin_capture_name="vision-stdin.txt",
+        args_capture_name="vision-args.txt",
+    )
+    provider = ClaudeCLIProvider(binary_path=fake)
+    encoded = base64.b64encode(b"fake-png").decode()
+    req = _req(
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": encoded,
+                        },
+                    },
+                    {"type": "text", "text": "¿Qué ves?"},
+                ],
+            )
+        ]
+    )
+
+    response = await provider.complete(req)
+
+    assert response.text == "Veo una captura."
+    args = (tmp_path / "vision-args.txt").read_text()
+    assert "--tools\nRead\n" in args
+    assert "--allowedTools\nRead\n" in args
+    assert "--permission-mode\ndontAsk\n" in args
+    prompt = (tmp_path / "vision-stdin.txt").read_text()
+    assert "Imágenes privadas adjuntas" in prompt
+    assert "adjunto-01.png" in prompt
 
 
 @pytest.mark.asyncio

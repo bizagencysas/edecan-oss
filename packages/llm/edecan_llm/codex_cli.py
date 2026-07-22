@@ -25,6 +25,7 @@ from tempfile import TemporaryDirectory
 
 from .base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
 from .errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
+from .multimodal import cli_image_context, materialize_request_images
 from .output_safety import sanitize_visible_assistant_text
 from .prompted_tools import parse_tool_call, render_prompt
 
@@ -92,7 +93,12 @@ class CodexCLIProvider(LLMProvider):
         self._timeout_seconds = timeout_seconds
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
-        stdout, _stderr = await self._run(self._args(req), render_prompt(req))
+        with TemporaryDirectory(prefix="edecan-codex-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            prompt = _render_codex_prompt(req, image_paths)
+            stdout, _stderr = await self._run(
+                self._args(req, image_paths=image_paths), prompt
+            )
         return _parse_response(stdout, req)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
@@ -103,7 +109,12 @@ class CodexCLIProvider(LLMProvider):
         evento matchea el patrón tolerante, degrada a una única respuesta —
         mismo criterio que `ClaudeCLIProvider.stream`.
         """
-        stdout, _stderr = await self._run(self._args(req), render_prompt(req))
+        with TemporaryDirectory(prefix="edecan-codex-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            prompt = _render_codex_prompt(req, image_paths)
+            stdout, _stderr = await self._run(
+                self._args(req, image_paths=image_paths), prompt
+            )
 
         chunks = _parse_events(stdout, tools_requested=bool(req.tools))
         if chunks is None:
@@ -116,10 +127,12 @@ class CodexCLIProvider(LLMProvider):
         for chunk in chunks:
             yield chunk
 
-    def _args(self, req: CompletionRequest) -> list[str]:
+    def _args(self, req: CompletionRequest, *, image_paths: list[str] | None = None) -> list[str]:
         args = [self._binary_path, "exec", "--json"]
         if req.model:
             args += ["--model", req.model]
+        for image_path in image_paths or []:
+            args += ["--image", image_path]
         return args
 
     async def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
@@ -175,6 +188,11 @@ class CodexCLIProvider(LLMProvider):
                 provider=self.name,
             )
         return stdout, stderr
+
+
+def _render_codex_prompt(req: CompletionRequest, image_paths: list[str]) -> str:
+    image_context = cli_image_context(image_paths)
+    return "\n\n".join(piece for piece in (render_prompt(req), image_context) if piece)
 
 
 def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:

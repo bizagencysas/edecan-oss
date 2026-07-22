@@ -8,6 +8,7 @@ use tauri::AppHandle;
 
 use crate::backend;
 use crate::listen;
+use crate::permissions;
 
 /// Botón "Reintentar" del panel de error de splash. Repite exactamente el
 /// mismo camino que el arranque inicial (elige puerto, lanza, espera).
@@ -48,4 +49,18 @@ pub fn always_listen_set_enabled(app: AppHandle, enabled: bool) -> Result<(), St
 #[tauri::command]
 pub fn always_listen_reset_training(app: AppHandle) -> Result<(), String> {
     listen::reset_training(app)
+}
+
+// --- Centro de permisos del sistema operativo ---------------------------
+
+#[tauri::command]
+pub fn desktop_permissions_get_state() -> permissions::DesktopPermissionsState {
+    permissions::get_state()
+}
+
+#[tauri::command]
+pub async fn desktop_permission_request(
+    permission_id: String,
+) -> Result<permissions::PermissionActionResult, String> {
+    permissions::request(permission_id).await
 }

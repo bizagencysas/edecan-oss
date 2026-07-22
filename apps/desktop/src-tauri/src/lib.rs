@@ -9,6 +9,7 @@
 mod backend;
 mod commands;
 mod listen;
+mod permissions;
 mod tray;
 mod util;
 
@@ -34,6 +35,8 @@ pub fn run() {
             commands::always_listen_train,
             commands::always_listen_set_enabled,
             commands::always_listen_reset_training,
+            commands::desktop_permissions_get_state,
+            commands::desktop_permission_request,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

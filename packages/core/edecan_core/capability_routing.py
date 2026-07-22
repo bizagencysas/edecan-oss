@@ -140,7 +140,7 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "docx",
             }
         ),
-        frozenset({"consultar_documentos"}),
+        frozenset({"consultar_documentos", "leer_archivo"}),
     ),
     (
         frozenset({"csv", "excel", "xlsx", "tabla", "tablas"}),
@@ -148,11 +148,11 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     ),
     (
         frozenset({"pdf"}),
-        frozenset({"consultar_documentos", "extraer_tablas_pdf"}),
+        frozenset({"consultar_documentos", "editar_pdf", "extraer_tablas_pdf", "leer_archivo"}),
     ),
     (
         frozenset({"imagen", "imagenes", "foto", "fotos"}),
-        frozenset({"analizar_imagen", "generar_imagen", "crear_contenido_social"}),
+        frozenset({"analizar_imagen", "generar_imagen", "crear_contenido_social", "leer_archivo"}),
     ),
     (
         frozenset(

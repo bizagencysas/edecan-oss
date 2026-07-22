@@ -6,6 +6,7 @@ script ejecutable fake (`tmp_path`) como `binary_path`. Análogo a
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -97,6 +98,45 @@ async def test_complete_extrae_texto_de_evento_message(tmp_path: Path) -> None:
     assert response.stop_reason == "end"
     assert response.usage.input_tokens == 11
     assert response.usage.output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_complete_pasa_imagen_por_flag_nativo(tmp_path: Path) -> None:
+    line = json.dumps({"type": "agent_message", "text": "Veo una captura."})
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=line,
+        stdin_capture_name="vision-stdin.txt",
+        args_capture_name="vision-args.txt",
+    )
+    provider = CodexCLIProvider(binary_path=fake)
+    encoded = base64.b64encode(b"fake-png").decode()
+    req = _req(
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": encoded,
+                        },
+                    },
+                    {"type": "text", "text": "¿Qué ves?"},
+                ],
+            )
+        ]
+    )
+
+    response = await provider.complete(req)
+
+    assert response.text == "Veo una captura."
+    args = (tmp_path / "vision-args.txt").read_text()
+    assert "--image\n" in args
+    assert "adjunto-01.png" in args
+    assert "Imágenes privadas adjuntas" in (tmp_path / "vision-stdin.txt").read_text()
 
 
 @pytest.mark.asyncio

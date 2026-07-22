@@ -59,3 +59,26 @@ export function transcriptContainsWakePhrase(transcript: string, wakePhrase: str
   }
   return false;
 }
+
+const SLEEP_COMMANDS = new Set([
+  "duerme",
+  "duerme edecan",
+  "descansa",
+  "descansa edecan",
+  "puedes dormir",
+  "puedes dormir edecan",
+  "hasta luego",
+  "hasta luego edecan",
+  "deja de escuchar",
+  "deja de escuchar edecan",
+]);
+
+/**
+ * Reconoce únicamente órdenes completas y deliberadas para terminar la
+ * conversación de voz continua. No usamos coincidencias parciales para que
+ * frases como "recuérdame dormir" o "¿puedes dormir poco?" no apaguen a
+ * Edecán por accidente.
+ */
+export function transcriptRequestsSleep(transcript: string): boolean {
+  return SLEEP_COMMANDS.has(normalizeWakePhrase(transcript));
+}

@@ -243,7 +243,7 @@ function EscuchaSiempreTabNativa() {
       <Card>
         <CardHeader
           title="Escucha en segundo plano"
-          description="Con esto activado, Edecán te escucha en segundo plano -- incluso con la ventana minimizada o cerrada -- y atiende apenas decís tu palabra clave, sin que hagas click en nada."
+          description="Con esto activado, Edecán te escucha en segundo plano -- incluso con la ventana minimizada o cerrada -- y atiende apenas dices tu palabra clave. La dices una sola vez y la conversación continúa hasta que digas «descansa» o cierres el modo."
         />
         <CardBody>
           <Switch

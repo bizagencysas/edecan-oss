@@ -692,43 +692,6 @@ def _apply_edit(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
     }
 
 
-def _png_dimensions_via_sips(path: str) -> tuple[int, int]:
-    """`(width, height)` de un PNG vía `sips` (utilidad del sistema en macOS).
-
-    No agrega una dependencia de Pillow solo para esto (no es dependencia del
-    paquete, ver `pyproject.toml`): si `sips` no está, falla, o su salida no
-    se puede interpretar, devuelve `(0, 0)` en vez de fallar toda la acción
-    -- el PNG en sí siempre es válido y quien lo consuma puede leer sus
-    dimensiones del propio archivo si de verdad las necesita.
-    """
-    try:
-        proc = subprocess.run(
-            ["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", path],
-            check=True,
-            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0, 0
-
-    width = height = 0
-    for line in proc.stdout.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("pixelWidth:"):
-            width = _safe_int(stripped.split(":", 1)[1])
-        elif stripped.startswith("pixelHeight:"):
-            height = _safe_int(stripped.split(":", 1)[1])
-    return width, height
-
-
-def _safe_int(raw: str) -> int:
-    try:
-        return int(raw.strip())
-    except ValueError:
-        return 0
-
-
 def _screenshot_options(params: dict[str, Any]) -> tuple[str, int, int | None]:
     """Valida las opciones de transporte sin acoplarlas al backend de captura."""
     image_format = str(params.get("format") or "png").lower()
@@ -830,14 +793,76 @@ def _screenshot_via_mss(params: dict[str, Any]) -> tuple[bytes, int, int, int, i
         raise ActionError(f"no se pudo capturar la pantalla: {exc}; {hint}") from exc
 
 
+def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:
+    """Captura macOS dentro del proceso autorizado, sin otro ejecutable.
+
+    TCC concede Grabación de pantalla a una identidad de código concreta. El
+    comando externo ``screencapture`` crea un segundo proceso y puede volver a
+    mostrar el diálogo aunque ``edecan-local`` ya esté autorizado. Quartz
+    mantiene la captura en el mismo proceso que macOS reconoce en Ajustes.
+    """
+
+    display = params.get("display")
+    if display is not None:
+        try:
+            display_index = int(display)
+        except (TypeError, ValueError):
+            raise ActionError("'display' debe ser un número entero") from None
+        if display_index < 1:
+            raise ActionError("'display' debe ser un número entero desde 1")
+    else:
+        display_index = None
+
+    try:
+        import AppKit  # type: ignore[import-not-found]
+        import Quartz  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ActionError("la captura nativa de macOS requiere pyobjc-framework-Quartz") from exc
+
+    if display_index is None:
+        display_id = Quartz.CGMainDisplayID()
+    else:
+        error, displays, count = Quartz.CGGetActiveDisplayList(32, None, None)
+        if error != Quartz.kCGErrorSuccess:
+            raise ActionError(f"macOS no pudo enumerar las pantallas (código {error})")
+        if display_index > count:
+            raise ActionError(f"'display' fuera de rango: usa un valor entre 1 y {count}")
+        display_id = displays[display_index - 1]
+
+    image = Quartz.CGDisplayCreateImage(display_id)
+    if image is None:
+        raise ActionError(
+            "Edecán no pudo leer la pantalla. Autoriza Grabación de pantalla para "
+            "edecan-local en Ajustes del Sistema y vuelve a abrir Edecán."
+        )
+
+    bitmap = AppKit.NSBitmapImageRep.alloc().initWithCGImage_(image)
+    encoded = bitmap.representationUsingType_properties_(
+        AppKit.NSBitmapImageFileTypePNG,
+        {},
+    )
+    image_bytes = bytes(encoded) if encoded is not None else b""
+    if not image_bytes:
+        raise ActionError("macOS devolvió una captura vacía")
+
+    bounds = Quartz.CGDisplayBounds(display_id)
+    return (
+        image_bytes,
+        int(Quartz.CGImageGetWidth(image)),
+        int(Quartz.CGImageGetHeight(image)),
+        int(bounds.origin.x),
+        int(bounds.origin.y),
+    )
+
+
 def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
     """Captura la pantalla y devuelve un frame PNG/JPEG optimizado en base64.
 
-    En macOS usa `/usr/sbin/screencapture`; en Windows/Linux usa `mss`,
-    instalado mediante el extra ``remote-control``. Los permisos de captura
-    siguen siendo siempre los nativos del sistema operativo: esta acción no
-    los solicita, evade ni automatiza. Puede reducir el frame y convertirlo a
-    JPEG para que el visor remoto sea fluido; conserva PNG cuando se solicita.
+    En macOS captura dentro del proceso autorizado mediante Quartz; en
+    Windows/Linux usa `mss`, instalado mediante el extra ``remote-control``.
+    Los permisos siguen siendo siempre los nativos del sistema operativo: esta
+    acción no los solicita, evade ni automatiza. Puede reducir el frame y
+    convertirlo a JPEG para que el visor remoto sea fluido.
     """
     image_format, quality, max_width = _screenshot_options(params)
     if sys.platform != "darwin":
@@ -861,60 +886,23 @@ def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
             "origin_y": origin_y,
         }
 
-    argv = ["/usr/sbin/screencapture", "-x", "-t", "png"]
-    display = params.get("display")
-    if display is not None:
-        try:
-            argv.extend(["-D", str(int(display))])
-        except (TypeError, ValueError):
-            raise ActionError("'display' debe ser un número entero") from None
-
-    fd, tmp_path = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        try:
-            subprocess.run(
-                [*argv, tmp_path],
-                check=True,
-                timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:
-            raise ActionError(f"no se encontró el comando del sistema: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ActionError("se agotó el tiempo de espera capturando la pantalla") from exc
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip() if exc.stderr else str(exc)
-            raise ActionError(f"no se pudo capturar la pantalla: {detail}") from exc
-
-        image_bytes = Path(tmp_path).read_bytes() if os.path.exists(tmp_path) else b""
-        if not image_bytes:
-            raise ActionError(
-                "screencapture no generó una imagen; revisa el permiso de 'Grabación de "
-                "pantalla' en Ajustes del Sistema → Privacidad y Seguridad"
-            )
-
-        width, height = _png_dimensions_via_sips(tmp_path)
-        image_bytes, width, height, mime = _optimize_screenshot(
-            image_bytes,
-            width=width,
-            height=height,
-            image_format=image_format,
-            quality=quality,
-            max_width=max_width,
-        )
-        return {
-            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
-            "width": width,
-            "height": height,
-            "mime": mime,
-            "origin_x": 0,
-            "origin_y": 0,
-        }
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_path)
+    image_bytes, width, height, origin_x, origin_y = _screenshot_via_quartz(params)
+    image_bytes, width, height, mime = _optimize_screenshot(
+        image_bytes,
+        width=width,
+        height=height,
+        image_format=image_format,
+        quality=quality,
+        max_width=max_width,
+    )
+    return {
+        "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+        "width": width,
+        "height": height,
+        "mime": mime,
+        "origin_x": origin_x,
+        "origin_y": origin_y,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +1000,6 @@ class _QuartzInputBackend:
         for event_type in (down_type, up_type):
             event = Quartz.CGEventCreateMouseEvent(None, event_type, (x, y), mouse_button)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-
 
     def _post_pointer_button(self, x: int, y: int, button: str, *, down: bool) -> None:
         Quartz = self._Quartz
@@ -1334,15 +1321,13 @@ async def execute(
         return {
             "ok": False,
             "error": (
-                "el IDE está deshabilitado en este companion "
-                "(ide_enabled=false en companion.yaml)"
+                "el IDE está deshabilitado en este companion (ide_enabled=false en companion.yaml)"
             ),
         }
 
     if action in _INPUT_ACTIONS and not config.remote_input_enabled:
         logger.info(
-            "Acción de control remoto %r rechazada: remote_input_enabled=false en "
-            "companion.yaml.",
+            "Acción de control remoto %r rechazada: remote_input_enabled=false en companion.yaml.",
             action,
         )
         audit.log_action(

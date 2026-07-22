@@ -9,7 +9,6 @@ Todo corre contra `companion_config` (fixture de `conftest.py`, en
 from __future__ import annotations
 
 import base64
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -418,75 +417,45 @@ def test_screenshot_rejects_unsupported_platforms(companion_config, monkeypatch)
         actions._screenshot({}, companion_config)
 
 
-def test_screenshot_captures_png_and_reads_dimensions_via_sips(companion_config, monkeypatch):
+def test_screenshot_captures_png_inside_the_macos_process(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
     fake_png_bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes"
-
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(fake_png_bytes)
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-        if argv[0] == "/usr/bin/sips":
-            return subprocess.CompletedProcess(
-                argv, 0, stdout="/tmp/x.png\n  pixelWidth: 1512\n  pixelHeight: 982\n", stderr=""
-            )
-        raise AssertionError(f"comando inesperado: {argv}")
-
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        actions,
+        "_screenshot_via_quartz",
+        lambda params: (fake_png_bytes, 1512, 982, -1512, 0),
+    )
 
     result = actions._screenshot({}, companion_config)
 
     assert base64.b64decode(result["image_b64"]) == fake_png_bytes
     assert result["width"] == 1512
     assert result["height"] == 982
+    assert result["origin_x"] == -1512
 
 
-def test_screenshot_passes_the_display_flag_when_given(companion_config, monkeypatch):
+def test_screenshot_passes_the_display_to_quartz(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
-    seen_argvs = []
+    seen_params = []
 
-    def fake_run(argv, **kwargs):
-        seen_argvs.append(argv)
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(b"x")
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    def fake_capture(params):
+        seen_params.append(params)
+        return b"x", 100, 100, 0, 0
 
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_screenshot_via_quartz", fake_capture)
 
     actions._screenshot({"display": 2}, companion_config)
 
-    screencapture_argv = seen_argvs[0]
-    assert "-D" in screencapture_argv
-    assert screencapture_argv[screencapture_argv.index("-D") + 1] == "2"
+    assert seen_params == [{"display": 2}]
 
 
-def test_screenshot_falls_back_to_zero_dimensions_when_sips_fails(companion_config, monkeypatch):
+def test_screenshot_surfaces_native_permission_failure(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
 
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(b"x")
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-        raise FileNotFoundError("sips no encontrado (simulado)")
+    def denied(params):
+        raise actions.ActionError("Autoriza Grabación de pantalla")
 
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
-
-    result = actions._screenshot({}, companion_config)
-
-    assert result["width"] == 0
-    assert result["height"] == 0
-    assert base64.b64decode(result["image_b64"]) == b"x"
-
-
-def test_screenshot_raises_when_no_image_was_produced(companion_config, monkeypatch):
-    """Simula el caso típico de falta de permiso de Grabación de Pantalla:
-    `screencapture` "sale bien" pero no deja una imagen utilizable."""
-    monkeypatch.setattr(actions.sys, "platform", "darwin")
-
-    def fake_run(argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")  # no escribe el archivo
-
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_screenshot_via_quartz", denied)
 
     with pytest.raises(actions.ActionError, match="Grabaci"):
         actions._screenshot({}, companion_config)
@@ -496,24 +465,7 @@ def test_screenshot_rejects_invalid_display_param(companion_config, monkeypatch)
     monkeypatch.setattr(actions.sys, "platform", "darwin")
 
     with pytest.raises(actions.ActionError, match="display"):
-        actions._screenshot({"display": "no-es-numero"}, companion_config)
-
-
-def test_screenshot_cleans_up_the_tmp_png_file(companion_config, monkeypatch):
-    monkeypatch.setattr(actions.sys, "platform", "darwin")
-    captured_tmp_path = {}
-
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            captured_tmp_path["path"] = argv[-1]
-            Path(argv[-1]).write_bytes(b"x")
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
-
-    actions._screenshot({}, companion_config)
-
-    assert not Path(captured_tmp_path["path"]).exists()
+        actions._screenshot_via_quartz({"display": "no-es-numero"})
 
 
 # ---------------------------------------------------------------------------

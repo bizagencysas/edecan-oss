@@ -150,6 +150,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--macos-capture-check",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
 
 
@@ -161,9 +166,7 @@ def _macos_permission_status() -> dict[str, bool]:
 
     import ctypes
 
-    core_graphics = ctypes.CDLL(
-        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
-    )
+    core_graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
     core_graphics.CGPreflightScreenCaptureAccess.argtypes = []
     core_graphics.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
 
@@ -176,6 +179,24 @@ def _macos_permission_status() -> dict[str, bool]:
     return {
         "screen_recording": bool(core_graphics.CGPreflightScreenCaptureAccess()),
         "accessibility": bool(application_services.AXIsProcessTrusted()),
+    }
+
+
+def _macos_capture_check() -> dict[str, Any]:
+    """Ejecuta una captura real y devuelve metadatos, nunca la imagen."""
+
+    from edecan_companion.actions import _screenshot
+    from edecan_companion.config import CompanionConfig
+
+    result = _screenshot(
+        {"format": "jpeg", "quality": 55, "max_width": 640},
+        CompanionConfig(),
+    )
+    return {
+        "ok": True,
+        "width": int(result["width"]),
+        "height": int(result["height"]),
+        "mime": str(result["mime"]),
     }
 
 
@@ -750,6 +771,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.macos_permission_status:
         print(json.dumps(_macos_permission_status(), separators=(",", ":")))
+        return
+    if args.macos_capture_check:
+        print(json.dumps(_macos_capture_check(), separators=(",", ":")))
         return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     asyncio.run(

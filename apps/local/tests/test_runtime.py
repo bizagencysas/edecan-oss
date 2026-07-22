@@ -53,6 +53,7 @@ def test_parse_args_defaults() -> None:
     assert args.no_web is False
     assert args.mobile_access is False
     assert args.macos_permission_status is False
+    assert args.macos_capture_check is False
 
 
 def test_parse_args_overrides() -> None:
@@ -84,6 +85,23 @@ def test_main_permission_probe_does_not_start_backend(monkeypatch, capsys) -> No
     assert json.loads(capsys.readouterr().out) == {
         "screen_recording": False,
         "accessibility": True,
+    }
+
+
+def test_main_capture_probe_returns_only_metadata(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        rt,
+        "_macos_capture_check",
+        lambda: {"ok": True, "width": 640, "height": 414, "mime": "image/jpeg"},
+    )
+
+    rt.main(["--macos-capture-check"])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "width": 640,
+        "height": 414,
+        "mime": "image/jpeg",
     }
 
 

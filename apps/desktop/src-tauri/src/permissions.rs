@@ -126,7 +126,7 @@ fn permission_catalog() -> Vec<DesktopPermission> {
         DesktopPermission {
             id: "screen_recording",
             title: "Grabación de pantalla",
-            description: "Permite ver la pantalla de esta Mac desde el teléfono emparejado.",
+            description: "Activa Edecán en la lista superior de Grabación de audio del sistema y pantalla. No es el permiso de solo audio.",
             level: "essential",
             status: if remote
                 .as_ref()
@@ -136,7 +136,7 @@ fn permission_catalog() -> Vec<DesktopPermission> {
             } else {
                 PermissionStatus::NeedsAction
             },
-            action_label: Some("Solicitar permiso"),
+            action_label: Some("Abrir Grabación de pantalla"),
         },
         DesktopPermission {
             id: "notifications",
@@ -353,7 +353,7 @@ fn request_screen_recording() -> Result<PermissionActionResult, String> {
         permission_id: "screen_recording".into(),
         status: PermissionStatus::NeedsAction,
         message:
-            "Activa Edecán en Grabación de pantalla. La app y su motor remoto comparten una única identidad firmada."
+            "Activa el interruptor de Edecán en la lista superior de Grabación de audio del sistema y pantalla. No lo actives solamente en la sección de solo audio. Después vuelve a abrir Edecán."
                 .into(),
     })
 }

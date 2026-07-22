@@ -480,6 +480,7 @@ def test_native_macos_capture_includes_windows_dock_and_cursor(monkeypatch):
         return actions.subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(actions, "_macos_display_target", lambda params: (2, 99, -1200, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
     monkeypatch.setattr(actions.subprocess, "run", fake_run)
 
     image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture(
@@ -504,11 +505,30 @@ def test_native_macos_capture_can_hide_cursor(monkeypatch):
         return actions.subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
     monkeypatch.setattr(actions.subprocess, "run", fake_run)
 
     actions._screenshot_via_screencapture({"include_cursor": False})
 
     assert "-C" not in seen_command
+
+
+def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(monkeypatch):
+    called = False
+
+    def unexpected_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("screencapture no debe ejecutarse sin permiso")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: False)
+    monkeypatch.setattr(actions.subprocess, "run", unexpected_run)
+
+    with pytest.raises(actions.ActionError, match="lista superior"):
+        actions._screenshot_via_screencapture({})
+
+    assert called is False
 
 
 # ---------------------------------------------------------------------------

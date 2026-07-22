@@ -847,6 +847,22 @@ def _screenshot_via_screencapture(
     if not isinstance(include_cursor, bool):
         raise ActionError("'include_cursor' debe ser true o false")
 
+    # El visor movil solicita cuadros de forma continua. Invocar
+    # ``screencapture`` mientras TCC esta desactivado hace que macOS vuelva a
+    # mostrar su modal por cada intento, lo que deja al usuario atrapado en
+    # una sucesion de avisos. Jarvis evita ese bucle porque su proceso ya
+    # tiene el permiso antes de servir capturas. Edecan hace lo mismo de forma
+    # explicita: comprueba TCC sin solicitar nada y solo ejecuta la captura
+    # cuando el permiso ya esta concedido.
+    if not _macos_screen_capture_allowed():
+        raise ActionError(
+            "Grabacion de pantalla esta desactivada para Edecan. Abre "
+            "Configuracion del Sistema > Privacidad y seguridad > "
+            "Grabacion de audio del sistema y pantalla, activa Edecan en la "
+            "lista superior (no en 'Solo grabacion de audio del sistema') y "
+            "vuelve a abrir Edecan."
+        )
+
     fd, temporary_name = tempfile.mkstemp(prefix="edecan-screen-", suffix=".png")
     os.close(fd)
     temporary_path = Path(temporary_name)
@@ -899,6 +915,33 @@ def _screenshot_via_screencapture(
     finally:
         with contextlib.suppress(OSError):
             temporary_path.unlink()
+
+
+def _macos_screen_capture_allowed() -> bool:
+    """Consulta TCC sin abrir dialogos ni provocar una nueva solicitud.
+
+    Falla abierto si CoreGraphics no pudiera cargarse: en ese caso la llamada
+    real a ``screencapture`` conserva el diagnostico nativo. En macOS normal,
+    un ``False`` evita que el polling del telefono repita el modal del sistema.
+    """
+
+    if sys.platform != "darwin":
+        return True
+    try:
+        import ctypes
+
+        core_graphics = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+        )
+        core_graphics.CGPreflightScreenCaptureAccess.argtypes = []
+        core_graphics.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+        return bool(core_graphics.CGPreflightScreenCaptureAccess())
+    except (AttributeError, OSError):
+        logger.warning(
+            "No se pudo consultar TCC antes de capturar; se conserva el diagnostico nativo.",
+            exc_info=True,
+        )
+        return True
 
 
 def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:

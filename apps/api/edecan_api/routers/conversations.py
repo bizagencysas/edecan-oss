@@ -327,7 +327,7 @@ _TITLE_API_PROVIDER_RE = re.compile(
 def _credential_conversation_title(intent: InlineCredentialIntent) -> str:
     """Nombra el objetivo, nunca la frase que contenía la credencial."""
 
-    return f"Configurar API Key de {intent.display_name}"[:72]
+    return f"Configurar API Key - {intent.display_name}"[:72]
 
 
 def _automatic_conversation_title(text: str, *, fallback: str = "Conversación") -> str:
@@ -339,7 +339,7 @@ def _automatic_conversation_title(text: str, *, fallback: str = "Conversación")
     provider_match = _TITLE_API_PROVIDER_RE.search(clean)
     if provider_match:
         provider = provider_match.group("provider").strip(" ,;:-")
-        return f"Configurar API Key de {provider}"[:72]
+        return f"Configurar API Key - {provider}"[:72]
     if re.search(r"\b(?:api[\s_-]*key|clave(?:\s+api)?|credencial)\b", clean, re.IGNORECASE):
         return "Configurar API Key"
 

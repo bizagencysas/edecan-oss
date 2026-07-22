@@ -19,7 +19,7 @@ def test_automatic_title_summarizes_api_setup_without_copying_the_message() -> N
         "Configura la API key de X es [credencial protegida]. Luego pruébala."
     )
 
-    assert title == "Configurar API Key de X"
+    assert title == "Configurar API Key - X"
     assert "credencial" not in title.lower()
 
 
@@ -276,7 +276,7 @@ async def test_inline_credential_never_reaches_llm_history_or_sse(
     assert secret not in fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
     assert (
         fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
-        == "Configurar API Key de ElevenLabs"
+        == "Configurar API Key - ElevenLabs"
     )
     assert fake_repo.audit_log[-1]["action"] == "credentials.chat.failed"
 

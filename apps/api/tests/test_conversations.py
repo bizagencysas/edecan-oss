@@ -12,6 +12,17 @@ from conftest import auth_headers
 from edecan_schemas import ArtifactRef, ToolEndEvent
 
 
+def test_automatic_title_summarizes_api_setup_without_copying_the_message() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    title = conversations_module._automatic_conversation_title(
+        "Configura la API key de X es [credencial protegida]. Luego pruébala."
+    )
+
+    assert title == "Configurar API Key de X"
+    assert "credencial" not in title.lower()
+
+
 def test_tool_end_with_artifact_is_json_serializable_for_history() -> None:
     import edecan_api.routers.conversations as conversations_module
 
@@ -222,7 +233,7 @@ async def test_first_message_names_conversation_without_waiting_for_second_llm(
 
     assert response.status_code == 200
     row = fake_repo.conversations[uuid.UUID(conversation_id)]
-    assert row["title"] == "Planifica mi viaje familiar a Madrid"
+    assert row["title"] == "Planificar viaje familiar a Madrid"
 
 
 async def test_inline_credential_never_reaches_llm_history_or_sse(
@@ -263,6 +274,10 @@ async def test_inline_credential_never_reaches_llm_history_or_sse(
     assert [message["role"] for message in stored] == ["user", "assistant"]
     assert secret not in json.dumps(stored, default=str)
     assert secret not in fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
+    assert (
+        fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
+        == "Configurar API Key de ElevenLabs"
+    )
     assert fake_repo.audit_log[-1]["action"] == "credentials.chat.failed"
 
 

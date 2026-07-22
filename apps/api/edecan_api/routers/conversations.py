@@ -26,6 +26,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -38,9 +39,9 @@ from edecan_core.agent import (
     mission_ref_from_tool_data,
     rich_blocks_from_tool_data,
 )
-from edecan_core.safety import redact
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
+from edecan_core.safety import redact
 from edecan_core.tools import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage
 from edecan_llm.router import LLMRouter
@@ -292,21 +293,74 @@ def _extract_text(content: Any) -> str:
     return ""
 
 
-def _automatic_conversation_title(text: str, *, fallback: str = "Conversación") -> str:
-    """Crea un título breve desde la primera intención, sin otra llamada al LLM."""
+_TITLE_LEADING_FILLER_RE = re.compile(
+    r"^(?:(?:hola|buenas(?:\s+(?:tardes|noches|d[ií]as))?)[,.!\s]+)?"
+    r"(?:(?:por\s+favor|necesito\s+que|quiero\s+que|puedes|podr[ií]as)\s+)?",
+    re.IGNORECASE,
+)
+_TITLE_ACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?:configura(?:me)?|configurar)\b", re.IGNORECASE), "Configurar"),
+    (re.compile(r"^(?:planifica(?:me)?|planea(?:me)?|planificar)\b", re.IGNORECASE), "Planificar"),
+    (re.compile(r"^(?:crea(?:me)?|crear|genera(?:me)?|generar)\b", re.IGNORECASE), "Crear"),
+    (
+        re.compile(r"^(?:escribe(?:me)?|redacta(?:me)?|escribir|redactar)\b", re.IGNORECASE),
+        "Escribir",
+    ),
+    (re.compile(r"^(?:busca(?:me)?|encuentra(?:me)?|buscar)\b", re.IGNORECASE), "Buscar"),
+    (
+        re.compile(r"^(?:revisa(?:me)?|analiza(?:me)?|audita(?:me)?|revisar)\b", re.IGNORECASE),
+        "Revisar",
+    ),
+    (re.compile(r"^(?:edita(?:me)?|corrige(?:me)?|editar|corregir)\b", re.IGNORECASE), "Editar"),
+    (re.compile(r"^(?:organiza(?:me)?|ordenar|organizar)\b", re.IGNORECASE), "Organizar"),
+)
+_TITLE_API_PROVIDER_RE = re.compile(
+    r"\b(?:api[\s_-]*key|clave(?:\s+api)?|token|credencial)"
+    r"(?:\s+(?:de|para))?\s+"
+    r"(?P<provider>[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9._-]*"
+    r"(?:\s+[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9._-]*){0,2})"
+    r"(?=\s+(?:es|vale|con)\b|[:=,.!?]|$)",
+    re.IGNORECASE,
+)
 
-    clean = " ".join(text.replace("\n", " ").split()).strip(" \t\r\n#*-")
+
+def _credential_conversation_title(intent: InlineCredentialIntent) -> str:
+    """Nombra el objetivo, nunca la frase que contenía la credencial."""
+
+    return f"Configurar API Key de {intent.display_name}"[:72]
+
+
+def _automatic_conversation_title(text: str, *, fallback: str = "Conversación") -> str:
+    """Resume la primera intención como una tarea breve, sin otra llamada al LLM."""
+
+    clean = redact(" ".join(text.replace("\n", " ").split())).strip(" \t\r\n#*-")
     if not clean:
         return fallback
+    provider_match = _TITLE_API_PROVIDER_RE.search(clean)
+    if provider_match:
+        provider = provider_match.group("provider").strip(" ,;:-")
+        return f"Configurar API Key de {provider}"[:72]
+    if re.search(r"\b(?:api[\s_-]*key|clave(?:\s+api)?|credencial)\b", clean, re.IGNORECASE):
+        return "Configurar API Key"
+
+    clean = _TITLE_LEADING_FILLER_RE.sub("", clean).strip()
     first_sentence = clean
     for separator in ("?", "!", "."):
         candidate = first_sentence.split(separator, 1)[0].strip()
         if candidate:
             first_sentence = candidate
-    if len(first_sentence) <= 72:
-        return first_sentence
-    shortened = first_sentence[:72].rsplit(" ", 1)[0].rstrip(" ,;:")
-    return shortened or first_sentence[:72]
+    for action_re, infinitive in _TITLE_ACTIONS:
+        match = action_re.match(first_sentence)
+        if match is None:
+            continue
+        subject = first_sentence[match.end() :].strip(" ,;:-")
+        subject = re.sub(r"^(?:me|mi|un|una|el|la)\s+", "", subject, count=1, flags=re.I)
+        first_sentence = f"{infinitive} {subject}".strip()
+        break
+    shortened = first_sentence[:72]
+    if len(first_sentence) > 72:
+        shortened = shortened.rsplit(" ", 1)[0]
+    return shortened.rstrip(" ,;:") or fallback
 
 
 def _attachment_context_line(item: dict[str, Any]) -> str:
@@ -1541,10 +1595,15 @@ async def post_message(
     # persistente. Dos requests concurrentes con la misma clave nunca insertan
     # dos mensajes de usuario ni arrancan dos turnos del agente.
     if not str(conversation.get("title") or "").strip():
+        automatic_title = (
+            _credential_conversation_title(inline_credential)
+            if inline_credential is not None
+            else _automatic_conversation_title(safe_user_text, fallback="Archivo adjunto")
+        )
         await repo.update_conversation_title(
             tenant_id=tenant.tenant_id,
             conversation_id=conversation_id,
-            title=_automatic_conversation_title(safe_user_text, fallback="Archivo adjunto"),
+            title=automatic_title,
             only_if_empty=True,
         )
     await repo.add_message(

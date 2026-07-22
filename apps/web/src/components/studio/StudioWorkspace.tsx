@@ -160,6 +160,7 @@ export function StudioWorkspace() {
   async function createProject() {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
+    setMessage("Edecán está creando la primera revisión. Puedes seguir viendo este progreso aquí.");
     const response = await execute({ action: "create", prompt: cleanPrompt, projectName: cleanPrompt.slice(0, 80), files: attachments.map((item) => item.id), ...createOptions });
     setShowClarify(false);
     setPrompt("");
@@ -173,6 +174,7 @@ export function StudioWorkspace() {
 
   async function applyEdit(instruction: string, includeTweaks = false) {
     if (!activeProject || !instruction.trim() && !includeTweaks) return;
+    setMessage("Edecán está aplicando el cambio y conservará la revisión anterior.");
     const compiled = buildStudioEditInstruction({ instruction, selection: selection?.label, annotations: annotationDescription, tweaks: includeTweaks ? tweaks : [] });
     const response = await execute({ action: "edit", projectId: activeProject.id, revisionId: activeRevision?.id, instruction: compiled });
     setSelection(null);
@@ -266,10 +268,12 @@ export function StudioWorkspace() {
         <div className="border-b border-slate-200 bg-white px-3 py-3 dark:border-slate-700 dark:bg-slate-900">
           <div className="flex items-center gap-2">
             <Button type="button" size="sm" variant="ghost" className="lg:hidden" onClick={() => setShowProjects(true)}>Proyectos</Button>
-            <div className="hidden sm:block"><HistoryNav currentIndex={Math.max(0, activeRevisionIndex)} totalCount={revisions.length} onPrev={() => activeProject && activeRevisionIndex > 0 && void selectRevision(activeProject.id, revisions[activeRevisionIndex - 1])} onNext={() => activeProject && activeRevisionIndex < revisions.length - 1 && void selectRevision(activeProject.id, revisions[activeRevisionIndex + 1])} onDuplicate={() => void duplicateProject()} disabled={busy} /></div>
+            <div className="hidden min-w-0 flex-1 overflow-x-auto sm:block"><HistoryNav currentIndex={Math.max(0, activeRevisionIndex)} totalCount={revisions.length} onPrev={() => activeProject && activeRevisionIndex > 0 && void selectRevision(activeProject.id, revisions[activeRevisionIndex - 1])} onNext={() => activeProject && activeRevisionIndex < revisions.length - 1 && void selectRevision(activeProject.id, revisions[activeRevisionIndex + 1])} onDuplicate={() => void duplicateProject()} disabled={busy} /></div>
+            <Button type="button" variant="secondary" onClick={() => setShowInspector((value) => !value)} className="xl:hidden">Editar</Button>
+          </div>
+          <div className="mt-2 flex items-start gap-2">
             <div className="min-w-0 flex-1"><Textarea id="studio-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && prompt.trim()) setShowClarify(true); }} placeholder="Dime qué quieres crear o mejorar…" rows={2} className="min-h-12 resize-none" /></div>
             <div className="flex flex-col gap-1"><Button type="button" onClick={() => setShowClarify(true)} disabled={!prompt.trim() || busy}>Crear</Button><span className="hidden text-center text-[9px] text-slate-400 sm:block">⌘ Enter</span></div>
-            <Button type="button" variant="secondary" onClick={() => setShowInspector((value) => !value)} className="xl:hidden">Editar</Button>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {CREATIVE_STARTERS.map((starter) => <button key={starter.label} type="button" onClick={() => { setPrompt(starter.prompt); document.getElementById("studio-prompt")?.focus(); }} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600 hover:border-brand-300 hover:text-brand-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{starter.label}</button>)}

@@ -80,7 +80,7 @@
       "source": "design/src/app/project/[slug]/page.tsx",
       "sourceSha256": "5ffda95cfdd0947fed36ec40f9e3f26b5a117a509f20efc41717e0256a868459",
       "targets": [
-        { "path": "apps/web/src/components/studio/StudioWorkspace.tsx", "sha256": "2cfcd99bf2519acf1f27a119d75cb99c56391814f5afea7cbf10962af62418c3" },
+        { "path": "apps/web/src/components/studio/StudioWorkspace.tsx", "sha256": "40097110233b6d4fc8465e2fc344965830f8223ba1ac255b4d918aeaa670c30a" },
         { "path": "apps/web/src/app/(app)/app/studio/page.tsx", "sha256": "b683a3092ee9a84d1dba867b08f6cdc72420674cfd5d9df7f709ebb419ae0723" }
       ],
       "adaptation": "Recomposed the interaction model under /app/studio with natural creative intents, private attachments, project/template sidebars, artifact progress, responsive drawers, and the authenticated Edecan API. Original auth, SaaS database, design-system API, and server routes were not ported."

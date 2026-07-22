@@ -752,6 +752,55 @@ async def test_list_conversations_is_scoped_per_tenant(client) -> None:
     assert len(response_b.json()) == 0
 
 
+async def test_list_conversations_replaces_legacy_long_message_copy(
+    client, fake_repo
+) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    first_message = (
+        "Configura la API key de X es [credencial protegida]. "
+        "Luego comprueba que la integración responda correctamente."
+    )
+    legacy_title = first_message[:62]
+    fake_repo.conversations[conversation_id]["title"] = legacy_title
+    fake_repo.conversations[conversation_id]["title_source"] = "legacy"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": first_message},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Configurar API Key - X"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "auto"
+
+
+async def test_list_conversations_preserves_legacy_manual_title(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    fake_repo.conversations[conversation_id]["title"] = "Viaje familiar"
+    fake_repo.conversations[conversation_id]["title_source"] = "legacy"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": "Quiero comparar vuelos y hoteles para viajar con mi familia."},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Viaje familiar"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "manual"
+
+
 # --------------------------------------------------------------------------
 # GET /{id} y DELETE /{id}
 # --------------------------------------------------------------------------

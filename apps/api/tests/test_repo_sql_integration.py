@@ -338,12 +338,14 @@ async def test_conversations_and_messages(db) -> None:
             # `title` es NOT NULL sin default aplicable aquí (columna sí va en
             # el INSERT): un `None` debe sustituirse por "" (ver repo.py).
             assert sin_titulo["title"] == ""
+            assert sin_titulo["title_source"] == "auto_pending"
             assert sin_titulo["channel"] == "web"
 
             con_titulo = await repo.create_conversation(
                 tenant_id=tenant_id, user_id=user_id, title="Plan de viaje", channel="voice"
             )
             assert con_titulo["title"] == "Plan de viaje"
+            assert con_titulo["title_source"] == "manual"
 
             listado = await repo.list_conversations(tenant_id=tenant_id, user_id=user_id)
             assert {c["id"] for c in listado} == {sin_titulo["id"], con_titulo["id"]}

@@ -262,6 +262,7 @@ class FakeRepo:
             "tenant_id": tenant_id,
             "user_id": user_id,
             "title": title,
+            "title_source": "manual" if title and title.strip() else "auto_pending",
             "channel": channel,
             "created_at": _now(),
             "updated_at": _now(),
@@ -278,6 +279,33 @@ class FakeRepo:
         ]
         rows.sort(key=lambda r: r["updated_at"], reverse=True)
         return [dict(r) for r in rows]
+
+    async def list_legacy_conversation_title_candidates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]:
+        candidates: list[Row] = []
+        for row in self.conversations.values():
+            if row["tenant_id"] != tenant_id or row["user_id"] != user_id:
+                continue
+            if row.get("title_source", "legacy") != "legacy":
+                continue
+            first_user = next(
+                (
+                    message.get("content")
+                    for message in self.messages.get(row["id"], [])
+                    if message.get("role") == "user"
+                ),
+                None,
+            )
+            candidates.append(
+                {
+                    "id": row["id"],
+                    "title": row.get("title", ""),
+                    "title_source": row.get("title_source", "legacy"),
+                    "first_user_content": first_user,
+                }
+            )
+        return candidates
 
     # -- llamadas como canal conversacional -----------------------------------
 
@@ -542,13 +570,18 @@ class FakeRepo:
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
+        source: str | None = None,
     ) -> Row | None:
         row = self.conversations.get(conversation_id)
         if row is None or row["tenant_id"] != tenant_id:
             return None
-        if only_if_empty and str(row.get("title") or "").strip():
+        if only_if_empty and str(row.get("title") or "").strip() and row.get(
+            "title_source"
+        ) != "auto_pending":
             return None
         row["title"] = title
+        if source is not None:
+            row["title_source"] = source
         row["updated_at"] = _now()
         return dict(row)
 

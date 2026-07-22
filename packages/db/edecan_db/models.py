@@ -365,12 +365,18 @@ class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`conversations(tenant_id, user_id, title, channel: web|voice|phone|api)`."""
 
     __tablename__ = "conversations"
-    __table_args__ = (_enum_check("channel", ("web", "voice", "phone", "api")),)
+    __table_args__ = (
+        _enum_check("channel", ("web", "voice", "phone", "api")),
+        _enum_check("title_source", ("auto_pending", "auto", "manual", "legacy")),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    title_source: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="legacy"
+    )
     channel: Mapped[str] = mapped_column(String, nullable=False, server_default="web")
 
 

@@ -145,6 +145,9 @@ class Repo(Protocol):
     async def list_conversations(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]: ...
+    async def list_legacy_conversation_title_candidates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]: ...
     async def get_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> Row | None: ...
@@ -155,6 +158,7 @@ class Repo(Protocol):
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
+        source: str | None = None,
     ) -> Row | None: ...
     async def delete_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
@@ -728,9 +732,9 @@ class SqlRepo:
         row = await self._first(
             """
             INSERT INTO conversations (
-                id, tenant_id, user_id, title, channel, created_at, updated_at
+                id, tenant_id, user_id, title, title_source, channel, created_at, updated_at
             )
-            VALUES (:id, :tenant_id, :user_id, :title, :channel, :now, :now)
+            VALUES (:id, :tenant_id, :user_id, :title, :title_source, :channel, :now, :now)
             RETURNING *
             """,
             {
@@ -744,6 +748,7 @@ class SqlRepo:
                 # (el flujo normal de "nueva conversación") hay que mandar el
                 # mismo "" que usaría el default, o Postgres rechaza el INSERT.
                 "title": title if title is not None else "",
+                "title_source": "manual" if title and title.strip() else "auto_pending",
                 "channel": channel,
                 "now": _now(),
             },
@@ -757,6 +762,31 @@ class SqlRepo:
             SELECT * FROM conversations
             WHERE tenant_id = :tenant_id AND user_id = :user_id
             ORDER BY updated_at DESC
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id},
+        )
+
+    async def list_legacy_conversation_title_candidates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]:
+        return await self._all(
+            """
+            SELECT c.id, c.title, c.title_source, first_user.content AS first_user_content
+            FROM conversations AS c
+            LEFT JOIN LATERAL (
+                SELECT m.content
+                FROM messages AS m
+                WHERE m.tenant_id = c.tenant_id
+                  AND m.conversation_id = c.id
+                  AND m.role = 'user'
+                ORDER BY m.created_at ASC, m.id ASC
+                LIMIT 1
+            ) AS first_user ON TRUE
+            WHERE c.tenant_id = :tenant_id
+              AND c.user_id = :user_id
+              AND c.title_source = 'legacy'
+            ORDER BY c.created_at ASC
+            LIMIT 1000
             """,
             {"tenant_id": tenant_id, "user_id": user_id},
         )
@@ -776,12 +806,16 @@ class SqlRepo:
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
+        source: str | None = None,
     ) -> Row | None:
-        empty_guard = "AND BTRIM(title) = ''" if only_if_empty else ""
+        empty_guard = (
+            "AND (BTRIM(title) = '' OR title_source = 'auto_pending')" if only_if_empty else ""
+        )
+        source_set = ", title_source = :source" if source is not None else ""
         return await self._first(
             f"""
             UPDATE conversations
-            SET title = :title, updated_at = :now
+            SET title = :title {source_set}, updated_at = :now
             WHERE tenant_id = :tenant_id AND id = :id {empty_guard}
             RETURNING *
             """,
@@ -789,6 +823,7 @@ class SqlRepo:
                 "tenant_id": tenant_id,
                 "id": conversation_id,
                 "title": title,
+                "source": source,
                 "now": _now(),
             },
         )

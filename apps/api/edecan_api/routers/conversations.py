@@ -190,6 +190,7 @@ def _message_out(row: dict[str, Any]) -> dict[str, Any]:
 async def list_conversations(
     current_user: CurrentUser = Depends(get_current_user), repo: Repo = Depends(get_repo)
 ) -> list[dict[str, Any]]:
+    await _refresh_legacy_conversation_titles(current_user=current_user, repo=repo)
     rows = await repo.list_conversations(
         tenant_id=current_user.tenant_id, user_id=current_user.user_id
     )
@@ -251,6 +252,7 @@ async def rename_conversation(
         tenant_id=current_user.tenant_id,
         conversation_id=conversation_id,
         title=title,
+        source="manual",
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
@@ -361,6 +363,44 @@ def _automatic_conversation_title(text: str, *, fallback: str = "Conversación")
     if len(first_sentence) > 72:
         shortened = shortened.rsplit(" ", 1)[0]
     return shortened.rstrip(" ,;:") or fallback
+
+
+def _legacy_title_is_a_long_message_copy(title: str, first_user_text: str) -> bool:
+    """Detecta el título histórico defectuoso sin tocar nombres manuales breves."""
+
+    normalized_title = " ".join(title.split()).strip()
+    normalized_message = " ".join(first_user_text.split()).strip()
+    if len(normalized_title) < 48 or not normalized_message:
+        return False
+    return normalized_message.casefold().startswith(normalized_title.casefold())
+
+
+async def _refresh_legacy_conversation_titles(
+    *, current_user: CurrentUser, repo: Repo
+) -> None:
+    """Clasifica una sola vez títulos previos a 0021 y resume copias largas."""
+
+    candidates = await repo.list_legacy_conversation_title_candidates(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+    )
+    for row in candidates:
+        old_title = str(row.get("title") or "").strip()
+        first_user_text = _extract_text(row.get("first_user_content"))
+        if _legacy_title_is_a_long_message_copy(old_title, first_user_text):
+            title = _automatic_conversation_title(first_user_text)
+            source = "auto"
+        else:
+            title = old_title
+            source = "manual"
+        if not title:
+            continue
+        await repo.update_conversation_title(
+            tenant_id=current_user.tenant_id,
+            conversation_id=row["id"],
+            title=title,
+            source=source,
+        )
 
 
 def _attachment_context_line(item: dict[str, Any]) -> str:
@@ -1605,6 +1645,7 @@ async def post_message(
             conversation_id=conversation_id,
             title=automatic_title,
             only_if_empty=True,
+            source="auto",
         )
     await repo.add_message(
         tenant_id=tenant.tenant_id,

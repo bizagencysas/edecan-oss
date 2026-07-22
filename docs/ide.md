@@ -68,7 +68,7 @@ A diferencia de las demás listas (que empiezan vacías/apagadas), `ide_enabled`
 | `search_files` | Busca texto línea por línea: `{query, path?}` → `{query, matches: [{path, line, texto}], truncated}` | substring sin distinguir mayúsculas; hasta 2000 archivos considerados, 200 coincidencias devueltas, líneas cortadas a 200 caracteres; solo archivos de texto UTF-8 < 256 KB |
 | `apply_edit` | Reemplaza `old_string` por `new_string`: `{path, old_string, new_string, replace_all?}` → `{path, replacements, bytes_written}` | sin `replace_all`, `old_string` debe ser único en el archivo (si no, error con el conteo); escritura atómica (archivo temporal + `rename`); mismo tope de 256 KB que `read_file` |
 | `trash_path` | Envía un archivo o carpeta del sandbox a la papelera recuperable | Siempre exige aprobación local; nunca acepta la raíz del sandbox |
-| `screenshot` | Captura y optimiza la pantalla: `{display?, format?, quality?, max_width?}` → `{image_b64, width, height, mime, origin_x, origin_y}` | macOS nativo; Windows/Linux con el extra `remote-control`; respeta los permisos de captura del sistema |
+| `screenshot` | Captura y optimiza la pantalla: `{display?, format?, quality?, max_width?, include_cursor?}` → `{image_b64, width, height, mime, origin_x, origin_y}` | macOS nativo con ventanas, Dock, barra y cursor; Windows/Linux con el extra `remote-control`; respeta los permisos de captura del sistema |
 
 Las tres primeras son nuevas de este WP; la terminal del IDE (`POST /v1/ide/run`) y abrir/guardar archivo (`GET`/`PUT /v1/ide/file`) reutilizan `run_command`/`read_file`/`write_file`, que ya existían desde v1.
 

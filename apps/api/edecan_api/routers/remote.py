@@ -101,7 +101,7 @@ columna ya es vocabulario abierto, sin `CHECK constraint`
 ## Contrato de degradación con el companion (`screenshot`)
 
 La acción `screenshot` conserva el contrato de WP-V2-08 y lo amplía en v0.5:
-`{display?, format?, quality?, max_width?} -> {image_b64, width, height,
+`{display?, format?, quality?, max_width?, include_cursor?} -> {image_b64, width, height,
 mime, origin_x, origin_y}`. Ese WP aterrizó
 `apps/companion/edecan_companion/actions.py::_screenshot` MIENTRAS este WP
 estaba en curso — el contrato de degradación de abajo sigue siendo necesario

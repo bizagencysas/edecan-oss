@@ -92,7 +92,12 @@ def test_main_capture_probe_returns_only_metadata(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         rt,
         "_macos_capture_check",
-        lambda: {"ok": True, "width": 640, "height": 414, "mime": "image/jpeg"},
+        lambda output_path=None: {
+            "ok": True,
+            "width": 640,
+            "height": 414,
+            "mime": "image/jpeg",
+        },
     )
 
     rt.main(["--macos-capture-check"])

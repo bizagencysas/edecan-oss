@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -155,6 +156,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--macos-capture-output",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
 
 
@@ -182,8 +189,8 @@ def _macos_permission_status() -> dict[str, bool]:
     }
 
 
-def _macos_capture_check() -> dict[str, Any]:
-    """Ejecuta una captura real y devuelve metadatos, nunca la imagen."""
+def _macos_capture_check(output_path: str | None = None) -> dict[str, Any]:
+    """Ejecuta una captura real y opcionalmente guarda evidencia local de QA."""
 
     from edecan_companion.actions import _screenshot
     from edecan_companion.config import CompanionConfig
@@ -192,11 +199,18 @@ def _macos_capture_check() -> dict[str, Any]:
         {"format": "jpeg", "quality": 55, "max_width": 640},
         CompanionConfig(sandbox_dir=Path.home()),
     )
+    saved_path: str | None = None
+    if output_path:
+        destination = Path(output_path).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(base64.b64decode(str(result["image_b64"])))
+        saved_path = str(destination)
     return {
         "ok": True,
         "width": int(result["width"]),
         "height": int(result["height"]),
         "mime": str(result["mime"]),
+        **({"output": saved_path} if saved_path else {}),
     }
 
 
@@ -773,7 +787,12 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(_macos_permission_status(), separators=(",", ":")))
         return
     if args.macos_capture_check:
-        print(json.dumps(_macos_capture_check(), separators=(",", ":")))
+        print(
+            json.dumps(
+                _macos_capture_check(args.macos_capture_output),
+                separators=(",", ":"),
+            )
+        )
         return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     asyncio.run(

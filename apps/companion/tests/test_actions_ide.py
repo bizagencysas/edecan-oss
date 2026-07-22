@@ -417,12 +417,12 @@ def test_screenshot_rejects_unsupported_platforms(companion_config, monkeypatch)
         actions._screenshot({}, companion_config)
 
 
-def test_screenshot_captures_png_inside_the_macos_process(companion_config, monkeypatch):
+def test_screenshot_uses_complete_native_macos_capture(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
     fake_png_bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes"
     monkeypatch.setattr(
         actions,
-        "_screenshot_via_quartz",
+        "_screenshot_via_screencapture",
         lambda params: (fake_png_bytes, 1512, 982, -1512, 0),
     )
 
@@ -434,7 +434,7 @@ def test_screenshot_captures_png_inside_the_macos_process(companion_config, monk
     assert result["origin_x"] == -1512
 
 
-def test_screenshot_passes_the_display_to_quartz(companion_config, monkeypatch):
+def test_screenshot_passes_the_display_to_native_macos_capture(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
     seen_params = []
 
@@ -442,7 +442,7 @@ def test_screenshot_passes_the_display_to_quartz(companion_config, monkeypatch):
         seen_params.append(params)
         return b"x", 100, 100, 0, 0
 
-    monkeypatch.setattr(actions, "_screenshot_via_quartz", fake_capture)
+    monkeypatch.setattr(actions, "_screenshot_via_screencapture", fake_capture)
 
     actions._screenshot({"display": 2}, companion_config)
 
@@ -455,7 +455,7 @@ def test_screenshot_surfaces_native_permission_failure(companion_config, monkeyp
     def denied(params):
         raise actions.ActionError("Autoriza Grabación de pantalla")
 
-    monkeypatch.setattr(actions, "_screenshot_via_quartz", denied)
+    monkeypatch.setattr(actions, "_screenshot_via_screencapture", denied)
 
     with pytest.raises(actions.ActionError, match="Grabaci"):
         actions._screenshot({}, companion_config)
@@ -465,7 +465,50 @@ def test_screenshot_rejects_invalid_display_param(companion_config, monkeypatch)
     monkeypatch.setattr(actions.sys, "platform", "darwin")
 
     with pytest.raises(actions.ActionError, match="display"):
-        actions._screenshot_via_quartz({"display": "no-es-numero"})
+        actions._screenshot_via_screencapture({"display": "no-es-numero"})
+
+
+def test_native_macos_capture_includes_windows_dock_and_cursor(monkeypatch):
+    from PIL import Image
+
+    seen_command: list[str] = []
+
+    def fake_run(command, **kwargs):
+        seen_command.extend(command)
+        output_path = Path(command[-1])
+        Image.new("RGB", (1200, 800), color=(30, 40, 50)).save(output_path, format="PNG")
+        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (2, 99, -1200, 0))
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+
+    image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture(
+        {"display": 2}
+    )
+
+    assert image_bytes.startswith(b"\x89PNG")
+    assert (width, height, origin_x, origin_y) == (1200, 800, -1200, 0)
+    assert seen_command[:2] == ["/usr/sbin/screencapture", "-x"]
+    assert seen_command[seen_command.index("-D") + 1] == "2"
+    assert "-C" in seen_command
+
+
+def test_native_macos_capture_can_hide_cursor(monkeypatch):
+    from PIL import Image
+
+    seen_command: list[str] = []
+
+    def fake_run(command, **kwargs):
+        seen_command.extend(command)
+        Image.new("RGB", (10, 10)).save(Path(command[-1]), format="PNG")
+        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+
+    actions._screenshot_via_screencapture({"include_cursor": False})
+
+    assert "-C" not in seen_command
 
 
 # ---------------------------------------------------------------------------

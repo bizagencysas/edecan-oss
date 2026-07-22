@@ -793,17 +793,17 @@ def _screenshot_via_mss(params: dict[str, Any]) -> tuple[bytes, int, int, int, i
         raise ActionError(f"no se pudo capturar la pantalla: {exc}; {hint}") from exc
 
 
-def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:
-    """Captura macOS dentro del proceso autorizado, sin otro ejecutable.
+def _macos_display_target(params: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Resuelve el número de pantalla de ``screencapture`` y su geometría.
 
-    TCC concede Grabación de pantalla a una identidad de código concreta. El
-    comando externo ``screencapture`` crea un segundo proceso y puede volver a
-    mostrar el diálogo aunque ``edecan-local`` ya esté autorizado. Quartz
-    mantiene la captura en el mismo proceso que macOS reconoce en Ajustes.
+    macOS numera sus pantallas desde 1 para ``screencapture -D``. Conservamos
+    también el ``CGDirectDisplayID`` y el origen global para que los toques del
+    teléfono sigan mapeando correctamente cuando hay más de un monitor.
     """
-
     display = params.get("display")
     if display is not None:
+        if isinstance(display, bool):
+            raise ActionError("'display' debe ser un número entero")
         try:
             display_index = int(display)
         except (TypeError, ValueError):
@@ -814,20 +814,103 @@ def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int
         display_index = None
 
     try:
-        import AppKit  # type: ignore[import-not-found]
         import Quartz  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ActionError("la captura nativa de macOS requiere pyobjc-framework-Quartz") from exc
 
-    if display_index is None:
-        display_id = Quartz.CGMainDisplayID()
-    else:
-        error, displays, count = Quartz.CGGetActiveDisplayList(32, None, None)
-        if error != Quartz.kCGErrorSuccess:
-            raise ActionError(f"macOS no pudo enumerar las pantallas (código {error})")
-        if display_index > count:
-            raise ActionError(f"'display' fuera de rango: usa un valor entre 1 y {count}")
-        display_id = displays[display_index - 1]
+    error, displays, count = Quartz.CGGetActiveDisplayList(32, None, None)
+    if error != Quartz.kCGErrorSuccess:
+        raise ActionError(f"macOS no pudo enumerar las pantallas (código {error})")
+    selected_index = display_index or 1
+    if selected_index > count:
+        raise ActionError(f"'display' fuera de rango: usa un valor entre 1 y {count}")
+    display_id = displays[selected_index - 1]
+    bounds = Quartz.CGDisplayBounds(display_id)
+    return selected_index, display_id, int(bounds.origin.x), int(bounds.origin.y)
+
+
+def _screenshot_via_screencapture(
+    params: dict[str, Any],
+) -> tuple[bytes, int, int, int, int]:
+    """Captura el escritorio completo usando el backend nativo de macOS.
+
+    ``CGDisplayCreateImage`` puede devolver únicamente el fondo de escritorio
+    en versiones recientes de macOS aunque TCC informe que el permiso existe.
+    La utilidad del sistema ``screencapture`` usa el pipeline moderno que sí
+    incluye ventanas, barra de menú y Dock. Es el mismo enfoque probado por
+    Jarvis, pero aquí se ejecuta sin shell, con timeout, archivo temporal
+    aislado y la identidad firmada estable de ``edecan-local``.
+    """
+
+    display_index, _display_id, origin_x, origin_y = _macos_display_target(params)
+    include_cursor = params.get("include_cursor", True)
+    if not isinstance(include_cursor, bool):
+        raise ActionError("'include_cursor' debe ser true o false")
+
+    fd, temporary_name = tempfile.mkstemp(prefix="edecan-screen-", suffix=".png")
+    os.close(fd)
+    temporary_path = Path(temporary_name)
+    # ``screencapture`` crea el archivo. Evitamos entregarle uno preexistente
+    # y lo eliminamos siempre al terminar, incluso en timeout o permiso negado.
+    with contextlib.suppress(OSError):
+        temporary_path.unlink()
+
+    command = [
+        "/usr/sbin/screencapture",
+        "-x",
+        "-t",
+        "png",
+        "-D",
+        str(display_index),
+    ]
+    if include_cursor:
+        command.append("-C")
+    command.append(str(temporary_path))
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", "replace").strip()
+            suffix = f": {detail[:500]}" if detail else ""
+            raise ActionError(
+                "macOS no pudo capturar las ventanas. Verifica Grabación de pantalla "
+                f"para Edecán y vuelve a abrir la app{suffix}"
+            )
+        image_bytes = temporary_path.read_bytes()
+        if not image_bytes:
+            raise ActionError("macOS devolvió una captura vacía")
+        try:
+            from PIL import Image  # type: ignore[import-not-found]
+
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                width, height = image.size
+        except (ImportError, OSError, ValueError) as exc:
+            raise ActionError(f"macOS devolvió una captura inválida: {exc}") from exc
+        return image_bytes, int(width), int(height), origin_x, origin_y
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError("macOS tardó demasiado en capturar la pantalla") from exc
+    except OSError as exc:
+        raise ActionError(f"no se pudo ejecutar la captura nativa de macOS: {exc}") from exc
+    finally:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+
+
+def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:
+    """Backend Quartz conservado para diagnóstico y compatibilidad interna."""
+
+    _display_index, display_id, origin_x, origin_y = _macos_display_target(params)
+
+    try:
+        import AppKit  # type: ignore[import-not-found]
+        import Quartz  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ActionError("la captura nativa de macOS requiere pyobjc-framework-Quartz") from exc
 
     image = Quartz.CGDisplayCreateImage(display_id)
     if image is None:
@@ -845,21 +928,21 @@ def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int
     if not image_bytes:
         raise ActionError("macOS devolvió una captura vacía")
 
-    bounds = Quartz.CGDisplayBounds(display_id)
     return (
         image_bytes,
         int(Quartz.CGImageGetWidth(image)),
         int(Quartz.CGImageGetHeight(image)),
-        int(bounds.origin.x),
-        int(bounds.origin.y),
+        origin_x,
+        origin_y,
     )
 
 
 def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
     """Captura la pantalla y devuelve un frame PNG/JPEG optimizado en base64.
 
-    En macOS captura dentro del proceso autorizado mediante Quartz; en
-    Windows/Linux usa `mss`, instalado mediante el extra ``remote-control``.
+    En macOS usa el capturador nativo del sistema para incluir ventanas, Dock,
+    barra de menú y cursor; en Windows/Linux usa `mss`, instalado mediante el
+    extra ``remote-control``.
     Los permisos siguen siendo siempre los nativos del sistema operativo: esta
     acción no los solicita, evade ni automatiza. Puede reducir el frame y
     convertirlo a JPEG para que el visor remoto sea fluido.
@@ -886,7 +969,7 @@ def _screenshot(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
             "origin_y": origin_y,
         }
 
-    image_bytes, width, height, origin_x, origin_y = _screenshot_via_quartz(params)
+    image_bytes, width, height, origin_x, origin_y = _screenshot_via_screencapture(params)
     image_bytes, width, height, mime = _optimize_screenshot(
         image_bytes,
         width=width,

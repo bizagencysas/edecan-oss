@@ -255,6 +255,20 @@ data class ChatUiState(
     val errorMensaje: String? = null,
 )
 
+/** Aplica la lista canónica del servidor sin tocar el turno que acaba de
+ * renderizarse. El backend asigna el título después del primer mensaje, por
+ * eso Android debe refrescar esta metadata al terminar el stream igual que
+ * web e iOS. */
+internal fun ChatUiState.conConversacionesActualizadas(
+    actualizadas: List<Conversation>,
+): ChatUiState {
+    val title = actualizadas.firstOrNull { it.id == conversationId }?.title
+    return copy(
+        conversaciones = actualizadas,
+        tituloConversacion = title ?: tituloConversacion,
+    )
+}
+
 internal fun aplicarFinDeHerramienta(
     estado: ChatUiState,
     idRespuesta: String,
@@ -795,8 +809,22 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         if (completado && idUsuario != null) {
             clavesIdempotencia.completar(idUsuario)
             textosPrivadosPorMensaje.remove(idUsuario)
+            refrescarTitulosDeConversacion(api)
         }
         return completado
+    }
+
+    private suspend fun refrescarTitulosDeConversacion(api: EdecanApi) {
+        try {
+            val actualizadas = api.conversations()
+            _uiState.update { it.conConversacionesActualizadas(actualizadas) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // El mensaje ya terminó y quedó persistido. Un fallo secundario al
+            // refrescar el nombre no debe convertirlo en un envío fallido; la
+            // próxima carga de historial recuperará la metadata canónica.
+        }
     }
 
     private fun marcarEntregado(idUsuario: String) {

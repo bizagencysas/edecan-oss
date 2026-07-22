@@ -25,6 +25,10 @@ use backend::{BackendState, DesktopCapabilityState, PortState, StartHiddenState}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let start_hidden = std::env::args().any(|argument| argument == "--hidden");
+    // Opción de lifecycle para smokes/entornos administrados. El producto
+    // normal es residente en los tres sistemas: el teléfono depende de que
+    // el master siga vivo aunque la ventana se cierre.
+    let exit_on_close = std::env::args().any(|argument| argument == "--exit-on-close");
     tauri::Builder::default()
         // Debe ser el primer plugin: si Edecán ya está residente, un segundo
         // doble clic recupera la ventana existente en vez de lanzar otro
@@ -103,19 +107,17 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // El cierre lo completa explícitamente este handler. Evitar
                 // primero el destroy implícito de GTK impide que el cierre
                 // normal y `AppHandle::exit` intenten destruir la misma
                 // ventana a la vez (especialmente visible bajo X11).
                 api.prevent_close();
-                // En macOS Edecán siempre es residente. En Windows/Linux se
-                // conserva la semántica previa: solo queda residente si la
-                // escucha continua necesita seguir activa. Así no cambia el
-                // contrato histórico de cierre ni el smoke de bundles Linux.
-                let keep_resident =
-                    cfg!(target_os = "macos") || listen::is_enabled(window.app_handle());
+                // Misma semántica en macOS, Windows y Linux: cerrar `main`
+                // la oculta y conserva backend, relay y acceso móvil. Solo el
+                // flag explícito de QA pide que cerrar termine la app.
+                let keep_resident = !exit_on_close;
                 match lifecycle::close_action(window.label(), keep_resident) {
                     lifecycle::WindowCloseAction::Hide => {
                         // Edecán es residente: cerrar `main` solo guarda la

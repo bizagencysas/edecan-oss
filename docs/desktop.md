@@ -5,9 +5,10 @@ La aplicación local de Edecán es instalable en macOS, Windows y Linux x64: se 
 > **Importante sobre validación:** los tres son targets soportados, pero la
 > evidencia es nativa por plataforma. Construir o abrir `Edecán.app` en macOS
 > no valida NSIS/MSI de Windows ni AppImage/deb/rpm de Linux. Windows requiere
-> su build y smoke en Windows x64; Linux requiere su build y
-> `verify-linux-bundles.sh` en Linux x64. Este documento describe el contrato
-> de cada target, no afirma que una Mac haya ejecutado los otros dos.
+> su build y `verify-windows-bundles.ps1` en Windows x64; Linux requiere su
+> build y `verify-linux-bundles.sh` en Linux x64. Los dos gates están definidos
+> en GitHub Actions. Este documento no presenta una revisión estática hecha en
+> Mac como si hubiese ejecutado los otros sistemas.
 
 Código fuente de este paquete: [`apps/desktop`](../apps/desktop) (referencia técnica rápida en su propio `README.md`).
 
@@ -64,9 +65,11 @@ navegador**, **Ver carpeta de datos**, **Escucha siempre** y **Salir
 completamente**. Solo esta última acción (o Cmd+Q) termina el proceso y ejecuta
 el apagado grácil del sidecar.
 
-Windows y Linux mantienen su semántica histórica de cierre completo cuando la
-escucha continua está apagada; si está activa, cerrar también oculta la ventana
-para que esa función pueda seguir trabajando.
+Windows y Linux usan el mismo contrato residente: cerrar oculta la ventana en
+la bandeja, pero conserva el backend, el relay y la conexión del teléfono.
+**Salir completamente** en la bandeja sí termina la app y el sidecar. Los
+smokes nativos pasan `--exit-on-close` únicamente para ejercer ese apagado
+total sin automatizar clics sobre la bandeja del runner.
 
 ### Centro de permisos
 
@@ -88,6 +91,10 @@ La pantalla consulta estados nativos y ofrece una acción por capacidad:
 - En Windows abre las páginas exactas de Micrófono y Notificaciones. Mouse,
   teclado, captura y archivos normales no tienen un permiso global; Windows
   conserva UAC para cualquier acción administrativa puntual.
+- En Linux explica los límites reales de PipeWire/PulseAudio/ALSA, X11,
+  Wayland, Flatpak y Snap. Captura/control se comprueban al utilizarlos porque
+  algunos compositores Wayland no exponen una ruta compatible. No se finge que
+  existe un botón universal para todas las distribuciones.
 
 La pantalla nunca simula que concedió un permiso. El sistema operativo toma
 la decisión final y Edecán actualiza el estado al recuperar el foco o pulsar
@@ -153,6 +160,19 @@ Salida en `src-tauri\target\release\bundle\`:
 - `nsis\Edecán_<version>_<arch>-setup.exe` — instalador NSIS (el recomendado; instala por-usuario, sin pedir admin — `tauri.conf.json` → `bundle.windows.nsis.installMode: "currentUser"`).
 - `msi\Edecán_<version>_<arch>.msi` — alternativa MSI, útil si tu organización despliega por GPO/Intune.
 
+Después del build, ejecuta:
+
+```powershell
+.\scripts\verify-windows-bundles.ps1
+```
+
+El gate extrae administrativamente el MSI, instala NSIS en un perfil efímero,
+comprueba `edecan-local`, FyDesign, Node 22, Chromium y las herramientas
+multimedia, arranca la aplicación instalada, espera `/healthz`, cierra la
+ventana por el protocolo normal de Windows y exige cero procesos huérfanos.
+Ese flujo corre en un runner Windows x64 de GitHub Actions; una ejecución en
+macOS no lo sustituye.
+
 ### 4.3 Linux
 
 En una máquina Linux x64 con los requisitos de §3:
@@ -174,7 +194,9 @@ tres formatos en `src-tauri/target/release/bundle/`:
 Después del build, `./scripts/verify-linux-bundles.sh` inspecciona los paquetes,
 arranca el AppImage en Xvfb, espera el `/healthz` del backend empaquetado, exige
 una ventana visible y confirma que el cierre no deja `edecan-local` huérfano.
-Ese mismo smoke test corre en GitHub Actions sobre Ubuntu 22.04 en cada cambio.
+También exige que `.deb` y `.rpm` contengan el runtime completo de FyDesign:
+Node 22, MCP, Chromium, ffmpeg, ffprobe y yt-dlp. Ese mismo smoke test corre en
+GitHub Actions sobre Ubuntu 22.04 en cada cambio.
 
 La app local-first empaquetada requiere Linux x64 porque `pgserver` publica el
 Postgres embebido para esa arquitectura. Linux ARM64 sigue soportado mediante

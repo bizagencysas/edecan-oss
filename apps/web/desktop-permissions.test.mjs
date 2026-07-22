@@ -2,10 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DESKTOP_PLATFORM_COPY,
   mergePermissionAction,
   PERMISSION_STATUS_COPY,
   readyPermissionCount,
 } from "./src/lib/desktop-permissions.ts";
+
+test("desktop platform copy never presents Linux or Windows as macOS", () => {
+  assert.equal(DESKTOP_PLATFORM_COPY.macos.name, "macOS");
+  assert.equal(DESKTOP_PLATFORM_COPY.windows.name, "Windows");
+  assert.equal(DESKTOP_PLATFORM_COPY.linux.name, "Linux");
+  assert.match(DESKTOP_PLATFORM_COPY.windows.revealLabel, /Explorador/);
+  assert.match(DESKTOP_PLATFORM_COPY.linux.revealLabel, /carpeta/);
+  assert.doesNotMatch(DESKTOP_PLATFORM_COPY.linux.applicationHint, /macOS/);
+});
 
 const state = {
   platform: "macos",

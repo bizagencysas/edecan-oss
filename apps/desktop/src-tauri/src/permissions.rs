@@ -199,14 +199,40 @@ fn permission_catalog() -> Vec<DesktopPermission> {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn permission_catalog() -> Vec<DesktopPermission> {
-    vec![DesktopPermission {
-        id: "microphone",
-        title: "Micrófono",
-        description: "Para hablar con Edecán y usar tu palabra clave.",
-        level: "essential",
-        status: PermissionStatus::Unknown,
-        action_label: Some("Comprobar permiso"),
-    }]
+    vec![
+        DesktopPermission {
+            id: "microphone",
+            title: "Micrófono",
+            description: "Para hablar con Edecán y usar tu palabra clave. PipeWire, PulseAudio o ALSA pueden mostrar el consentimiento del escritorio al usarlo.",
+            level: "essential",
+            status: PermissionStatus::Unknown,
+            action_label: Some("Comprobar permiso"),
+        },
+        DesktopPermission {
+            id: "notifications",
+            title: "Notificaciones",
+            description: "Edecán usa el servicio de notificaciones de tu escritorio cuando está disponible.",
+            level: "recommended",
+            status: PermissionStatus::NotRequired,
+            action_label: None,
+        },
+        DesktopPermission {
+            id: "computer_control",
+            title: "Mouse, teclado y pantalla",
+            description: "Linux no tiene un permiso global único. X11 usa los permisos de tu sesión; algunos compositores Wayland bloquean captura o control y Edecán lo comprobará al usar la función.",
+            level: "on_demand",
+            status: PermissionStatus::Unknown,
+            action_label: None,
+        },
+        DesktopPermission {
+            id: "files",
+            title: "Archivos y carpetas",
+            description: "Edecán trabaja con los archivos permitidos para tu usuario; Flatpak, Snap y los portales conservan sus límites propios.",
+            level: "on_demand",
+            status: PermissionStatus::NotRequired,
+            action_label: None,
+        },
+    ]
 }
 
 #[cfg(target_os = "macos")]

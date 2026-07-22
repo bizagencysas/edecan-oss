@@ -322,6 +322,9 @@ fn with_studio_env(
             node_binary.display()
         ));
     }
+    if !source_command {
+        validate_bundled_studio_node(&node_binary)?;
+    }
 
     let mut cmd = cmd
         .env(
@@ -338,6 +341,11 @@ fn with_studio_env(
             "PLAYWRIGHT_BROWSERS_PATH",
             browsers_dir.to_string_lossy().to_string(),
         );
+    } else if !source_command {
+        return Err(format!(
+            "Studio está incompleto: falta el navegador empaquetado en {}.",
+            browsers_dir.display()
+        ));
     }
     let tools_dir = engine_dir.join("tools");
     let executable_suffix = if cfg!(target_os = "windows") {
@@ -361,6 +369,34 @@ fn with_studio_env(
         }
     }
     Ok(cmd)
+}
+
+fn validate_bundled_studio_node(node_binary: &Path) -> Result<(), String> {
+    let output = std::process::Command::new(node_binary)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("No se pudo arrancar el runtime Node de Studio: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "El runtime Node empaquetado de Studio terminó con {}.",
+            output.status
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout);
+    if !studio_node_version_supported(version.trim()) {
+        return Err(format!(
+            "Studio requiere el runtime Node 22 empaquetado; se detectó {}.",
+            version.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn studio_node_version_supported(version: &str) -> bool {
+    version
+        .strip_prefix('v')
+        .and_then(|value| value.split('.').next())
+        == Some("22")
 }
 
 fn resolve_bundled_studio_node() -> Option<PathBuf> {
@@ -726,20 +762,24 @@ pub fn kill_backend(app: &AppHandle) {
         }
     }
 
-    if let Err(err) = child.kill() {
-        eprintln!("[edecan-desktop] no se pudo matar el backend local (pid {pid}): {err}");
-    }
-
-    // `CommandChild::kill()` termina el proceso del sidecar, pero en
-    // Windows no siempre se lleva con él a los procesos que ESE proceso
-    // haya lanzado (ej. el Postgres embebido de `pgserver`, WP-V3-05).
-    // `taskkill /T` mata el árbol completo por PID como red de seguridad
-    // extra — nunca debe quedar un proceso huérfano tras cerrar la app.
+    // En Windows el árbol debe terminar mientras el PID raíz todavía existe.
+    // Matar primero PyInstaller y ejecutar después `taskkill /T` puede perder
+    // la relación padre-hijo y dejar PostgreSQL huérfano. `status()` también
+    // espera a que taskkill complete antes de que termine el proceso Tauri.
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("taskkill")
+        let tree_killed = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
-            .spawn();
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if tree_killed {
+            return;
+        }
+    }
+
+    if let Err(err) = child.kill() {
+        eprintln!("[edecan-desktop] no se pudo matar el backend local (pid {pid}): {err}");
     }
 }
 
@@ -787,7 +827,15 @@ fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{expanded_path_value, parse_ready_port};
+    use super::{expanded_path_value, parse_ready_port, studio_node_version_supported};
+
+    #[test]
+    fn studio_runtime_accepts_only_the_bundled_node_major() {
+        assert!(studio_node_version_supported("v22.21.0"));
+        assert!(!studio_node_version_supported("v20.19.0"));
+        assert!(!studio_node_version_supported("22.21.0"));
+        assert!(!studio_node_version_supported("not-a-version"));
+    }
 
     #[test]
     fn ready_port_parser_ignores_unrelated_text() {

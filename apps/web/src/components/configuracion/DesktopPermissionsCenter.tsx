@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Alert, Button, Card, CardBody, CardHeader } from "@/components/ui";
 import {
+  DESKTOP_PLATFORM_COPY,
   mergePermissionAction,
   PERMISSION_STATUS_COPY,
   readyPermissionCount,
@@ -104,7 +105,7 @@ function DesktopPermissionsCenterNative() {
       setStartup(next);
       setMessage(
         next.enabled
-          ? "Edecán se abrirá oculto en la barra al iniciar sesión."
+          ? `Edecán se abrirá oculto en ${platformCopy.residentLocation} al iniciar sesión.`
           : "Edecán ya no se abrirá automáticamente al iniciar sesión.",
       );
     } catch (err) {
@@ -115,13 +116,15 @@ function DesktopPermissionsCenterNative() {
   }
 
   const ready = state ? readyPermissionCount(state) : 0;
-  const platform = state?.platform === "windows" ? "Windows" : "macOS";
+  const platformCopy = state
+    ? DESKTOP_PLATFORM_COPY[state.platform]
+    : DESKTOP_PLATFORM_COPY.macos;
 
   return (
     <Card className="lg:col-span-2">
       <CardHeader
         title="Permisos de esta computadora"
-        description={`Todo en un solo lugar. Edecán comprueba ${platform}, abre el diálogo nativo cuando existe y te lleva a la sección exacta cuando el sistema exige activarlo manualmente.`}
+        description={`Todo en un solo lugar. Edecán comprueba ${platformCopy.name}, abre el diálogo nativo cuando existe y te lleva a la sección exacta cuando el sistema exige activarlo manualmente.`}
       />
       <CardBody className="space-y-4">
         {error && <Alert variant="error">{error}</Alert>}
@@ -135,7 +138,7 @@ function DesktopPermissionsCenterNative() {
                 : `${ready} de ${state.permissions.length} listos o no requeridos`}
             </p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Edecán nunca puede concederse permisos por sí mismo; la decisión final siempre aparece en {platform}.
+              Edecán nunca puede concederse permisos por sí mismo; la decisión final siempre aparece en {platformCopy.settingsOwner}.
             </p>
           </div>
           <Button
@@ -155,7 +158,7 @@ function DesktopPermissionsCenterNative() {
               El archivo que debes permitir es {state.application_name}
             </p>
             <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
-              Si macOS muestra un botón +, selecciona exactamente esta aplicación. No elijas Python, Terminal ni Jarvis.
+              {platformCopy.applicationHint}
             </p>
             <code className="mt-2 block break-all rounded-lg bg-white/80 px-3 py-2 text-[11px] text-slate-700 dark:bg-slate-900/80 dark:text-slate-200">
               {state.application_path}
@@ -167,7 +170,7 @@ function DesktopPermissionsCenterNative() {
               onClick={() => void revealApplication()}
               className="mt-3"
             >
-              Mostrar Edecán en Finder
+              {platformCopy.revealLabel}
             </Button>
           </div>
         )}
@@ -180,7 +183,7 @@ function DesktopPermissionsCenterNative() {
               </p>
               <p className="mt-1 text-sm leading-5 text-slate-500 dark:text-slate-400">
                 {startup.enabled
-                  ? "Se inicia oculto con tu sesión y queda disponible en la barra de menú para el iPhone."
+                  ? `Se inicia oculto con tu sesión y queda disponible en ${platformCopy.residentLocation} para el teléfono.`
                   : "Solo estará disponible después de abrirlo manualmente."}
               </p>
             </div>

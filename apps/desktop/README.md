@@ -10,7 +10,7 @@ Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán 
 1. Al arrancar, elige un puerto libre (preferencia `8765`) y lanza `edecan_local` como *sidecar* (empaquetado con PyInstaller, o desde el código fuente en modo desarrollo).
 2. Muestra una ventana de splash mientras espera a que el backend avise `EDECAN_LOCAL_READY` por stdout (máx. 60s), con un panel de error + reintentar si algo falla.
 3. Abre la ventana principal apuntando a `http://127.0.0.1:<puerto>/` — el propio backend local sirve ahí tanto la API como la web estática.
-4. En macOS, cerrar la ventana principal solo la oculta: Edecán, el backend y el acceso móvil siguen residentes en la barra de menú. **Salir completamente** desde el menú de Edecán (o Cmd+Q) apaga el sidecar de forma limpia — nunca debe quedar huérfano. Windows/Linux conservan el cierre completo salvo cuando está activa la escucha continua.
+4. En macOS, Windows y Linux, cerrar la ventana principal solo la oculta: Edecán, el backend y el acceso móvil siguen residentes en la barra o bandeja del sistema. **Salir completamente** desde el menú de Edecán apaga el sidecar de forma limpia; en macOS también funciona Cmd+Q. Nunca debe quedar huérfano.
 
 Documentación completa (requisitos, build paso a paso por plataforma, dónde viven los datos, desinstalar, troubleshooting, firma de código): **[`docs/desktop.md`](../../docs/desktop.md)**. Este README es la referencia rápida de quien trabaja *en* este directorio.
 
@@ -48,6 +48,7 @@ apps/desktop/
 │   ├── download-ollama.sh|.ps1  # OPCIONAL: descarga Ollama -> sidecar (fase v4)
 │   ├── dev.sh                   # cargo tauri dev, backend desde fuente
 │   ├── build-app.sh             # build-backend + cargo tauri build
+│   ├── verify-windows-bundles.ps1 # instala NSIS, extrae MSI y hace smoke real
 │   ├── verify-linux-bundles.sh  # smoke real AppImage + inspección deb/rpm
 │   └── make-icons.sh            # assets/icon-source.png -> src-tauri/icons/
 └── assets/
@@ -81,10 +82,12 @@ multimedia globales. Sus licencias separadas se documentan en
 Esta fase sí requiere red en la máquina de build y aumenta de forma importante
 el tamaño del artefacto; nada de `node_modules` o Chromium entra en Git.
 
-En Windows x64, el equivalente es `scripts\build-app.ps1`. En Linux x64 el
-mismo `build-app.sh` produce AppImage, `.deb` y `.rpm`; el CI además arranca el
-AppImage, espera el backend real y confirma que cerrar la ventana no deje
-procesos huérfanos.
+En Windows x64, el equivalente es `scripts\build-app.ps1`; el CI extrae MSI,
+instala NSIS y arranca la aplicación instalada con
+`scripts\verify-windows-bundles.ps1`. En Linux x64 el mismo `build-app.sh`
+produce AppImage, `.deb` y `.rpm`; el CI arranca el AppImage y comprueba que
+los tres paquetes contienen FyDesign completo. Ambos gates esperan el backend
+real y confirman que cerrar la ventana no deje procesos huérfanos.
 
 `dev.sh` funciona desde un clon sin sidecar precompilado. La primera corrida
 instala las dependencias declaradas y genera la UI estática; las siguientes
@@ -116,5 +119,6 @@ cargo test --locked
 Los scripts de release se validan además con `bash -n`. Un `cargo check` o
 los tests unitarios no sustituyen el build de los instaladores: publica desde
 macOS/Linux x64 con `build-app.sh` y desde Windows x64 con `build-app.ps1`, y
-prueba el artefacto generado en la plataforma correspondiente. En Linux, usa
-`scripts/verify-linux-bundles.sh` después del build.
+prueba el artefacto generado en la plataforma correspondiente. En Windows usa
+`scripts/verify-windows-bundles.ps1`; en Linux,
+`scripts/verify-linux-bundles.sh`.

@@ -26,6 +26,42 @@ export interface PermissionActionResult {
   message: string;
 }
 
+export const DESKTOP_PLATFORM_COPY: Record<
+  DesktopPermissionsState["platform"],
+  {
+    name: string;
+    settingsOwner: string;
+    residentLocation: string;
+    revealLabel: string;
+    applicationHint: string;
+  }
+> = {
+  macos: {
+    name: "macOS",
+    settingsOwner: "macOS",
+    residentLocation: "la barra de menú",
+    revealLabel: "Mostrar Edecán en Finder",
+    applicationHint:
+      "Si macOS muestra un botón +, selecciona exactamente esta aplicación. No elijas Python, Terminal ni Jarvis.",
+  },
+  windows: {
+    name: "Windows",
+    settingsOwner: "Windows",
+    residentLocation: "la bandeja del sistema",
+    revealLabel: "Mostrar Edecán en el Explorador",
+    applicationHint:
+      "Este es el ejecutable instalado de Edecán. No necesitas seleccionar Python, PowerShell ni otra aplicación.",
+  },
+  linux: {
+    name: "Linux",
+    settingsOwner: "tu escritorio Linux",
+    residentLocation: "la bandeja del sistema",
+    revealLabel: "Mostrar la carpeta de Edecán",
+    applicationHint:
+      "Esta es la instalación que usa Edecán. Wayland, Flatpak, Snap o el portal de tu escritorio pueden pedir permisos adicionales al utilizar una función.",
+  },
+};
+
 export const PERMISSION_STATUS_COPY: Record<
   DesktopPermissionStatus,
   { label: string; tone: "success" | "warning" | "neutral" }

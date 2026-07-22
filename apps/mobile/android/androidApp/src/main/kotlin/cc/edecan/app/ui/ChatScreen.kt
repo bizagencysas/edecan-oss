@@ -3,6 +3,7 @@
 package cc.edecan.app.ui
 
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,6 +11,7 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -25,6 +28,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
@@ -55,9 +61,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.FileProvider
@@ -111,6 +120,9 @@ fun ChatScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val listaArrastrada by listState.interactionSource.collectIsDraggedAsState()
+    var cantidadMensajesAnterior by remember { mutableStateOf(0) }
+    var conversacionAnterior by remember { mutableStateOf<String?>(null) }
     val selectorArchivo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val api = sessionViewModel.api
         if (uri != null && api != null) {
@@ -139,8 +151,26 @@ fun ChatScreen(
         sessionViewModel.api?.let(chatViewModel::cargar)
     }
 
-    LaunchedEffect(chatState.mensajes.size, chatState.mensajes.lastOrNull()?.texto) {
-        if (chatState.mensajes.isNotEmpty()) listState.animateScrollToItem(chatState.mensajes.lastIndex)
+    LaunchedEffect(
+        chatState.conversationId,
+        chatState.mensajes.size,
+        chatState.mensajes.lastOrNull(),
+    ) {
+        val cantidad = chatState.mensajes.size
+        if (cantidad == 0) {
+            cantidadMensajesAnterior = 0
+            conversacionAnterior = chatState.conversationId
+            return@LaunchedEffect
+        }
+        val cambioConversacion = chatState.conversationId != conversacionAnterior
+        val agregoMensaje = cambioConversacion || cantidad != cantidadMensajesAnterior
+        val ultimoVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+        if (agregoMensaje || debeSeguirDelta(ultimoVisible, cantidad, listaArrastrada)) {
+            if (agregoMensaje) listState.animateScrollToItem(cantidad - 1)
+            else listState.scrollToItem(cantidad - 1)
+        }
+        cantidadMensajesAnterior = cantidad
+        conversacionAnterior = chatState.conversationId
     }
 
     LaunchedEffect(solicitudInicial) {
@@ -252,7 +282,7 @@ fun ChatScreen(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(modifier = Modifier.padding(padding).fillMaxSize().imePadding()) {
             Box(modifier = Modifier.weight(1f)) {
                 if (chatState.cargandoHistorial && chatState.mensajes.isEmpty()) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -510,6 +540,7 @@ private fun BurbujaMensaje(
     onReintentar: () -> Unit,
 ) {
     val esUsuario = mensaje.rol == MensajeUi.Rol.USUARIO
+    val context = LocalContext.current
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (esUsuario) Arrangement.End else Arrangement.Start) {
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -526,10 +557,27 @@ private fun BurbujaMensaje(
                     strokeWidth = 2.dp,
                 )
             } else if (mensaje.texto.isNotEmpty()) {
-                Text(
-                    mensaje.texto,
-                    color = if (esUsuario) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SelectionContainer {
+                    Text(
+                        markdownParaChat(mensaje.texto),
+                        color = if (esUsuario) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("Mensaje de Edecán", mensaje.texto),
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 0.dp),
+                ) {
+                    Text(
+                        "Copiar",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (esUsuario) Color.White else MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             if (esUsuario && mensaje.adjuntos.isNotEmpty()) {
                 mensaje.adjuntos.forEach { adjunto ->
@@ -738,6 +786,7 @@ private fun BarraDeEntrada(
     onEnviar: () -> Unit,
 ) {
     var menuAbierto by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     Row(
         verticalAlignment = Alignment.Bottom,
         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -773,6 +822,18 @@ private fun BarraDeEntrada(
             placeholder = { Text("Escríbele a Edecán…") },
             modifier = Modifier.weight(1f),
             maxLines = 4,
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Sentences,
+                imeAction = ImeAction.Send,
+            ),
+            keyboardActions = KeyboardActions(
+                onSend = {
+                    if (habilitado) {
+                        onEnviar()
+                        focusManager.clearFocus()
+                    }
+                },
+            ),
         )
         IconButton(onClick = onEnviar, enabled = habilitado) {
             // Emoji en vez de `androidx.compose.material.icons` a propósito
@@ -785,6 +846,18 @@ private fun BarraDeEntrada(
             )
         }
     }
+}
+
+/** Sigue el delta solo si la persona continúa cerca del final. Un gesto
+ * activo o estar leyendo mensajes antiguos desactiva el seguimiento hasta
+ * que vuelva al final; los mensajes nuevos se manejan aparte. */
+internal fun debeSeguirDelta(
+    ultimoVisible: Int?,
+    totalMensajes: Int,
+    usuarioArrastrando: Boolean,
+): Boolean {
+    if (totalMensajes <= 0 || usuarioArrastrando) return false
+    return ultimoVisible == null || ultimoVisible >= totalMensajes - 2
 }
 
 private data class PresetCreacion(val emoji: String, val label: String, val message: String)

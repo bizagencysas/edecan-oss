@@ -2,6 +2,11 @@
 
 Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán como una app de escritorio instalable para macOS, Windows y Linux x64. No reimplementa nada: reusa la interfaz web ya construida en [`apps/web`](../web) (Next.js, export estático) y el backend local ya definido en [`apps/local`](../local) (`edecan_local`, fase v3) — este directorio solo los orquesta:
 
+> **Alcance de la evidencia:** una build o un smoke test ejecutado en macOS
+> valida únicamente el bundle macOS. Windows debe compilarse y probarse en
+> Windows x64, y Linux en Linux x64. Que sus configuraciones y scripts vivan
+> en este repo no equivale a haber validado esos artefactos desde una Mac.
+
 1. Al arrancar, elige un puerto libre (preferencia `8765`) y lanza `edecan_local` como *sidecar* (empaquetado con PyInstaller, o desde el código fuente en modo desarrollo).
 2. Muestra una ventana de splash mientras espera a que el backend avise `EDECAN_LOCAL_READY` por stdout (máx. 60s), con un panel de error + reintentar si algo falla.
 3. Abre la ventana principal apuntando a `http://127.0.0.1:<puerto>/` — el propio backend local sirve ahí tanto la API como la web estática.

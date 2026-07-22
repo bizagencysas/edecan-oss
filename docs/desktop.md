@@ -2,6 +2,13 @@
 
 La aplicación local de Edecán es instalable en macOS, Windows y Linux x64: se descarga, se instala, se abre, se conecta con tus propias credenciales en Configuración y queda funcionando — sin servidor propio, sin Docker y sin editar archivos a mano. Este documento cubre instalación, requisitos y build por plataforma, ubicación de datos, desinstalación y troubleshooting. Para el wizard de bienvenida y la pantalla de Configuración, ver [`primeros-pasos.md`](./primeros-pasos.md). Para el backend empaquetado (Postgres embebido, migraciones y colas), ver [`desktop-local.md`](./desktop-local.md).
 
+> **Importante sobre validación:** los tres son targets soportados, pero la
+> evidencia es nativa por plataforma. Construir o abrir `Edecán.app` en macOS
+> no valida NSIS/MSI de Windows ni AppImage/deb/rpm de Linux. Windows requiere
+> su build y smoke en Windows x64; Linux requiere su build y
+> `verify-linux-bundles.sh` en Linux x64. Este documento describe el contrato
+> de cada target, no afirma que una Mac haya ejecutado los otros dos.
+
 Código fuente de este paquete: [`apps/desktop`](../apps/desktop) (referencia técnica rápida en su propio `README.md`).
 
 ## 1. Arquitectura en 60 segundos

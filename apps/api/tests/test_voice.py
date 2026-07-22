@@ -338,6 +338,46 @@ async def test_speak_manda_a_elevenlabs_el_texto_ya_sin_markdown(client, app, fa
 
 
 @respx.mock
+async def test_speak_usa_expresion_v3_configurada_desde_el_chat(client, app, fake_repo) -> None:
+    """La app movil usa este endpoint, por lo que la expresion debe sobrevivir
+    al resolver HTTP y no existir solo en las tools internas del agente."""
+
+    ruta = respx.post("https://api.elevenlabs.io/v1/text-to-speech/voz-tenant").mock(
+        return_value=httpx.Response(200, content=b"FAKE-MP3-BYTES")
+    )
+    fake_vault = FakeVault()
+    tenant_id = uuid.uuid4()
+    await _conectar_voz_tenant(
+        app,
+        fake_repo,
+        fake_vault,
+        tenant_id=tenant_id,
+        connector_key="voice_tts",
+        config={
+            "provider": "elevenlabs",
+            "api_key": "el_tenant_key",
+            "voice_id": "voz-tenant",
+            "model_id": "eleven_v3",
+            "expressive": True,
+        },
+    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+
+    response = await client.post(
+        "/v1/voice/speak",
+        json={"text": "**Listo**, quedó configurado."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    enviado = json.loads(ruta.calls.last.request.content)
+    assert enviado == {
+        "text": "[warmly] Listo, quedó configurado.",
+        "model_id": "eleven_v3",
+    }
+
+
+@respx.mock
 async def test_speak_tenant_sin_config_de_voz_cae_a_stub(client, app, fake_repo) -> None:
     app.dependency_overrides[edecan_deps.get_vault] = lambda: FakeVault()
     tenant_id = uuid.uuid4()

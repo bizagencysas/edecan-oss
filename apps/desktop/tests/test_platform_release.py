@@ -100,3 +100,5 @@ def test_linux_is_documented_as_a_first_class_desktop_target() -> None:
     assert "AppImage" in desktop_readme
     assert "no publica hoy un bundle Tauri para Linux" not in desktop_guide
     assert "no publica hoy un bundle Tauri para Linux" not in desktop_readme
+    assert "no valida NSIS/MSI de Windows ni AppImage/deb/rpm de Linux" in desktop_guide
+    assert "una build o un smoke test ejecutado en macOS" in desktop_readme

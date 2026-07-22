@@ -90,7 +90,74 @@ def _search(provider: str, secret: str) -> dict[str, Any]:
     return {"tipo": "search", "campos": {"provider": provider, "api_key": secret}}
 
 
+def _llm(provider: str, secret: str) -> dict[str, Any]:
+    return {"tipo": "llm", "campos": {"provider": provider, "api_key": secret}}
+
+
 _PROVIDERS: tuple[_ProviderRule, ...] = (
+    _ProviderRule(
+        key="anthropic",
+        display_name="Anthropic",
+        aliases=(r"anthropic", r"claude(?:\s+api)?"),
+        preferred_prefixes=("sk-ant-",),
+        tool_args_factory=lambda secret: _llm("anthropic", secret),
+    ),
+    _ProviderRule(
+        key="openai",
+        display_name="OpenAI",
+        aliases=(r"openai", r"chatgpt(?:\s+api)?"),
+        preferred_prefixes=("sk-",),
+        tool_args_factory=lambda secret: _llm("openai", secret),
+    ),
+    _ProviderRule(
+        key="gemini",
+        display_name="Gemini",
+        aliases=(r"gemini", r"google\s+ai"),
+        preferred_prefixes=("AIza",),
+        tool_args_factory=lambda secret: _llm("gemini", secret),
+    ),
+    _ProviderRule(
+        key="deepseek",
+        display_name="DeepSeek",
+        aliases=(r"deepseek",),
+        preferred_prefixes=("sk-",),
+        tool_args_factory=lambda secret: _llm("deepseek", secret),
+    ),
+    _ProviderRule(
+        key="groq",
+        display_name="Groq",
+        aliases=(r"groq",),
+        preferred_prefixes=("gsk_",),
+        tool_args_factory=lambda secret: _llm("groq", secret),
+    ),
+    _ProviderRule(
+        key="openrouter",
+        display_name="OpenRouter",
+        aliases=(r"openrouter", r"open\s+router"),
+        preferred_prefixes=("sk-or-",),
+        tool_args_factory=lambda secret: _llm("openrouter", secret),
+    ),
+    _ProviderRule(
+        key="xai",
+        display_name="xAI",
+        aliases=(r"xai", r"x\.ai", r"grok"),
+        preferred_prefixes=("xai-",),
+        tool_args_factory=lambda secret: _llm("xai", secret),
+    ),
+    _ProviderRule(
+        key="mistral",
+        display_name="Mistral",
+        aliases=(r"mistral",),
+        preferred_prefixes=(),
+        tool_args_factory=lambda secret: _llm("mistral", secret),
+    ),
+    _ProviderRule(
+        key="kimi",
+        display_name="Kimi",
+        aliases=(r"kimi", r"moonshot"),
+        preferred_prefixes=(),
+        tool_args_factory=lambda secret: _llm("kimi", secret),
+    ),
     _ProviderRule(
         key="elevenlabs",
         display_name="ElevenLabs",
@@ -139,7 +206,22 @@ def _candidate_for_rule(text: str, rule: _ProviderRule) -> str | None:
 
     for match in _TOKEN_AFTER_CREDENTIAL_RE.finditer(text):
         candidate = _trim_token(match.group("secret"))
-        if candidate.lower() not in {rule.key, "elevenlabs", "deepgram", "brave", "tavily"}:
+        if candidate.lower() not in {
+            rule.key,
+            "elevenlabs",
+            "deepgram",
+            "brave",
+            "tavily",
+            "anthropic",
+            "openai",
+            "gemini",
+            "deepseek",
+            "groq",
+            "openrouter",
+            "xai",
+            "mistral",
+            "kimi",
+        }:
             return candidate
 
     provider_pattern = re.compile(
@@ -201,10 +283,20 @@ def detect_inline_credential_intent(text: str) -> InlineCredentialIntent | None:
 
     rule, secret = matches[0]
     redacted = clean.replace(secret, "[credencial protegida]")
+    tool_args = rule.tool_args_factory(secret)
+    if rule.key == "openai" and re.search(
+        r"\b(?:imagen|im[aá]genes|generaci[oó]n\s+visual|crear\s+fotos?)\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        tool_args = {
+            "tipo": "images",
+            "campos": {"provider": "openai", "api_key": secret},
+        }
     return InlineCredentialIntent(
         provider=rule.key,
         display_name=rule.display_name,
-        tool_args=rule.tool_args_factory(secret),
+        tool_args=tool_args,
         redacted_text=redacted,
         secret_values=(secret,),
     )

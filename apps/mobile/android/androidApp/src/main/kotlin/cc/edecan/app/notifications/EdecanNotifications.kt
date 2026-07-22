@@ -118,7 +118,16 @@ object EdecanNotifications {
         stableId: Int? = null,
     ) {
         initialize(context)
-        if (!permissionGranted(context)) return
+        // Mantener el guard junto a `notify` permite que Android Lint
+        // compruebe el flujo y cubre una revocación ocurrida después de que
+        // otra pantalla consultara `permissionGranted`.
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return
         val openIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_NOTIFICATION_ROUTE, route.wireValue)
@@ -139,7 +148,12 @@ object EdecanNotifications {
             .setContentIntent(pending)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
-        NotificationManagerCompat.from(context).notify(id, notification)
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (_: SecurityException) {
+            // El permiso puede revocarse entre el guard y la llamada. En ese
+            // caso se omite el aviso; nunca se cae el proceso de FCM/alarmas.
+        }
     }
 }
 

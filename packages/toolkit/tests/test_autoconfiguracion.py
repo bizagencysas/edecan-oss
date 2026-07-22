@@ -45,6 +45,95 @@ async def test_tipo_desconocido_devuelve_error(make_ctx, make_session):
     assert "desconocido" in resultado.content.lower()
 
 
+@respx.mock
+async def test_llm_openai_valida_descubre_modelos_y_guarda(
+    make_ctx, make_session, make_vault
+):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-example", "created": 2},
+                    {"id": "gpt-example-mini", "created": 3},
+                    {"id": "text-embedding-example", "created": 4},
+                ]
+            },
+        )
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "llm", "campos": {"provider": "openai", "api_key": "sk-test"}},
+    )
+
+    assert "verifiqué OpenAI" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "kind": "openai_compat",
+        "api_key": "sk-test",
+        "base_url": "https://api.openai.com/v1",
+        "model_principal": "gpt-example",
+        "model_rapido": "gpt-example-mini",
+        "extra": {"provider_label": "openai"},
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "llm"
+
+
+@respx.mock
+async def test_llm_rechazado_no_guarda_clave(make_ctx, make_session, make_vault):
+    respx.get("https://api.deepseek.com/models").mock(
+        return_value=httpx.Response(401, json={"error": "invalid"})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "llm", "campos": {"provider": "deepseek", "api_key": "sk-test"}},
+    )
+
+    assert "No guardé nada" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []
+
+
+@respx.mock
+async def test_images_openai_descubre_modelo_y_guarda(make_ctx, make_session, make_vault):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-text", "created": 10},
+                    {"id": "gpt-image-example", "created": 20},
+                ]
+            },
+        )
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "images", "campos": {"provider": "openai", "api_key": "sk-test"}},
+    )
+
+    assert "crear imágenes" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test",
+        "model": "gpt-image-example",
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "images"
+
+
 async def test_voice_stt_guarda_deepgram(make_ctx, make_session, make_vault):
     session = make_session([[], _NUEVA_FILA])
     vault = make_vault()

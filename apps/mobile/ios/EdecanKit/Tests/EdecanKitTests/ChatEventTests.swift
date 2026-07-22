@@ -117,6 +117,38 @@ struct ChatEventTests {
         #expect(evento == .done(usage: nil))
     }
 
+    @Test func marcadorDoneSinNombreTambienCierraElTurno() throws {
+        let evento = try SSEClient.decodificarEvento(nombre: nil, payload: "[DONE]")
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func estadoTerminalAceptaUnSoloDone() throws {
+        var terminal = SSETerminalState()
+        let aceptoDelta = terminal.aceptar(.textDelta(text: "hola"))
+        let aceptoDone = terminal.aceptar(.done(usage: nil))
+        let aceptoDuplicado = terminal.aceptar(.textDelta(text: "duplicado"))
+        #expect(aceptoDelta)
+        #expect(aceptoDone)
+        #expect(terminal.finalizado)
+        #expect(!aceptoDuplicado)
+        try terminal.validarCierre()
+    }
+
+    @Test func estadoTerminalRechazaConexionTruncada() {
+        let terminal = SSETerminalState()
+        #expect(throws: SSEClient.SSEError.self) {
+            try terminal.validarCierre()
+        }
+    }
+
+    @Test func errorDelAgenteTambienEsUnCierreTerminalValido() throws {
+        var terminal = SSETerminalState()
+        let acepto = terminal.aceptar(.error(message: "Proveedor no disponible"))
+        #expect(acepto)
+        #expect(terminal.finalizado)
+        try terminal.validarCierre()
+    }
+
     @Test func eventoDeContenidoMalformadoSigueFallando() {
         #expect(throws: SSEClient.SSEError.self) {
             try SSEClient.decodificarEvento(

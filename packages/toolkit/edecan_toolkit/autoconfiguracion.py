@@ -21,17 +21,12 @@ de cada router, adaptado a lo que `ToolContext` expone (`ctx.session`/
 directo contra `connector_accounts`, mismo criterio que `recordatorios.py`/
 `finanzas.py` de este mismo paquete.
 
-Validación (trade-off deliberado): para cubrir las 7 familias de credencial
-soportadas en una sola tool sin duplicar cada `_ping_*` de red distinto de
-cada router, esta tool SOLO valida FORMATO (prefijos, longitudes, regex) —
-NO hace un ping en vivo al proveedor antes de guardar (a diferencia de, p.
-ej., `PUT /v1/finance/stripe/credentials`, que sí llama a Stripe). Un typo se
-descubre en el primer uso real, no al guardar — se lo advierte al usuario en
-el `content` de la respuesta. `LLM` (credencial "cerebro" del tenant) queda
-fuera a propósito: tiene su propio asistente de conexión dedicado en el
-wizard de onboarding (`PUT /v1/credentials/llm`), con más formas de proveedor
-(Anthropic directo, OpenAI-compatible, CLIs locales) de las que vale la pena
-sumar a esta tool genérica en su primera versión.
+Validación: LLM, imágenes y Alpaca se comprueban en vivo antes de guardar,
+porque una conexión incompleta dejaría inutilizable el cerebro, el estudio o
+las órdenes. Las demás familias conservan validación de formato y dejan una
+explicación clara cuando la verificación completa ocurre en el primer uso.
+Los CLIs locales y Ollama no necesitan copiar secretos por chat: el asistente
+de conexión del master los detecta y ofrece directamente.
 
 `dangerous = True`: como cualquier escritura de un secreto, exige
 confirmación humana explícita antes de ejecutar (`edecan_core.agent.Agent.
@@ -51,6 +46,7 @@ from typing import Any
 
 import httpx
 from edecan_core import Tool, ToolContext, ToolResult
+from edecan_llm import choose_discovered_models
 from edecan_schemas import TokenBundle
 from sqlalchemy import text
 
@@ -60,6 +56,8 @@ from sqlalchemy import text
 # `ARCHITECTURE.md`/los routers correspondientes.
 _VOICE_STT_KEY = "voice_stt"
 _VOICE_TTS_KEY = "voice_tts"
+_LLM_KEY = "llm"
+_IMAGES_KEY = "images"
 _SEARCH_KEY = "search"
 _ALPACA_PAPER_KEY = "alpaca_paper"
 _STRIPE_KEY = "stripe"
@@ -77,6 +75,28 @@ _WHATSAPP_TOKEN_MIN_LEN = 20
 _MIN_BOT_TOKEN_LEN = 10
 _POLLY_DEFAULT_VOICE = "Lupe"
 _SEARCH_PROVIDERS = ("brave", "tavily")
+_LLM_PROVIDERS: dict[str, tuple[str, str | None]] = {
+    "anthropic": ("anthropic", None),
+    "gemini": ("vertex", None),
+    "openai": ("openai_compat", "https://api.openai.com/v1"),
+    "deepseek": ("openai_compat", "https://api.deepseek.com"),
+    "groq": ("openai_compat", "https://api.groq.com/openai/v1"),
+    "openrouter": ("openai_compat", "https://openrouter.ai/api/v1"),
+    "xai": ("openai_compat", "https://api.x.ai/v1"),
+    "mistral": ("openai_compat", "https://api.mistral.ai/v1"),
+    "kimi": ("openai_compat", "https://api.moonshot.ai/v1"),
+}
+_PROVIDER_DISPLAY = {
+    "anthropic": "Anthropic",
+    "gemini": "Gemini",
+    "openai": "OpenAI",
+    "deepseek": "DeepSeek",
+    "groq": "Groq",
+    "openrouter": "OpenRouter",
+    "xai": "xAI",
+    "mistral": "Mistral",
+    "kimi": "Kimi",
+}
 _ELEVENLABS_MODELS = (
     "eleven_v3",
     "eleven_flash_v2_5",
@@ -84,6 +104,8 @@ _ELEVENLABS_MODELS = (
 )
 
 _TIPOS_VALIDOS = (
+    "llm",
+    "images",
     "voice_stt",
     "voice_tts",
     "stripe",
@@ -162,8 +184,9 @@ class ConfigurarCredencialTool(Tool):
     description = (
         "Guarda una credencial que el dueño del tenant pegó directamente en el chat "
         "(p. ej. 'activa ElevenLabs, esta es mi api_key: ...') sin que tenga que ir a "
-        "Ajustes/Conectores a pegarla él mismo. Cubre: voz (voice_stt=Deepgram, "
-        "voice_tts=ElevenLabs/Polly), Stripe, Twilio, WhatsApp Business, bots de "
+        "Ajustes/Conectores a pegarla él mismo. Cubre: inteligencia (LLM), imágenes, "
+        "voz (voice_stt=Deepgram, voice_tts=ElevenLabs/Polly), Stripe, Twilio, "
+        "WhatsApp Business, bots de "
         "Telegram/Discord, búsqueda Brave/Tavily y apps OAuth propias "
         "(Google/Microsoft/Meta/X/YouTube/Slack). "
         "Requiere confirmación porque persiste un secreto de verdad."
@@ -195,7 +218,8 @@ class ConfigurarCredencialTool(Tool):
                     "{account_sid, auth_token, phone_number}. whatsapp: {access_token, "
                     "phone_number_id}. bot_token: {bot_token}. oauth_app: {client_id, "
                     "client_secret?}. search: {provider: 'brave'|'tavily', api_key}."
-                    " alpaca_paper: {api_key_id, secret_key}."
+                    " alpaca_paper: {api_key_id, secret_key}. llm: {provider, api_key}. "
+                    "images: {provider: 'openai', api_key, model?}."
                 ),
             },
         },
@@ -221,6 +245,8 @@ class ConfigurarCredencialTool(Tool):
         conector = str(args.get("conector", "")).strip().lower()
 
         handler = {
+            "llm": self._llm,
+            "images": self._images,
             "voice_stt": self._voice_stt,
             "voice_tts": self._voice_tts,
             "stripe": self._stripe,
@@ -235,6 +261,175 @@ class ConfigurarCredencialTool(Tool):
             return await handler(ctx, campos, conector)
         except _CampoInvalido as exc:
             return ToolResult(content=str(exc))
+
+    async def _llm(
+        self, ctx: ToolContext, campos: dict[str, Any], _conector: str
+    ) -> ToolResult:
+        provider = str(campos.get("provider") or "").strip().lower()
+        if provider not in _LLM_PROVIDERS:
+            raise _CampoInvalido(
+                "Proveedor de inteligencia no reconocido. Puedo configurar Anthropic, "
+                "Gemini, OpenAI, DeepSeek, Groq, OpenRouter, xAI, Mistral o Kimi."
+            )
+        api_key = _requerido(campos, "api_key")
+        kind, base_url = _LLM_PROVIDERS[provider]
+        display_name = _PROVIDER_DISPLAY[provider]
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                if provider == "anthropic":
+                    response = await client.get(
+                        "https://api.anthropic.com/v1/models",
+                        headers={
+                            "x-api-key": api_key,
+                            "anthropic-version": "2023-06-01",
+                        },
+                    )
+                elif provider == "gemini":
+                    response = await client.get(
+                        "https://generativelanguage.googleapis.com/v1beta/models",
+                        params={"key": api_key},
+                    )
+                else:
+                    response = await client.get(
+                        f"{str(base_url).rstrip('/')}/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+        except httpx.HTTPError:
+            return ToolResult(
+                content=(
+                    f"No pude contactar {display_name}, así que no guardé la clave. "
+                    "Inténtalo de nuevo cuando tengas conexión."
+                )
+            )
+        if not 200 <= response.status_code < 300:
+            return ToolResult(
+                content=(
+                    f"{display_name} rechazó esa clave. No guardé nada. "
+                    "Verifica la credencial y vuelve a enviarla."
+                )
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            return ToolResult(
+                content=(
+                    f"{display_name} respondió sin un catálogo de modelos válido. "
+                    "No guardé la clave."
+                )
+            )
+        choice = choose_discovered_models(kind, payload)
+        if choice is None:
+            return ToolResult(
+                content=(
+                    f"La clave de {display_name} respondió, pero no encontré un modelo "
+                    "de conversación utilizable. No guardé nada para evitar dejar Edecán roto."
+                )
+            )
+        config = {
+            "kind": kind,
+            "api_key": api_key,
+            "base_url": base_url,
+            "model_principal": choice.principal,
+            "model_rapido": choice.rapido,
+            "extra": {"provider_label": provider},
+        }
+        account = await _find_or_create_connector_account(
+            ctx, _LLM_KEY, _LLM_KEY, "Proveedor de inteligencia"
+        )
+        await ctx.vault.put(
+            ctx.tenant_id,
+            account["id"],
+            TokenBundle(
+                access_token=_json(config),
+                token_type="config",
+                scopes=[kind, provider],
+            ),
+        )
+        return ToolResult(
+            content=(
+                f"Listo, conecté y verifiqué {display_name}. Elegí "
+                f"{choice.principal} como modelo principal y {choice.rapido} como rápido. "
+                "La clave quedó cifrada y no permanece visible en el chat."
+            ),
+            data={
+                "tipo": "llm",
+                "provider": provider,
+                "model_principal": choice.principal,
+                "model_rapido": choice.rapido,
+            },
+        )
+
+    async def _images(
+        self, ctx: ToolContext, campos: dict[str, Any], _conector: str
+    ) -> ToolResult:
+        provider = str(campos.get("provider") or "openai").strip().lower()
+        if provider != "openai":
+            raise _CampoInvalido(
+                "La configuración automática de imágenes admite OpenAI. Para un endpoint "
+                "compatible personalizado necesito también su URL y modelo en Ajustes."
+            )
+        api_key = _requerido(campos, "api_key")
+        base_url = "https://api.openai.com/v1"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{base_url}/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+        except httpx.HTTPError:
+            return ToolResult(
+                content="No pude contactar OpenAI, así que no guardé la clave de imágenes."
+            )
+        if not 200 <= response.status_code < 300:
+            return ToolResult(
+                content="OpenAI rechazó esa clave. No guardé nada; verifica la credencial."
+            )
+        try:
+            items = response.json().get("data", [])
+        except (AttributeError, ValueError):
+            items = []
+        model = str(campos.get("model") or "").strip()
+        if not model:
+            candidates = [
+                item
+                for item in items
+                if isinstance(item, dict) and "image" in str(item.get("id") or "").lower()
+            ]
+            if candidates:
+                selected = max(
+                    candidates,
+                    key=lambda item: (
+                        int(item.get("created") or 0),
+                        str(item.get("id") or ""),
+                    ),
+                )
+                model = str(selected.get("id") or "").strip()
+        if not model:
+            return ToolResult(
+                content=(
+                    "La clave de OpenAI respondió, pero la cuenta no anunció un modelo de "
+                    "imágenes. No guardé nada para evitar una conexión incompleta."
+                )
+            )
+        account = await _find_or_create_connector_account(
+            ctx, _IMAGES_KEY, _IMAGES_KEY, "Generación de imágenes"
+        )
+        await ctx.vault.put(
+            ctx.tenant_id,
+            account["id"],
+            TokenBundle(
+                access_token=_json({"base_url": base_url, "api_key": api_key, "model": model}),
+                token_type="config",
+                scopes=["openai_compat"],
+            ),
+        )
+        return ToolResult(
+            content=(
+                f"Listo, conecté OpenAI para crear imágenes con {model}. La clave quedó "
+                "cifrada y no permanece visible en el chat."
+            ),
+            data={"tipo": "images", "provider": provider, "model": model},
+        )
 
     async def _voice_stt(
         self, ctx: ToolContext, campos: dict[str, Any], _conector: str

@@ -23,6 +23,7 @@ struct ChatView: View {
     @State private var previewTarget: SecurePreviewTarget?
     @State private var conversacionPersistida = ""
     private let estadoLocal = ChatLocalStateStore()
+    private let anclaFinal = "chat-final"
     @FocusState private var campoEnfocado: Bool
 
     var body: some View {
@@ -155,6 +156,9 @@ struct ChatView: View {
                             resolverConfirmacion(aprobado: aprobado)
                         }
                     }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(anclaFinal)
                 }
                 .padding()
             }
@@ -163,10 +167,10 @@ struct ChatView: View {
             .onTapGesture {
                 campoEnfocado = false
             }
-            .onChange(of: viewModel.mensajes.count) { _, _ in
+            .onChange(of: viewModel.mensajes.last) { _, _ in
                 desplazarAlFinal(proxy)
             }
-            .onChange(of: viewModel.mensajes.last?.texto) { _, _ in
+            .onChange(of: viewModel.confirmacionPendiente?.id) { _, _ in
                 desplazarAlFinal(proxy)
             }
         }
@@ -198,9 +202,8 @@ struct ChatView: View {
     }
 
     private func desplazarAlFinal(_ proxy: ScrollViewProxy) {
-        guard let ultimo = viewModel.mensajes.last else { return }
         withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(ultimo.id, anchor: .bottom)
+            proxy.scrollTo(anclaFinal, anchor: .bottom)
         }
     }
 

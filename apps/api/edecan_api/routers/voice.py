@@ -247,7 +247,12 @@ async def _tts_para_tenant(
         if cfg is not None:
             provider = cfg.get("provider")
             if provider == "elevenlabs" and cfg.get("api_key"):
-                return ElevenLabsTTS(api_key=cfg["api_key"], default_voice_id=cfg.get("voice_id"))
+                return ElevenLabsTTS(
+                    api_key=cfg["api_key"],
+                    default_voice_id=cfg.get("voice_id"),
+                    model_id=str(cfg.get("model_id") or "eleven_multilingual_v2"),
+                    expressive=bool(cfg.get("expressive", False)),
+                )
             if provider == "polly":
                 if getattr(settings, "EDECAN_LOCAL_MODE", False):
                     # `allow_ambient_credentials=True`: seguro AQUÍ porque el

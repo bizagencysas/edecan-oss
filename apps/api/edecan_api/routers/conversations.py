@@ -190,7 +190,7 @@ def _message_out(row: dict[str, Any]) -> dict[str, Any]:
 async def list_conversations(
     current_user: CurrentUser = Depends(get_current_user), repo: Repo = Depends(get_repo)
 ) -> list[dict[str, Any]]:
-    await _refresh_legacy_conversation_titles(current_user=current_user, repo=repo)
+    await _refresh_conversation_titles(current_user=current_user, repo=repo)
     rows = await repo.list_conversations(
         tenant_id=current_user.tenant_id, user_id=current_user.user_id
     )
@@ -324,6 +324,14 @@ _TITLE_API_PROVIDER_RE = re.compile(
     r"(?=\s+(?:es|vale|con)\b|[:=,.!?]|$)",
     re.IGNORECASE,
 )
+_TITLE_DAILY_EXERCISE_RE = re.compile(
+    r"^(?:qu[eé]\s+pasar[ií]a\s+si\s+)?(?:yo\s+)?"
+    r"(?:empezara?\s+a\s+)?(?:hacer\s+)?"
+    r"(?P<count>\d+)\s+(?P<exercise>flexiones|sentadillas|abdominales)"
+    r"(?:\s+(?P<frequency>diarias?|cada\s+d[ií]a))?\b",
+    re.IGNORECASE,
+)
+_TITLE_MAX_CHARS = 46
 
 
 def _credential_conversation_title(intent: InlineCredentialIntent) -> str:
@@ -345,6 +353,19 @@ def _automatic_conversation_title(text: str, *, fallback: str = "Conversación")
     if re.search(r"\b(?:api[\s_-]*key|clave(?:\s+api)?|credencial)\b", clean, re.IGNORECASE):
         return "Configurar API Key"
 
+    if re.search(r"\bwho\s+you\s+are\b", clean, re.IGNORECASE):
+        return "Explicar quién es Edecán"
+
+    exercise_match = _TITLE_DAILY_EXERCISE_RE.match(clean)
+    if exercise_match:
+        frequency = exercise_match.group("frequency") or "diarias"
+        if frequency.casefold() == "cada día":
+            frequency = "diarias"
+        return (
+            f"Hacer {exercise_match.group('count')} "
+            f"{exercise_match.group('exercise').lower()} {frequency.lower()}"
+        )
+
     clean = _TITLE_LEADING_FILLER_RE.sub("", clean).strip()
     first_sentence = clean
     for separator in ("?", "!", "."):
@@ -359,8 +380,8 @@ def _automatic_conversation_title(text: str, *, fallback: str = "Conversación")
         subject = re.sub(r"^(?:me|mi|un|una|el|la)\s+", "", subject, count=1, flags=re.I)
         first_sentence = f"{infinitive} {subject}".strip()
         break
-    shortened = first_sentence[:72]
-    if len(first_sentence) > 72:
+    shortened = first_sentence[:_TITLE_MAX_CHARS]
+    if len(first_sentence) > _TITLE_MAX_CHARS:
         shortened = shortened.rsplit(" ", 1)[0]
     return shortened.rstrip(" ,;:") or fallback
 
@@ -375,25 +396,24 @@ def _legacy_title_is_a_long_message_copy(title: str, first_user_text: str) -> bo
     return normalized_message.casefold().startswith(normalized_title.casefold())
 
 
-async def _refresh_legacy_conversation_titles(
-    *, current_user: CurrentUser, repo: Repo
-) -> None:
-    """Clasifica una sola vez títulos previos a 0021 y resume copias largas."""
+async def _refresh_conversation_titles(*, current_user: CurrentUser, repo: Repo) -> None:
+    """Resume títulos automáticos y clasifica los heredados sin tocar los manuales."""
 
-    candidates = await repo.list_legacy_conversation_title_candidates(
+    candidates = await repo.list_conversation_title_refresh_candidates(
         tenant_id=current_user.tenant_id,
         user_id=current_user.user_id,
     )
     for row in candidates:
         old_title = str(row.get("title") or "").strip()
         first_user_text = _extract_text(row.get("first_user_content"))
-        if _legacy_title_is_a_long_message_copy(old_title, first_user_text):
+        old_source = str(row.get("title_source") or "legacy")
+        if old_source == "auto" or _legacy_title_is_a_long_message_copy(old_title, first_user_text):
             title = _automatic_conversation_title(first_user_text)
             source = "auto"
         else:
             title = old_title
             source = "manual"
-        if not title:
+        if not title or (title == old_title and source == old_source):
             continue
         await repo.update_conversation_title(
             tenant_id=current_user.tenant_id,

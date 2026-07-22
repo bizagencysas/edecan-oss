@@ -280,14 +280,14 @@ class FakeRepo:
         rows.sort(key=lambda r: r["updated_at"], reverse=True)
         return [dict(r) for r in rows]
 
-    async def list_legacy_conversation_title_candidates(
+    async def list_conversation_title_refresh_candidates(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]:
         candidates: list[Row] = []
         for row in self.conversations.values():
             if row["tenant_id"] != tenant_id or row["user_id"] != user_id:
                 continue
-            if row.get("title_source", "legacy") != "legacy":
+            if row.get("title_source", "legacy") not in {"legacy", "auto"}:
                 continue
             first_user = next(
                 (
@@ -575,9 +575,11 @@ class FakeRepo:
         row = self.conversations.get(conversation_id)
         if row is None or row["tenant_id"] != tenant_id:
             return None
-        if only_if_empty and str(row.get("title") or "").strip() and row.get(
-            "title_source"
-        ) != "auto_pending":
+        if (
+            only_if_empty
+            and str(row.get("title") or "").strip()
+            and row.get("title_source") != "auto_pending"
+        ):
             return None
         row["title"] = title
         if source is not None:

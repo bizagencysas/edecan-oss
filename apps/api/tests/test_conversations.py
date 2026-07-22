@@ -23,6 +23,23 @@ def test_automatic_title_summarizes_api_setup_without_copying_the_message() -> N
     assert "credencial" not in title.lower()
 
 
+def test_automatic_title_is_a_short_intent_instead_of_the_opening_sentence() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    assert (
+        conversations_module._automatic_conversation_title(
+            "Que pasaría si yo empezara a hacer 15 flexiones diarias con 15"
+        )
+        == "Hacer 15 flexiones diarias"
+    )
+    assert (
+        conversations_module._automatic_conversation_title(
+            "How do I explain a friend in one paragraph who you are and what you make"
+        )
+        == "Explicar quién es Edecán"
+    )
+
+
 def test_tool_end_with_artifact_is_json_serializable_for_history() -> None:
     import edecan_api.routers.conversations as conversations_module
 
@@ -220,9 +237,7 @@ async def test_first_message_names_conversation_without_waiting_for_second_llm(
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
 
     response = await client.post(
@@ -299,9 +314,7 @@ async def test_secret_without_configuration_intent_is_redacted_before_llm_and_st
 
     monkeypatch.setattr(conversations_module, "Agent", InspectingAgent)
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
     secret = "sk-proj-example-secret-1234567890"
 
@@ -340,9 +353,7 @@ def test_historical_secret_is_redacted_when_serialized_or_sent_back_to_llm() -> 
 
 async def test_conversation_can_be_renamed_and_is_tenant_scoped(client) -> None:
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
 
     renamed = await client.patch(
@@ -383,9 +394,7 @@ async def test_post_message_idempotency_replays_exact_sse_without_duplicate_side
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     key = str(uuid.uuid4())
     headers["Idempotency-Key"] = key
     conversation_id = await _create_conversation(client, headers)
@@ -443,18 +452,14 @@ async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disc
     )
     first = await anext(stream)
     assert first == "event: message.delta\ndata: first\n\n"
-    in_flight = await conversations_module._load_idempotency_record(
-        fake_redis, redis_key=redis_key
-    )
+    in_flight = await conversations_module._load_idempotency_record(fake_redis, redis_key=redis_key)
     assert in_flight is not None and in_flight["status"] == "in_flight"
 
     # Simula que el transporte se desconecta después del primer token. Cerrar
     # el consumidor debe esperar al productor y dejar el replay completo.
     asyncio.get_running_loop().call_soon(release.set)
     await stream.aclose()
-    completed = await conversations_module._load_idempotency_record(
-        fake_redis, redis_key=redis_key
-    )
+    completed = await conversations_module._load_idempotency_record(fake_redis, redis_key=redis_key)
     assert completed is not None
     assert completed == {
         "status": "completed",
@@ -480,9 +485,7 @@ async def test_post_message_idempotency_rejects_same_key_with_different_body(
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     conversation_id = await _create_conversation(client, headers)
 
@@ -523,9 +526,7 @@ async def test_post_message_idempotency_rejects_concurrent_in_flight_retry(
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", SlowAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     conversation_id = await _create_conversation(client, headers)
     url = f"/v1/conversations/{conversation_id}/messages"
@@ -562,9 +563,7 @@ async def test_post_message_idempotency_is_scoped_per_conversation(client, monke
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     first_conversation = await _create_conversation(client, headers)
     second_conversation = await _create_conversation(client, headers)
@@ -585,9 +584,7 @@ async def test_post_message_idempotency_is_scoped_per_conversation(client, monke
 
 
 async def test_post_message_rejects_malformed_idempotency_uuid(client) -> None:
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = "no-es-uuid"
     conversation_id = await _create_conversation(client, headers)
 
@@ -752,9 +749,7 @@ async def test_list_conversations_is_scoped_per_tenant(client) -> None:
     assert len(response_b.json()) == 0
 
 
-async def test_list_conversations_replaces_legacy_long_message_copy(
-    client, fake_repo
-) -> None:
+async def test_list_conversations_replaces_legacy_long_message_copy(client, fake_repo) -> None:
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
     headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
@@ -801,6 +796,28 @@ async def test_list_conversations_preserves_legacy_manual_title(client, fake_rep
     assert fake_repo.conversations[conversation_id]["title_source"] == "manual"
 
 
+async def test_list_conversations_improves_existing_automatic_title(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    first_message = "How do I explain a friend in one paragraph who you are and what you make"
+    fake_repo.conversations[conversation_id]["title"] = first_message[:72]
+    fake_repo.conversations[conversation_id]["title_source"] = "auto"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": first_message},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Explicar quién es Edecán"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "auto"
+
+
 # --------------------------------------------------------------------------
 # GET /{id} y DELETE /{id}
 # --------------------------------------------------------------------------
@@ -836,9 +853,7 @@ async def test_get_conversation_recovers_only_public_pending_confirmation(
     import edecan_api.routers.conversations as conversations_module
 
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
     conversation_uuid = uuid.UUID(conversation_id)
     await conversations_module._store_pending_confirmation(
@@ -888,9 +903,7 @@ async def test_get_conversation_recovers_only_public_pending_confirmation(
         headers=headers,
     )
     assert declined.status_code == 200
-    after_consumption = await client.get(
-        f"/v1/conversations/{conversation_id}", headers=headers
-    )
+    after_consumption = await client.get(f"/v1/conversations/{conversation_id}", headers=headers)
     assert after_consumption.json()["pending_confirmation"] is None
 
 

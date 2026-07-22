@@ -145,7 +145,7 @@ class Repo(Protocol):
     async def list_conversations(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]: ...
-    async def list_legacy_conversation_title_candidates(
+    async def list_conversation_title_refresh_candidates(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]: ...
     async def get_conversation(
@@ -766,7 +766,7 @@ class SqlRepo:
             {"tenant_id": tenant_id, "user_id": user_id},
         )
 
-    async def list_legacy_conversation_title_candidates(
+    async def list_conversation_title_refresh_candidates(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]:
         return await self._all(
@@ -784,7 +784,7 @@ class SqlRepo:
             ) AS first_user ON TRUE
             WHERE c.tenant_id = :tenant_id
               AND c.user_id = :user_id
-              AND c.title_source = 'legacy'
+              AND c.title_source IN ('legacy', 'auto')
             ORDER BY c.created_at ASC
             LIMIT 1000
             """,
@@ -988,9 +988,7 @@ class SqlRepo:
         }
         clean = {key: value for key, value in fields.items() if key in allowed}
         if not clean:
-            return await self.get_phone_agent_template(
-                tenant_id=tenant_id, template_id=template_id
-            )
+            return await self.get_phone_agent_template(tenant_id=tenant_id, template_id=template_id)
         set_clause = ", ".join(f"{key} = :{key}" for key in clean)
         return await self._first(
             f"UPDATE phone_agent_templates SET {set_clause}, updated_at = :now "
@@ -1107,9 +1105,7 @@ class SqlRepo:
 
     async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None:
         """Lookup sin tenant solo para webhooks firmados, usando repo plataforma."""
-        return await self._first(
-            "SELECT * FROM phone_calls WHERE id = :id", {"id": call_id}
-        )
+        return await self._first("SELECT * FROM phone_calls WHERE id = :id", {"id": call_id})
 
     async def update_phone_call(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]

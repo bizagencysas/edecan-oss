@@ -24,6 +24,9 @@ ARCH="$(uname -m)"
 case "$PLATFORM" in
   Darwin)
     PLATFORM_LABEL="macOS"
+    if [[ -n "${EDECAN_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+      export APPLE_SIGNING_IDENTITY="$EDECAN_MACOS_CODESIGN_IDENTITY"
+    fi
     # Un bundle sin firma exterior hereda la firma del ejecutable y falla
     # `codesign --verify --deep --strict`. `-` es la identidad ad-hoc nativa
     # de codesign. Una identidad real definida por el empaquetador siempre

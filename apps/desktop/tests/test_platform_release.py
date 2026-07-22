@@ -104,6 +104,41 @@ def test_release_shell_scripts_are_executable() -> None:
         assert mode & stat.S_IXUSR, f"{name} must be executable in a source checkout"
 
 
+def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None:
+    installer = (
+        REPO_ROOT / "apps" / "desktop" / "scripts" / "install-macos.sh"
+    ).read_text(encoding="utf-8")
+    builder = (
+        REPO_ROOT / "apps" / "desktop" / "scripts" / "build-app.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'TARGET_APP="/Applications/Edecán.app"' in installer
+    assert 'TARGET_APP="$HOME/Applications/Edecán.app"' in installer
+    assert "EDECAN_INSTALL_PATH" in installer
+    assert "EDECAN_MACOS_CODESIGN_IDENTITY" in installer
+    assert "codesign_authority" in installer
+    assert "codesign --verify --deep --strict" in installer
+    assert "migrate_macos_autostart" in installer
+    assert 'Set :ProgramArguments:0 $executable' in installer
+    assert 'launchctl bootout "$gui_domain"' in installer
+    assert 'launchctl bootstrap "$gui_domain"' in installer
+    assert 'BACKUP_ARCHIVE="$HOME/.Trash/Edecán anterior ' in installer
+    assert "BACKUP_APP=" not in installer
+    assert "EDECAN_MACOS_CODESIGN_IDENTITY" in builder
+
+
+def test_ios_chat_dismisses_the_keyboard_without_a_listo_accessory_bar() -> None:
+    chat_view = (
+        REPO_ROOT / "apps" / "mobile" / "ios" / "EdecanApp" / "Screens" / "ChatView.swift"
+    ).read_text(encoding="utf-8")
+
+    assert 'ToolbarItemGroup(placement: .keyboard)' not in chat_view
+    assert 'Button("Listo")' not in chat_view
+    assert ".scrollDismissesKeyboard(.interactively)" in chat_view
+    assert ".onTapGesture" in chat_view
+    assert "campoEnfocado = false" in chat_view
+
+
 def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:
     spec = (REPO_ROOT / "apps" / "desktop" / "packaging" / "edecan_local.spec").read_text(
         encoding="utf-8"

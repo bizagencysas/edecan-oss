@@ -39,7 +39,8 @@ Ni la interfaz ni el backend se reescriben para la versión de escritorio: `apps
 
 En macOS, si recibiste el repositorio en vez del DMG, haz doble clic en
 **`Abrir Edecán.command`** en la raíz. La primera vez prepara e instala
-`~/Applications/Edecán.app`; después solo abre la app. El proceso que macOS
+`/Applications/Edecán.app` cuando esa carpeta es escribible, o
+`~/Applications/Edecán.app` como fallback; después solo abre la app. El proceso que macOS
 ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 `python3.x`, evitando que sus permisos se mezclen con Jarvis u otro proyecto.
 

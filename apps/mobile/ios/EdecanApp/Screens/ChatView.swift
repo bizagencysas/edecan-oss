@@ -88,14 +88,6 @@ struct ChatView: View {
                     .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
                     .accessibilityLabel("Nuevo chat")
                 }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Listo") {
-                        campoEnfocado = false
-                    }
-                    .fontWeight(.semibold)
-                    .accessibilityHint("Cierra el teclado sin enviar el mensaje")
-                }
             }
             .task {
                 guard let client = session.client else { return }

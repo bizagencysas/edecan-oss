@@ -198,7 +198,10 @@ DESKTOP_WEB_SECURITY_HEADERS: dict[str, str] = {
             "default-src 'self'",
             "base-uri 'self'",
             "object-src 'none'",
-            "frame-src 'none'",
+            # Studio y los previews de archivos usan exclusivamente Blob URLs
+            # creadas tras una descarga autenticada. Cada iframe se monta sin
+            # permisos y recibe además una CSP interna sin scripts ni red.
+            "frame-src blob:",
             "frame-ancestors 'none'",
             "form-action 'self'",
             "script-src 'self' 'unsafe-inline'",

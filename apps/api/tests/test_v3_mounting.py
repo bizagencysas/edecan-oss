@@ -173,6 +173,8 @@ async def test_serve_web_dir_definido_y_existente_se_monta_y_sirve_index(
     assert "microphone=(self)" in raiz.headers["permissions-policy"]
     csp = raiz.headers["content-security-policy"]
     assert "frame-ancestors 'none'" in csp
+    assert "frame-src blob:" in csp
+    assert "frame-src http" not in csp
     assert "connect-src 'self' ipc: http://ipc.localhost" in csp
     assert "unsafe-eval" not in csp
     # El mount en "/" va AL FINAL: /healthz sigue alcanzable, no queda tapado.

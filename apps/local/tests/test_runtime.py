@@ -52,6 +52,7 @@ def test_parse_args_defaults() -> None:
     assert args.data_dir == rt.DEFAULT_DATA_DIR
     assert args.no_web is False
     assert args.mobile_access is False
+    assert args.macos_permission_status is False
 
 
 def test_parse_args_overrides() -> None:
@@ -60,6 +61,30 @@ def test_parse_args_overrides() -> None:
     assert args.data_dir == "/tmp/x"
     assert args.no_web is True
     assert args.mobile_access is True
+
+
+def test_macos_permission_status_is_ready_outside_macos(monkeypatch) -> None:
+    monkeypatch.setattr(rt.sys, "platform", "linux")
+
+    assert rt._macos_permission_status() == {
+        "screen_recording": True,
+        "accessibility": True,
+    }
+
+
+def test_main_permission_probe_does_not_start_backend(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        rt,
+        "_macos_permission_status",
+        lambda: {"screen_recording": False, "accessibility": True},
+    )
+
+    rt.main(["--macos-permission-status"])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "screen_recording": False,
+        "accessibility": True,
+    }
 
 
 # ---------------------------------------------------------------------------

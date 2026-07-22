@@ -17,9 +17,6 @@ import EdecanKit
 @MainActor
 @Observable
 final class RemotoViewModel {
-    private(set) var historial: [RemoteSession] = []
-    private(set) var cargandoHistorial = false
-
     private(set) var sesion: RemoteSession?
     private(set) var frame: RemoteFrame?
 
@@ -43,21 +40,6 @@ final class RemotoViewModel {
     private let intervaloPollingFrame: Duration = .milliseconds(350)
     private var tareaPollingFrame: Task<Void, Never>?
 
-    // MARK: - Historial
-
-    /// `GET /v1/remote/sessions` — secundario: si falla no bloquea el flujo
-    /// principal (mismo criterio que `loadHistory` en la página web).
-    func cargarHistorial(client: APIClient?) async {
-        guard let client else { return }
-        cargandoHistorial = true
-        defer { cargandoHistorial = false }
-        do {
-            historial = try await client.listRemoteSessions()
-        } catch {
-            // Silencioso a propósito, ver el docstring de este método.
-        }
-    }
-
     // MARK: - Iniciar sesión / pedir frame
 
     /// `kind`: `"view"` o `"control"`. Crea la sesión y de inmediato pide el
@@ -78,7 +60,6 @@ final class RemotoViewModel {
         } catch {
             errorMensaje = error.localizedDescription
         }
-        Task { await self.cargarHistorial(client: client) }
     }
 
     /// `GET .../frame`. Éxito: guarda el frame y refleja `status="active"` en
@@ -107,7 +88,6 @@ final class RemotoViewModel {
                 detenerPollingFrame()
                 autoActualizar = false
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
-                Task { await self.cargarHistorial(client: client) }
             }
         } catch {
             errorMensaje = error.localizedDescription
@@ -159,7 +139,6 @@ final class RemotoViewModel {
         }
         sesion = nil
         frame = nil
-        Task { await self.cargarHistorial(client: client) }
     }
 
     // MARK: - Input (solo sesiones kind="control" activas)
@@ -197,7 +176,6 @@ final class RemotoViewModel {
                 detenerPollingFrame()
                 autoActualizar = false
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
-                Task { await self.cargarHistorial(client: client) }
             }
         } catch {
             errorMensaje = error.localizedDescription

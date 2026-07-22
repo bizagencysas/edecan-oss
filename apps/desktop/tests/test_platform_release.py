@@ -118,6 +118,8 @@ def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None
     assert "EDECAN_MACOS_CODESIGN_IDENTITY" in installer
     assert "codesign_authority" in installer
     assert "codesign --verify --deep --strict" in installer
+    assert 'identifier cc.edecan.desktop' in installer
+    assert 'Contents/MacOS/edecan-local' in installer
     assert "migrate_macos_autostart" in installer
     assert 'Set :ProgramArguments:0 $executable' in installer
     assert 'launchctl bootout "$gui_domain"' in installer
@@ -137,6 +139,18 @@ def test_ios_chat_dismisses_the_keyboard_without_a_listo_accessory_bar() -> None
     assert ".scrollDismissesKeyboard(.interactively)" in chat_view
     assert ".onTapGesture" in chat_view
     assert "campoEnfocado = false" in chat_view
+
+
+def test_ios_remote_control_focuses_on_current_session_without_history_panel() -> None:
+    root = Path(__file__).resolve().parents[3]
+    view = (root / "apps/mobile/ios/EdecanApp/Screens/RemotoView.swift").read_text()
+    model = (
+        root / "apps/mobile/ios/EdecanApp/Componentes/RemotoViewModel.swift"
+    ).read_text()
+
+    assert "Historial de sesiones" not in view
+    assert "FilaSesionRemotaHistorial" not in view
+    assert "cargarHistorial" not in model
 
 
 def test_linux_sidecar_preserves_postgres_runtime_modules() -> None:

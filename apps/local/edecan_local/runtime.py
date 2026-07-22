@@ -145,7 +145,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "La app nativa de Edecán lo activa automáticamente."
         ),
     )
+    parser.add_argument(
+        "--macos-permission-status",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
+
+
+def _macos_permission_status() -> dict[str, bool]:
+    """Consulta TCC desde el motor que realmente captura y controla la Mac."""
+
+    if sys.platform != "darwin":
+        return {"screen_recording": True, "accessibility": True}
+
+    import ctypes
+
+    core_graphics = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+    )
+    core_graphics.CGPreflightScreenCaptureAccess.argtypes = []
+    core_graphics.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+
+    application_services = ctypes.CDLL(
+        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+    )
+    application_services.AXIsProcessTrusted.argtypes = []
+    application_services.AXIsProcessTrusted.restype = ctypes.c_bool
+
+    return {
+        "screen_recording": bool(core_graphics.CGPreflightScreenCaptureAccess()),
+        "accessibility": bool(application_services.AXIsProcessTrusted()),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +748,9 @@ async def run(
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.macos_permission_status:
+        print(json.dumps(_macos_permission_status(), separators=(",", ":")))
+        return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     asyncio.run(
         run(

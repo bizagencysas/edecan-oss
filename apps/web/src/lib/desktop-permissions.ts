@@ -42,7 +42,7 @@ export const DESKTOP_PLATFORM_COPY: Record<
     residentLocation: "la barra de menú",
     revealLabel: "Mostrar Edecán en Finder",
     applicationHint:
-      "Si macOS muestra un botón +, selecciona exactamente esta aplicación. No elijas Python, Terminal ni Jarvis.",
+      "Si macOS muestra un botón +, selecciona exactamente esta aplicación. Edecán y su motor remoto comparten la misma identidad firmada.",
   },
   windows: {
     name: "Windows",

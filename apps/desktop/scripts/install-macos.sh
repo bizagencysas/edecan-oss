@@ -128,6 +128,14 @@ ditto "$BUILT_APP" "$STAGED_APP"
 SIGNING_IDENTITY="$(available_signing_identity || true)"
 if [[ -n "$SIGNING_IDENTITY" ]]; then
   codesign --force --deep --sign "$SIGNING_IDENTITY" --timestamp=none "$STAGED_APP"
+  # El motor local ejecuta la captura y el input remoto. Si conserva el
+  # identificador automático `edecan-local`, TCC lo trata como otra app.
+  # Compartir el requisito designado estable hace que el consentimiento de
+  # Edecán cubra también el proceso que realmente realiza esas acciones.
+  codesign --force --sign "$SIGNING_IDENTITY" --identifier cc.edecan.desktop \
+    --timestamp=none "$STAGED_APP/Contents/MacOS/edecan-local"
+  codesign --force --sign "$SIGNING_IDENTITY" --identifier cc.edecan.desktop \
+    --timestamp=none "$STAGED_APP"
 fi
 codesign --verify --deep --strict "$STAGED_APP"
 

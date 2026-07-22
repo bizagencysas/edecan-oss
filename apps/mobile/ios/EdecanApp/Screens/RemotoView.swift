@@ -61,14 +61,12 @@ struct RemotoView: View {
                     consentimiento
                 }
 
-                historial
             }
             .padding()
         }
         .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
         .navigationTitle("Remoto")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await viewModel.cargarHistorial(client: session.client) }
         .onDisappear { viewModel.limpiar() }
     }
 
@@ -394,30 +392,6 @@ struct RemotoView: View {
         return UIImage(data: data)
     }
 
-    // MARK: - Historial
-
-    private var historial: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Historial de sesiones").font(.headline)
-                Spacer()
-                if viewModel.cargandoHistorial { ProgressView().controlSize(.small) }
-            }
-            if viewModel.historial.isEmpty {
-                Text("Todavía no hay sesiones.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(viewModel.historial) { item in
-                        FilaSesionRemotaHistorial(sesion: item)
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .tarjetaVidrio(esquina: 18)
-    }
 }
 
 private struct EtiquetaEstadoSesionRemota: View {
@@ -449,33 +423,6 @@ private struct EtiquetaEstadoSesionRemota: View {
         case "denied": return .red
         default: return .secondary
         }
-    }
-}
-
-private struct FilaSesionRemotaHistorial: View {
-    let sesion: RemoteSession
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(sesion.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.subheadline)
-                    if sesion.esControl {
-                        Text("control")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.red)
-                    }
-                }
-                Text("\(sesion.framesCount) frame(s)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            EtiquetaEstadoSesionRemota(status: sesion.status)
-        }
-        .padding(10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

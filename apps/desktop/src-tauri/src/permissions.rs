@@ -7,6 +7,8 @@
 //! conceder todo: algunos permisos muestran un diálogo y otros obligan a
 //! abrir la sección exacta de Configuración.
 
+#[cfg(target_os = "macos")]
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::listen;
@@ -99,6 +101,7 @@ async fn request_microphone() -> Result<PermissionActionResult, String> {
 
 #[cfg(target_os = "macos")]
 fn permission_catalog() -> Vec<DesktopPermission> {
+    let remote = macos_remote_engine_permissions();
     vec![
         DesktopPermission {
             id: "microphone",
@@ -113,7 +116,7 @@ fn permission_catalog() -> Vec<DesktopPermission> {
             title: "Accesibilidad",
             description: "Permite que el control remoto mueva el mouse, escriba y use tus aplicaciones.",
             level: "essential",
-            status: if macos_accessibility_granted() {
+            status: if remote.as_ref().is_some_and(|status| status.accessibility) {
                 PermissionStatus::Granted
             } else {
                 PermissionStatus::NeedsAction
@@ -125,7 +128,10 @@ fn permission_catalog() -> Vec<DesktopPermission> {
             title: "Grabación de pantalla",
             description: "Permite ver la pantalla de esta Mac desde el teléfono emparejado.",
             level: "essential",
-            status: if macos_screen_recording_granted() {
+            status: if remote
+                .as_ref()
+                .is_some_and(|status| status.screen_recording)
+            {
                 PermissionStatus::Granted
             } else {
                 PermissionStatus::NeedsAction
@@ -237,28 +243,19 @@ fn permission_catalog() -> Vec<DesktopPermission> {
 
 #[cfg(target_os = "macos")]
 fn request_accessibility() -> Result<PermissionActionResult, String> {
-    if macos_accessibility_granted() {
+    if macos_remote_engine_permissions().is_some_and(|status| status.accessibility) {
         return Ok(PermissionActionResult {
             permission_id: "accessibility".into(),
             status: PermissionStatus::Granted,
             message: "Accesibilidad ya está permitida.".into(),
         });
     }
-    // Esta variante de la API no solo consulta: pide a macOS que agregue la
-    // aplicación responsable a la lista y muestre el consentimiento nativo.
-    // Si sigue pendiente, abrimos además la sección exacta.
-    if macos_request_accessibility() {
-        return Ok(PermissionActionResult {
-            permission_id: "accessibility".into(),
-            status: PermissionStatus::Granted,
-            message: "Accesibilidad quedó permitida para Edecán.".into(),
-        });
-    }
+    let _ = reveal_application();
     open_settings_for("accessibility")?;
     Ok(PermissionActionResult {
         permission_id: "accessibility".into(),
         status: PermissionStatus::NeedsAction,
-        message: "Activa Edecán en Accesibilidad y vuelve a esta pantalla para comprobarlo.".into(),
+        message: "Activa Edecán en Accesibilidad. La app y su motor remoto comparten una única identidad firmada.".into(),
     })
 }
 
@@ -274,6 +271,21 @@ fn current_application_path() -> Option<String> {
         }
     }
     Some(executable.display().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn current_remote_engine_path() -> Option<String> {
+    let bundle = current_application_path()?;
+    let engine = std::path::Path::new(&bundle)
+        .join("Contents")
+        .join("MacOS")
+        .join("edecan-local");
+    engine.exists().then(|| engine.display().to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_remote_engine_path() -> Option<String> {
+    None
 }
 
 fn reveal_application() -> Result<PermissionActionResult, String> {
@@ -328,19 +340,20 @@ fn request_accessibility() -> Result<PermissionActionResult, String> {
 
 #[cfg(target_os = "macos")]
 fn request_screen_recording() -> Result<PermissionActionResult, String> {
-    if macos_screen_recording_granted() || macos_request_screen_recording() {
+    if macos_remote_engine_permissions().is_some_and(|status| status.screen_recording) {
         return Ok(PermissionActionResult {
             permission_id: "screen_recording".into(),
             status: PermissionStatus::Granted,
             message: "Grabación de pantalla está permitida.".into(),
         });
     }
+    let _ = reveal_application();
     open_settings_for("screen_recording")?;
     Ok(PermissionActionResult {
         permission_id: "screen_recording".into(),
         status: PermissionStatus::NeedsAction,
         message:
-            "Activa Edecán en Grabación de pantalla. macOS puede pedir que reinicies la aplicación."
+            "Activa Edecán en Grabación de pantalla. La app y su motor remoto comparten una única identidad firmada."
                 .into(),
     })
 }
@@ -426,56 +439,23 @@ fn platform_name() -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_accessibility_granted() -> bool {
-    #[link(name = "ApplicationServices", kind = "framework")]
-    unsafe extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-    }
-    // SAFETY: función de consulta sin argumentos de la API pública de
-    // Accessibility; no transfiere memoria ni conserva punteros.
-    unsafe { AXIsProcessTrusted() }
+#[derive(Debug, Deserialize)]
+struct MacosRemoteEnginePermissions {
+    screen_recording: bool,
+    accessibility: bool,
 }
 
 #[cfg(target_os = "macos")]
-fn macos_request_accessibility() -> bool {
-    use core_foundation::base::TCFType;
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-    use core_foundation::string::CFString;
-
-    #[link(name = "ApplicationServices", kind = "framework")]
-    unsafe extern "C" {
-        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+fn macos_remote_engine_permissions() -> Option<MacosRemoteEnginePermissions> {
+    let engine = current_remote_engine_path()?;
+    let output = std::process::Command::new(engine)
+        .arg("--macos-permission-status")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-
-    let options: CFDictionary<CFString, CFBoolean> = CFDictionary::from_CFType_pairs(&[(
-        CFString::from_static_string("AXTrustedCheckOptionPrompt"),
-        CFBoolean::true_value(),
-    )]);
-    // SAFETY: la API pública solo lee el CFDictionary retenido durante esta
-    // llamada y devuelve un booleano. El diccionario permanece vivo.
-    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_screen_recording_granted() -> bool {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-    }
-    // SAFETY: consulta booleana de CoreGraphics, sin argumentos ni punteros.
-    unsafe { CGPreflightScreenCaptureAccess() }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_request_screen_recording() -> bool {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGRequestScreenCaptureAccess() -> bool;
-    }
-    // SAFETY: API pública de CoreGraphics que muestra el consentimiento
-    // nativo y devuelve únicamente si la captura quedó autorizada.
-    unsafe { CGRequestScreenCaptureAccess() }
+    serde_json::from_slice(&output.stdout).ok()
 }
 
 #[cfg(test)]

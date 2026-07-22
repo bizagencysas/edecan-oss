@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import { CheckIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
-import type { ToolTimelineEntry } from "@/lib/chat-blocks";
+import { plainToolResultPreview, type ToolTimelineEntry } from "@/lib/chat-blocks";
 import { getMission, type MissionDetail } from "@/lib/api-misiones";
 
 import { ArtifactLinks } from "./ArtifactLinks";
@@ -12,7 +12,13 @@ import { ArtifactLinks } from "./ArtifactLinks";
 export type ToolEvent = ToolTimelineEntry;
 
 /** Traza visual de las herramientas que el agente fue llamando durante el turno (§10.7). */
-export function ToolTimeline({ events }: { events: ToolEvent[] }) {
+export function ToolTimeline({
+  events,
+  showResultPreview = true,
+}: {
+  events: ToolEvent[];
+  showResultPreview?: boolean;
+}) {
   if (events.length === 0) return null;
   return (
     <div className="flex flex-col gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-900/60">
@@ -25,12 +31,14 @@ export function ToolTimeline({ events }: { events: ToolEvent[] }) {
           )}
           <div>
             <span className="font-medium text-slate-700 dark:text-slate-200">{displayToolName(event.name)}</span>
-            {event.status === "done" && event.resultPreview && (
-              <span className="text-slate-500 dark:text-slate-400"> — {event.resultPreview}</span>
+            {showResultPreview && event.status === "done" && event.resultPreview && (
+              <span className="text-slate-500 dark:text-slate-400">
+                {" · "}{plainToolResultPreview(event.resultPreview)}
+              </span>
             )}
             {event.status === "running" && (
               <span className="text-slate-400">
-                {" — "}{event.progressMessage ?? "ejecutando…"}
+                {" · "}{event.progressMessage ?? "ejecutando…"}
                 {typeof event.elapsedSeconds === "number" ? ` · ${formatDuration(event.elapsedSeconds)}` : ""}
               </span>
             )}

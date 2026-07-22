@@ -419,6 +419,22 @@ export interface ToolTimelineEntry {
   missionId?: string;
 }
 
+/**
+ * La salida de una tool puede contener Markdown porque también alimenta al
+ * modelo. La timeline es una traza compacta, no otro mensaje del chat: quita
+ * los delimitadores de formato para que nunca muestre `**texto**` literal.
+ */
+export function plainToolResultPreview(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, "código generado")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/(\*\*|__|~~)(.*?)\1/g, "$2")
+    .replace(/(^|\s)[*_]([^*_\n]+)[*_](?=\s|$|[.,:;!?])/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Reduce eventos por identidad; el nombre solo se usa como fallback para logs antiguos sin ID. */
 export function reduceToolTimeline(
   previous: ToolTimelineEntry[],

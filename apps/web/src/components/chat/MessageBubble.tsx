@@ -59,7 +59,9 @@ export function MessageBubble({
           </div>
         )}
         {!isUser && <RichMessageBlocks blocks={blocks} onPrefillMessage={onPrefillMessage} />}
-        {!isUser && toolTimeline.length > 0 && <ToolTimeline events={toolTimeline} />}
+        {!isUser && toolTimeline.length > 0 && (
+          <ToolTimeline events={toolTimeline} showResultPreview={!text} />
+        )}
         <ArtifactLinks artifacts={artifacts} />
         {!isUser && canSpeak && text && (
           <button

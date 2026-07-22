@@ -7,6 +7,7 @@ import {
   messageBlocks,
   parseAgentEvent,
   parseChatBlock,
+  plainToolResultPreview,
   publicHttpUrl,
   reduceToolTimeline,
   toolTimelineFromCalls,
@@ -193,4 +194,14 @@ test("helpers de presentación producen destinos y etiquetas humanas", () => {
   assert.equal(flightStopsLabel(2), "2 escalas");
   assert.equal(sourceModeLabel("demo"), "Demostración");
   assert.equal(sourceModeLabel("live"), "Datos en vivo");
+});
+
+test("la traza técnica no muestra Markdown crudo", () => {
+  assert.equal(
+    plainToolResultPreview(
+      "**Descripción:** logo `Edecán` y [archivo](https://example.com/a).\n~~borrador~~",
+    ),
+    "Descripción: logo Edecán y archivo. borrador",
+  );
+  assert.equal(plainToolResultPreview("```js\nalert(1)\n```"), "código generado");
 });

@@ -227,11 +227,45 @@ def test_get_input_backend_constructs_pynput_backend_on_linux(monkeypatch):
 
 def test_get_input_backend_constructs_quartz_backend_on_darwin(monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
+    monkeypatch.delenv("EDECAN_DESKTOP_BRIDGE_SOCKET", raising=False)
+    monkeypatch.delenv("EDECAN_DESKTOP_BRIDGE_TOKEN", raising=False)
     _install_fake_quartz(monkeypatch)
 
     backend = actions._get_input_backend()
 
     assert isinstance(backend, actions._QuartzInputBackend)
+
+
+def test_get_input_backend_prefers_authorized_desktop_bridge_on_darwin(monkeypatch):
+    monkeypatch.setattr(actions.sys, "platform", "darwin")
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_SOCKET", "/tmp/edecan-test.sock")
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_TOKEN", "test-token")
+
+    backend = actions._get_input_backend()
+
+    assert isinstance(backend, actions._DesktopBridgeInputBackend)
+
+
+def test_desktop_bridge_input_backend_forwards_typed_actions(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        actions,
+        "_desktop_bridge_call",
+        lambda action, params: calls.append((action, params)) or {"executed": True},
+    )
+    backend = actions._DesktopBridgeInputBackend()
+
+    backend.click_pointer(10, 20, "left")
+    backend.scroll_pointer(3, -90)
+    backend.type_text("Hola")
+    backend.press_key("enter", ("command",))
+
+    assert calls == [
+        ("click_pointer", {"x": 10, "y": 20, "button": "left"}),
+        ("scroll_pointer", {"delta_x": 3, "delta_y": -90}),
+        ("type_text", {"text": "Hola"}),
+        ("press_key", {"key": "enter", "modifiers": ["command"]}),
+    ]
 
 
 # ---------------------------------------------------------------------------

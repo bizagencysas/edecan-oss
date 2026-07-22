@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+use crate::remote_bridge;
+
 /// Handle del proceso del sidecar actualmente vivo (si hay uno). Se limpia
 /// SIEMPRE antes de lanzar uno nuevo y al salir de la app — nunca debe
 /// quedar un `edecan-local` huérfano corriendo en segundo plano.
@@ -124,6 +126,14 @@ pub async fn start_backend(app: AppHandle) {
     };
     *app.state::<DesktopCapabilityState>().0.lock().unwrap() = Some(capability.clone());
 
+    let remote_bridge = match remote_bridge::ensure_started(&app) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[edecan-desktop] no se pudo iniciar el puente remoto nativo: {error}");
+            None
+        }
+    };
+
     let target_data_dir = data_dir(&app);
     if let Err(err) = std::fs::create_dir_all(&target_data_dir) {
         emit_error(
@@ -139,7 +149,13 @@ pub async fn start_backend(app: AppHandle) {
 
     let _ = app.emit("edecan://backend-status", "Arrancando tu asistente…");
 
-    let command = match build_command(&app, port, &target_data_dir, &capability) {
+    let command = match build_command(
+        &app,
+        port,
+        &target_data_dir,
+        &capability,
+        remote_bridge.as_ref(),
+    ) {
         Ok(cmd) => cmd,
         Err(message) => {
             emit_error(&app, message, Vec::new());
@@ -243,6 +259,7 @@ fn build_command(
     port: u16,
     target_data_dir: &Path,
     desktop_capability: &str,
+    remote_bridge: Option<&remote_bridge::RemoteBridgeCredentials>,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     let port_arg = port.to_string();
     let data_dir_arg = target_data_dir.to_string_lossy().to_string();
@@ -278,6 +295,12 @@ fn build_command(
     };
 
     let cmd = with_studio_env(cmd, app, source_command)?;
+    let cmd = if let Some(bridge) = remote_bridge {
+        cmd.env("EDECAN_DESKTOP_BRIDGE_SOCKET", &bridge.socket_path)
+            .env("EDECAN_DESKTOP_BRIDGE_TOKEN", &bridge.token)
+    } else {
+        cmd
+    };
     Ok(
         with_expanded_path(with_ollama_env(cmd))
             .env("LOCAL_DESKTOP_CAPABILITY", desktop_capability),

@@ -12,6 +12,7 @@ mod commands;
 mod lifecycle;
 mod listen;
 mod permissions;
+mod remote_bridge;
 mod startup;
 mod tray;
 mod util;
@@ -42,6 +43,7 @@ pub fn run() {
         .manage(StartHiddenState(std::sync::atomic::AtomicBool::new(
             start_hidden,
         )))
+        .manage(remote_bridge::RemoteBridgeState::default())
         .manage(listen::AlwaysListenRuntime::default())
         .manage(tray::TrayState::default())
         .plugin(tauri_plugin_shell::init())

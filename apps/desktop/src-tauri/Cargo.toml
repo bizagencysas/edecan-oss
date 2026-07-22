@@ -75,6 +75,13 @@ half = "=2.4.1"
 # detectarla (src/listen.rs).
 hound = "3.5.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# El control remoto debe ejecutarse desde el proceso .app al que macOS
+# concede TCC, no desde el sidecar Python. CoreGraphics sintetiza input desde
+# esa identidad y base64 transporta capturas por el socket local privado.
+base64 = "0.22"
+core-graphics = { version = "0.25", features = ["highsierra"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

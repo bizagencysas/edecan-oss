@@ -9,6 +9,7 @@ Todo corre contra `companion_config` (fixture de `conftest.py`, en
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 
 import pytest
@@ -529,6 +530,29 @@ def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(
         actions._screenshot_via_screencapture({})
 
     assert called is False
+
+
+def test_native_macos_capture_prefers_authorized_desktop_bridge(monkeypatch):
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (900, 600), color=(1, 2, 3)).save(buffer, format="PNG")
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(
+        actions,
+        "_desktop_bridge_call",
+        lambda action, params: {"image_b64": base64.b64encode(buffer.getvalue()).decode("ascii")},
+    )
+    monkeypatch.setattr(
+        actions,
+        "_macos_screen_capture_allowed",
+        lambda: (_ for _ in ()).throw(AssertionError("no debe consultar TCC en el sidecar")),
+    )
+
+    image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})
+
+    assert image_bytes.startswith(b"\x89PNG")
+    assert (width, height, origin_x, origin_y) == (900, 600, 0, 0)
 
 
 # ---------------------------------------------------------------------------

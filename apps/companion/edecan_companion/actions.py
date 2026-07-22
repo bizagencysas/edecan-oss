@@ -35,9 +35,11 @@ import base64
 import binascii
 import contextlib
 import io
+import json
 import logging
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,7 @@ MAX_READ_FILE_BYTES = 256 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 10 * 1024
 COMMAND_TIMEOUT_SECONDS = 30
 HELPER_SUBPROCESS_TIMEOUT_SECONDS = 15
+DESKTOP_BRIDGE_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 # -- IDE embebido (ROADMAP_V2.md §7.8, WP-V2-08) -----------------------------
 
@@ -847,6 +850,24 @@ def _screenshot_via_screencapture(
     if not isinstance(include_cursor, bool):
         raise ActionError("'include_cursor' debe ser true o false")
 
+    bridge_result = _desktop_bridge_call(
+        "screenshot",
+        {"display": display_index, "include_cursor": include_cursor},
+    )
+    if bridge_result is not None:
+        encoded = bridge_result.get("image_b64")
+        if not isinstance(encoded, str) or not encoded:
+            raise ActionError("el puente nativo devolvio una captura invalida")
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+            from PIL import Image  # type: ignore[import-not-found]
+
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                width, height = image.size
+        except (binascii.Error, ImportError, OSError, ValueError) as exc:
+            raise ActionError(f"el puente nativo devolvio una captura invalida: {exc}") from exc
+        return image_bytes, int(width), int(height), origin_x, origin_y
+
     # El visor movil solicita cuadros de forma continua. Invocar
     # ``screencapture`` mientras TCC esta desactivado hace que macOS vuelva a
     # mostrar su modal por cada intento, lo que deja al usuario atrapado en
@@ -942,6 +963,54 @@ def _macos_screen_capture_allowed() -> bool:
             exc_info=True,
         )
         return True
+
+
+def _desktop_bridge_call(
+    action: str,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Ejecuta una accion tipada dentro del proceso de escritorio autorizado.
+
+    El socket Unix y su capacidad aleatoria solo existen en la app instalada.
+    En CLI/desarrollo sin Tauri devuelve ``None`` para conservar los backends
+    nativos anteriores. Nunca acepta un ejecutable, shell ni ruta arbitraria.
+    """
+
+    socket_path = os.environ.get("EDECAN_DESKTOP_BRIDGE_SOCKET", "").strip()
+    token = os.environ.get("EDECAN_DESKTOP_BRIDGE_TOKEN", "").strip()
+    if not socket_path or not token:
+        return None
+    request = json.dumps(
+        {"token": token, "action": action, "params": params},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    response = bytearray()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(HELPER_SUBPROCESS_TIMEOUT_SECONDS)
+            client.connect(socket_path)
+            client.sendall(request)
+            while not response.endswith(b"\n"):
+                chunk = client.recv(256 * 1024)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if len(response) > DESKTOP_BRIDGE_MAX_RESPONSE_BYTES:
+                    raise ActionError("la respuesta del puente nativo es demasiado grande")
+    except (OSError, TimeoutError) as exc:
+        raise ActionError(f"no se pudo contactar el puente remoto nativo: {exc}") from exc
+    try:
+        payload = json.loads(bytes(response))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ActionError("el puente remoto nativo devolvio una respuesta invalida") from exc
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        error = payload.get("error") if isinstance(payload, dict) else None
+        raise ActionError(str(error or "el puente remoto nativo fallo"))
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise ActionError("el puente remoto nativo devolvio un resultado invalido")
+    return result
 
 
 def _screenshot_via_quartz(params: dict[str, Any]) -> tuple[bytes, int, int, int, int]:
@@ -1180,6 +1249,36 @@ class _QuartzInputBackend:
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
+class _DesktopBridgeInputBackend:
+    """Input macOS ejecutado por la app principal que ya posee Accesibilidad."""
+
+    @staticmethod
+    def _call(action: str, params: dict[str, Any]) -> None:
+        if _desktop_bridge_call(action, params) is None:
+            raise ActionError("el puente remoto nativo no esta disponible")
+
+    def move_pointer(self, x: int, y: int) -> None:
+        self._call("move_pointer", {"x": x, "y": y})
+
+    def click_pointer(self, x: int, y: int, button: str) -> None:
+        self._call("click_pointer", {"x": x, "y": y, "button": button})
+
+    def pointer_down(self, x: int, y: int, button: str) -> None:
+        self._call("pointer_down", {"x": x, "y": y, "button": button})
+
+    def pointer_up(self, x: int, y: int, button: str) -> None:
+        self._call("pointer_up", {"x": x, "y": y, "button": button})
+
+    def scroll_pointer(self, delta_x: int, delta_y: int) -> None:
+        self._call("scroll_pointer", {"delta_x": delta_x, "delta_y": delta_y})
+
+    def type_text(self, text: str) -> None:
+        self._call("type_text", {"text": text})
+
+    def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None:
+        self._call("press_key", {"key": key, "modifiers": list(modifiers)})
+
+
 class _PynputInputBackend:
     """Backend real para Windows/Linux mediante el extra ``remote-control``."""
 
@@ -1272,6 +1371,10 @@ def _get_input_backend() -> InputBackend:
     `sys.platform`, así nunca construyen un `_QuartzInputBackend` real.
     """
     if sys.platform == "darwin":
+        if os.environ.get("EDECAN_DESKTOP_BRIDGE_SOCKET") and os.environ.get(
+            "EDECAN_DESKTOP_BRIDGE_TOKEN"
+        ):
+            return _DesktopBridgeInputBackend()
         return _QuartzInputBackend()
     if sys.platform == "win32" or sys.platform.startswith("linux"):
         return _PynputInputBackend()

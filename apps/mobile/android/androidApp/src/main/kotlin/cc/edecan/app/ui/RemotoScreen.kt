@@ -66,7 +66,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import cc.edecan.app.ui.components.formatearFechaHora
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.RemotoUiState
 import cc.edecan.app.vm.RemotoViewModel
@@ -76,10 +75,7 @@ import cc.edecan.shared.FLAG_COMPANION_REMOTE_INPUT
 import cc.edecan.shared.FLAG_COMPANION_REMOTE_VIEW
 import cc.edecan.shared.REMOTE_KIND_CONTROL
 import cc.edecan.shared.REMOTE_KIND_VIEW
-import cc.edecan.shared.REMOTE_STATUS_ACTIVE
 import cc.edecan.shared.REMOTE_STATUS_DENIED
-import cc.edecan.shared.REMOTE_STATUS_ENDED
-import cc.edecan.shared.REMOTE_STATUS_PENDING
 import cc.edecan.shared.RemoteFrame
 import cc.edecan.shared.RemoteSession
 import cc.edecan.shared.boolFlag
@@ -185,7 +181,7 @@ fun RemotoScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Sin sesión: "Nueva sesión" (consentimiento) + historial.
+// Sin sesión: consentimiento e inicio.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -201,32 +197,6 @@ private fun ListaYNuevaSesion(
             error = uiState.errorIniciar,
             onIniciar = onIniciar,
         )
-
-        Text(
-            "Sesiones anteriores",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
-        )
-        when {
-            uiState.cargandoSesiones && uiState.sesiones.isEmpty() ->
-                CircularProgressIndicator(modifier = Modifier.padding(vertical = 12.dp))
-            uiState.sesiones.isEmpty() -> Text(
-                "Todavía no iniciaste ninguna sesión remota.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                uiState.sesiones.forEach { sesion -> FilaHistorialSesion(sesion) }
-            }
-        }
-        uiState.errorLista?.let { error ->
-            Text(
-                error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
     }
 }
 
@@ -331,35 +301,6 @@ private fun NuevaSesionCard(
                 }
                 Text(if (esControl) "Iniciar sesión de control remoto" else "Iniciar sesión de vista remota")
             }
-        }
-    }
-}
-
-private val ETIQUETAS_ESTADO_REMOTO = mapOf(
-    REMOTE_STATUS_PENDING to "Pendiente",
-    REMOTE_STATUS_ACTIVE to "Activa",
-    REMOTE_STATUS_ENDED to "Terminada",
-    REMOTE_STATUS_DENIED to "Denegada",
-)
-
-@Composable
-private fun FilaHistorialSesion(sesion: RemoteSession) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (sesion.isControl) "🖱️" else "👁️", modifier = Modifier.padding(end = 10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(if (sesion.isControl) "Control remoto" else "Solo vista", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "${formatearFechaHora(sesion.createdAt)} · ${sesion.framesCount} frames",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                ETIQUETAS_ESTADO_REMOTO[sesion.status] ?: sesion.status,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

@@ -60,9 +60,6 @@ val TECLAS_ESPECIALES: List<TeclaEspecialUi> = listOf(
 // desincronizada.
 
 data class RemotoUiState(
-    val cargandoSesiones: Boolean = false,
-    val sesiones: List<RemoteSession> = emptyList(),
-    val errorLista: String? = null,
     val iniciando: Boolean = false,
     val errorIniciar: String? = null,
     /** La sesión actual (recién creada o ya en curso) — no `null` implica
@@ -80,8 +77,8 @@ data class RemotoUiState(
 /**
  * Estado y lógica de la pestaña "Remoto" (`/v1/remote`, `ARCHITECTURE.md`
  * §13.c/§14, `docs/control-remoto.md` §7bis/§10 — WP-V6-09, espejo Android de
- * WP-V6-08 en iOS): lista de sesiones + "Nueva sesión" (Ver/Controlar) →
- * espera la aprobación LOCAL en el companion → visor con *polling* + input de
+ * WP-V6-08 en iOS): "Nueva sesión" (Ver/Controlar) → espera la aprobación
+ * LOCAL en el companion → visor con *polling* + input de
  * teclado/mouse si `kind = "control"`.
  *
  * GUARDRAIL NO NEGOCIABLE (`ARCHITECTURE.md` §0/§13.c,
@@ -111,41 +108,14 @@ class RemotoViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(RemotoUiState())
     val uiState: StateFlow<RemotoUiState> = _uiState.asStateFlow()
 
-    private var yaCargado = false
     private var pollingJob: Job? = null
 
-    /** Llamada desde `LaunchedEffect(api)` en `RemotoScreen` — carga el
-     * historial una vez y, si ya hay una sesión `active` en curso (se volvió
-     * a esta pantalla tras pausarla, ver el docstring de la clase), reanuda
-     * el *polling*. */
+    /** Llamada desde `LaunchedEffect(api)` en `RemotoScreen`. Si ya hay una
+     * sesión `active` en curso, reanuda el *polling*. */
     fun cargar(api: EdecanApi) {
-        if (!yaCargado) {
-            yaCargado = true
-            viewModelScope.launch { refrescarLista(api) }
-        }
         val sesion = _uiState.value.sesionActual
         if (sesion != null && sesion.status == REMOTE_STATUS_ACTIVE) {
             iniciarPolling(api, sesion.id)
-        }
-    }
-
-    private suspend fun refrescarLista(api: EdecanApi) {
-        _uiState.update { it.copy(cargandoSesiones = true, errorLista = null) }
-        try {
-            val sesiones = api.listRemoteSessions()
-            _uiState.update { it.copy(cargandoSesiones = false, sesiones = sesiones) }
-        } catch (e: ApiException) {
-            _uiState.update { it.copy(cargandoSesiones = false, errorLista = e.message) }
-        }
-    }
-
-    /** El historial es secundario: si falla no bloquea el flujo principal
-     * (mismo criterio que `loadHistory` en `apps/web/.../remoto/page.tsx`). */
-    private suspend fun refrescarListaSilenciosa(api: EdecanApi) {
-        try {
-            _uiState.update { it.copy(sesiones = api.listRemoteSessions()) }
-        } catch (e: ApiException) {
-            // Silencioso a propósito.
         }
     }
 
@@ -164,7 +134,6 @@ class RemotoViewModel : ViewModel() {
                 _uiState.update {
                     it.copy(iniciando = false, sesionActual = sesion, frame = null, errorFrame = null)
                 }
-                refrescarListaSilenciosa(api)
                 pedirFrame(api, sesion.id)
             } catch (e: ApiException) {
                 _uiState.update { it.copy(iniciando = false, errorIniciar = e.message) }
@@ -215,7 +184,6 @@ class RemotoViewModel : ViewModel() {
             }
             if (status == 403 || status == 409) {
                 pausarPolling()
-                refrescarListaSilenciosa(api)
             }
         }
     }
@@ -259,7 +227,6 @@ class RemotoViewModel : ViewModel() {
                 _uiState.update {
                     it.copy(sesionActual = null, frame = null, terminando = false, errorFrame = null)
                 }
-                refrescarListaSilenciosa(api)
             }
         }
     }
@@ -348,7 +315,6 @@ class RemotoViewModel : ViewModel() {
             pausarPolling()
             val nuevoEstado = if (status == 403) REMOTE_STATUS_DENIED else REMOTE_STATUS_ENDED
             _uiState.update { estado -> estado.copy(sesionActual = estado.sesionActual?.copy(status = nuevoEstado)) }
-            refrescarListaSilenciosa(api)
         }
     }
 

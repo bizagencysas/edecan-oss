@@ -18,6 +18,8 @@ YTDLP_VERSION="2026.06.09"
 YTDLP_DIST_BASE="https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION"
 FFMPEG_VERSION="8.1.2"
 FFMPEG_DIST_BASE="https://ffmpeg.martin-riedl.de/download"
+FFMPEG_BTB_RELEASE="autobuild-2026-07-22-13-36"
+FFMPEG_BTB_BASE="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_BTB_RELEASE"
 FFMPEG_GPL_URL="https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VERSION/COPYING.GPLv3"
 FFMPEG_GPL_SHA256="8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
 YTDLP_LICENSE_URL="https://raw.githubusercontent.com/yt-dlp/yt-dlp/$YTDLP_VERSION/LICENSE"
@@ -39,6 +41,7 @@ fi
 TARGET_TRIPLE="$(rustc -Vv | awk '/^host:/ { print $2 }')"
 case "$TARGET_TRIPLE" in
   aarch64-apple-darwin)
+    FFMPEG_ARCHIVE_KIND="split-zip"
     NODE_ASSET="node-v$NODE_VERSION-darwin-arm64.tar.gz"
     NODE_SHA256="615dda58b5fb41fad2be43940b6398ca56554cbe05800953afadc724729cb09e"
     YTDLP_ASSET="yt-dlp_macos"
@@ -48,6 +51,7 @@ case "$TARGET_TRIPLE" in
     FFPROBE_SHA256="c39787f4af7a3932502d2d48db6f6feaaa836b48a73ef78c32cc3285df61dfaf"
     ;;
   x86_64-apple-darwin)
+    FFMPEG_ARCHIVE_KIND="split-zip"
     NODE_ASSET="node-v$NODE_VERSION-darwin-x64.tar.gz"
     NODE_SHA256="c39c8ec3cdadedfcc75de0cb3305df95ae2aecebc5db8d68a9b67bd74616d2ad"
     YTDLP_ASSET="yt-dlp_macos"
@@ -57,22 +61,22 @@ case "$TARGET_TRIPLE" in
     FFPROBE_SHA256="5408ca588c8c72b0dde3afe676d0a7acf25ef97e55ae6eba5c7bede1cda42695"
     ;;
   aarch64-unknown-linux-gnu)
+    FFMPEG_ARCHIVE_KIND="combined-tar-xz"
     NODE_ASSET="node-v$NODE_VERSION-linux-arm64.tar.gz"
     NODE_SHA256="3e99df8b01b27dc8b334a2a30d1cd500442b3b0877d217b308fd61a9ccfc33d4"
     YTDLP_ASSET="yt-dlp_linux_aarch64"
     YTDLP_SHA256="cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd"
-    FFMPEG_ASSET_PATH="linux/arm64/1783010599_8.1.2"
-    FFMPEG_SHA256="ab9e16864b6bf4ae7e13bbdbdc29621be11a5c547c57af8d4250e9fa2f5e6461"
-    FFPROBE_SHA256="fb78317b81cdeb614533be59e489019b754afd199670666af28f0e9574be395b"
+    FFMPEG_ASSET_NAME="ffmpeg-n8.1.2-30-g45f1910444-linuxarm64-gpl-8.1.tar.xz"
+    FFMPEG_SHA256="369dac151ae4ebf752c789cc48fbb520a193665ba41463a39615777b7236222a"
     ;;
   x86_64-unknown-linux-gnu)
+    FFMPEG_ARCHIVE_KIND="combined-tar-xz"
     NODE_ASSET="node-v$NODE_VERSION-linux-x64.tar.gz"
     NODE_SHA256="0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a"
     YTDLP_ASSET="yt-dlp_linux"
     YTDLP_SHA256="bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66"
-    FFMPEG_ASSET_PATH="linux/amd64/1783011670_8.1.2"
-    FFMPEG_SHA256="56452c0bfc4ee0325cd615d62f46ba8264f62eed34f727c2224c6c84fa7b8719"
-    FFPROBE_SHA256="c6f2d36e98f9a4445fad0b0be539f4c4faf13fd502116bf131becd53f56cd390"
+    FFMPEG_ASSET_NAME="ffmpeg-n8.1.2-30-g45f1910444-linux64-gpl-8.1.tar.xz"
+    FFMPEG_SHA256="4ad0d6eb98bde796841050cf12bf9428e188446bd518b245fb4aa02f25b633a0"
     ;;
   *)
     echo "error: FyDesign Studio no tiene Node 22 fijado para $TARGET_TRIPLE." >&2
@@ -130,28 +134,49 @@ echo "==> [Studio 3/5] Instalando ffmpeg/ffprobe redistribuibles y yt-dlp fijado
 TOOLS_DIR="$STAGED_ENGINE/tools"
 LICENSES_DIR="$TOOLS_DIR/licenses"
 mkdir -p "$TOOLS_DIR" "$LICENSES_DIR"
-FFMPEG_ARCHIVE="$BUILD_ROOT/ffmpeg.zip"
-FFPROBE_ARCHIVE="$BUILD_ROOT/ffprobe.zip"
-curl --fail --location --silent --show-error \
-  "$FFMPEG_DIST_BASE/$FFMPEG_ASSET_PATH/ffmpeg.zip" --output "$FFMPEG_ARCHIVE"
-curl --fail --location --silent --show-error \
-  "$FFMPEG_DIST_BASE/$FFMPEG_ASSET_PATH/ffprobe.zip" --output "$FFPROBE_ARCHIVE"
-if command -v shasum >/dev/null 2>&1; then
-  FFMPEG_ACTUAL_SHA256="$(shasum -a 256 "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
-  FFPROBE_ACTUAL_SHA256="$(shasum -a 256 "$FFPROBE_ARCHIVE" | awk '{ print $1 }')"
+if [[ "$FFMPEG_ARCHIVE_KIND" == "split-zip" ]]; then
+  FFMPEG_ARCHIVE="$BUILD_ROOT/ffmpeg.zip"
+  FFPROBE_ARCHIVE="$BUILD_ROOT/ffprobe.zip"
+  FFMPEG_BINARY_SOURCE="$FFMPEG_DIST_BASE/$FFMPEG_ASSET_PATH/"
+  curl --fail --location --silent --show-error \
+    "${FFMPEG_BINARY_SOURCE}ffmpeg.zip" --output "$FFMPEG_ARCHIVE"
+  curl --fail --location --silent --show-error \
+    "${FFMPEG_BINARY_SOURCE}ffprobe.zip" --output "$FFPROBE_ARCHIVE"
+  if command -v shasum >/dev/null 2>&1; then
+    FFMPEG_ACTUAL_SHA256="$(shasum -a 256 "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
+    FFPROBE_ACTUAL_SHA256="$(shasum -a 256 "$FFPROBE_ARCHIVE" | awk '{ print $1 }')"
+  else
+    FFMPEG_ACTUAL_SHA256="$(sha256sum "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
+    FFPROBE_ACTUAL_SHA256="$(sha256sum "$FFPROBE_ARCHIVE" | awk '{ print $1 }')"
+  fi
+  if [[ "$FFMPEG_ACTUAL_SHA256" != "$FFMPEG_SHA256" || "$FFPROBE_ACTUAL_SHA256" != "$FFPROBE_SHA256" ]]; then
+    echo "error: checksum invalido para ffmpeg/ffprobe $FFMPEG_VERSION ($TARGET_TRIPLE)." >&2
+    exit 1
+  fi
+  mkdir -p "$BUILD_ROOT/ffmpeg" "$BUILD_ROOT/ffprobe"
+  unzip -q "$FFMPEG_ARCHIVE" -d "$BUILD_ROOT/ffmpeg"
+  unzip -q "$FFPROBE_ARCHIVE" -d "$BUILD_ROOT/ffprobe"
+  FFMPEG_SOURCE="$(find "$BUILD_ROOT/ffmpeg" -type f -name ffmpeg -print -quit)"
+  FFPROBE_SOURCE="$(find "$BUILD_ROOT/ffprobe" -type f -name ffprobe -print -quit)"
 else
-  FFMPEG_ACTUAL_SHA256="$(sha256sum "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
-  FFPROBE_ACTUAL_SHA256="$(sha256sum "$FFPROBE_ARCHIVE" | awk '{ print $1 }')"
+  FFMPEG_ARCHIVE="$BUILD_ROOT/$FFMPEG_ASSET_NAME"
+  FFMPEG_BINARY_SOURCE="$FFMPEG_BTB_BASE/$FFMPEG_ASSET_NAME"
+  curl --fail --location --silent --show-error \
+    "$FFMPEG_BINARY_SOURCE" --output "$FFMPEG_ARCHIVE"
+  if command -v shasum >/dev/null 2>&1; then
+    FFMPEG_ACTUAL_SHA256="$(shasum -a 256 "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
+  else
+    FFMPEG_ACTUAL_SHA256="$(sha256sum "$FFMPEG_ARCHIVE" | awk '{ print $1 }')"
+  fi
+  if [[ "$FFMPEG_ACTUAL_SHA256" != "$FFMPEG_SHA256" ]]; then
+    echo "error: checksum invalido para $FFMPEG_ASSET_NAME." >&2
+    exit 1
+  fi
+  mkdir -p "$BUILD_ROOT/ffmpeg-combined"
+  tar -xJf "$FFMPEG_ARCHIVE" -C "$BUILD_ROOT/ffmpeg-combined"
+  FFMPEG_SOURCE="$(find "$BUILD_ROOT/ffmpeg-combined" -type f -name ffmpeg -print -quit)"
+  FFPROBE_SOURCE="$(find "$BUILD_ROOT/ffmpeg-combined" -type f -name ffprobe -print -quit)"
 fi
-if [[ "$FFMPEG_ACTUAL_SHA256" != "$FFMPEG_SHA256" || "$FFPROBE_ACTUAL_SHA256" != "$FFPROBE_SHA256" ]]; then
-  echo "error: checksum invalido para ffmpeg/ffprobe $FFMPEG_VERSION ($TARGET_TRIPLE)." >&2
-  exit 1
-fi
-mkdir -p "$BUILD_ROOT/ffmpeg" "$BUILD_ROOT/ffprobe"
-unzip -q "$FFMPEG_ARCHIVE" -d "$BUILD_ROOT/ffmpeg"
-unzip -q "$FFPROBE_ARCHIVE" -d "$BUILD_ROOT/ffprobe"
-FFMPEG_SOURCE="$(find "$BUILD_ROOT/ffmpeg" -type f -name ffmpeg -print -quit)"
-FFPROBE_SOURCE="$(find "$BUILD_ROOT/ffprobe" -type f -name ffprobe -print -quit)"
 if [[ -z "$FFMPEG_SOURCE" || -z "$FFPROBE_SOURCE" ]]; then
   echo "error: los archivos fijados no contienen ffmpeg y ffprobe." >&2
   exit 1
@@ -197,7 +222,7 @@ fi
 "$TOOLS_DIR/ffmpeg" -buildconf >"$LICENSES_DIR/FFMPEG-BUILD-CONFIGURATION.txt" 2>&1
 printf '%s\n' \
   "FFmpeg/ffprobe $FFMPEG_VERSION — separate GPL-3.0-or-later executables." \
-  "Binary source: $FFMPEG_DIST_BASE/$FFMPEG_ASSET_PATH/" \
+  "Binary source: $FFMPEG_BINARY_SOURCE" \
   "Corresponding source: https://github.com/FFmpeg/FFmpeg/tree/n$FFMPEG_VERSION" \
   "Build scripts: https://git.martin-riedl.de/ffmpeg/build-script" \
   >"$LICENSES_DIR/FFMPEG-SOURCE.txt"

@@ -9,9 +9,9 @@ generated builds, dependency trees and Git history are not included.
 The native desktop bundle aggregates separate third-party executables that are
 not relicensed under this package's Apache-2.0 license:
 
-- ffmpeg and ffprobe 8.1.2 are separate GPL-3.0-or-later programs. macOS and
-  Linux builds come from https://ffmpeg.martin-riedl.de; Windows builds come
-  from https://github.com/BtbN/FFmpeg-Builds. The installer rejects builds
+- ffmpeg and ffprobe 8.1.2 are separate GPL-3.0-or-later programs. macOS builds
+  come from https://ffmpeg.martin-riedl.de; Linux and Windows builds come from
+  https://github.com/BtbN/FFmpeg-Builds. The installer rejects builds
   marked nonfree or unredistributable. Full GPL text, build configuration and
   exact binary/source metadata are retained under tools/licenses in the native
   resource. Corresponding FFmpeg source is at

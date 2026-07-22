@@ -12,6 +12,7 @@
       "modified_from_base_and_adapted_for_oss": [
         "mcp/fydesign-mcp.mjs",
         "scripts/fydesign-gen.ts",
+        "src/lib/ai/openai-image-client.ts",
         "src/lib/video/ad-engine.ts"
       ],
       "owner_supplied_untracked_and_reviewed": [
@@ -38,7 +39,7 @@
   },
   "files": {
     "mcp/fydesign-mcp.mjs": "ef96ba2ef54f9f21350d4443515ce2840876a6c94a159946ab9240dbd9a23857",
-    "scripts/fydesign-gen.ts": "15890cae62a97c97f01260cfaf13ba9ecf6edee1d0a8f662326499ffa5c09b26",
+    "scripts/fydesign-gen.ts": "a56643d63bded0668965359d61f17deac52385c7ebd37a61beaa5fb010b3392b",
     "scripts/fydesign-project.ts": "36253821b660e19fa87cfd6dd659b21c3e92e189bc84a8b68f076523d1b5b3c9",
     "scripts/network-guard-smoke.ts": "055e2e4a95faf87f34de8fb61408d8978ef8ce0c97bd21132d98eff059d652c7",
     "scripts/project-pipeline-smoke.ts": "8089fb298fc224cc9130e7f08c92f881004033214b74bc9a7d22b5d5797d3bd3",
@@ -63,7 +64,7 @@
     "src/lib/ai/imagen-client.ts": "0edaa601573d84447a29f2f1097c645f214d2c999bcffbe1fa3fb87823ac8e69",
     "src/lib/ai/index.ts": "e5c7a49de65dbc1adaaf57e04c3473f88b8bb36ec21d8f708663b5027de2a6d8",
     "src/lib/ai/muapi-client.ts": "cd984fa4e5dfff87186f632252848a9584be5f7e0023cb85726b748ce9678619",
-    "src/lib/ai/openai-image-client.ts": "571787229db596bb5a9c382ce9884ca29f6b13031bf8377401360e0b2029bfd3",
+    "src/lib/ai/openai-image-client.ts": "9c08416996c20bf455fb833c626c8bb0cc1bf8a59f65b509868fe213092c1b7a",
     "src/lib/ai/svg-gen.ts": "56de53d25e30995c40cb2dc9d66824f3e97a7bddb84729cd9a449f83018a45fb",
     "src/lib/ai/upscale.ts": "dfa98f7cbb885d60132a3ca912e1045113de74906000270e1cd4d8e78bb5f687",
     "src/lib/ai/vision-critic.ts": "ccd130c6e465d8045d5380fa2d35dbf473a30d54b7d4cfcd5bbf7892eef6da10",

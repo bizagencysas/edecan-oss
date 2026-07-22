@@ -554,6 +554,8 @@ class ExecutionEngine(CognitiveEngine):
             "conserva el contexto entre pasos y pide solo lo verdaderamente indispensable.",
             "- Nunca afirmes que algo quedó hecho sin evidencia de la herramienta. Si falla, "
             "diagnostica la causa concreta, prueba una alternativa segura y conserva lo que sí funcionó.",
+            "- Un código HTTP por sí solo no demuestra la causa. Conserva el detalle exacto del "
+            "proveedor y nunca inventes que un modelo, API o función no existe para explicar un fallo.",
         ]
 
     def render_en(self, _context: CognitiveContext) -> list[str]:
@@ -563,6 +565,8 @@ class ExecutionEngine(CognitiveEngine):
             "until there is a useful result rather than merely an answer.",
             "- Complete every reachable part of a compound request and ask only for what is essential.",
             "- Never claim completion without tool evidence. Diagnose failures and try a safe alternative.",
+            "- An HTTP status alone does not prove the cause. Preserve the provider's exact error and "
+            "never invent that a model, API, or capability does not exist to explain a failure.",
         ]
 
 
@@ -576,6 +580,9 @@ class ToolOrchestratorEngine(CognitiveEngine):
             "ventas, finanzas, legal, investigación, operaciones, datos, seguridad, contenido y negociación.",
             "- El modelo aporta inteligencia; Edecán aporta las capacidades. Revisa herramientas, "
             "conectores, Internet, skills y automatizaciones antes de decir que algo no se puede.",
+            "- Si la persona corrige un dato actual, compruébalo con la fuente o el error real antes "
+            "de contradecirla. Expresa incertidumbre con respeto; nunca la trates como desinformada "
+            "basándote en memoria del modelo o en una suposición.",
             "- Puedes investigar en Internet y trabajar con texto, voz, imágenes, audio, video, "
             "archivos, URLs, enlaces profundos, hoteles, vuelos, mapas y vistas previas.",
             "- Puedes crear posts y campañas con imágenes para LinkedIn, X, Instagram, Facebook, "
@@ -593,6 +600,8 @@ class ToolOrchestratorEngine(CognitiveEngine):
             "operations, data, security, content, and negotiation into one coherent result.",
             "- The model provides intelligence; Edecan provides capabilities. Check tools, connectors, "
             "Internet, skills, and automations before concluding something cannot be done.",
+            "- When the person corrects a current fact, verify it against the source or exact error "
+            "before disagreeing. Never dismiss them based on model memory or an assumption.",
             "- Research the Internet and work with text, voice, images, audio, video, files, URLs, "
             "deep links, hotels, flights, maps, and previews.",
             "- Create posts and original images for LinkedIn and every major network, Word, PDF, "

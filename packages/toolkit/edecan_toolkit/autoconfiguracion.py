@@ -104,6 +104,38 @@ _ELEVENLABS_MODELS = (
     "eleven_multilingual_v2",
 )
 
+_OPENAI_IMAGE_MODEL_PRIORITY = (
+    "gpt-image-2",
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
+)
+
+
+def _choose_openai_image_model(items: Any) -> str | None:
+    """Prefiere aliases estables actuales antes que snapshots o modelos viejos."""
+
+    rows = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    by_id = {str(item.get("id") or "").strip(): item for item in rows}
+    for model in _OPENAI_IMAGE_MODEL_PRIORITY:
+        if model in by_id:
+            return model
+    snapshots_v2 = [item for item in rows if str(item.get("id") or "").startswith("gpt-image-2-")]
+    if snapshots_v2:
+        selected = max(
+            snapshots_v2,
+            key=lambda item: (int(item.get("created") or 0), str(item.get("id") or "")),
+        )
+        return str(selected.get("id") or "").strip() or None
+    candidates = [item for item in rows if "image" in str(item.get("id") or "").lower()]
+    if not candidates:
+        return None
+    selected = max(
+        candidates,
+        key=lambda item: (int(item.get("created") or 0), str(item.get("id") or "")),
+    )
+    return str(selected.get("id") or "").strip() or None
+
 _TIPOS_VALIDOS = (
     "llm",
     "images",
@@ -445,22 +477,21 @@ class ConfigurarCredencialTool(Tool):
             items = response.json().get("data", [])
         except (AttributeError, ValueError):
             items = []
+        announced_models = {
+            str(item.get("id") or "").strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
         model = str(campos.get("model") or "").strip()
-        if not model:
-            candidates = [
-                item
-                for item in items
-                if isinstance(item, dict) and "image" in str(item.get("id") or "").lower()
-            ]
-            if candidates:
-                selected = max(
-                    candidates,
-                    key=lambda item: (
-                        int(item.get("created") or 0),
-                        str(item.get("id") or ""),
-                    ),
+        if model and model not in announced_models:
+            return ToolResult(
+                content=(
+                    f"OpenAI aceptó la clave, pero no anunció el modelo {model}. "
+                    "No guardé una configuración que no pude verificar."
                 )
-                model = str(selected.get("id") or "").strip()
+            )
+        if not model:
+            model = _choose_openai_image_model(items) or ""
         if not model:
             return ToolResult(
                 content=(

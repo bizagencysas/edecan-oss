@@ -307,6 +307,12 @@ firmar**, no antes de compilar para el simulador:
   2. O escribiéndolo directamente en `project.yml` y corriendo
      `xcodegen generate` de nuevo.
 
+La configuración `Debug` usa `EdecanApp.local.entitlements`, sin APNs, para
+que también pueda firmarse con un equipo personal gratuito. Esto no elimina
+los avisos locales ni las notificaciones dentro de Edecán. La configuración
+`Release` usa `EdecanApp.entitlements` y conserva Push Notifications para
+quien conecte una cuenta Apple Developer de pago con esa capacidad activa.
+
 ## Compilar e instalar en tu iPhone (build ad-hoc)
 
 Con bundle id y equipo ya configurados:

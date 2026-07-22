@@ -27,6 +27,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
 import { reduceToolTimeline } from "@/lib/chat-blocks";
+import { redactChatSecrets } from "@/lib/chat-secret-redaction";
 import {
   ASSISTANT_INTENT_EVENT,
   assistantPromptForIntent,
@@ -425,7 +426,7 @@ export default function ChatPage() {
         id: localId,
         role: "user",
         content: {
-          text,
+          text: redactChatSecrets(text),
           attachments: outgoingAttachments.flatMap((attachment) =>
             attachment.fileId
               ? [{ file_id: attachment.fileId, filename: attachment.filename, mime: attachment.mime }]

@@ -673,7 +673,7 @@ Ambos endpoints comparten el mismo criterio fail-closed que `PUT /v1/credentials
 #### `PUT /v1/credentials/images`
 
 ```json
-{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-1", "validate": true}
+{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-2", "validate": true}
 ```
 
 Los tres campos son obligatorios (`400` si falta alguno). `base_url` acepta cualquier endpoint compatible con `POST {base_url}/images/generations` (contrato de OpenAI Images) — mismo criterio que `kind: "openai_compat"` de LLM. `validate` (default `true`) hace `GET {base_url}/models` antes de guardar (reutiliza el mismo ping que `openai_compat`); `400` con el detalle exacto si el proveedor rechaza la credencial.

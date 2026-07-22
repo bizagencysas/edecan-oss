@@ -38,6 +38,7 @@ from edecan_core.agent import (
     mission_ref_from_tool_data,
     rich_blocks_from_tool_data,
 )
+from edecan_core.safety import redact
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
 from edecan_core.tools import Tool, ToolContext, ToolResult
@@ -153,19 +154,31 @@ class ConfirmIn(BaseModel):
 def _conversation_out(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
-        "title": row.get("title"),
+        "title": redact(str(row.get("title") or "")),
         "channel": row.get("channel", "web"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
 
 
+def _redact_payload(value: Any) -> Any:
+    """Redacta strings anidados al leer filas creadas por versiones viejas."""
+
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_payload(item) for key, item in value.items()}
+    return value
+
+
 def _message_out(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "role": row["role"],
-        "content": row.get("content"),
-        "tool_calls": row.get("tool_calls"),
+        "content": _redact_payload(row.get("content")),
+        "tool_calls": _redact_payload(row.get("tool_calls")),
         "tokens_in": row.get("tokens_in", 0),
         "tokens_out": row.get("tokens_out", 0),
         "created_at": row.get("created_at"),
@@ -191,7 +204,7 @@ async def create_conversation(
     row = await repo.create_conversation(
         tenant_id=current_user.tenant_id,
         user_id=current_user.user_id,
-        title=body.title,
+        title=redact(body.title or ""),
         channel=body.channel,
     )
     return _conversation_out(row)
@@ -230,7 +243,7 @@ async def rename_conversation(
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    title = " ".join(body.title.split())
+    title = redact(" ".join(body.title.split()))
     if not title:
         raise HTTPException(status_code=422, detail="Escribe un nombre para la conversación.")
     row = await repo.update_conversation_title(
@@ -328,7 +341,7 @@ async def _resolve_message_attachments(
 
 def _rows_to_chat_messages(rows: list[dict[str, Any]]) -> list[ChatMessage]:
     return [
-        ChatMessage(role=row["role"], content=_extract_text(row.get("content")))
+        ChatMessage(role=row["role"], content=redact(_extract_text(row.get("content"))))
         for row in rows
         if row.get("role") in ("system", "user", "assistant", "tool")
     ]
@@ -1450,7 +1463,13 @@ async def post_message(
         file_ids=body.attachments,
     )
     inline_credential = detect_inline_credential_intent(body.text) if not attachments else None
-    safe_user_text = inline_credential.redacted_text if inline_credential is not None else body.text
+    # Toda credencial reconocible se redacta ANTES de título, base de datos,
+    # historial LLM y SSE. La detección de intención conserva el valor crudo
+    # solo en memoria para el vault; un segundo mensaje que únicamente discuta
+    # una clave también debe quedar protegido aunque no configure nada.
+    safe_user_text = (
+        inline_credential.redacted_text if inline_credential is not None else redact(body.text)
+    )
     stored_user_content: dict[str, Any] = {"text": safe_user_text}
     if attachments:
         stored_user_content["attachments"] = attachments

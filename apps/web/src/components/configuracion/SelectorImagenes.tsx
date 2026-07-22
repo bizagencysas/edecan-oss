@@ -96,7 +96,7 @@ export function SelectorImagenes({ onConnected }: { onConnected?: () => void }) 
           id="imagenes_model"
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          placeholder="gpt-image-1"
+          placeholder="gpt-image-2"
           autoComplete="off"
           disabled={busy}
         />

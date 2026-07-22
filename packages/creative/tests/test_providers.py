@@ -14,6 +14,7 @@ import pytest
 import respx
 from edecan_creative.providers import (
     IMAGES_CONNECTOR_KEY,
+    ImageProviderRequestError,
     OpenAICompatImagesProvider,
     StubImageProvider,
     _parse_size,
@@ -98,7 +99,6 @@ async def test_openai_compat_provider_sends_expected_request_and_decodes_b64():
         "model": "fake-model",
         "prompt": "un perro con lentes",
         "size": "512x512",
-        "response_format": "b64_json",
     }
 
 
@@ -114,12 +114,47 @@ async def test_openai_compat_provider_raises_value_error_on_missing_b64():
 
 @respx.mock
 async def test_openai_compat_provider_raises_on_http_error():
-    respx.post(_IMAGES_URL).mock(return_value=httpx.Response(500, text="boom"))
+    respx.post(_IMAGES_URL).mock(
+        return_value=httpx.Response(
+            400,
+            headers={"x-request-id": "req_image_123"},
+            json={
+                "error": {
+                    "message": "Unknown parameter: response_format",
+                    "code": "unknown_parameter",
+                    "param": "response_format",
+                }
+            },
+        )
+    )
     provider = OpenAICompatImagesProvider(
         base_url="https://images.example.com/v1", api_key="k", model="m"
     )
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ImageProviderRequestError) as captured:
         await provider.generate("algo")
+    error = captured.value
+    assert error.status_code == 400
+    assert error.code == "unknown_parameter"
+    assert error.param == "response_format"
+    assert error.request_id == "req_image_123"
+    assert "Unknown parameter" in str(error)
+
+
+@respx.mock
+async def test_openai_compat_provider_never_reflects_a_secret_from_upstream_error():
+    respx.post(_IMAGES_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={"error": {"message": "Rejected Bearer secret-value-123456789"}},
+        )
+    )
+    provider = OpenAICompatImagesProvider(
+        base_url="https://images.example.com/v1", api_key="k", model="m"
+    )
+    with pytest.raises(ImageProviderRequestError) as captured:
+        await provider.generate("algo")
+    assert "secret-value-123456789" not in str(captured.value)
+    assert "[credencial protegida]" in str(captured.value)
 
 
 # --- get_image_provider -------------------------------------------------------------

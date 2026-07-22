@@ -33,7 +33,7 @@ options:
 
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "13"
+    CURRENT_PROJECT_VERSION: "14"
     MARKETING_VERSION: "0.7.0"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
@@ -97,8 +97,16 @@ targets:
         PRODUCT_NAME: Edecan
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        CODE_SIGN_ENTITLEMENTS: EdecanApp/EdecanApp.entitlements
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
+      configs:
+        # Los equipos personales de Apple permiten instalar Edecán por USB,
+        # pero no pueden firmar APNs. Debug usa por eso un entitlement local
+        # vacío; Release conserva Push Notifications para quien conecte su
+        # propia cuenta Apple Developer de pago.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: EdecanApp/EdecanApp.local.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: EdecanApp/EdecanApp.entitlements
     dependencies:
       - package: EdecanKit
       - target: EdecanWidgetsExtension

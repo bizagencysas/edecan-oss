@@ -40,7 +40,12 @@ from .podcast import (
     resolver_config_tts_tenant,
     validar_guion,
 )
-from .providers import DEFAULT_SIZE, ImageProvider, get_tenant_image_provider
+from .providers import (
+    DEFAULT_SIZE,
+    ImageProvider,
+    ImageProviderRequestError,
+    get_tenant_image_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +123,24 @@ class GenerarImagenTool(Tool):
         tamano = _cap_str(args.get("tamano"), 32) or DEFAULT_SIZE
 
         provider = self._image_provider or await get_tenant_image_provider(ctx)
-        png_bytes = await provider.generate(prompt, size=tamano)
+        try:
+            png_bytes = await provider.generate(prompt, size=tamano)
+        except ImageProviderRequestError as exc:
+            return ToolResult(
+                content=(
+                    "No generé la imagen porque el proveedor rechazó la petición. "
+                    f"Detalle exacto: {exc}. No atribuyas una causa distinta ni cambies "
+                    "el modelo sin comprobar primero este detalle."
+                ),
+                data={
+                    "error": "image_provider_rejected",
+                    "status_code": exc.status_code,
+                    "model": exc.model,
+                    "code": exc.code,
+                    "param": exc.param,
+                    "request_id": exc.request_id,
+                },
+            )
 
         filename = f"{_slug(prompt)}.png"
         file_id, filename = await self._uploader(

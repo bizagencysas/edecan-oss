@@ -7,6 +7,7 @@ import cc.edecan.shared.ArtifactRef
 import cc.edecan.shared.ChatBlock
 import cc.edecan.shared.ChatEvent
 import cc.edecan.shared.ChatMessageIn
+import cc.edecan.shared.ChatSecretRedaction
 import cc.edecan.shared.ConfirmIn
 import cc.edecan.shared.Conversation
 import cc.edecan.shared.EdecanApi
@@ -354,6 +355,8 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     private val tareasSubida = mutableMapOf<String, Job>()
     private val seguimientoMisiones = mutableMapOf<String, Job>()
     private val clavesIdempotencia = ClavesIntentoLogico()
+    /** Texto crudo únicamente en memoria durante un intento reintentable. */
+    private val textosPrivadosPorMensaje = mutableMapOf<String, String>()
     private var adjuntoUploader = AdjuntoUploader { api, local ->
         api.uploadFile(local.contenido(), local.filename, local.mime)
     }
@@ -420,6 +423,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     fun abrirConversacion(id: String, api: EdecanApi) {
         val version = ++cargaVersion
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         viewModelScope.launch {
             _uiState.update { it.copy(cargandoHistorial = true, errorMensaje = null) }
             try {
@@ -458,6 +462,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         if (_uiState.value.enviando) return
         cargaVersion += 1
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         _uiState.update {
             it.copy(
                 conversationId = null,
@@ -599,6 +604,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
             // Un contenido nuevo inaugura otro intento lógico. Las claves de
             // mensajes fallidos anteriores ya no deben heredarse.
             val idempotencyKey = clavesIdempotencia.nueva(idUsuario)
+            textosPrivadosPorMensaje[idUsuario] = texto
             actualizarBorrador("")
             _uiState.update {
                 it.copy(
@@ -606,7 +612,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                         MensajeUi(
                             idUsuario,
                             MensajeUi.Rol.USUARIO,
-                            texto,
+                            ChatSecretRedaction.redact(texto),
                             adjuntos = refs,
                             estadoEntrega = EstadoEntrega.ENVIANDO,
                         ) + MensajeUi(idRespuesta, MensajeUi.Rol.ASISTENTE, enProgreso = true),
@@ -651,7 +657,10 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 api,
                 "/v1/conversations/$idConversacion/messages",
                 edecanJson.encodeToString(
-                    ChatMessageIn(mensaje.texto, mensaje.adjuntos.map { it.fileId }),
+                    ChatMessageIn(
+                        textosPrivadosPorMensaje[idUsuario] ?: mensaje.texto,
+                        mensaje.adjuntos.map { it.fileId },
+                    ),
                 ),
                 idRespuesta,
                 idUsuario,
@@ -783,7 +792,10 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 )
             }
         }
-        if (completado && idUsuario != null) clavesIdempotencia.completar(idUsuario)
+        if (completado && idUsuario != null) {
+            clavesIdempotencia.completar(idUsuario)
+            textosPrivadosPorMensaje.remove(idUsuario)
+        }
         return completado
     }
 
@@ -933,6 +945,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         archivosAdjuntos.values.forEach(ArchivoSubidaLocal::eliminar)
         archivosAdjuntos.clear()
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         cargaVersion += 1
         _uiState.value = ChatUiState()
     }

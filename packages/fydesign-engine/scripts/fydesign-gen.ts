@@ -25,7 +25,7 @@ import { CAROUSEL_BRAIN } from '../src/lib/design-engine/prompts/carousel';
 import { buildBrandStyleGuide } from '../src/lib/brand-style';
 import { planStrategy } from '../src/lib/strategist';
 import { generateBrandSVG } from '../src/lib/ai/svg-gen';
-import { hasOpenAI, generateGptImage } from '../src/lib/ai/openai-image-client';
+import { generateGptImage, getOpenAIImageModel, hasOpenAI } from '../src/lib/ai/openai-image-client';
 import { hasFal, generateFalImage } from '../src/lib/ai/fal-client';
 import { loadFeedMemory, appendFeedMemory, memoryDigest } from '../src/lib/feed-memory';
 import { findBrandRealData, brandRealDataBlock } from '../src/lib/brand-registry';
@@ -1031,13 +1031,14 @@ async function generateForSize(
     if (!hasOpenAI()) throw new Error('Falta OPENAI_API_KEY para provider="openai".');
     const oaSize = size.w === size.h ? '1024x1024' : (size.h > size.w ? '1024x1536' : '1536x1024');
     const count = Math.max(1, Math.min(4, input.count || 1));
-    log(`Imagen vía OpenAI gpt-image-1 @ ${size.w}×${size.h}…`);
+    const openAIImageModel = getOpenAIImageModel();
+    log(`Imagen vía OpenAI ${openAIImageModel} @ ${size.w}×${size.h}…`);
     for (let n = 0; n < count; n++) {
       if (n > 0) await sleep(1500);
       const img = await generateGptImage(mediaPrompt, { size: oaSize });
       outputs.push({ dataUrl: img.dataUrl });
     }
-    usedModel = 'openai:gpt-image-1';
+    usedModel = `openai:${openAIImageModel}`;
   } else if (input.provider === 'fal') {
     if (!hasFal()) throw new Error('Falta FAL_KEY para provider="fal".');
     const count = Math.max(1, Math.min(4, input.count || 1));

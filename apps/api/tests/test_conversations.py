@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime
 
 from conftest import auth_headers
 from edecan_schemas import ArtifactRef, ToolEndEvent
@@ -263,6 +264,63 @@ async def test_inline_credential_never_reaches_llm_history_or_sse(
     assert secret not in json.dumps(stored, default=str)
     assert secret not in fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
     assert fake_repo.audit_log[-1]["action"] == "credentials.chat.failed"
+
+
+async def test_secret_without_configuration_intent_is_redacted_before_llm_and_storage(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    seen_user_text: list[str] = []
+
+    class InspectingAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            seen_user_text.append(kwargs["user_text"])
+            yield {"type": "text_delta", "text": "Entendido."}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", InspectingAgent)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+    secret = "sk-proj-example-secret-1234567890"
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": f"Seguro la pusiste mal. Esta es {secret}."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert seen_user_text and secret not in seen_user_text[0]
+    stored = fake_repo.messages[uuid.UUID(conversation_id)]
+    assert secret not in json.dumps(stored, default=str)
+    assert "[REDACTED]" in json.dumps(stored, default=str)
+
+
+def test_historical_secret_is_redacted_when_serialized_or_sent_back_to_llm() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    secret = "sk-proj-historical-secret-1234567890"
+    row = {
+        "id": uuid.uuid4(),
+        "role": "user",
+        "content": {"text": f"Clave antigua: {secret}"},
+        "tool_calls": [{"result": {"debug": f"Bearer {secret}"}}],
+        "created_at": datetime.now(UTC),
+    }
+
+    outgoing = conversations_module._message_out(row)
+    history = conversations_module._rows_to_chat_messages([row])
+
+    assert secret not in json.dumps(outgoing, default=str)
+    assert secret not in str(history[0].content)
+    assert "[REDACTED]" in json.dumps(outgoing, default=str)
 
 
 async def test_conversation_can_be_renamed_and_is_tenant_scoped(client) -> None:

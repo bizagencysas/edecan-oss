@@ -211,6 +211,15 @@ def test_prompt_compone_core_identity_y_motores_cognitivos_separados():
     assert "- Construye productos escalables" in prompt
 
 
+def test_prompt_no_inventa_causas_de_errores_ni_desautoriza_a_la_persona():
+    prompt = build_system_prompt(PersonaConfig(), []).lower()
+
+    assert "un código http por sí solo no demuestra la causa" in prompt
+    assert "nunca inventes que un modelo, api o función no existe" in prompt
+    assert "compruébalo con la fuente o el error real antes de contradecirla" in prompt
+    assert "nunca la trates como desinformada" in prompt
+
+
 def test_core_identity_es_el_texto_canonico_entregado_sin_reescrituras():
     """Una edición accidental del núcleo debe romper la prueba de snapshot."""
 

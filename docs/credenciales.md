@@ -101,7 +101,7 @@ curl -s -X PUT "$API/v1/credentials/voice/tts" \
 ```bash
 curl -s -X PUT "$API/v1/credentials/images" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-1", "validate": true}'
+  -d '{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-2", "validate": true}'
 
 curl -s -X PUT "$API/v1/credentials/search" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

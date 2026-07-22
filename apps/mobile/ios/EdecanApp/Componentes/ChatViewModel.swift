@@ -127,6 +127,9 @@ final class ChatViewModel {
         let id: String
         var rol: Rol
         var texto: String
+        /// Solo vive en memoria mientras el intento puede reintentarse. La UI
+        /// muestra `texto`, ya redactado, y nunca persiste este valor crudo.
+        var textoTransporte: String? = nil
         var enProgreso: Bool = false
         var artefactos: [ArtifactRef] = []
         var bloques: [ChatBlock] = []
@@ -142,6 +145,7 @@ final class ChatViewModel {
             id: String = UUID().uuidString,
             rol: Rol,
             texto: String,
+            textoTransporte: String? = nil,
             enProgreso: Bool = false,
             artefactos: [ArtifactRef] = [],
             bloques: [ChatBlock] = [],
@@ -153,6 +157,7 @@ final class ChatViewModel {
             self.id = id
             self.rol = rol
             self.texto = texto
+            self.textoTransporte = textoTransporte
             self.enProgreso = enProgreso
             self.artefactos = artefactos
             self.bloques = bloques
@@ -286,7 +291,8 @@ final class ChatViewModel {
 
         let mensaje = Mensaje(
             rol: .usuario,
-            texto: textoLimpio,
+            texto: ChatSecretRedaction.redact(textoLimpio),
+            textoTransporte: textoLimpio,
             adjuntos: adjuntos,
             logicalAttempt: LogicalChatAttempt()
         )
@@ -312,7 +318,7 @@ final class ChatViewModel {
               confirmacionPendiente == nil,
               let indiceUsuario = mensajes.firstIndex(where: { $0.id == mensajeId })
         else { return false }
-        let texto = mensajes[indiceUsuario].texto
+        let texto = mensajes[indiceUsuario].textoTransporte ?? mensajes[indiceUsuario].texto
         let attachmentIds = mensajes[indiceUsuario].adjuntos.map(\.fileId)
         let logicalAttempt = mensajes[indiceUsuario].logicalAttempt ?? LogicalChatAttempt()
         mensajes[indiceUsuario].logicalAttempt = logicalAttempt
@@ -356,6 +362,7 @@ final class ChatViewModel {
             if mensajes.indices.contains(indiceUsuario) {
                 mensajes[indiceUsuario].falloEnvio = false
                 mensajes[indiceUsuario].logicalAttempt = nil
+                mensajes[indiceUsuario].textoTransporte = nil
             }
             await cargarConversaciones(client: client)
             return true

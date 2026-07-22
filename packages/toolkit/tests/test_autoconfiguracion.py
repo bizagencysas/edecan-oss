@@ -110,7 +110,9 @@ async def test_images_openai_descubre_modelo_y_guarda(make_ctx, make_session, ma
             json={
                 "data": [
                     {"id": "gpt-text", "created": 10},
-                    {"id": "gpt-image-example", "created": 20},
+                    {"id": "gpt-image-2-2026-04-21", "created": 30},
+                    {"id": "gpt-image-2", "created": 20},
+                    {"id": "gpt-image-1", "created": 40},
                 ]
             },
         )
@@ -129,9 +131,36 @@ async def test_images_openai_descubre_modelo_y_guarda(make_ctx, make_session, ma
     assert config == {
         "base_url": "https://api.openai.com/v1",
         "api_key": "sk-test",
-        "model": "gpt-image-example",
+        "model": "gpt-image-2",
     }
     assert session.llamadas[-1][1]["connector_key"] == "images"
+
+
+@respx.mock
+async def test_images_openai_no_guarda_un_modelo_solicitado_que_no_existe(
+    make_ctx, make_session, make_vault
+):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-image-2"}]})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "images",
+            "campos": {
+                "provider": "openai",
+                "api_key": "sk-test",
+                "model": "modelo-inventado",
+            },
+        },
+    )
+
+    assert "no anunció" in resultado.content
+    assert vault.puts == []
 
 
 async def test_voice_stt_guarda_deepgram(make_ctx, make_session, make_vault):

@@ -190,7 +190,7 @@ def _macos_capture_check() -> dict[str, Any]:
 
     result = _screenshot(
         {"format": "jpeg", "quality": 55, "max_width": 640},
-        CompanionConfig(),
+        CompanionConfig(sandbox_dir=Path.home()),
     )
     return {
         "ok": True,

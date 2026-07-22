@@ -102,8 +102,12 @@ migrate_macos_autostart() {
 
   [[ -f "$launch_agent" ]] || return 0
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $executable" "$launch_agent"
+  # Si el agente antiguo sigue cargado, primero lo retiramos. Arrancarlo acá y
+  # ejecutar `open` inmediatamente después crea una carrera: los dos procesos
+  # alcanzan el bloqueo de instancia casi a la vez y macOS muestra dos íconos.
+  # La app visible conserva backend/túnel durante esta sesión; el LaunchAgent
+  # actualizado se cargará normalmente en el próximo inicio de sesión.
   launchctl bootout "$gui_domain" "$launch_agent" >/dev/null 2>&1 || true
-  launchctl bootstrap "$gui_domain" "$launch_agent"
 }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

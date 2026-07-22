@@ -123,7 +123,8 @@ def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None
     assert "migrate_macos_autostart" in installer
     assert 'Set :ProgramArguments:0 $executable' in installer
     assert 'launchctl bootout "$gui_domain"' in installer
-    assert 'launchctl bootstrap "$gui_domain"' in installer
+    assert 'launchctl bootstrap "$gui_domain"' not in installer
+    assert 'open "$TARGET_APP"' in installer
     assert 'BACKUP_ARCHIVE="$HOME/.Trash/Edecán anterior ' in installer
     assert "BACKUP_APP=" not in installer
     assert "EDECAN_MACOS_CODESIGN_IDENTITY" in builder

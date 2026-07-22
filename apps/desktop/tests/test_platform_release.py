@@ -56,6 +56,8 @@ def test_windows_release_builds_installs_and_exercises_native_packages() -> None
     assert "apps/desktop/src-tauri/target/release/bundle/msi/*.msi" in workflow
     assert "msiexec.exe" in verifier
     assert '"/a"' in verifier
+    assert "$env:RUNNER_TEMP" in verifier
+    assert '"/L*V"' in verifier
     assert '"/S"' in verifier
     assert "Assert-InstalledPayload" in verifier
     assert '"http://127.0.0.1:$Port/healthz"' in verifier

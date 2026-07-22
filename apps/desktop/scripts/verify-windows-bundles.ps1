@@ -92,9 +92,18 @@ function Get-SmokeProcesses {
 $Nsis = Get-OneArtifact (Join-Path $BundleDir "nsis") "*.exe" "instalador NSIS"
 $Msi = Get-OneArtifact (Join-Path $BundleDir "msi") "*.msi" "instalador MSI"
 
-$SmokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("edecan-windows-smoke-" + [guid]::NewGuid().ToString("N"))
+# El payload incluye Chromium y dependencias Node con rutas relativas largas.
+# En GitHub Actions, GetTempPath() agrega suficiente prefijo como para que una
+# extracción administrativa MSI alcance MAX_PATH y termine con 1603 aunque el
+# instalador sea válido. RUNNER_TEMP es deliberadamente corto; fuera de CI se
+# conserva el directorio temporal normal. El sufijo corto mantiene aislamiento
+# sin gastar otros 24 caracteres de ruta en cada archivo del paquete.
+$SmokeBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$SmokeSuffix = [guid]::NewGuid().ToString("N").Substring(0, 8)
+$SmokeRoot = Join-Path $SmokeBase ("es-" + $SmokeSuffix)
 $MsiExtract = Join-Path $SmokeRoot "msi"
 $NsisInstall = Join-Path $SmokeRoot "nsis"
+$MsiLog = Join-Path $SmokeRoot "msi-admin.log"
 $OldAppData = $env:APPDATA
 $OldLocalAppData = $env:LOCALAPPDATA
 $AppProcess = $null
@@ -104,9 +113,14 @@ try {
 
     Write-Host "==> Extrayendo e inspeccionando MSI..."
     $MsiProcess = Start-Process msiexec.exe -ArgumentList @(
-        "/a", "`"$Msi`"", "/qn", "TARGETDIR=`"$MsiExtract`""
+        "/a", "`"$Msi`"", "/qn", "/norestart", "TARGETDIR=`"$MsiExtract`"",
+        "/L*V", "`"$MsiLog`""
     ) -Wait -PassThru
     if ($MsiProcess.ExitCode -ne 0) {
+        if (Test-Path $MsiLog) {
+            Write-Host "==> Ultimas lineas del diagnostico MSI:"
+            Get-Content $MsiLog -Tail 120 | Write-Host
+        }
         throw "la extraccion administrativa del MSI fallo (codigo $($MsiProcess.ExitCode))."
     }
     Assert-InstalledPayload $MsiExtract | Out-Null

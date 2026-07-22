@@ -4,7 +4,7 @@ version = "0.7.0"
 description = "Edecán — asistente personal de IA (app de escritorio)"
 authors = ["Edecán"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
 license = "Apache-2.0"
 
 # Ver docs/desktop.md y ../README.md para el resto del contrato de este
@@ -37,6 +37,8 @@ serde_json = "1"
 # máquina (ver README.md); se agregan las dos por las dudas, costo nulo.
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 tauri-plugin-shell = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Capacidad criptográfica efímera que une exclusivamente el sidecar local con
@@ -72,6 +74,11 @@ half = "=2.4.1"
 # como para codificar el audio del comando que se emite a JS después de
 # detectarla (src/listen.rs).
 hound = "3.5.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Construye el diccionario requerido por AXIsProcessTrustedWithOptions para
+# que macOS agregue Edecán a Accesibilidad al pulsar un único botón.
+core-foundation = "0.10"
 
 [profile.release]
 panic = "abort"

@@ -425,6 +425,17 @@ public actor APIClient {
         }
     }
 
+    /// Cambia el título visible del chat en todos los dispositivos conectados.
+    @discardableResult
+    public func renombrarConversacion(id: String, titulo: String) async throws -> Conversation {
+        struct Body: Encodable { let title: String }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/conversations/\(id)", method: "PATCH", body: Body(title: titulo)
+            )
+        }
+    }
+
     /// `GET /v1/files/{id}/download` — descarga privada, autenticada y
     /// limitada al tenant del usuario. Devuelve bytes en memoria para que la
     /// app decida si abrir la hoja de compartir o guardarlos en Archivos;
@@ -436,6 +447,43 @@ public actor APIClient {
             return try await self.ejecutarAutenticadoData(request).data
         }
         return DownloadedArtifact(artifact: artifact, data: data)
+    }
+
+    /// Registra o reemplaza el token APNs de este dispositivo. El token no
+    /// se persiste ni se registra en logs dentro de la app; APNs puede
+    /// rotarlo y el cliente vuelve a enviarlo cada vez que iOS lo entrega.
+    public func registrarPushToken(deviceId: String, token: String) async throws {
+        struct Body: Encodable {
+            let pushToken: String
+            let pushPlatform = "apns"
+            enum CodingKeys: String, CodingKey {
+                case pushToken = "push_token"
+                case pushPlatform = "push_platform"
+            }
+        }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/devices/\(deviceId)/push-token",
+                method: "POST",
+                body: Body(pushToken: token)
+            )
+        }
+    }
+
+    /// Elimina el destino push antes de desvincular el dispositivo. Es
+    /// independiente de revocar la sesión para que ambos pasos puedan ser
+    /// reintentados de forma segura.
+    public func revocarPushToken(deviceId: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo(
+                "/v1/devices/\(deviceId)/push-token",
+                method: "DELETE"
+            )
+        }
+    }
+
+    public func estadoPush() async throws -> PushStatus {
+        try await conAutoRefresh { try await self.obtener("/v1/devices/push/status") }
     }
 
     /// `POST /v1/files` desde un archivo local mediante multipart transmitido
@@ -749,16 +797,11 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtener("/v1/reminders") }
     }
 
-    /// `POST /v1/reminders {message, due_at, channel}`. `canal` default
-    /// `"web"` — **nunca mandes `"mobile"` todavía**: ese valor existe como
-    /// concepto desde v5, pero la entrega push a este teléfono no está
-    /// conectada (`apps/worker/edecan_worker/handlers/send_reminder.py` solo
-    /// sabe entregar por chat hoy — `voice`/`phone` tampoco tienen ruta
-    /// propia, ver su docstring); hasta que esa ola aterrice, un recordatorio
-    /// creado desde la app se entrega exactamente igual que uno creado en el
-    /// panel web.
+    /// `POST /v1/reminders {message, due_at, channel}`. La app usa `mobile`
+    /// para que el worker intente APNs y conserva una notificación local como
+    /// respaldo cuando el despliegue OSS no tiene credenciales push.
     @discardableResult
-    public func createReminder(texto: String, fecha: Date, canal: String = "web") async throws -> ReminderOut {
+    public func createReminder(texto: String, fecha: Date, canal: String = "mobile") async throws -> ReminderOut {
         struct Body: Encodable {
             let message: String
             let dueAt: Date

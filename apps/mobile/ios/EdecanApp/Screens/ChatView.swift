@@ -11,7 +11,6 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var tabRouter
-    @Environment(\.openURL) private var openURL
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var mostrandoVoz = false
@@ -21,6 +20,7 @@ struct ChatView: View {
     @State private var tareasSubida: [UUID: Task<Void, Never>] = [:]
     @State private var artefactoDescargandoId: String?
     @State private var archivoCompartible: ArchivoCompartible?
+    @State private var previewTarget: SecurePreviewTarget?
     @State private var conversacionPersistida = ""
     private let estadoLocal = ChatLocalStateStore()
     @FocusState private var campoEnfocado: Bool
@@ -58,6 +58,9 @@ struct ChatView: View {
                     archivoCompartible = nil
                 }
             }
+            .sheet(item: $previewTarget) { target in
+                SecurePreviewSheet(target: target, client: session.client)
+            }
             .fileImporter(
                 isPresented: $mostrandoSelectorArchivos,
                 allowedContentTypes: [.item],
@@ -83,14 +86,6 @@ struct ChatView: View {
                     }
                     .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
                     .accessibilityLabel("Nuevo chat")
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Listo") {
-                        campoEnfocado = false
-                    }
-                    .fontWeight(.semibold)
-                    .accessibilityHint("Cierra el teclado y vuelve a mostrar toda la conversación")
                 }
             }
             .task {
@@ -149,7 +144,7 @@ struct ChatView: View {
                             mensaje: mensaje,
                             client: session.client,
                             artefactoDescargandoId: artefactoDescargandoId,
-                            onAbrirArtefacto: descargarYCompartir,
+                            onAbrirArtefacto: { previewTarget = .artifact($0) },
                             onAction: ejecutarAccion,
                             onRetry: reintentarMensaje
                         )
@@ -257,6 +252,11 @@ struct ChatView: View {
                 TextField("Escríbele a Edecán…", text: $textoActual, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($campoEnfocado)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        guard botonHabilitado else { return }
+                        enviarMensajeActual()
+                    }
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -348,7 +348,7 @@ struct ChatView: View {
                 viewModel.errorMensaje = "El enlace no es seguro y no se abrio."
                 return
             }
-            openURL(url)
+            previewTarget = .publicURL(url)
         case .openScreen(_, _, let screen):
             switch screen {
             case .assistant:
@@ -587,6 +587,8 @@ private struct AdjuntoPendiente: Identifiable, Equatable {
 
 private struct HistorialChatView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var conversacionARenombrar: Conversation?
+    @State private var tituloEditado = ""
     let viewModel: ChatViewModel
     let client: APIClient?
     let onNueva: () -> Void
@@ -618,6 +620,15 @@ private struct HistorialChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button {
+                                conversacionARenombrar = conversacion
+                                tituloEditado = titulo(conversacion)
+                            } label: {
+                                Label("Renombrar", systemImage: "pencil")
+                            }
+                            .tint(.indigo)
+                        }
                     }
                 }
             }
@@ -637,6 +648,19 @@ private struct HistorialChatView: View {
             .refreshable {
                 guard let client else { return }
                 await viewModel.cargarConversaciones(client: client)
+            }
+            .alert("Renombrar conversación", isPresented: Binding(
+                get: { conversacionARenombrar != nil },
+                set: { if !$0 { conversacionARenombrar = nil } }
+            )) {
+                TextField("Nombre", text: $tituloEditado)
+                Button("Cancelar", role: .cancel) { conversacionARenombrar = nil }
+                Button("Guardar") {
+                    guard let client, let id = conversacionARenombrar?.id else { return }
+                    let titulo = tituloEditado
+                    conversacionARenombrar = nil
+                    Task { await viewModel.renombrarConversacion(id: id, titulo: titulo, client: client) }
+                }
             }
         }
     }

@@ -17,9 +17,11 @@
 import { useState } from "react";
 
 import { Alert, Button, Field, Input } from "@/components/ui";
+import { OfficialLink, SetupStep, SetupSteps } from "@/components/configuracion/SetupGuide";
 import { ApiError, putAdsCredentials } from "@/lib/api-ads";
 
 const ENLACE_META_DEVELOPERS = "https://developers.facebook.com/apps";
+const ENLACE_META_ADS_MANAGER = "https://adsmanager.facebook.com/";
 
 function mensajeError(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -56,12 +58,22 @@ export function ConectarMetaAds({ onConnected }: { onConnected?: () => void }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-400">
-        Opcional — conecta tu propia app de Meta for Developers (access token con permisos
-        «ads_management»/«ads_read» + el id de tu cuenta de anuncios) para ver campañas y
-        métricas reales, y crear borradores que puedas empujar a Meta. Sin esto, el resumen
-        sigue funcionando con una campaña de ejemplo en modo offline — no bloquea nada.
-      </p>
+      <SetupSteps>
+        <SetupStep number={1}>
+          <OfficialLink href={ENLACE_META_DEVELOPERS}>Abrir mis apps de Meta</OfficialLink>
+          <span className="mt-1 block">
+            Usa una app propia con acceso a Marketing API y permisos <code>ads_read</code> y
+            <code> ads_management</code>.
+          </span>
+        </SetupStep>
+        <SetupStep number={2}>
+          <OfficialLink href={ENLACE_META_ADS_MANAGER}>Abrir Meta Ads Manager</OfficialLink>
+          <span className="mt-1 block">Copia el ID de la cuenta publicitaria que quieres manejar.</span>
+        </SetupStep>
+        <SetupStep number={3}>
+          Pega ambos datos. Edecan los comprobará con Meta antes de cifrar y guardar.
+        </SetupStep>
+      </SetupSteps>
       {resultado && <Alert variant={resultado.ok ? "success" : "error"}>{resultado.mensaje}</Alert>}
       <Field
         label="Access token de Meta"
@@ -92,18 +104,8 @@ export function ConectarMetaAds({ onConnected }: { onConnected?: () => void }) {
           disabled={busy}
         />
       </Field>
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <a
-          href={ENLACE_META_DEVELOPERS}
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400"
-        >
-          Sacar mi access token en Meta for Developers →
-        </a>
-      </div>
       <Button size="sm" onClick={() => void conectar()} loading={busy} disabled={!puedeConectar}>
-        Conectar
+        Comprobar y conectar
       </Button>
     </div>
   );

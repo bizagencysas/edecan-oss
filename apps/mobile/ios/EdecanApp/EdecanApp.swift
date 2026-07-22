@@ -7,14 +7,17 @@ import EdecanKit
 /// ``OnboardingView``; si ya lo está, va directo a ``RootTabView``.
 @main
 struct EdecanApp: App {
+    @UIApplicationDelegateAdaptor(EdecanAppDelegate.self) private var appDelegate
     @State private var pairingStore = PairingStore()
     @State private var session = SessionStore()
+    @State private var push = PushNotificationCoordinator()
 
     var body: some Scene {
         WindowGroup {
             RaizDeLaApp()
                 .environment(pairingStore)
                 .environment(session)
+                .environment(push)
         }
     }
 }
@@ -25,6 +28,7 @@ struct EdecanApp: App {
 private struct RaizDeLaApp: View {
     @Environment(PairingStore.self) private var pairingStore
     @Environment(SessionStore.self) private var session
+    @Environment(PushNotificationCoordinator.self) private var push
 
     var body: some View {
         Group {
@@ -42,6 +46,20 @@ private struct RaizDeLaApp: View {
         }
         .onOpenURL { url in
             pairingStore.recibirEnlace(url)
+        }
+        .task(id: pairingStore.deviceId) {
+            await push.configurar(client: session.client, deviceId: pairingStore.deviceId)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .edecanAPNsToken)) { notification in
+            guard let token = notification.object as? String else { return }
+            Task { await push.recibir(token: token) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .edecanNotificationRoute)) { notification in
+            guard let raw = notification.object as? String else { return }
+            push.rutaPendiente = NotificationRoute(rawValue: raw) ?? .assistant
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .edecanAPNsRegistrationFailed)) { _ in
+            push.marcarRegistroRemotoNoDisponible()
         }
     }
 }

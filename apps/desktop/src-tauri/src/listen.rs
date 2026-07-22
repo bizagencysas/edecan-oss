@@ -200,13 +200,12 @@ fn save_persisted(app: &AppHandle, state: &PersistedState) -> Result<(), String>
     std::fs::write(&path, bytes).map_err(|err| err.to_string())
 }
 
-// --- Getter sincrónico usado por lib.rs en el hot path de cierre de ventana
+// --- Getter sincrónico del estado efectivo de escucha --------------------
 
 /// Lee el flag en memoria (NO el archivo de disco a propósito — ver
-/// docstring de `AlwaysListenRuntime::enabled_flag`). Se llama desde el
-/// handler de `CloseRequested` en lib.rs para decidir si cerrar la ventana
-/// oculta la app (escucha activa) o la cierra del todo (comportamiento de
-/// siempre).
+/// docstring de `AlwaysListenRuntime::enabled_flag`). Lo usan el menú de
+/// bandeja y sus indicadores para reflejar el loop que realmente está vivo,
+/// no solo la preferencia persistida.
 pub fn is_enabled(app: &AppHandle) -> bool {
     *app.state::<AlwaysListenRuntime>()
         .enabled_flag
@@ -340,8 +339,7 @@ fn validate_wake_label(value: String) -> Result<String, String> {
 
 /// Activa o desactiva "escuchar siempre". Activar sin haber entrenado antes
 /// es un error explícito; desactivar siempre es válido (incluso si ya
-/// estaba desactivado — es idempotente a propósito, así el ítem fijo del
-/// menú de bandeja puede llamarlo sin chequear el estado primero).
+/// estaba desactivado — es idempotente a propósito).
 pub fn set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     let persisted = load_persisted(&app);
     if enabled && !persisted.trained {
@@ -366,8 +364,8 @@ pub fn set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     if let Err(error) = save_persisted(&app, &next) {
         // La escucha nunca debe quedar activa si no pudimos persistir el
         // consentimiento del usuario. También reflejamos el estado real en
-        // memoria para que cerrar la ventana no la oculte como si siguiera
-        // escuchando.
+        // memoria para que la UI y la bandeja no reporten una escucha que
+        // en realidad ya no está corriendo.
         if enabled {
             stop_listen_loop(&app);
         }
@@ -423,8 +421,7 @@ pub fn maybe_autostart(app: &AppHandle) -> Result<(), String> {
     // Arranca el loop PRIMERO y solo marca `enabled_flag` en memoria si
     // arrancó sin error — mismo orden que `set_enabled`, para que
     // `is_enabled()` nunca reporte `true` con ningún loop realmente
-    // corriendo detrás (ver getter sincrónico usado por el hot path de
-    // cierre de ventana en lib.rs).
+    // corriendo detrás.
     start_listen_loop(app)?;
     *app.state::<AlwaysListenRuntime>()
         .enabled_flag

@@ -11,6 +11,7 @@ struct PerfilView: View {
     @Environment(PairingStore.self) private var pairingStore
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var router
+    @Environment(PushNotificationCoordinator.self) private var push
     @State private var mostrarConfirmacionSalir = false
     @State private var mostrarEstudioDeContenido = false
     @State private var perfilVivo: LiveProfile?
@@ -22,6 +23,7 @@ struct PerfilView: View {
                     tarjetaDePersona
                     perfilPersonal
                     tarjetaDeEdecan
+                    tarjetaNotificaciones
                     herramientas
                     modoAvanzado
                     version
@@ -152,6 +154,33 @@ struct PerfilView: View {
         }
         .padding(18)
         .tarjetaVidrio(esquina: 20)
+    }
+
+    private var tarjetaNotificaciones: some View {
+        Button {
+            Task { await push.pedirPermiso() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "bell.badge.fill")
+                    .foregroundStyle(EdecanTheme.morado)
+                    .frame(width: 42, height: 42)
+                    .background(EdecanTheme.morado.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Avisos")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(push.estado.texto)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer()
+            }
+            .padding(16)
+            .tarjetaVidrio(esquina: 20)
+        }
+        .buttonStyle(.plain)
+        .disabled(push.estado == .activo)
     }
 
     private var herramientas: some View {
@@ -286,6 +315,7 @@ struct PerfilView: View {
         let deviceId = pairingStore.deviceId
         pairingStore.olvidarEmparejamiento()
         Task {
+            await push.revocar()
             await session.cerrarSesion(deviceId: deviceId)
         }
     }

@@ -87,6 +87,7 @@ async def test_search_sin_embedder_usa_fallback_ilike():
     assert hits[0].score == 0.0
     statement, params = session.calls[0]
     assert "ILIKE" in str(statement)
+    assert "superseded_at IS NULL" in str(statement)
     assert params["q"] == "%CDMX%"
     assert params["k"] == 8
 
@@ -104,6 +105,7 @@ async def test_search_con_embedder_ordena_por_distancia_vectorial():
     statement, params = session.calls[0]
     assert "<=>" in str(statement)
     assert "ORDER BY embedding <=> :q" in str(statement)
+    assert "superseded_at IS NULL" in str(statement)
     assert params["k"] == 3
     assert hits[0].score == pytest.approx(0.83)
 

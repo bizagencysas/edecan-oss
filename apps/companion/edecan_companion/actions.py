@@ -979,10 +979,9 @@ class _QuartzInputBackend:
         if not Quartz.AXIsProcessTrusted():
             raise ActionError(
                 "este proceso no tiene el permiso de Accesibilidad concedido en macOS. "
-                "Ve a Ajustes del Sistema → Privacidad y Seguridad → Accesibilidad y "
-                "actívalo para la aplicación/terminal que ejecuta el companion. Ese "
-                "permiso SOLO se puede conceder con un clic humano en esa pantalla -- "
-                "el companion nunca lo solicita ni lo evade automáticamente."
+                "Abre Edecán → Ajustes → Permisos de esta computadora y pulsa "
+                "'Comprobar y permitir' en Accesibilidad. Edecán abrirá el diálogo "
+                "correcto y te mostrará su archivo exacto si macOS exige seleccionarlo."
             )
 
         self._Quartz = Quartz

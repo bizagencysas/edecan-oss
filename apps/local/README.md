@@ -43,3 +43,17 @@ en [`../desktop/README.md`](../desktop/README.md).
 - `--mobile-access`: permite la conexión móvil desde la red local; la app de
   escritorio lo activa automáticamente.
 - `EDECAN_WEB_DIR`: directorio de un export estático que se sirve en `/`.
+
+## IDE del escritorio
+
+La app instalada registra este mismo proceso como companion local. Las rutas
+autenticadas `/v1/ide/*` ejecutan árbol, búsqueda, lectura, escritura, edición
+y terminal directamente contra el `sandbox_dir` de
+`<data-dir>/companion.yaml`; no hace falta abrir un segundo companion ni una
+terminal de aprobación. El bridge delega en las acciones reales de
+`edecan_companion`, por lo que conserva sandbox, auditoría, `ide_enabled`,
+límites de tamaño y la lista explícita `allowed_commands`.
+
+La terminal permanece cerrada por defecto porque `allowed_commands` empieza
+vacío. Añadir un ejecutable permite solo ese primer token, siempre con
+`shell=False` y `cwd=sandbox_dir`; reinicia la app después de editar el YAML.

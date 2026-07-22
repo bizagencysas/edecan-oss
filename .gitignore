@@ -5,6 +5,7 @@
 *.pem
 *.key
 *.crt
+**/google-services.json
 
 # ---- Python ----
 __pycache__/

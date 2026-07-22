@@ -248,6 +248,20 @@ def test_validar_item_extraido_source_ausente_usa_default() -> None:
     assert resultado is not None and resultado["source"] == "conversación hoy"
 
 
+def test_validar_item_extraido_normaliza_reemplazos_sin_duplicados() -> None:
+    anterior = str(uuid.uuid4())
+    resultado = _validar_item_extraido(
+        {
+            "kind": "fact",
+            "content": "DataCred está aprobada en ambas tiendas.",
+            "replaces": [anterior, anterior, 123, ""],
+        },
+        fuente_default="conversación hoy",
+    )
+    assert resultado is not None
+    assert resultado["replaces"] == [anterior]
+
+
 # ---------------------------------------------------------------------------
 # Fase 1 end-to-end: `handle()` extrae vía LLM antes de deduplicar
 # ---------------------------------------------------------------------------
@@ -329,6 +343,95 @@ async def test_handle_extrae_memoria_nueva_del_llm_y_la_inserta_con_embedding(
     assert fake_repo.memory_edges == []
 
 
+async def test_handle_correccion_archiva_memoria_anterior_y_deja_solo_la_nueva_activa(
+    monkeypatch,
+) -> None:
+    fake_repo = FakeRepo()
+    monkeypatch.setattr(consolidate_module, "SqlRepo", lambda session: fake_repo)
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    memoria_anterior_id = uuid.uuid4()
+    fake_repo.tenants[tenant_id] = {"id": tenant_id, "plan_key": "hosted_pro"}
+    fake_repo.memory_items[memoria_anterior_id] = {
+        "id": memoria_anterior_id,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "kind": "fact",
+        "content": "DataCred está aprobada en App Store y pendiente en Google Play.",
+        "importance": 0.7,
+        "source": "importado",
+        "embedding": _unit_vector(90),
+        "created_at": datetime.now(UTC) - timedelta(days=1),
+    }
+    _agregar_conversacion_con_mensaje(
+        fake_repo,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        texto_usuario="Corrige esto: DataCred ya está aprobada en ambas plataformas.",
+    )
+
+    deps = make_deps()
+    await _use_platform_router_as_tenant_router(deps, monkeypatch)
+    deps.llm_router.provider.reply = (
+        '[{"kind":"fact","content":"DataCred está aprobada en App Store y Google Play.",'
+        f'"importance":0.95,"replaces":["{memoria_anterior_id}"]}}]'
+    )
+    env = JobEnvelope(
+        job_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        type="memory_consolidate",
+        payload={"user_id": str(user_id)},
+    )
+
+    await consolidate_module.handle(env, deps)
+
+    nuevas = [
+        row
+        for row in fake_repo.memory_items.values()
+        if row.get("content") == "DataCred está aprobada en App Store y Google Play."
+    ]
+    assert len(nuevas) == 1
+    anterior = fake_repo.memory_items[memoria_anterior_id]
+    assert anterior["superseded_at"] is not None
+    assert anterior["superseded_by"] == nuevas[0]["id"]
+    activas = await fake_repo.list_memory_contents(tenant_id=tenant_id, user_id=user_id, limit=50)
+    assert memoria_anterior_id not in {row["id"] for row in activas}
+    assert nuevas[0]["id"] in {row["id"] for row in activas}
+
+
+async def test_handle_ignora_id_de_reemplazo_que_no_pertenece_a_memorias_existentes(
+    monkeypatch,
+) -> None:
+    fake_repo = FakeRepo()
+    monkeypatch.setattr(consolidate_module, "SqlRepo", lambda session: fake_repo)
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    fake_repo.tenants[tenant_id] = {"id": tenant_id, "plan_key": "hosted_pro"}
+    _agregar_conversacion_con_mensaje(
+        fake_repo,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        texto_usuario="Corrige mi ciudad.",
+    )
+    deps = make_deps()
+    await _use_platform_router_as_tenant_router(deps, monkeypatch)
+    deps.llm_router.provider.reply = (
+        f'[{{"kind":"fact","content":"Vive en Caracas.","replaces":["{uuid.uuid4()}"]}}]'
+    )
+    env = JobEnvelope(
+        job_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        type="memory_consolidate",
+        payload={"user_id": str(user_id)},
+    )
+
+    await consolidate_module.handle(env, deps)
+
+    assert any(row.get("content") == "Vive en Caracas." for row in fake_repo.memory_items.values())
+    assert all(row.get("superseded_at") is None for row in fake_repo.memory_items.values())
+
+
 async def test_handle_enlaza_en_memory_edges_los_items_de_un_mismo_lote(monkeypatch) -> None:
     fake_repo = FakeRepo()
     monkeypatch.setattr(consolidate_module, "SqlRepo", lambda session: fake_repo)
@@ -360,8 +463,7 @@ async def test_handle_enlaza_en_memory_edges_los_items_de_un_mismo_lote(monkeypa
 
     assert len(fake_repo.memory_items) == 2
     id_hecho, id_preferencia = (
-        row["id"]
-        for row in sorted(fake_repo.memory_items.values(), key=lambda row: row["content"])
+        row["id"] for row in sorted(fake_repo.memory_items.values(), key=lambda row: row["content"])
     )
 
     # se enlazan en AMBOS sentidos (`neighbors()` solo resuelve salientes)

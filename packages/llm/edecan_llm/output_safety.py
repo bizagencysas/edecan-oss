@@ -57,6 +57,27 @@ _STRONG_INTERNAL_PATTERNS = tuple(
     )
 )
 
+_INTERNAL_PREFIXES = (
+    "el usuario",
+    "la usuaria",
+    "la persona",
+    "debo responder",
+    "debo contestar",
+    "tengo que responder",
+    "voy a responder",
+    "respondo con",
+    "respondo de forma",
+    "no necesito herramientas",
+    "no hace falta usar herramientas",
+    "the user",
+    "the person",
+    "i should answer",
+    "i should respond",
+    "i need to answer",
+    "i will respond",
+    "i'll respond",
+)
+
 
 def sanitize_visible_assistant_text(text: str) -> str:
     """Quita solo un prefacio inicial de autonarracion inequívoca.
@@ -89,6 +110,23 @@ def sanitize_visible_assistant_text(text: str) -> str:
     if matched_sentences and has_strong_marker and visible:
         return visible
     return original
+
+
+def is_potential_internal_prefix(text: str) -> bool:
+    """Indica si un fragmento inicial todavía podría ser autonarración.
+
+    El streaming recibe palabras incompletas. Por eso se consideran tanto
+    prefijos completos como parciales: ``El us`` debe esperar, mientras que
+    ``Hola`` se puede mostrar inmediatamente.
+    """
+
+    normalized = " ".join(text.lstrip().lower().split())
+    if not normalized:
+        return True
+    return any(
+        prefix.startswith(normalized) or normalized.startswith(prefix)
+        for prefix in _INTERNAL_PREFIXES
+    )
 
 
 def _looks_like_internal_sentence(sentence: str) -> bool:

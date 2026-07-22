@@ -68,6 +68,9 @@ tenant en el `TokenVault`.
   a diferencia del `DELETE /push/credentials` de abajo (que SÍ es
   idempotente, por ser un recurso singleton por tenant en vez de una fila
   puntual por id).
+- `GET|PUT "/push/preferences"` → preferencias personales por categoría
+  (`work|content|design|files|self_repair`). El `PUT` es parcial y append-only
+  en `audit_log`; apagar una categoría no borra su actividad durable.
 - `PUT "/push/credentials" {apns?: {...}, fcm?: {...}}` (al menos uno;
   parciales OK — un `PUT` con solo `apns` NUNCA borra un `fcm` ya guardado
   antes, y viceversa: se lee la config existente y se sobreescribe SOLO la
@@ -93,7 +96,7 @@ tenant en el `TokenVault`.
   registrados quedan intactos; un push posterior sin credencial conectada
   simplemente no se envía, ver `edecan_worker.push`).
 
-Los 5 endpoints de arriba SÍ gatean con el flag `notifications.push`
+Los 7 endpoints de arriba SÍ gatean con el flag `notifications.push`
 (`edecan_schemas.plans.FLAG_NOTIFICATIONS_PUSH`, `True` en los 4 planes hoy
 — infraestructura de cara al futuro, mismo mecanismo estándar que `ads.py`/
 `erp.py`): `403` si el plan del tenant no lo tiene.
@@ -114,11 +117,15 @@ from urllib.parse import urlencode
 import redis.asyncio as redis_asyncio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from edecan_core.notifications import (
+    get_notification_preferences,
+    save_notification_preferences,
+)
 from edecan_db.vault import TokenVault
 from edecan_schemas import TokenBundle
 from edecan_schemas.plans import FLAG_NOTIFICATIONS_PUSH
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -199,6 +206,26 @@ class PushStatusOut(BaseModel):
     apns: bool
     fcm: bool
     devices_con_token: int
+
+
+class PushPreferencesIn(BaseModel):
+    """PATCH semántico: las categorías omitidas conservan su valor actual."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    work: bool | None = None
+    content: bool | None = None
+    design: bool | None = None
+    files: bool | None = None
+    self_repair: bool | None = None
+
+
+class PushPreferencesOut(BaseModel):
+    work: bool
+    content: bool
+    design: bool
+    files: bool
+    self_repair: bool
 
 
 class PairingCreateOut(BaseModel):
@@ -777,6 +804,41 @@ async def delete_push_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dispositivo no encontrado (o no es tuyo).",
         )
+
+
+# -- GET/PUT /push/preferences ------------------------------------------------
+
+
+@router.get("/push/preferences", response_model=PushPreferencesOut)
+async def get_push_preferences(
+    current_user: CurrentUser = Depends(_require_notifications_push),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> PushPreferencesOut:
+    preferences = await get_notification_preferences(
+        session, tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
+    return PushPreferencesOut(**preferences)
+
+
+@router.put("/push/preferences", response_model=PushPreferencesOut)
+async def put_push_preferences(
+    body: PushPreferencesIn,
+    current_user: CurrentUser = Depends(_require_notifications_push),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> PushPreferencesOut:
+    partial = body.model_dump(exclude_none=True)
+    if not partial:
+        preferences = await get_notification_preferences(
+            session, tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        )
+    else:
+        preferences = await save_notification_preferences(
+            session,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
+            categories=partial,
+        )
+    return PushPreferencesOut(**preferences)
 
 
 # -- PUT/DELETE /push/credentials, GET /push/status ---------------------------

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import EdecanKit
+import UIKit
 
 /// Una burbuja de mensaje en ``ChatView``: alineada a la derecha con el
 /// degradado morado/azul para el usuario, a la izquierda con vidrio para
@@ -28,6 +29,13 @@ struct BurbujaMensaje: View {
                 } else if !mensaje.texto.isEmpty {
                     Text(textoMarkdown(mensaje.texto))
                         .textSelection(.enabled)
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = mensaje.texto
+                            } label: {
+                                Label("Copiar texto", systemImage: "doc.on.doc")
+                            }
+                        }
                 }
 
                 if !mensaje.adjuntos.isEmpty {
@@ -59,12 +67,12 @@ struct BurbujaMensaje: View {
                                 if artefactoDescargandoId == artefacto.fileId {
                                     ProgressView().controlSize(.small)
                                 } else {
-                                    Image(systemName: "arrow.down.doc")
+                                    Image(systemName: "doc.text.magnifyingglass")
                                 }
                                 Text(artefacto.filename)
                                     .lineLimit(1)
                                 Spacer(minLength: 0)
-                                Image(systemName: "square.and.arrow.up")
+                                Image(systemName: "eye")
                                     .font(.caption)
                             }
                             .font(.footnote.weight(.medium))

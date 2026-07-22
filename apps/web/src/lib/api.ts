@@ -47,6 +47,8 @@ import type {
   MemoryImportItem,
   MemoryItem,
   PersonaConfig,
+  PhoneAgentTemplate,
+  PhoneAgentTemplateInput,
   PhoneCall,
   Reminder,
   StripeStatus,
@@ -273,6 +275,13 @@ export async function getConversation(id: string): Promise<ConversationOut> {
   return apiJson<ConversationOut>(`/v1/conversations/${id}`);
 }
 
+export async function renameConversation(id: string, title: string): Promise<ConversationOut> {
+  return apiJson<ConversationOut>(`/v1/conversations/${id}`, {
+    method: "PATCH",
+    body: { title },
+  });
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await apiJson<void>(`/v1/conversations/${id}`, { method: "DELETE" });
 }
@@ -468,6 +477,34 @@ export async function grantConsent(input: {
   source: string;
 }): Promise<ConsentOut> {
   return apiJson<ConsentOut>("/v1/consents", { method: "POST", body: input });
+}
+
+/** Personas reutilizables para las llamadas salientes del asistente. */
+export async function listPhoneAgentTemplates(): Promise<PhoneAgentTemplate[]> {
+  return apiJson<PhoneAgentTemplate[]>("/v1/phone/agent-templates");
+}
+
+export async function createPhoneAgentTemplate(
+  input: PhoneAgentTemplateInput,
+): Promise<PhoneAgentTemplate> {
+  return apiJson<PhoneAgentTemplate>("/v1/phone/agent-templates", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function updatePhoneAgentTemplate(
+  id: string,
+  input: PhoneAgentTemplateInput,
+): Promise<PhoneAgentTemplate> {
+  return apiJson<PhoneAgentTemplate>(`/v1/phone/agent-templates/${id}`, {
+    method: "PUT",
+    body: input,
+  });
+}
+
+export async function deletePhoneAgentTemplate(id: string): Promise<void> {
+  await apiJson<void>(`/v1/phone/agent-templates/${id}`, { method: "DELETE" });
 }
 
 /** Llamadas del asistente, incluidas entrantes, salientes y borradores por confirmar. */

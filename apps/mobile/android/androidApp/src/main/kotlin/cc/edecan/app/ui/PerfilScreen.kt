@@ -1,5 +1,10 @@
 package cc.edecan.app.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,12 +35,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cc.edecan.app.vm.PerfilViewModel
 import cc.edecan.app.vm.SessionViewModel
 import cc.edecan.shared.LiveProfile
 import cc.edecan.shared.ProfileIdentity
 import cc.edecan.shared.nombrePila
+import cc.edecan.app.notifications.EdecanNotifications
 
 /**
  * Pestaña personal. Igual que iOS, aquí no se administran API keys ni
@@ -48,6 +55,7 @@ import cc.edecan.shared.nombrePila
 fun PerfilScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     perfilViewModel: PerfilViewModel = viewModel(),
+    onAbrirContenido: () -> Unit = {},
     onAbrirIde: () -> Unit = {},
     onAbrirCapacidades: () -> Unit = {},
     onAbrirNegocios: () -> Unit = {},
@@ -56,6 +64,12 @@ fun PerfilScreen(
     val perfilState by perfilViewModel.uiState.collectAsState()
     var editandoPerfil by remember { mutableStateOf(false) }
     var confirmarSalida by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    var permisoAvisos by remember { mutableStateOf(EdecanNotifications.permissionGranted(context)) }
+    val pedirAvisos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permisoAvisos = granted
+        if (granted) EdecanNotifications.refreshRemoteRegistration(context)
+    }
 
     LaunchedEffect(sessionViewModel.api) {
         sessionViewModel.api?.let { perfilViewModel.cargarPerfil(it) }
@@ -108,6 +122,30 @@ fun PerfilScreen(
                 }
             }
 
+            Card(
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= 33 && !permisoAvisos) {
+                        pedirAvisos.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        EdecanNotifications.refreshRemoteRegistration(context)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Avisos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            !permisoAvisos -> "Activa recordatorios, llamadas y trabajos terminados"
+                            EdecanNotifications.remoteConfigured(context) -> "Avisos locales y remotos activados"
+                            else -> "Avisos locales activados · push remoto es opcional en OSS"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+
             Card(onClick = { editandoPerfil = true }, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text("Perfil", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -139,6 +177,9 @@ fun PerfilScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text("TU EDECÁN", style = MaterialTheme.typography.labelMedium)
+                    Button(onClick = onAbrirContenido, modifier = Modifier.fillMaxWidth()) {
+                        Text("Crear contenido")
+                    }
                     Button(onClick = onAbrirCapacidades, modifier = Modifier.fillMaxWidth()) {
                         Text("Capacidades")
                     }

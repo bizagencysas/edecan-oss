@@ -98,14 +98,18 @@ async def resolver_config_tts_del_tenant(ctx: Any) -> dict[str, Any] | None:
 
     try:
         row = (
-            await session.execute(
-                sql_text(
-                    "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
-                    "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"tenant_id": tenant_id, "connector_key": VOICE_TTS_CONNECTOR_KEY},
+            (
+                await session.execute(
+                    sql_text(
+                        "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
+                        "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"tenant_id": tenant_id, "connector_key": VOICE_TTS_CONNECTOR_KEY},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
 
@@ -143,7 +147,12 @@ async def resolver_tts_del_tenant(ctx: Any) -> TTSProvider:
 
     provider = data.get("provider")
     if provider == "elevenlabs" and data.get("api_key"):
-        return ElevenLabsTTS(api_key=data["api_key"], default_voice_id=data.get("voice_id"))
+        return ElevenLabsTTS(
+            api_key=data["api_key"],
+            default_voice_id=data.get("voice_id"),
+            model_id=str(data.get("model_id") or "eleven_multilingual_v2"),
+            expressive=bool(data.get("expressive", False)),
+        )
     if provider == "polly" and getattr(getattr(ctx, "settings", None), "EDECAN_LOCAL_MODE", False):
         # `allow_ambient_credentials=True`: seguro AQUÍ porque el chequeo de
         # arriba ya confirmó que el backend corre en modo local de un único

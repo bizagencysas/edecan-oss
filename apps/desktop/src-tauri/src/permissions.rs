@@ -33,6 +33,8 @@ pub struct DesktopPermission {
 #[derive(Debug, Serialize)]
 pub struct DesktopPermissionsState {
     pub platform: &'static str,
+    pub application_name: &'static str,
+    pub application_path: Option<String>,
     pub permissions: Vec<DesktopPermission>,
 }
 
@@ -46,6 +48,8 @@ pub struct PermissionActionResult {
 pub fn get_state() -> DesktopPermissionsState {
     DesktopPermissionsState {
         platform: platform_name(),
+        application_name: "Edecán",
+        application_path: current_application_path(),
         permissions: permission_catalog(),
     }
 }
@@ -58,6 +62,7 @@ pub async fn request(permission_id: String) -> Result<PermissionActionResult, St
         "notifications" => open_permission_settings("notifications"),
         "full_disk_access" => open_permission_settings("full_disk_access"),
         "automation" => open_permission_settings("automation"),
+        "reveal_application" => reveal_application(),
         // En Windows estas capacidades no requieren un consentimiento
         // global; los límites de UAC se solicitan por acción.
         "computer_control" | "files" => Ok(PermissionActionResult {
@@ -213,12 +218,77 @@ fn request_accessibility() -> Result<PermissionActionResult, String> {
             message: "Accesibilidad ya está permitida.".into(),
         });
     }
+    // Esta variante de la API no solo consulta: pide a macOS que agregue la
+    // aplicación responsable a la lista y muestre el consentimiento nativo.
+    // Si sigue pendiente, abrimos además la sección exacta.
+    if macos_request_accessibility() {
+        return Ok(PermissionActionResult {
+            permission_id: "accessibility".into(),
+            status: PermissionStatus::Granted,
+            message: "Accesibilidad quedó permitida para Edecán.".into(),
+        });
+    }
     open_settings_for("accessibility")?;
     Ok(PermissionActionResult {
         permission_id: "accessibility".into(),
         status: PermissionStatus::NeedsAction,
         message: "Activa Edecán en Accesibilidad y vuelve a esta pantalla para comprobarlo.".into(),
     })
+}
+
+fn current_application_path() -> Option<String> {
+    let executable = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(bundle) = executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+        {
+            return Some(bundle.display().to_string());
+        }
+    }
+    Some(executable.display().to_string())
+}
+
+fn reveal_application() -> Result<PermissionActionResult, String> {
+    let path = current_application_path()
+        .ok_or_else(|| "No se pudo localizar el archivo de Edecán.".to_string())?;
+    reveal_path(&path)?;
+    Ok(PermissionActionResult {
+        permission_id: "reveal_application".into(),
+        status: PermissionStatus::NotRequired,
+        message: format!("Mostramos el archivo exacto que debes seleccionar: {path}"),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path(path: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .args(["-R", path])
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("No se pudo mostrar Edecán en Finder: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path(path: &str) -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{path}"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("No se pudo mostrar Edecán en el Explorador: {error}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn reveal_path(path: &str) -> Result<(), String> {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(path));
+    std::process::Command::new("xdg-open")
+        .arg(parent)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("No se pudo mostrar la carpeta de Edecán: {error}"))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -341,6 +411,27 @@ fn macos_accessibility_granted() -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_request_accessibility() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::CFString;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    }
+
+    let options: CFDictionary<CFString, CFBoolean> = CFDictionary::from_CFType_pairs(&[(
+        CFString::from_static_string("AXTrustedCheckOptionPrompt"),
+        CFBoolean::true_value(),
+    )]);
+    // SAFETY: la API pública solo lee el CFDictionary retenido durante esta
+    // llamada y devuelve un booleano. El diccionario permanece vivo.
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
+}
+
+#[cfg(target_os = "macos")]
 fn macos_screen_recording_granted() -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -381,6 +472,8 @@ mod tests {
     fn state_reports_current_platform() {
         let state = get_state();
         assert_eq!(state.platform, platform_name());
+        assert_eq!(state.application_name, "Edecán");
+        assert!(state.application_path.is_some());
         assert!(!state.permissions.is_empty());
     }
 }

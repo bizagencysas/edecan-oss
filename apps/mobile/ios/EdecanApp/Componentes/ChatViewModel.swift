@@ -253,6 +253,19 @@ final class ChatViewModel {
         errorMensaje = nil
     }
 
+    func renombrarConversacion(id: String, titulo: String, client: APIClient) async {
+        let limpio = titulo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !limpio.isEmpty else { return }
+        do {
+            let actualizada = try await client.renombrarConversacion(id: id, titulo: limpio)
+            if let index = conversaciones.firstIndex(where: { $0.id == id }) {
+                conversaciones[index] = actualizada
+            }
+        } catch {
+            errorMensaje = error.localizedDescription
+        }
+    }
+
     @discardableResult
     func enviar(
         texto: String,

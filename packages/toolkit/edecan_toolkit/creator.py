@@ -595,7 +595,14 @@ class CrearArtefactosTool(Tool):
             )
         elif kind == "pdf":
             tool = CrearPdfTool(uploader=capture_uploader)
-            result = await tool.run(ctx, {"titulo": plan.title, "parrafos": _paragraphs(content)})
+            result = await tool.run(
+                ctx,
+                {
+                    "titulo": plan.title,
+                    "parrafos": _paragraphs(content),
+                    "html": content,
+                },
+            )
         else:
             bullets = _bullets(content)
             slides = [

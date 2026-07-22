@@ -11,6 +11,7 @@ gradle/wrapper/dists/
 # Config local de cada máquina — Android Studio lo regenera solo al abrir
 # el proyecto; si compilas por CLI créalo a mano (ver README.md).
 local.properties
+androidApp/google-services.json
 
 # Firma release — cada cliente trae la suya, nunca se versiona (ver
 # docs/movil-android.md, sección "Firma release").

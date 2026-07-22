@@ -53,7 +53,7 @@ from edecan_schemas import (
 from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import (
@@ -75,6 +75,11 @@ from edecan_api.repo import Repo
 from edecan_api.routers.perfil import profile_context_for
 from edecan_api.routers.persona import persona_from_row
 from edecan_api.routers.phone import phone_tool_dispatcher_for
+from edecan_api.secret_intents import (
+    InlineCredentialIntent,
+    detect_inline_credential_intent,
+    redact_values,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +108,24 @@ PENDING_CONFIRMATION_TTL_SECONDS = 900
 §10.12): ventana para que el usuario apruebe/rechace antes de que expire la
 acción que el modelo propuso."""
 
+_IMPORTANT_TOOL_NOTIFICATIONS: dict[str, str] = {
+    "crear_contenido_social": "content_created",
+    "generar_contenido": "content_created",
+    "publicar_social": "content_published",
+    "crear_diseno_visual": "design_ready",
+    "refinar_diseno_visual": "design_ready",
+    "exportar_diseno_visual": "design_export_ready",
+    "gestionar_autorreparacion_local": "self_repair_completed",
+}
+
 
 class ConversationIn(BaseModel):
     title: str | None = None
     channel: Literal["web", "voice", "phone", "api"] = "web"
+
+
+class ConversationTitleIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
 
 
 class ConfirmIn(BaseModel):
@@ -187,6 +206,26 @@ async def get_conversation(
     return out
 
 
+@router.patch("/{conversation_id}")
+async def rename_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationTitleIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    title = " ".join(body.title.split())
+    if not title:
+        raise HTTPException(status_code=422, detail="Escribe un nombre para la conversación.")
+    row = await repo.update_conversation_title(
+        tenant_id=current_user.tenant_id,
+        conversation_id=conversation_id,
+        title=title,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+    return _conversation_out(row)
+
+
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
     conversation_id: uuid.UUID,
@@ -221,6 +260,23 @@ def _extract_text(content: Any) -> str:
                 return (text + "\n\nArchivos adjuntos privados:\n" + "\n".join(refs)).strip()
         return text
     return ""
+
+
+def _automatic_conversation_title(text: str, *, fallback: str = "Conversación") -> str:
+    """Crea un título breve desde la primera intención, sin otra llamada al LLM."""
+
+    clean = " ".join(text.replace("\n", " ").split()).strip(" \t\r\n#*-")
+    if not clean:
+        return fallback
+    first_sentence = clean
+    for separator in ("?", "!", "."):
+        candidate = first_sentence.split(separator, 1)[0].strip()
+        if candidate:
+            first_sentence = candidate
+    if len(first_sentence) <= 72:
+        return first_sentence
+    shortened = first_sentence[:72].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return shortened or first_sentence[:72]
 
 
 def _attachment_context_line(item: dict[str, Any]) -> str:
@@ -441,9 +497,7 @@ def _pending_confirmation_key(
     return f"pending_confirm:{tenant_id}:{conversation_id}:{tool_call_id}"
 
 
-def _current_pending_confirmation_key(
-    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
-) -> str:
+def _current_pending_confirmation_key(*, tenant_id: uuid.UUID, conversation_id: uuid.UUID) -> str:
     return f"pending_confirm_current:{tenant_id}:{conversation_id}"
 
 
@@ -798,6 +852,69 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     raise TypeError(f"Evento de agente con forma inesperada: {event!r}")
 
 
+def _uuid_from_tool_event(
+    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID, event: dict[str, Any], kind: str
+) -> tuple[uuid.UUID, uuid.UUID | None]:
+    """Devuelve un UUID opaco estable y, si existe, el artefacto navegable.
+
+    Nunca se encola texto libre: un id de proveedor no UUID solo participa en
+    un hash UUIDv5 y no cruza el proceso de API.
+    """
+
+    artifacts = event.get("artifacts")
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            try:
+                artifact_id = uuid.UUID(str(item.get("file_id")))
+            except (TypeError, ValueError):
+                continue
+            return artifact_id, artifact_id
+    opaque_source = ":".join(
+        (
+            str(tenant_id),
+            str(conversation_id),
+            str(event.get("tool_call_id") or "tool"),
+            kind,
+        )
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"edecan:{opaque_source}"), None
+
+
+async def _enqueue_tool_notification(
+    *,
+    settings: Settings,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    event: dict[str, Any],
+) -> None:
+    name = str(event.get("name") or "")
+    kind = _IMPORTANT_TOOL_NOTIFICATIONS.get(name)
+    preview = str(event.get("result_preview") or "").lstrip().lower()
+    if kind is None or preview.startswith(("error:", "falló", "no se pudo")):
+        return
+    event_id, artifact_id = _uuid_from_tool_event(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        event=event,
+        kind=kind,
+    )
+    payload: dict[str, str] = {
+        "user_id": str(user_id),
+        "kind": kind,
+        "event_id": str(event_id),
+    }
+    if artifact_id is not None:
+        payload["artifact_id"] = str(artifact_id)
+    elif kind in {"content_created", "design_ready", "design_export_ready"}:
+        payload["chat_id"] = str(conversation_id)
+    else:
+        payload["resource_id"] = str(event_id)
+    await enqueue(settings, "notify_important_event", payload, tenant_id)
+
+
 async def _stream_agent_events(
     *,
     events: AsyncIterator[Any],
@@ -827,6 +944,24 @@ async def _stream_agent_events(
                 yield _format_sse(sse_name, public_event)
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
+                if event_type == "tool_end":
+                    try:
+                        await _enqueue_tool_notification(
+                            settings=settings,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            event=event,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "No se pudo encolar la notificación de tool_end "
+                            "(tenant_id=%s conversation_id=%s tool=%s)",
+                            tenant_id,
+                            conversation_id,
+                            event.get("name"),
+                            exc_info=True,
+                        )
                 yield _format_sse(sse_name, public_event)
             elif event_type == "tool_progress":
                 # Es telemetría efímera para el turno vivo. No se persiste en
@@ -929,6 +1064,99 @@ async def _stream_declined_confirmation(
     yield _format_sse("message.done", {"type": "done", "usage": {}})
 
 
+async def _stream_inline_credential_configuration(
+    *,
+    intent: InlineCredentialIntent,
+    tool: Tool | None,
+    ctx: ToolContext,
+    repo: Repo,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> AsyncIterator[str]:
+    """Configura una key explícita sin entregársela al LLM ni al SSE.
+
+    El usuario ya dio una instrucción inequívoca al pegar su propia clave.
+    Este camino usa la misma tool y el mismo TokenVault que Ajustes, pero los
+    argumentos públicos contienen solo el nombre del proveedor. El texto
+    original ya fue persistido redactado por ``post_message``.
+    """
+
+    call_id = f"credential-{uuid.uuid4()}"
+    public_args = {"provider": intent.provider, "secret": "[credencial protegida]"}
+    yield _format_sse(
+        "tool.start",
+        {
+            "type": "tool_start",
+            "tool_call_id": call_id,
+            "name": "configurar_credencial",
+            "args": public_args,
+        },
+    )
+
+    if tool is None:
+        response_text = (
+            "No pude abrir el almacén seguro de credenciales. No guardé la clave y la "
+            "oculté del historial."
+        )
+        succeeded = False
+    else:
+        try:
+            result = await tool.run(ctx, intent.tool_args)
+            response_text = redact_values(result.content, intent.secret_values)
+            succeeded = not response_text.casefold().startswith(
+                ("error:", "no pude", "no tengo", "falta ")
+            )
+        except Exception:  # noqa: BLE001 - el secreto nunca debe reflejarse al cliente
+            logger.exception(
+                "Falló la configuración segura de una credencial provider=%s",
+                intent.provider,
+            )
+            response_text = (
+                f"No pude configurar {intent.display_name}. No guardé la clave y la oculté "
+                "del historial."
+            )
+            succeeded = False
+
+    await repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content={"text": response_text},
+    )
+    await repo.add_usage_event(
+        tenant_id=tenant_id,
+        kind="messages",
+        quantity=1.0,
+        meta={"conversation_id": str(conversation_id), "mode": "credential_setup"},
+    )
+    try:
+        await repo.add_audit_log(
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            action=("credentials.chat.configured" if succeeded else "credentials.chat.failed"),
+            target=intent.provider,
+        )
+    except Exception:  # pragma: no cover - auditoría best-effort en fakes antiguos
+        logger.warning("No se pudo registrar la auditoría de credencial", exc_info=True)
+
+    yield _format_sse(
+        "tool.end",
+        {
+            "type": "tool_end",
+            "tool_call_id": call_id,
+            "name": "configurar_credencial",
+            "result_preview": response_text[:_RESULT_PREVIEW_LEN],
+            "artifacts": [],
+            "blocks_version": 1,
+            "blocks": [],
+            "mission_id": None,
+        },
+    )
+    yield _format_sse("message.delta", {"type": "text_delta", "text": response_text})
+    yield _format_sse("message.done", {"type": "done", "usage": {}})
+
+
 async def _stream_approved_confirmation(
     *,
     tool_call_id: str,
@@ -938,7 +1166,9 @@ async def _stream_approved_confirmation(
     ctx: ToolContext,
     repo: Repo,
     tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
     conversation_id: uuid.UUID,
+    settings: Settings,
 ) -> AsyncIterator[str]:
     """El usuario aprobó la tool `dangerous` pendiente: se ejecuta DIRECTO con
     la tool/args que el modelo propuso originalmente (recuperados de Redis por
@@ -1002,6 +1232,23 @@ async def _stream_approved_confirmation(
                 str(mission_id) if (mission_id := mission_ref_from_tool_data(result.data)) else None
             ),
         }
+        try:
+            await _enqueue_tool_notification(
+                settings=settings,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event=tool_end,
+            )
+        except Exception:
+            logger.warning(
+                "No se pudo encolar la notificación de la herramienta aprobada "
+                "(tenant_id=%s conversation_id=%s tool=%s)",
+                tenant_id,
+                conversation_id,
+                tool_name,
+                exc_info=True,
+            )
         yield _format_sse("tool.end", tool_end)
 
         text = f"Listo, ejecuté «{tool_name}». {preview}".strip()
@@ -1185,7 +1432,9 @@ async def post_message(
         tenant_id=tenant.tenant_id,
         file_ids=body.attachments,
     )
-    stored_user_content: dict[str, Any] = {"text": body.text}
+    inline_credential = detect_inline_credential_intent(body.text) if not attachments else None
+    safe_user_text = inline_credential.redacted_text if inline_credential is not None else body.text
+    stored_user_content: dict[str, Any] = {"text": safe_user_text}
     if attachments:
         stored_user_content["attachments"] = attachments
     user_text = _extract_text(stored_user_content)
@@ -1255,6 +1504,13 @@ async def post_message(
     # La reclamación atómica ocurre inmediatamente antes del primer efecto
     # persistente. Dos requests concurrentes con la misma clave nunca insertan
     # dos mensajes de usuario ni arrancan dos turnos del agente.
+    if not str(conversation.get("title") or "").strip():
+        await repo.update_conversation_title(
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            title=_automatic_conversation_title(safe_user_text, fallback="Archivo adjunto"),
+            only_if_empty=True,
+        )
     await repo.add_message(
         tenant_id=tenant.tenant_id,
         conversation_id=conversation_id,
@@ -1262,23 +1518,34 @@ async def post_message(
         content=stored_user_content,
     )
 
-    events = agent.run_turn(
-        ctx=ctx,
-        persona=persona,
-        history=history,
-        user_text=user_text,
-        flags=tenant.flags,
-        extra_tools=extra_tools,
-    )
-    stream = _stream_agent_events(
-        events=events,
-        repo=repo,
-        tenant_id=tenant.tenant_id,
-        conversation_id=conversation_id,
-        user_id=current_user.user_id,
-        settings=settings,
-        redis_client=redis_client,
-    )
+    if inline_credential is not None:
+        stream = _stream_inline_credential_configuration(
+            intent=inline_credential,
+            tool=registry.get("configurar_credencial"),
+            ctx=ctx,
+            repo=repo,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=conversation_id,
+        )
+    else:
+        events = agent.run_turn(
+            ctx=ctx,
+            persona=persona,
+            history=history,
+            user_text=user_text,
+            flags=tenant.flags,
+            extra_tools=extra_tools,
+        )
+        stream = _stream_agent_events(
+            events=events,
+            repo=repo,
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            user_id=current_user.user_id,
+            settings=settings,
+            redis_client=redis_client,
+        )
     if idempotency_key is None:
         # Compatibilidad total: clientes existentes conservan streaming en vivo.
         return StreamingResponse(stream, media_type="text/event-stream")
@@ -1500,7 +1767,9 @@ async def confirm_tool_call(
             ctx=ctx,
             repo=repo,
             tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
             conversation_id=conversation_id,
+            settings=settings,
         ),
         media_type="text/event-stream",
     )

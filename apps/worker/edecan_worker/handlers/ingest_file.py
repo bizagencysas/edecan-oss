@@ -33,11 +33,13 @@ import logging
 import uuid
 from typing import Any
 
+from edecan_core.notifications import ImportantNotificationEvent
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_schemas import JobEnvelope
 
 from edecan_worker.deps import Deps
 from edecan_worker.repo import Repo, SqlRepo
+from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 
@@ -179,47 +181,16 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 mime=mime_imagen,
                 raw_bytes=raw_bytes,
             )
-            return
-
-        try:
-            extracted = _extract_text(
-                raw_bytes, mime=file_row["mime"], filename=file_row["filename"]
+            chunks_count = 1
+        else:
+            chunks_count = await _ingest_text_file(
+                deps,
+                repo,
+                tenant_id=env.tenant_id,
+                file_id=file_id,
+                file_row=file_row,
+                raw_bytes=raw_bytes,
             )
-        except Exception:  # noqa: BLE001 - parsers de terceros exponen errores distintos
-            logger.warning(
-                "ingest_file: no se pudo extraer texto de file_id=%s; se conserva ready",
-                file_id,
-                exc_info=True,
-            )
-            extracted = (
-                f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
-                "El contenido no se pudo extraer automáticamente; el archivo original "
-                "sigue disponible."
-            )
-
-        if extracted is None:
-            extracted = (
-                f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
-                "Este formato no tiene extracción de texto automática; usa una herramienta "
-                "compatible o descarga el original."
-            )
-
-        if not extracted.strip():
-            extracted = (
-                f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) sin texto "
-                "extraíble. El original está disponible para análisis visual o descarga."
-            )
-
-        pieces = chunk_text(extracted)
-        seq = 0
-        for batch_start in range(0, len(pieces), EMBEDDING_BATCH_SIZE):
-            batch = pieces[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
-            embeddings = await deps.embedder.embed(batch)
-            chunk_rows = [(seq + i, batch[i], embeddings[i]) for i in range(len(batch))]
-            await repo.add_file_chunks(tenant_id=env.tenant_id, file_id=file_id, chunks=chunk_rows)
-            seq += len(batch)
-
-        await repo.update_file_status(tenant_id=env.tenant_id, file_id=file_id, status="ready")
         # NO registrar aquí un usage_event `storage_bytes`: la API ya lo
         # contabiliza una única vez en `upload_file` (edecan_api/routers/files.py),
         # justo después del `s3.put_object` — que es el momento real en que el
@@ -228,13 +199,79 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         # /v1/usage` y haría que las cuotas de `limits.storage_mb` se agotaran
         # a la mitad de la capacidad real del tenant.
 
+    event_kind = (
+        "pdf_ready"
+        if (file_row["mime"] or "").split(";", 1)[0].lower() == "application/pdf"
+        or str(file_row["filename"]).lower().endswith(".pdf")
+        else "file_ready"
+    )
+    if file_row.get("user_id") is not None:
+        await notify_important_event(
+            deps,
+            ImportantNotificationEvent(
+                tenant_id=env.tenant_id,
+                user_id=uuid.UUID(str(file_row["user_id"])),
+                kind=event_kind,
+                event_id=file_id,
+                resource_id=file_id,
+            ),
+        )
+
     logger.info(
         "ingest_file completado file_id=%s tenant_id=%s chunks=%d bytes=%d",
         file_id,
         env.tenant_id,
-        len(pieces),
+        chunks_count,
         len(raw_bytes),
     )
+
+
+async def _ingest_text_file(
+    deps: Deps,
+    repo: Repo,
+    *,
+    tenant_id: uuid.UUID,
+    file_id: uuid.UUID,
+    file_row: dict[str, Any],
+    raw_bytes: bytes,
+) -> int:
+    """Indexa archivos no visuales y devuelve la cantidad de chunks."""
+    try:
+        extracted = _extract_text(raw_bytes, mime=file_row["mime"], filename=file_row["filename"])
+    except Exception:  # noqa: BLE001 - parsers de terceros exponen errores distintos
+        logger.warning(
+            "ingest_file: no se pudo extraer texto de file_id=%s; se conserva ready",
+            file_id,
+            exc_info=True,
+        )
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
+            "El contenido no se pudo extraer automáticamente; el archivo original "
+            "sigue disponible."
+        )
+
+    if extracted is None:
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
+            "Este formato no tiene extracción de texto automática; usa una herramienta "
+            "compatible o descarga el original."
+        )
+    if not extracted.strip():
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) sin texto "
+            "extraíble. El original está disponible para análisis visual o descarga."
+        )
+
+    pieces = chunk_text(extracted)
+    seq = 0
+    for batch_start in range(0, len(pieces), EMBEDDING_BATCH_SIZE):
+        batch = pieces[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
+        embeddings = await deps.embedder.embed(batch)
+        chunk_rows = [(seq + i, batch[i], embeddings[i]) for i in range(len(batch))]
+        await repo.add_file_chunks(tenant_id=tenant_id, file_id=file_id, chunks=chunk_rows)
+        seq += len(batch)
+    await repo.update_file_status(tenant_id=tenant_id, file_id=file_id, status="ready")
+    return len(pieces)
 
 
 async def _ingest_image(

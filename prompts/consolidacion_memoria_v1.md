@@ -61,6 +61,17 @@ Clasifica cada elemento con uno de estos `kind` (coincide con
 - `entity` — una persona/empresa/lugar relevante y su relación con el
   usuario ("Marta es su socia en el estudio").
 
+## Correcciones y reemplazos
+
+- Cada memoria reemplazable llega identificada con `id`.
+- Si el usuario dice que un dato cambió, era incorrecto, ya no aplica o pide
+  corregirlo, crea la versión vigente y agrega el id anterior en `replaces`.
+- Usa solo ids presentes en la entrada. Nunca inventes ids.
+- No reemplaces una memoria por una repetición o ampliación compatible.
+- Si la memoria anterior contiene varias ideas y solo una quedó obsoleta, el
+  contenido nuevo debe conservar lo todavía válido y cambiar únicamente la
+  parte corregida.
+
 ## Qué NUNCA extraer
 
 - Secretos, contraseñas, tokens, API keys o cualquier credencial — aunque
@@ -81,7 +92,8 @@ texto antes ni después, con esta forma exacta por elemento:
     "kind": "preference",
     "content": "Prefiere que le hablen de tú, en tono cercano.",
     "importance": 0.6,
-    "source": "conversación 2026-07-07"
+    "source": "conversación 2026-07-07",
+    "replaces": []
   }
 ]
 ```
@@ -91,6 +103,8 @@ texto antes ni después, con esta forma exacta por elemento:
   pesa más que un dato trivial).
 - `source`: una referencia breve de dónde salió (p. ej. "conversación
   {{fecha_de_hoy}}"), para poder auditar el origen de una memoria más tarde.
+- `replaces`: ids de memorias que esta versión vuelve obsoletas. Normalmente
+  queda vacío.
 
 ## Changelog
 
@@ -98,3 +112,5 @@ texto antes ni después, con esta forma exacta por elemento:
   `memory_items.kind`, la salida JSON estricta y las exclusiones (secretos,
   contenido inyectado). Alineado con `packages/evals/suites/memoria.yaml` y
   `seguridad_prompt_injection.yaml`.
+- **v1.1** (2026-07-21): reemplazo reversible de recuerdos corregidos por el
+  usuario mediante `replaces`, `superseded_at` y `superseded_by`.

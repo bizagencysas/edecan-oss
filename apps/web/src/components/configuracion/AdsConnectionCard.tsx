@@ -49,18 +49,31 @@ export function AdsConnectionCard({ onStatusChange }: { onStatusChange?: (status
   }
 
   const connected = status?.configured ?? false;
+  const statusLabel = !connected
+    ? "Sin configurar"
+    : status?.reachable === true
+      ? "Disponible ahora"
+      : status?.reachable === false
+        ? "Requiere atención"
+        : "No se pudo comprobar";
+  const statusVariant = !connected
+    ? "neutral"
+    : status?.reachable === true
+      ? "success"
+      : "warning";
   return (
     <Card>
       <CardHeader
         title="Meta Ads"
-        actions={loading ? <Spinner className="h-4 w-4 text-slate-400" /> : <Badge variant={connected ? "success" : "neutral"}>{connected ? "Conectado" : "Falta conectar"}</Badge>}
+        description="La conexión nativa recomendada: consulta datos reales y conserva el flujo seguro de borrador → confirmación → campaña pausada."
+        actions={loading ? <Spinner className="h-4 w-4 text-slate-400" /> : <Badge variant={statusVariant}>{statusLabel}</Badge>}
       />
       <CardBody className="space-y-3">
         {error && <Alert variant="error">{error}</Alert>}
         {connected && status && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-950/40">
             <span className="text-slate-700 dark:text-slate-200">
-              {[status.nombre_cuenta, status.ad_account_id ? `act_${status.ad_account_id}` : null, status.moneda, status.reachable === false ? "sin respuesta ahora mismo" : undefined].filter(Boolean).join(" · ")}
+              {[status.nombre_cuenta, status.ad_account_id ? `act_${status.ad_account_id}` : null, status.moneda].filter(Boolean).join(" · ") || "Credencial guardada"}
             </span>
             <button type="button" onClick={() => void remove()} disabled={removing} className="text-xs font-medium text-rose-600 hover:text-rose-700 disabled:opacity-50 dark:text-rose-400">
               {removing ? "Quitando…" : "Quitar"}

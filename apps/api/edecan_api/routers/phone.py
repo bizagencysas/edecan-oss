@@ -8,13 +8,15 @@ Twilio nunca se invoca durante `prepare`.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from edecan_core.persona import build_system_prompt
+from edecan_core.queue import enqueue
 from edecan_db.vault import TokenVault
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
@@ -31,7 +33,7 @@ from edecan_voice.telephony import (
     verify_twilio_signature,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from edecan_api.config import Settings
 from edecan_api.deps import (
@@ -54,6 +56,51 @@ TWILIO_CONNECTOR_KEY = "twilio"
 ACTIVE_STATUSES = frozenset({"confirmed", "queued", "ringing", "in_progress"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "busy", "no_answer", "cancelled"})
 STATUS_ORDER = {"draft": 0, "confirmed": 1, "queued": 2, "ringing": 3, "in_progress": 4}
+PHONE_AGENT_TEMPLATE_LIMIT = 20
+PHONE_SUMMARY_JOB = "notify_phone_call_summary"
+PHONE_INCOMING_JOB = "notify_incoming_phone_call"
+
+_COMMITMENT_MARKERS = (
+    "me comprometo",
+    "nos comprometemos",
+    "voy a",
+    "vamos a",
+    "te enviaré",
+    "le enviaré",
+    "quedamos en",
+    "acordamos",
+    "confirmo que",
+)
+_NEXT_STEP_MARKERS = (
+    "próximo paso",
+    "siguiente paso",
+    "mañana",
+    "volver a llamar",
+    "te contactaré",
+    "le contactaré",
+    "agendar",
+    "enviar",
+    "revisar",
+    "confirmar",
+)
+
+
+def _template_snapshot(template: dict[str, Any] | None) -> dict[str, Any]:
+    if template is None:
+        return {
+            "agent_template_id": None,
+            "agent_template_name": None,
+            "agent_name": None,
+            "agent_prompt": None,
+            "opening_message": None,
+        }
+    return {
+        "agent_template_id": template["id"],
+        "agent_template_name": template["name"],
+        "agent_name": template["agent_name"],
+        "agent_prompt": template["persona_prompt"],
+        "opening_message": template["opening_message"] or None,
+    }
 
 
 def _monotonic_status(current: str, incoming: str) -> str:
@@ -67,6 +114,162 @@ def _monotonic_status(current: str, incoming: str) -> str:
     return incoming
 
 
+def _dedupe_phrases(values: list[str], *, limit: int = 6) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = " ".join(value.split()).strip(" -\n\t")[:500]
+        key = clean.casefold()
+        if clean and key not in seen:
+            result.append(clean)
+            seen.add(key)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _sentences(text: str) -> list[str]:
+    return [piece for piece in re.split(r"(?<=[.!?])\s+|\n+", text) if piece.strip()]
+
+
+def _build_phone_call_summary(
+    call: dict[str, Any], events: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Resumen determinista: siempre disponible, incluso sin LLM o transcripción."""
+    turns: list[dict[str, str]] = []
+    for event in events:
+        if event.get("event_type") != "transcript":
+            continue
+        payload = event.get("payload") or {}
+        role = str(payload.get("role") or "").strip()
+        text = " ".join(str(payload.get("text") or "").split()).strip()[:2000]
+        if role in {"caller", "assistant"} and text:
+            turns.append({"role": role, "text": text})
+
+    caller_turns = [turn["text"] for turn in turns if turn["role"] == "caller"]
+    source_turns = caller_turns or [turn["text"] for turn in turns]
+    points = _dedupe_phrases(source_turns, limit=5)
+
+    all_sentences = [sentence for turn in turns for sentence in _sentences(turn["text"])]
+    commitments = _dedupe_phrases(
+        [
+            sentence
+            for sentence in all_sentences
+            if any(marker in sentence.casefold() for marker in _COMMITMENT_MARKERS)
+        ],
+        limit=5,
+    )
+    next_steps = _dedupe_phrases(
+        [
+            sentence
+            for sentence in all_sentences
+            if any(marker in sentence.casefold() for marker in _NEXT_STEP_MARKERS)
+        ],
+        limit=5,
+    )
+
+    status_value = str(call.get("status") or "failed")
+    if not points:
+        points = [
+            "No hubo transcripción disponible."
+            if not turns
+            else "La transcripción no contiene intervenciones claras del interlocutor."
+        ]
+    if not next_steps:
+        if status_value == "completed":
+            next_steps = ["Revisar el resumen y continuar desde Edecan si hace falta."]
+        else:
+            next_steps = ["Revisar el estado de la llamada y decidir si conviene reintentarlo."]
+
+    owner_phone = call["from_e164"] if call["direction"] == "outgoing" else call["to_e164"]
+    external_phone = call["to_e164"] if call["direction"] == "outgoing" else call["from_e164"]
+    return {
+        "version": 1,
+        "status": status_value,
+        "direction": call["direction"],
+        "participants": [
+            {
+                "role": "assistant",
+                "name": call.get("agent_name") or "Edecan",
+                "phone_e164": owner_phone,
+            },
+            {"role": "external", "name": None, "phone_e164": external_phone},
+        ],
+        "duration_seconds": call.get("duration_seconds"),
+        "key_points": points,
+        "commitments": commitments,
+        "next_steps": next_steps,
+        "transcript": {"available": bool(turns), "turn_count": len(turns)},
+    }
+
+
+async def _finalize_phone_call_summary(repo: Repo, call: dict[str, Any]) -> bool:
+    """Persiste resumen+actividad solo para el primer cierre terminal."""
+    if call.get("status") not in TERMINAL_STATUSES or call.get("summary") is not None:
+        return False
+    events = await repo.list_phone_call_events(
+        tenant_id=call["tenant_id"], call_id=call["id"]
+    )
+    summary = _build_phone_call_summary(call, events)
+    summarized = await repo.set_phone_call_summary_if_absent(
+        tenant_id=call["tenant_id"], call_id=call["id"], summary=summary
+    )
+    if summarized is None:
+        return False
+    await repo.add_phone_call_event(
+        tenant_id=call["tenant_id"],
+        call_id=call["id"],
+        event_type="activity",
+        payload={
+            "kind": "phone_call_finished",
+            "status": call["status"],
+            "direction": call["direction"],
+            "summary_available": True,
+        },
+    )
+    return True
+
+
+async def _enqueue_phone_summary_push(
+    settings: Settings, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+) -> None:
+    """El resumen ya está committed; una cola caída nunca rompe el cierre."""
+    try:
+        await enqueue(
+            settings,
+            PHONE_SUMMARY_JOB,
+            {"call_id": str(call_id)},
+            tenant_id,
+        )
+    except Exception:
+        logger.warning(
+            "phone_summary_push_enqueue_failed call_id=%s tenant_id=%s",
+            call_id,
+            tenant_id,
+            exc_info=True,
+        )
+
+
+async def _enqueue_incoming_phone_call_push(
+    settings: Settings, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+) -> None:
+    """La llamada+evento ya hicieron commit; la entrega es best-effort."""
+    try:
+        await enqueue(
+            settings,
+            PHONE_INCOMING_JOB,
+            {"call_id": str(call_id)},
+            tenant_id,
+        )
+    except Exception:
+        logger.warning(
+            "incoming_phone_push_enqueue_failed call_id=%s tenant_id=%s",
+            call_id,
+            tenant_id,
+            exc_info=True,
+        )
+
+
 class PhoneGateway(Protocol):
     async def create_call(
         self, *, to_e164: str, voice_url: str, status_callback_url: str
@@ -74,6 +277,7 @@ class PhoneGateway(Protocol):
 
 
 RepoTransactionFactory = Callable[[uuid.UUID], Any]
+SummaryReadyCallback = Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]
 
 
 class TransactionalPhoneDispatcher:
@@ -91,18 +295,23 @@ class TransactionalPhoneDispatcher:
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         public_base_url: str,
+        on_summary_ready: SummaryReadyCallback | None = None,
     ) -> None:
         self._repo_transaction = repo_transaction
         self._gateway = gateway
         self._tenant_id = tenant_id
         self._user_id = user_id
         self._public_base = public_base_url.rstrip("/")
+        self._on_summary_ready = on_summary_ready
 
     async def create_and_dispatch(self, *, to_e164: str, goal: str) -> dict[str, Any]:
         destination = normalize_e164(to_e164)
         normalized_goal = normalize_goal(goal)
         async with self._repo_transaction(self._tenant_id) as repo:
             account = await _twilio_account(repo, self._tenant_id)
+            template = await repo.get_default_phone_agent_template(
+                tenant_id=self._tenant_id, user_id=self._user_id
+            )
             if not await repo.has_phone_consent(
                 tenant_id=self._tenant_id, phone_e164=destination, kind="voice"
             ):
@@ -126,6 +335,7 @@ class TransactionalPhoneDispatcher:
                 to_e164=destination,
                 goal=normalized_goal,
                 status="confirmed",
+                **_template_snapshot(template),
             )
             call = await repo.update_phone_call(
                 tenant_id=self._tenant_id,
@@ -198,8 +408,9 @@ class TransactionalPhoneDispatcher:
                 ),
             )
         except TelephonyError as exc:
+            summary_created = False
             async with self._repo_transaction(self._tenant_id) as repo:
-                await repo.update_phone_call(
+                failed_call = await repo.update_phone_call(
                     tenant_id=self._tenant_id,
                     call_id=call_id,
                     fields={
@@ -214,6 +425,10 @@ class TransactionalPhoneDispatcher:
                     event_type="failed",
                     payload={"message": str(exc)},
                 )
+                assert failed_call is not None
+                summary_created = await _finalize_phone_call_summary(repo, failed_call)
+            if summary_created and self._on_summary_ready is not None:
+                await self._on_summary_ready(self._tenant_id, call_id)
             raise
 
         async with self._repo_transaction(self._tenant_id) as repo:
@@ -253,10 +468,33 @@ class TransactionalPhoneDispatcher:
         return updated
 
 
+class PhoneAgentTemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    agent_name: str = Field(min_length=1, max_length=80)
+    persona_prompt: str = Field(min_length=1, max_length=4000)
+    default_goal: str = Field(min_length=1, max_length=500)
+    opening_message: str = Field(default="", max_length=700)
+    is_default: bool = False
+
+    @field_validator("name", "agent_name", "persona_prompt", "default_goal")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("Este campo no puede quedar vacío.")
+        return clean
+
+    @field_validator("opening_message")
+    @classmethod
+    def _optional_text(cls, value: str) -> str:
+        return value.strip()
+
+
 class PrepareCallIn(BaseModel):
     to_e164: str = Field(min_length=1)
-    goal: str = Field(min_length=1, max_length=500)
+    goal: str | None = Field(default=None, max_length=500)
     conversation_id: uuid.UUID | None = None
+    agent_template_id: uuid.UUID | None = None
 
 
 class ConfirmCallIn(BaseModel):
@@ -279,12 +517,23 @@ def _out(row: dict[str, Any], *, events: list[dict[str, Any]] | None = None) -> 
         "from_e164": row["from_e164"],
         "to_e164": row["to_e164"],
         "goal": row["goal"],
+        "agent": (
+            {
+                "template_id": row.get("agent_template_id"),
+                "template_name": row.get("agent_template_name"),
+                "name": row.get("agent_name"),
+            }
+            if row.get("agent_template_name") or row.get("agent_name")
+            else None
+        ),
         "status": row["status"],
         "confirmed_at": row.get("confirmed_at"),
         "started_at": row.get("started_at"),
         "ended_at": row.get("ended_at"),
         "duration_seconds": row.get("duration_seconds"),
         "error": row.get("error"),
+        "summary": row.get("summary"),
+        "summary_generated_at": row.get("summary_generated_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -299,6 +548,39 @@ def _out(row: dict[str, Any], *, events: list[dict[str, Any]] | None = None) -> 
             for event in events
         ]
     return result
+
+
+def _template_out(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "agent_name": row["agent_name"],
+        "persona_prompt": row["persona_prompt"],
+        "default_goal": row["default_goal"],
+        "opening_message": row.get("opening_message") or "",
+        "is_default": bool(row.get("is_default")),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+async def _selected_template(
+    repo: Repo,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    template_id: uuid.UUID | None,
+) -> dict[str, Any] | None:
+    if template_id is None:
+        return await repo.get_default_phone_agent_template(
+            tenant_id=tenant_id, user_id=user_id
+        )
+    template = await repo.get_phone_agent_template(
+        tenant_id=tenant_id, template_id=template_id
+    )
+    if template is None or template["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    return template
 
 
 async def _twilio_account(repo: Repo, tenant_id: uuid.UUID) -> dict[str, Any]:
@@ -366,12 +648,18 @@ async def get_phone_dispatcher(
     current_user: CurrentUser = Depends(get_current_user),
     gateway: PhoneGateway = Depends(get_phone_gateway),
 ) -> TransactionalPhoneDispatcher:
+    async def summary_ready(tenant_id: uuid.UUID, call_id: uuid.UUID) -> None:
+        await _enqueue_phone_summary_push(
+            request.app.state.settings, tenant_id=tenant_id, call_id=call_id
+        )
+
     return TransactionalPhoneDispatcher(
         repo_transaction=_repo_transactions(request),
         gateway=gateway,
         tenant_id=current_user.tenant_id,
         user_id=current_user.user_id,
         public_base_url=request.app.state.settings.PUBLIC_BASE_URL,
+        on_summary_ready=summary_ready,
     )
 
 
@@ -395,6 +683,13 @@ def phone_tool_dispatcher_for(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 public_base_url=request.app.state.settings.PUBLIC_BASE_URL,
+                on_summary_ready=lambda resolved_tenant_id, call_id: (
+                    _enqueue_phone_summary_push(
+                        request.app.state.settings,
+                        tenant_id=resolved_tenant_id,
+                        call_id=call_id,
+                    )
+                ),
             )
             return await service.create_and_dispatch(to_e164=to_e164, goal=goal)
         except HTTPException as exc:
@@ -446,6 +741,152 @@ async def _verify_webhook(
         raise HTTPException(status_code=403, detail="Firma de Twilio inválida.")
 
 
+@router.get("/agent-templates", dependencies=[Depends(rate_limit)])
+async def list_phone_agent_templates(
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> list[dict[str, Any]]:
+    _require_telephony(current_user)
+    rows = await repo.list_phone_agent_templates(
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
+    return [_template_out(row) for row in rows]
+
+
+@router.post(
+    "/agent-templates",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit)],
+)
+async def create_phone_agent_template(
+    body: PhoneAgentTemplateIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    _require_telephony(current_user)
+    existing = await repo.list_phone_agent_templates(
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
+    if len(existing) >= PHONE_AGENT_TEMPLATE_LIMIT:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Puedes guardar hasta {PHONE_AGENT_TEMPLATE_LIMIT} agentes de llamada.",
+        )
+    if any(row["name"].casefold() == body.name.casefold() for row in existing):
+        raise HTTPException(status_code=409, detail="Ya tienes un agente con ese nombre.")
+
+    make_default = body.is_default or not existing
+    if make_default:
+        await repo.clear_default_phone_agent_template(
+            tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        )
+    created = await repo.create_phone_agent_template(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        name=body.name,
+        agent_name=body.agent_name,
+        persona_prompt=body.persona_prompt,
+        default_goal=body.default_goal,
+        opening_message=body.opening_message,
+        is_default=make_default,
+    )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="phone.agent_template_created",
+        target=str(created["id"]),
+        meta={"name": created["name"], "is_default": make_default},
+    )
+    return _template_out(created)
+
+
+@router.put("/agent-templates/{template_id}", dependencies=[Depends(rate_limit)])
+async def update_phone_agent_template(
+    template_id: uuid.UUID,
+    body: PhoneAgentTemplateIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    _require_telephony(current_user)
+    current = await repo.get_phone_agent_template(
+        tenant_id=current_user.tenant_id, template_id=template_id
+    )
+    if current is None or current["user_id"] != current_user.user_id:
+        raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    existing = await repo.list_phone_agent_templates(
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
+    if any(
+        row["id"] != template_id and row["name"].casefold() == body.name.casefold()
+        for row in existing
+    ):
+        raise HTTPException(status_code=409, detail="Ya tienes un agente con ese nombre.")
+    if body.is_default:
+        await repo.clear_default_phone_agent_template(
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
+            except_id=template_id,
+        )
+    updated = await repo.update_phone_agent_template(
+        tenant_id=current_user.tenant_id,
+        template_id=template_id,
+        fields={
+            "name": body.name,
+            "agent_name": body.agent_name,
+            "persona_prompt": body.persona_prompt,
+            "default_goal": body.default_goal,
+            "opening_message": body.opening_message,
+            "is_default": body.is_default,
+        },
+    )
+    assert updated is not None
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="phone.agent_template_updated",
+        target=str(template_id),
+        meta={"name": updated["name"], "is_default": bool(updated["is_default"])},
+    )
+    return _template_out(updated)
+
+
+@router.delete("/agent-templates/{template_id}", dependencies=[Depends(rate_limit)])
+async def delete_phone_agent_template(
+    template_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    _require_telephony(current_user)
+    current = await repo.get_phone_agent_template(
+        tenant_id=current_user.tenant_id, template_id=template_id
+    )
+    if current is None or current["user_id"] != current_user.user_id:
+        raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    deleted = await repo.delete_phone_agent_template(
+        tenant_id=current_user.tenant_id, template_id=template_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    if current.get("is_default"):
+        remaining = await repo.list_phone_agent_templates(
+            tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        )
+        if remaining:
+            await repo.update_phone_agent_template(
+                tenant_id=current_user.tenant_id,
+                template_id=remaining[0]["id"],
+                fields={"is_default": True},
+            )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="phone.agent_template_deleted",
+        target=str(template_id),
+        meta={"name": current["name"]},
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/calls", dependencies=[Depends(rate_limit)])
 async def list_calls(
     current_user: CurrentUser = Depends(get_current_user), repo: Repo = Depends(get_repo)
@@ -484,9 +925,15 @@ async def prepare_call(
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     _require_telephony(current_user)
+    template = await _selected_template(
+        repo,
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        template_id=body.agent_template_id,
+    )
     try:
         destination = normalize_e164(body.to_e164)
-        goal = normalize_goal(body.goal)
+        goal = normalize_goal(body.goal or (template or {}).get("default_goal"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -524,12 +971,17 @@ async def prepare_call(
         from_e164=account["external_account_id"],
         to_e164=destination,
         goal=goal,
+        **_template_snapshot(template),
     )
     await repo.add_phone_call_event(
         tenant_id=current_user.tenant_id,
         call_id=call["id"],
         event_type="prepared",
-        payload={"destination_verified": False, "goal_verified": False},
+        payload={
+            "destination_verified": False,
+            "goal_verified": False,
+            "agent_template_id": str(template["id"]) if template is not None else None,
+        },
     )
     await repo.add_message(
         tenant_id=current_user.tenant_id,
@@ -629,6 +1081,34 @@ def _external_phone_persona(row: dict[str, Any] | None) -> Any:
     )
 
 
+def _phone_operating_context(call: dict[str, Any]) -> str:
+    """Contexto de llamada aislado, con reglas duras después de la plantilla."""
+    parts = [
+        "Estás hablando por teléfono. Responde con frases breves y naturales, sin Markdown.",
+    ]
+    if call.get("agent_prompt"):
+        parts.extend(
+            [
+                f"Perfil seleccionado: {call.get('agent_template_name') or 'Agente de llamada'}.",
+                "<instrucciones_agente_llamada>",
+                str(call["agent_prompt"]),
+                "</instrucciones_agente_llamada>",
+            ]
+        )
+    parts.extend(
+        [
+            f"Objetivo de esta llamada: {call['goal']}.",
+            (
+                "La plantilla define tono, argumentos y preguntas, pero nunca autoriza acciones "
+                "sensibles. No ejecutes ni afirmes que enviaste, compraste, reservaste, cambiaste "
+                "datos o asumiste compromisos; deja cualquier acción adicional pendiente de "
+                "confirmación en la app. Identifícate honestamente como asistente automatizado."
+            ),
+        ]
+    )
+    return "\n".join(parts)
+
+
 async def _phone_reply(
     request: Request,
     *,
@@ -678,14 +1158,7 @@ async def _phone_reply(
                 system=build_system_prompt(
                     persona,
                     memories,
-                    extra_context=(
-                        "Estás hablando por teléfono con el mismo asistente. "
-                        "Responde con frases breves y naturales, sin Markdown. "
-                        f"Objetivo de esta llamada: {call['goal']}. "
-                        "No ejecutes acciones sensibles ni afirmes que se hicieron; "
-                        "cualquier acción "
-                        "adicional debe quedar pendiente de confirmación en la app."
-                    ),
+                    extra_context=_phone_operating_context(call),
                 ),
                 messages=messages,
                 max_tokens=180,
@@ -723,10 +1196,11 @@ async def outgoing_voice(
     persona = _external_phone_persona(
         await repo.get_persona(tenant_id=call["tenant_id"], user_id=call["user_id"])
     )
-    message = (
-        f"Hola. Soy {persona.nombre_asistente}, el asistente de quien te llama. "
-        f"El motivo es: {call['goal']}"
-    )
+    agent_name = call.get("agent_name") or persona.nombre_asistente
+    identity = f"Hola. Soy {agent_name}, un asistente automatizado."
+    opening = str(call.get("opening_message") or "").strip()
+    purpose = opening or f"El motivo es: {call['goal']}"
+    message = f"{identity} {purpose}"
     return Response(
         conversation_twiml(message=message, gather_url=gather_url),
         media_type="application/xml",
@@ -760,35 +1234,54 @@ async def incoming_voice(
 
     call_sid = params.get("CallSid", "")
     call = await repo.get_phone_call_by_provider_sid(provider_call_sid=call_sid)
+    call_created = False
     if call is None:
-        user_id = await repo.get_first_user_id_for_tenant(tenant_id)
-        if user_id is None:
-            return Response(
-                reject_twiml("Esta cuenta todavía no tiene una persona responsable."),
-                media_type="application/xml",
+        # La transacción cierra antes de encolar. Así el worker solo puede
+        # notificar una llamada y un evento `incoming` ya visibles y durables.
+        async with _repo_transactions(request)(tenant_id) as tenant_repo:
+            call = await tenant_repo.get_phone_call_by_provider_sid(
+                provider_call_sid=call_sid
             )
-        conversation = await repo.create_conversation(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            title=f"Llamada de {from_e164}",
-            channel="phone",
-        )
-        call = await repo.create_phone_call(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            conversation_id=conversation["id"],
-            direction="incoming",
-            from_e164=from_e164,
-            to_e164=to_e164,
-            goal="Atender la llamada entrante y ayudar a la persona.",
-            status="in_progress",
-            provider_call_sid=call_sid,
-        )
-        await repo.add_phone_call_event(
+            if call is None:
+                user_id = await tenant_repo.get_first_user_id_for_tenant(tenant_id)
+                if user_id is None:
+                    return Response(
+                        reject_twiml(
+                            "Esta cuenta todavía no tiene una persona responsable."
+                        ),
+                        media_type="application/xml",
+                    )
+                conversation = await tenant_repo.create_conversation(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    title=f"Llamada de {from_e164}",
+                    channel="phone",
+                )
+                call = await tenant_repo.create_phone_call(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    conversation_id=conversation["id"],
+                    direction="incoming",
+                    from_e164=from_e164,
+                    to_e164=to_e164,
+                    goal="Atender la llamada entrante y ayudar a la persona.",
+                    status="in_progress",
+                    provider_call_sid=call_sid,
+                )
+                await tenant_repo.add_phone_call_event(
+                    tenant_id=tenant_id,
+                    call_id=call["id"],
+                    event_type="incoming",
+                    payload={"status": "in_progress"},
+                )
+                call_created = True
+
+    assert call is not None
+    if call_created:
+        await _enqueue_incoming_phone_call_push(
+            request.app.state.settings,
             tenant_id=tenant_id,
             call_id=call["id"],
-            event_type="incoming",
-            payload={"status": "in_progress"},
         )
 
     gather_url = (
@@ -801,8 +1294,9 @@ async def incoming_voice(
     return Response(
         conversation_twiml(
             message=(
-                f"Hola, soy {persona.nombre_asistente}. Esta conversación quedará registrada "
-                "para poder ayudarte. ¿En qué puedo ayudarte?"
+                f"Hola, soy {persona.nombre_asistente}, un asistente automatizado. "
+                "Esta conversación quedará registrada para poder ayudarte. "
+                "¿En qué puedo ayudarte?"
             ),
             gather_url=gather_url,
         ),
@@ -912,20 +1406,45 @@ async def call_status(
         raise HTTPException(status_code=404, detail="Llamada no encontrada.")
     await _verify_webhook(request, params=params, repo=repo, tenant_id=call["tenant_id"])
     provider_status = normalize_twilio_status(params.get("CallStatus"))
-    effective_status = _monotonic_status(call["status"], provider_status)
-    fields: dict[str, Any] = {"status": effective_status}
-    if not call.get("provider_call_sid") and params.get("CallSid"):
-        fields["provider_call_sid"] = params["CallSid"]
-    if effective_status == "in_progress" and call.get("started_at") is None:
-        fields["started_at"] = datetime.now(UTC)
-    if effective_status in TERMINAL_STATUSES:
-        fields["ended_at"] = datetime.now(UTC)
-        if effective_status == "completed" and params.get("CallDuration", "").isdigit():
-            fields["duration_seconds"] = int(params["CallDuration"])
-    await repo.update_phone_call(tenant_id=call["tenant_id"], call_id=call_id, fields=fields)
-    await repo.add_phone_call_event(
-        tenant_id=call["tenant_id"],
-        call_id=call_id,
-        event_type="status",
-        payload={"status": effective_status, "provider_status": provider_status},
-    )
+    summary_created = False
+    # Esta transacción termina antes de encolar el push. Así el worker nunca
+    # observa un job cuyo resumen todavía no sea visible en PostgreSQL.
+    async with _repo_transactions(request)(call["tenant_id"]) as tenant_repo:
+        current = await tenant_repo.get_phone_call(
+            tenant_id=call["tenant_id"], call_id=call_id
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Llamada no encontrada.")
+        effective_status = _monotonic_status(current["status"], provider_status)
+        fields: dict[str, Any] = {"status": effective_status}
+        if not current.get("provider_call_sid") and params.get("CallSid"):
+            fields["provider_call_sid"] = params["CallSid"]
+        if effective_status == "in_progress" and current.get("started_at") is None:
+            fields["started_at"] = datetime.now(UTC)
+        if effective_status in TERMINAL_STATUSES:
+            if current.get("ended_at") is None:
+                fields["ended_at"] = datetime.now(UTC)
+            if (
+                effective_status == "completed"
+                and current.get("duration_seconds") is None
+                and params.get("CallDuration", "").isdigit()
+            ):
+                fields["duration_seconds"] = int(params["CallDuration"])
+        updated = await tenant_repo.update_phone_call(
+            tenant_id=call["tenant_id"], call_id=call_id, fields=fields
+        )
+        assert updated is not None
+        await tenant_repo.add_phone_call_event(
+            tenant_id=call["tenant_id"],
+            call_id=call_id,
+            event_type="status",
+            payload={"status": effective_status, "provider_status": provider_status},
+        )
+        summary_created = await _finalize_phone_call_summary(tenant_repo, updated)
+
+    if summary_created:
+        await _enqueue_phone_summary_push(
+            request.app.state.settings,
+            tenant_id=call["tenant_id"],
+            call_id=call_id,
+        )

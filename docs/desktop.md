@@ -14,7 +14,8 @@ apps/desktop (Tauri, Rust) — el shell nativo:
        edecan-local --port <P> --data-dir <carpeta de datos de la app>
   4. espera la línea "EDECAN_LOCAL_READY port=<P>" en su stdout (máx. 60s)
   5. abre la ventana principal → http://127.0.0.1:<P>/  y cierra el splash
-  6. al salir (ventana, bandeja o botón "Salir"): mata el sidecar SIEMPRE
+  6. macOS: cerrar `main` la oculta y deja backend/túnel vivos en la barra
+  7. al elegir "Salir completamente" (o Cmd+Q): mata el sidecar SIEMPRE
 
         │
         ▼ el sidecar sirve, en el mismo origen (http://127.0.0.1:<P>/):
@@ -45,6 +46,21 @@ ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 
 Nada de esto pide un `.env`, una terminal ni una base de datos propia — ver §9.
 
+### Edecán residente en macOS
+
+Cerrar la ventana roja no apaga al asistente: oculta la ventana principal y
+mantiene vivos el backend local, el acceso móvil/túnel y la escucha que la
+persona haya habilitado. Un clic izquierdo en el icono de Edecán en la barra
+de menú vuelve a mostrar y enfocar la ventana. El clic secundario abre un menú
+corto con el estado **Edecán activo**, **Abrir Edecán**, **Abrir en el
+navegador**, **Ver carpeta de datos**, **Escucha siempre** y **Salir
+completamente**. Solo esta última acción (o Cmd+Q) termina el proceso y ejecuta
+el apagado grácil del sidecar.
+
+Windows y Linux mantienen su semántica histórica de cierre completo cuando la
+escucha continua está apagada; si está activa, cerrar también oculta la ventana
+para que esa función pueda seguir trabajando.
+
 ### Centro de permisos
 
 En la aplicación instalada, abre **Ajustes → Permisos de esta computadora**.
@@ -54,6 +70,14 @@ La pantalla consulta estados nativos y ofrece una acción por capacidad:
   el consentimiento nativo de pantalla y micrófono, y abre directamente las
   secciones de Accesibilidad, Notificaciones, Automatización o Acceso total
   al disco cuando Apple exige que la persona active el interruptor.
+- Muestra la ruta exacta de la aplicación y ofrece **Mostrar Edecán en Finder**.
+- Activa una sola vez **Edecán residente**: en los siguientes inicios de sesión
+  arranca oculto en la barra de menú, mantiene disponible el backend para el
+  teléfono y respeta si la persona lo desactiva después desde Ajustes.
+- Mantiene una sola instancia: volver a abrir Edecán recupera la ventana
+  residente en vez de crear otro backend, puerto o túnel.
+  Si macOS presenta un botón `+`, la persona selecciona `Edecán.app`; nunca
+  necesita adivinar entre Python, Terminal, Jarvis u otro ejecutable.
 - En Windows abre las páginas exactas de Micrófono y Notificaciones. Mouse,
   teclado, captura y archivos normales no tienen un permiso global; Windows
   conserva UAC para cualquier acción administrativa puntual.
@@ -268,7 +292,7 @@ incluye Ollama.
 
 **Cómo lo activa el usuario final:** hoy, fijando `EDECAN_OLLAMA_AUTOSTART=true` en el entorno antes de abrir la app (uso avanzado/dev). La pieza de "un solo clic" ya existe del lado de detección: `GET /v1/setup/detect` (`apps/api/edecan_api/routers/setup.py`, fase v3/`edecan_llm.detect.detect_local_providers`) ya reporta si Ollama está corriendo en `OLLAMA_BASE_URL`, y la pantalla de Configuración ya ofrece "usar Ollama" con un clic apenas lo detecta corriendo — no importa si ese Ollama lo arrancó el usuario a mano, ya estaba corriendo de antes, o lo arrancó `edecan_local.ollama_supervisor` (ver abajo) por él: para la pantalla de Configuración es indistinguible, simplemente "ya está corriendo, un clic y listo".
 
-**Qué pasa por dentro:** cuando `EDECAN_OLLAMA_AUTOSTART` está activada, `edecan_local.ollama_supervisor.maybe_start_ollama` (dentro del backend local, `edecan_local.runtime.run()`) resuelve el binario (`EDECAN_OLLAMA_BIN`, la ruta al sidecar que el paso de arriba empaquetó — la fija automáticamente `apps/desktop/src-tauri/src/backend.rs` al lanzar el sidecar si lo encuentra — o si no, `ollama` en el `PATH`), evita lanzar un segundo proceso si ya hay uno corriendo, y lo apaga limpio al cerrar la app (mismo criterio de apagado prolijo que el resto del backend local — ver [`desktop-local.md`](./desktop-local.md) §8). Es de "mejor esfuerzo" en todo momento: cualquier problema (binario roto, puerto ocupado, nunca responde) se resuelve en silencio con un log claro, nunca bloquea el arranque del resto del asistente. Detalle técnico completo en [`desktop-local.md`](./desktop-local.md).
+**Qué pasa por dentro:** cuando `EDECAN_OLLAMA_AUTOSTART` está activada, `edecan_local.ollama_supervisor.maybe_start_ollama` (dentro del backend local, `edecan_local.runtime.run()`) resuelve el binario (`EDECAN_OLLAMA_BIN`, la ruta al sidecar que el paso de arriba empaquetó — la fija automáticamente `apps/desktop/src-tauri/src/backend.rs` al lanzar el sidecar si lo encuentra — o si no, `ollama` en el `PATH`), evita lanzar un segundo proceso si ya hay uno corriendo, y lo apaga limpio al elegir **Salir completamente** o Cmd+Q (mismo criterio de apagado prolijo que el resto del backend local — ver [`desktop-local.md`](./desktop-local.md) §8). Es de "mejor esfuerzo" en todo momento: cualquier problema (binario roto, puerto ocupado, nunca responde) se resuelve en silencio con un log claro, nunca bloquea el arranque del resto del asistente. Detalle técnico completo en [`desktop-local.md`](./desktop-local.md).
 
 ## Ver también
 

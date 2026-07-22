@@ -140,6 +140,90 @@ async def test_buscar_web_tool_sin_consulta(make_ctx):
     assert "busque" in resultado.content.lower()
 
 
+async def test_buscar_web_no_agrega_cards_a_un_pedido_de_enlace_directo(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "duckduckgo"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit(
+                    title="Google Maps",
+                    url="https://maps.google.com/?q=Medellin",
+                    snippet="Abre Medellín en Google Maps.",
+                ),
+                SearchHit(
+                    title="Medellín en Internet",
+                    url="https://example.com/medellin",
+                    snippet="Una fuente secundaria que no se pidió.",
+                ),
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(
+        make_ctx(), {"consulta": "Dame el link de Google Maps de Medellín"}
+    )
+
+    assert len(resultado.data["resultados"]) == 2
+    assert "https://maps.google.com" in resultado.content
+    assert resultado.presentation == []
+
+
+async def test_buscar_web_solo_presenta_fuentes_utiles_y_no_duplicadas(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "brave"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit("Google Maps", "https://maps.google.com/place", ""),
+                SearchHit("Fuente uno", "https://uno.example/guia", "Una guía detallada."),
+                SearchHit("Fuente uno repetida", "https://uno.example/guia?utm=2", "Duplicada."),
+                SearchHit("Fuente dos", "https://dos.example/analisis", "Un análisis útil."),
+                SearchHit("Fuente tres", "https://tres.example/reporte", "Un reporte útil."),
+                SearchHit("Fuente cuatro", "https://cuatro.example/datos", "Datos adicionales."),
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(make_ctx(), {"consulta": "mercado turístico Medellín"})
+
+    assert [card["title"] for card in resultado.presentation] == [
+        "Fuente uno",
+        "Fuente dos",
+        "Fuente tres",
+    ]
+    assert all(card["description"] for card in resultado.presentation)
+
+
+async def test_buscar_web_no_confunde_linkedin_con_un_pedido_de_link(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "duckduckgo"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit(
+                    "Guía de LinkedIn",
+                    "https://ejemplo.com/linkedin",
+                    "Estrategias recientes para LinkedIn.",
+                )
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(make_ctx(), {"consulta": "tendencias de LinkedIn"})
+
+    assert len(resultado.presentation) == 1
+
+
 # --- get_tenant_search_provider (bring-your-own, auditoría "riesgo-legal-tos") ------
 #
 # Desde la corrección de diseño de `DIRECCION_ACTUAL.md` ("nunca una llave

@@ -331,6 +331,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             val deviceId = tokenStore.getDeviceId()
+            if (deviceId != null) runCatching { apiActual.deletePushToken(deviceId) }
             tokenStore.clearDevicePairing()
             apiActual.cerrarSesion(deviceId)
         }

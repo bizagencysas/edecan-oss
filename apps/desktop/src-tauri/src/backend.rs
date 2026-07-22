@@ -13,6 +13,7 @@
 use std::fmt::Write as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +35,10 @@ pub struct PortState(pub Mutex<u16>);
 /// Capacidad aleatoria del arranque actual. El sidecar la recibe por entorno
 /// y la UI por fragmento URL (que nunca llega a logs/proxies HTTP).
 pub struct DesktopCapabilityState(pub Mutex<Option<String>>);
+
+/// `true` solo durante el arranque automático con `--hidden`. Se consume al
+/// crear `main`; cualquier apertura posterior desde el tray vuelve a mostrarla.
+pub struct StartHiddenState(pub AtomicBool);
 
 const READY_MARKER: &str = "EDECAN_LOCAL_READY";
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -540,6 +545,10 @@ fn diagnostics_enabled() -> bool {
 /// propio backend en `/` (Next.js exportado, ver scripts/build-backend.sh)
 /// — Tauri no empaqueta ni sirve el frontend, solo navega a esa URL.
 fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
+    let start_hidden = app
+        .state::<StartHiddenState>()
+        .0
+        .swap(false, Ordering::SeqCst);
     let capability = app
         .state::<DesktopCapabilityState>()
         .0
@@ -556,8 +565,10 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
         // No debería pasar en el flujo normal (retry_backend solo se llama
         // antes de que "main" exista), pero por las dudas no se duplica la
         // ventana — solo se enfoca la que ya está.
-        existing.show().map_err(|e| e.to_string())?;
-        existing.set_focus().map_err(|e| e.to_string())?;
+        if !start_hidden {
+            existing.show().map_err(|e| e.to_string())?;
+            existing.set_focus().map_err(|e| e.to_string())?;
+        }
     } else {
         let main_window =
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
@@ -570,9 +581,12 @@ fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 600.0)
                 .center()
+                .visible(!start_hidden)
                 .build()
                 .map_err(|e| e.to_string())?;
-        let _ = main_window.set_focus();
+        if !start_hidden {
+            let _ = main_window.set_focus();
+        }
     }
 
     if let Some(splash) = app.get_webview_window("splash") {

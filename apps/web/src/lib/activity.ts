@@ -135,7 +135,7 @@ export function buildActivityOverview({
       id: `phone:${call.id}`,
       kind: "phone",
       title: call.direction === "outgoing" ? `Llamada a ${peer}` : `Llamada de ${peer}`,
-      detail: call.error || call.goal,
+      detail: call.error || call.summary?.key_points[0] || call.goal,
       href: "/app",
       tone: isAttention ? "attention" : isError ? "error" : isActive ? "active" : "complete",
       statusLabel: callLabels[call.status],

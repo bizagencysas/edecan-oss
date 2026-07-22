@@ -9,7 +9,7 @@ import { ConversationList } from "@/components/chat/ConversationList";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ToolTimeline, type ToolEvent } from "@/components/chat/ToolTimeline";
 import { messageText } from "@/components/chat/utils";
-import { MenuIcon } from "@/components/icons";
+import { ChatIcon, MenuIcon, MicIcon, PlusIcon } from "@/components/icons";
 import { Alert, Button, EmptyState, Spinner } from "@/components/ui";
 import {
   confirmToolCallStream,
@@ -18,6 +18,7 @@ import {
   getConversation,
   getPersona,
   listConversations,
+  renameConversation,
   sendMessageStream,
   speakText,
   transcribeAudio,
@@ -26,6 +27,11 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
 import { reduceToolTimeline } from "@/lib/chat-blocks";
+import {
+  ASSISTANT_INTENT_EVENT,
+  assistantPromptForIntent,
+  assistantPromptFromSearch,
+} from "@/lib/assistant-intents";
 import { splitIntoSentences } from "@/lib/speech";
 import { isTauriApp, tauriListenEvent } from "@/lib/tauriListen";
 import {
@@ -47,6 +53,7 @@ const STARTER_REQUESTS = [
 ];
 
 const ATTACHMENT_UPLOAD_TIMEOUT_MS = 90_000;
+const CONVERSATION_PANEL_KEY = "edecan:conversation-panel-collapsed";
 
 /** Payload de `edecan://wake-detected` (evento nativo, Tauri): el listener
  * en segundo plano ya detectó la wake word entrenada Y ya grabó -- con corte
@@ -85,6 +92,7 @@ export default function ChatPage() {
   const [creating, setCreating] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [mobileListOpen, setMobileListOpen] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
 
   const [messages, setMessages] = useState<MessageOut[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -132,12 +140,37 @@ export default function ChatPage() {
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
+    const assistantPrompt = assistantPromptFromSearch(window.location.search);
+    if (assistantPrompt) {
+      setInput(assistantPrompt);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("intent");
+      window.history.replaceState(window.history.state, "", cleanUrl);
+    }
     // La primera vez Edecan queda listo para recibir una frase sin obligar a
     // entender ni crear manualmente el concepto de "conversación".
     void loadConversations(undefined, false, true);
     getPersona()
       .then((p) => setVoiceId(p.voice_id))
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    function prefillAssistantIntent(event: Event) {
+      const prompt = assistantPromptForIntent((event as CustomEvent<unknown>).detail);
+      if (prompt) setInput(prompt);
+    }
+
+    window.addEventListener(ASSISTANT_INTENT_EVENT, prefillAssistantIntent);
+    return () => window.removeEventListener(ASSISTANT_INTENT_EVENT, prefillAssistantIntent);
+  }, []);
+
+  useEffect(() => {
+    try {
+      setHistoryCollapsed(window.localStorage.getItem(CONVERSATION_PANEL_KEY) === "true");
+    } catch {
+      // El panel sigue siendo plegable durante la sesión aunque storage esté bloqueado.
+    }
   }, []);
 
   useEffect(
@@ -284,6 +317,18 @@ export default function ChatPage() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo borrar la conversación.");
+    }
+  }
+
+  async function handleRename(id: string, title: string) {
+    try {
+      const updated = await renameConversation(id, title);
+      setConversations((current) =>
+        current.map((conversation) => (conversation.id === id ? updated : conversation)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo renombrar la conversación.");
+      throw err;
     }
   }
 
@@ -681,29 +726,51 @@ export default function ChatPage() {
 
   const turnBlocked = sending || pendingConfirmation !== null;
   const showStreamingBubble = sending && (streamingText.length > 0 || toolEvents.length === 0);
+  const activeConversationTitle =
+    conversations.find((conversation) => conversation.id === activeId)?.title || "Conversación nueva";
+
+  function toggleHistoryCollapsed() {
+    setHistoryCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(CONVERSATION_PANEL_KEY, String(next));
+      } catch {
+        // La interacción actual no depende de que pueda persistirse.
+      }
+      return next;
+    });
+  }
 
   return (
-    <div className="flex h-[calc(100vh-7.5rem)] min-h-[28rem] gap-4">
-      <div className="hidden w-64 shrink-0 rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block">
+    <div className="flex h-full min-h-0 gap-3">
+      <aside
+        className={`${
+          historyCollapsed ? "w-16" : "w-72"
+        } hidden min-h-0 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-[width] duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex lg:flex-col`}
+        data-testid="desktop-conversation-panel"
+      >
         <ConversationList
           conversations={conversations}
           activeId={activeId}
           loading={convLoading}
           creating={creating}
+          collapsed={historyCollapsed}
           onSelect={handleSelect}
           onCreate={handleCreate}
           onDelete={handleDelete}
+          onRename={handleRename}
+          onToggleCollapsed={toggleHistoryCollapsed}
         />
-      </div>
+      </aside>
 
       {mobileListOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
+        <div className="fixed inset-0 z-40 lg:hidden">
           <button
             aria-label="Cerrar"
             className="absolute inset-0 bg-slate-900/50"
             onClick={() => setMobileListOpen(false)}
           />
-          <div className="absolute inset-y-0 left-0 w-72 bg-white shadow-xl dark:bg-slate-900">
+          <div className="absolute inset-y-0 left-0 w-[min(20rem,88vw)] bg-white shadow-xl dark:bg-slate-900">
             <ConversationList
               conversations={conversations}
               activeId={activeId}
@@ -712,23 +779,60 @@ export default function ChatPage() {
               onSelect={handleSelect}
               onCreate={handleCreate}
               onDelete={handleDelete}
+              onRename={handleRename}
             />
           </div>
         </div>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5 dark:border-slate-800 md:hidden">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-100 px-3 sm:px-4 dark:border-slate-800">
           <button
             onClick={() => setMobileListOpen(true)}
-            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-            aria-label="Conversaciones"
+            className="rounded-xl p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 lg:hidden"
+            aria-label="Abrir historial"
           >
             <MenuIcon className="h-4 w-4" />
           </button>
-          <span className="truncate text-sm font-medium text-slate-700 dark:text-slate-200">
-            {conversations.find((c) => c.id === activeId)?.title || "Conversación"}
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
+            <ChatIcon className="h-4 w-4" />
           </span>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+              {activeConversationTitle}
+            </h1>
+            <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Edecan está listo
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {canRecordAudio && activeId && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setAlwaysListenOpen(true)}
+                className="rounded-xl"
+                title="Abrir conversación por voz"
+              >
+                <MicIcon className="h-4 w-4" />
+                <span className="hidden xl:inline">Escuchar</span>
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={handleCreate}
+              loading={creating}
+              className="h-9 w-9 rounded-xl px-0"
+              aria-label="Nueva conversación"
+              title="Nueva conversación"
+            >
+              <PlusIcon className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         {error && (
@@ -738,7 +842,7 @@ export default function ChatPage() {
         )}
 
         {!activeId && !convLoading ? (
-          <div className="flex flex-1 items-center justify-center p-6">
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
             <EmptyState
               title="Aún no tienes conversaciones"
               description='Pulsa "Nueva conversación" para empezar a hablar con tu asistente.'
@@ -751,81 +855,76 @@ export default function ChatPage() {
           </div>
         ) : (
           <>
-            <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4 thin-scrollbar">
-              {messagesLoading ? (
-                <div className="flex justify-center py-8">
-                  <Spinner className="h-5 w-5 text-slate-400" />
-                </div>
-              ) : (
-                <>
-                  {messages.length === 0 && !sending && (
-                    <div className="mx-auto flex max-w-xl flex-col items-center px-4 py-10 text-center">
-                      <p className="text-lg font-semibold text-slate-800 dark:text-slate-100">¿Qué necesitas?</p>
-                      <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                        Escríbelo como se lo dirías a una persona. Edecan decidirá cómo hacerlo.
-                      </p>
-                      <div className="mt-5 flex flex-wrap justify-center gap-2">
-                        {STARTER_REQUESTS.map((request) => (
-                          <button
-                            key={request}
-                            type="button"
-                            onClick={() => setInput(request)}
-                            className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition-colors hover:border-brand-300 hover:text-brand-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-                          >
-                            {request}
-                          </button>
-                        ))}
+            <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain thin-scrollbar">
+              <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+                {messagesLoading ? (
+                  <div className="flex flex-1 justify-center py-8">
+                    <Spinner className="h-5 w-5 text-slate-400" />
+                  </div>
+                ) : (
+                  <>
+                    {messages.length === 0 && !sending && (
+                      <div className="m-auto flex max-w-xl flex-col items-center px-4 py-10 text-center">
+                        <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
+                          <ChatIcon className="h-5 w-5" />
+                        </span>
+                        <p className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                          ¿Qué hacemos?
+                        </p>
+                        <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                          Escríbelo como se lo dirías a una persona. Edecan organizará el resto.
+                        </p>
+                        <div className="mt-6 flex flex-wrap justify-center gap-2">
+                          {STARTER_REQUESTS.map((request) => (
+                            <button
+                              key={request}
+                              type="button"
+                              onClick={() => setInput(request)}
+                              className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-600 shadow-sm transition-all hover:-translate-y-0.5 hover:border-brand-300 hover:text-brand-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                            >
+                              {request}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {messages.map((m) => (
-                    <MessageBubble
-                      key={m.id}
-                      message={m}
-                      canSpeak={canVoice}
-                      speaking={speakingId === m.id ? speakingState : null}
-                      onToggleSpeak={() => toggleSpeak(m)}
-                      onPrefillMessage={setInput}
-                    />
-                  ))}
-                  {showStreamingBubble && (
-                    <MessageBubble
-                      message={{
-                        id: "streaming",
-                        role: "assistant",
-                        content: { text: streamingText },
-                        tool_calls: null,
-                        tokens_in: 0,
-                        tokens_out: 0,
-                        created_at: new Date().toISOString(),
-                      }}
-                    />
-                  )}
-                  {toolEvents.length > 0 && <ToolTimeline events={toolEvents} />}
-                  {pendingConfirmation && (
-                    <ConfirmationCard
-                      name={pendingConfirmation.name}
-                      args={pendingConfirmation.args}
-                      onApprove={() => handleConfirm(true)}
-                      onDeny={() => handleConfirm(false)}
-                      loading={sending}
-                    />
-                  )}
-                </>
-              )}
-            </div>
-            {canRecordAudio && activeId && (
-              <div className="mb-2 flex justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setAlwaysListenOpen(true)}
-                >
-                  Escuchar siempre
-                </Button>
+                    )}
+                    {messages.map((message) => (
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        canSpeak={canVoice}
+                        speaking={speakingId === message.id ? speakingState : null}
+                        onToggleSpeak={() => toggleSpeak(message)}
+                        onPrefillMessage={setInput}
+                      />
+                    ))}
+                    {showStreamingBubble && (
+                      <MessageBubble
+                        message={{
+                          id: "streaming",
+                          role: "assistant",
+                          content: { text: streamingText },
+                          tool_calls: null,
+                          tokens_in: 0,
+                          tokens_out: 0,
+                          created_at: new Date().toISOString(),
+                        }}
+                      />
+                    )}
+                    {toolEvents.length > 0 && <ToolTimeline events={toolEvents} />}
+                    {pendingConfirmation && (
+                      <ConfirmationCard
+                        name={pendingConfirmation.name}
+                        args={pendingConfirmation.args}
+                        onApprove={() => handleConfirm(true)}
+                        onDeny={() => handleConfirm(false)}
+                        loading={sending}
+                      />
+                    )}
+                  </>
+                )}
               </div>
-            )}
+            </div>
             <ChatComposer
               value={input}
               onChange={setInput}
@@ -844,7 +943,7 @@ export default function ChatPage() {
             />
           </>
         )}
-      </div>
+      </section>
       {alwaysListenOpen && activeId && (
         <AlwaysListenMode
           onClose={() => {

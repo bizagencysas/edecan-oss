@@ -47,9 +47,15 @@ final class RecordatoriosViewModel {
         errorCreacion = nil
         defer { creando = false }
         do {
-            // `canal` default "web" — nunca "mobile" todavía, ver el
-            // docstring de `APIClient.createReminder`.
-            let creado = try await client.createReminder(texto: limpio, fecha: fecha)
+            let creado = try await client.createReminder(texto: limpio, fecha: fecha, canal: "mobile")
+            let apnsDisponible = (try? await client.estadoPush().apns) == true
+            if !apnsDisponible {
+                await LocalNotificationScheduler.reminder(
+                    id: creado.id,
+                    message: creado.message,
+                    dueAt: creado.dueAt
+                )
+            }
             recordatorios.append(creado)
             recordatorios.sort { $0.dueAt < $1.dueAt }
             return creado

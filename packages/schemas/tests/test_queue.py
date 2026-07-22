@@ -59,7 +59,7 @@ def test_job_types_incluye_process_meeting_v6():
     # ARCHITECTURE.md §15 (dueño WP-V6-01): 12º job type, agregado al final
     # de los 11 de v1+v2+v5 — la cobertura exhaustiva de la tupla completa
     # vive en test_v2_contracts.py::test_job_types_v1_y_v2_intactos_mas_v5_al_final.
-    assert JOB_TYPES[-1] == "process_meeting"
+    assert JOB_TYPES[11] == "process_meeting"
     assert "process_meeting" in JOB_TYPES
 
 
@@ -71,3 +71,40 @@ def test_job_envelope_process_meeting_valido():
         payload={"meeting_id": str(uuid4())},
     )
     assert env.type == "process_meeting"
+
+
+def test_job_envelope_notify_phone_call_summary_valido():
+    env = JobEnvelope(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        type="notify_phone_call_summary",
+        payload={"call_id": str(uuid4())},
+    )
+    assert JOB_TYPES[12] == "notify_phone_call_summary"
+    assert env.type == "notify_phone_call_summary"
+
+
+def test_job_envelope_notify_incoming_phone_call_valido():
+    env = JobEnvelope(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        type="notify_incoming_phone_call",
+        payload={"call_id": str(uuid4())},
+    )
+    assert JOB_TYPES[13] == "notify_incoming_phone_call"
+    assert env.type == "notify_incoming_phone_call"
+
+
+def test_job_envelope_notify_important_event_valido():
+    env = JobEnvelope(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        type="notify_important_event",
+        payload={
+            "user_id": str(uuid4()),
+            "event_id": str(uuid4()),
+            "kind": "design_ready",
+        },
+    )
+    assert JOB_TYPES[14] == "notify_important_event"
+    assert env.type == "notify_important_event"

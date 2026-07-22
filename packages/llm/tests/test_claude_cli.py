@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -397,6 +398,69 @@ async def test_stream_formato_reconocido_emite_texto_incremental(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_stream_publica_antes_de_que_termine_claude(tmp_path: Path) -> None:
+    first = json.dumps(
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hola "},
+            },
+        }
+    )
+    second = json.dumps(
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "mundo"},
+            },
+        }
+    )
+    result = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 4, "output_tokens": 2}}
+    )
+    script = tmp_path / "claude-live"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null\n"
+        f"printf '%s\\n' '{first}'\n"
+        "sleep 0.5\n"
+        f"printf '%s\\n' '{second}'\n"
+        f"printf '%s\\n' '{result}'\n"
+    )
+    script.chmod(0o755)
+    provider = ClaudeCLIProvider(binary_path=str(script))
+
+    started = time.monotonic()
+    stream = provider.stream(_req())
+    first_chunk = await anext(stream)
+    elapsed = time.monotonic() - started
+
+    assert first_chunk.type == "text"
+    assert first_chunk.text == "Hola "
+    assert elapsed < 0.35
+    remaining = [chunk async for chunk in stream]
+    assert "".join(chunk.text or "" for chunk in remaining) == "mundo"
+
+
+@pytest.mark.asyncio
+async def test_stream_pide_mensajes_parciales_al_cli(tmp_path: Path) -> None:
+    result = json.dumps({"type": "result", "result": "Listo"})
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=result,
+        args_capture_name="stream-args.txt",
+    )
+    provider = ClaudeCLIProvider(binary_path=fake)
+
+    _ = [chunk async for chunk in provider.stream(_req())]
+
+    args = (tmp_path / "stream-args.txt").read_text().splitlines()
+    assert "--include-partial-messages" in args
+
+
+@pytest.mark.asyncio
 async def test_stream_no_emite_prefacio_de_autonarracion(tmp_path: Path) -> None:
     lines = [
         json.dumps(
@@ -436,6 +500,81 @@ async def test_stream_no_emite_prefacio_de_autonarracion(tmp_path: Path) -> None
     assert visible == "JAJAJA, entendido."
     assert "El usuario" not in visible
     assert "Debo responder" not in visible
+
+
+@pytest.mark.asyncio
+async def test_stream_no_filtra_autonarracion_dividida_en_deltas(tmp_path: Path) -> None:
+    fragments = [
+        "El us",
+        "uario aclaró que era una broma. ",
+        "Debo responder con humor. ",
+        "Jajaja, entendido.",
+    ]
+    lines = [
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": fragment},
+                },
+            }
+        )
+        for fragment in fragments
+    ]
+    lines.append(json.dumps({"type": "result", "result": "Jajaja, entendido."}))
+    fake = _make_fake_cli(tmp_path, stdout="\n".join(lines))
+    provider = ClaudeCLIProvider(binary_path=fake)
+
+    chunks = [chunk async for chunk in provider.stream(_req())]
+
+    visible = "".join(chunk.text or "" for chunk in chunks if chunk.type == "text")
+    assert visible == "Jajaja, entendido."
+    assert "usuario" not in visible.lower()
+    assert "debo responder" not in visible.lower()
+
+
+@pytest.mark.asyncio
+async def test_stream_retiene_json_de_tool_hasta_convertirlo(tmp_path: Path) -> None:
+    fragments = [
+        '{"tool_call":{"name":"buscar_web",',
+        '"arguments":{"query":"Edecan"}}}',
+    ]
+    lines = [
+        json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": fragment},
+                },
+            }
+        )
+        for fragment in fragments
+    ]
+    lines.append(json.dumps({"type": "result"}))
+    fake = _make_fake_cli(tmp_path, stdout="\n".join(lines))
+    provider = ClaudeCLIProvider(binary_path=fake)
+    req = _req(
+        tools=[
+            ToolSpec(
+                name="buscar_web",
+                description="Busca en internet",
+                input_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            )
+        ]
+    )
+
+    chunks = [chunk async for chunk in provider.stream(req)]
+
+    assert not [chunk for chunk in chunks if chunk.type == "text"]
+    tool_chunks = [chunk for chunk in chunks if chunk.type == "tool_call"]
+    assert len(tool_chunks) == 1
+    assert tool_chunks[0].tool_call is not None
+    assert tool_chunks[0].tool_call.name == "buscar_web"
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,8 @@ import cc.edecan.app.ui.RemotoScreen
 import cc.edecan.app.ui.VozScreen
 import cc.edecan.app.vm.ChatViewModel
 import cc.edecan.shared.AssistantDestination
+import cc.edecan.app.notifications.NotificationRoute
+import androidx.compose.runtime.LaunchedEffect
 
 private val AssistantDestination.etiqueta: String
     get() = when (this) {
@@ -75,11 +77,27 @@ private enum class PantallaSecundaria {
  * mutableStateOf(...) }` local, sin tocar la `NavigationBar` de abajo.
  */
 @Composable
-fun RootNav(sessionKey: Long) {
+fun RootNav(
+    sessionKey: Long,
+    notificationRoute: NotificationRoute? = null,
+    onNotificationRouteConsumed: () -> Unit = {},
+) {
     val chatViewModel: ChatViewModel = viewModel()
     var seleccion by rememberSaveable(sessionKey) { mutableStateOf(AssistantDestination.EDECAN) }
     var pantallaSecundaria by rememberSaveable(sessionKey) { mutableStateOf<PantallaSecundaria?>(null) }
     var solicitudChat by rememberSaveable(sessionKey) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(notificationRoute) {
+        when (notificationRoute) {
+            NotificationRoute.ASSISTANT -> seleccion = AssistantDestination.EDECAN
+            NotificationRoute.ACTIVITY -> seleccion = AssistantDestination.ACTIVITY
+            NotificationRoute.SETTINGS -> seleccion = AssistantDestination.YOU
+            NotificationRoute.CREATE -> pantallaSecundaria = PantallaSecundaria.CREAR
+            NotificationRoute.REMOTE -> pantallaSecundaria = PantallaSecundaria.REMOTO
+            null -> return@LaunchedEffect
+        }
+        onNotificationRouteConsumed()
+    }
 
     DisposableEffect(sessionKey) {
         onDispose {
@@ -95,14 +113,7 @@ fun RootNav(sessionKey: Long) {
     if (secundaria != null) {
         val volver = { pantallaSecundaria = null }
         when (secundaria) {
-            PantallaSecundaria.CREAR -> ContentStudioScreen(
-                onVolver = volver,
-                onCrear = { solicitud ->
-                    solicitudChat = solicitud
-                    pantallaSecundaria = null
-                    seleccion = AssistantDestination.EDECAN
-                },
-            )
+            PantallaSecundaria.CREAR -> ContentStudioScreen(onVolver = volver)
             PantallaSecundaria.MISIONES -> MisionesScreen(onVolver = volver)
             PantallaSecundaria.AUTOMATIZACIONES -> AutomatizacionesScreen(onVolver = volver)
             PantallaSecundaria.RECORDATORIOS -> RecordatoriosScreen(onVolver = volver)
@@ -164,6 +175,7 @@ fun RootNav(sessionKey: Long) {
                     onAbrirRemoto = { pantallaSecundaria = PantallaSecundaria.REMOTO },
                 )
                 AssistantDestination.YOU -> PerfilScreen(
+                    onAbrirContenido = { pantallaSecundaria = PantallaSecundaria.CREAR },
                     onAbrirIde = { pantallaSecundaria = PantallaSecundaria.IDE },
                     onAbrirCapacidades = { pantallaSecundaria = PantallaSecundaria.CAPACIDADES },
                     onAbrirNegocios = { pantallaSecundaria = PantallaSecundaria.NEGOCIOS },

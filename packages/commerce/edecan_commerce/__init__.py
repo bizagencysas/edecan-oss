@@ -13,6 +13,15 @@ from __future__ import annotations
 
 from edecan_core import Tool
 
+from .alpaca import (
+    ALPACA_CONNECTOR_KEY,
+    AlpacaAPIError,
+    AlpacaCredentials,
+    AlpacaPaperBroker,
+    AlpacaPaperClient,
+    ConsultarAlpacaTool,
+    resolve_alpaca_paper_client,
+)
 from .budgets import ALERTA_PCT, estado_presupuestos, fijar_presupuesto, listar_presupuestos
 from .paper import PaperBroker
 from .quotes import CoinGeckoQuotes, Quote, QuoteProvider, StubQuotes, get_quote_provider
@@ -25,8 +34,14 @@ from .tools import (
 
 __all__ = [
     "ALERTA_PCT",
+    "ALPACA_CONNECTOR_KEY",
+    "AlpacaAPIError",
+    "AlpacaCredentials",
+    "AlpacaPaperBroker",
+    "AlpacaPaperClient",
     "CoinGeckoQuotes",
     "CotizarActivoTool",
+    "ConsultarAlpacaTool",
     "GestionarPresupuestoTool",
     "PaperBroker",
     "PrepararOrdenTool",
@@ -39,13 +54,15 @@ __all__ = [
     "get_all_tools",
     "get_quote_provider",
     "listar_presupuestos",
+    "resolve_alpaca_paper_client",
 ]
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las 4 herramientas del paquete (nombres exactos: `ROADMAP_V2.md` §7.7)."""
+    """Instancia las herramientas financieras disponibles para el agente."""
     return [
         CotizarActivoTool(),
+        ConsultarAlpacaTool(),
         GestionarPresupuestoTool(),
         PrepararPagoTool(),
         PrepararOrdenTool(),

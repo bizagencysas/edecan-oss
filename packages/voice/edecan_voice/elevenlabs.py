@@ -13,6 +13,7 @@ from typing import Literal
 import httpx
 
 from edecan_voice.base import TTSProvider
+from edecan_voice.expression import expressive_eleven_v3_text, plain_text_for_speech
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,14 @@ class ElevenLabsTTS(TTSProvider):
         api_key: str,
         default_voice_id: str | None = None,
         *,
+        model_id: str = DEFAULT_MODEL_ID,
+        expressive: bool = False,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._api_key = api_key
         self._default_voice_id = default_voice_id
+        self._model_id = model_id
+        self._expressive = expressive and model_id == "eleven_v3"
         self._timeout = timeout
 
     async def synthesize(
@@ -56,7 +61,10 @@ class ElevenLabsTTS(TTSProvider):
             logger.warning("ElevenLabsTTS solo produce mp3; se ignora fmt=%r", fmt)
 
         headers = {"xi-api-key": self._api_key}
-        payload = {"text": text, "model_id": DEFAULT_MODEL_ID}
+        spoken_text = (
+            expressive_eleven_v3_text(text) if self._expressive else plain_text_for_speech(text)
+        )
+        payload = {"text": spoken_text, "model_id": self._model_id}
         url = ELEVENLABS_TTS_URL_TEMPLATE.format(voice_id=resolved_voice_id)
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:

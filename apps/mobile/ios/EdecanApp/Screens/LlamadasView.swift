@@ -10,6 +10,7 @@ struct LlamadasView: View {
     @State private var cargando = false
     @State private var mensajeNoDisponible: String?
     @State private var errorMensaje: String?
+    @State private var estadosObservados: [String: String] = [:]
 
     var body: some View {
         Group {
@@ -99,7 +100,27 @@ struct LlamadasView: View {
         mensajeNoDisponible = nil
         defer { cargando = false }
         do {
-            llamadas = try await client.listarLlamadas()
+            let nuevas = try await client.listarLlamadas()
+            if !estadosObservados.isEmpty {
+                for llamada in nuevas {
+                    let anterior = estadosObservados[llamada.id]
+                    let cambio = anterior != llamada.status
+                    guard cambio, llamada.status == "ringing" ||
+                        ["completed", "failed", "busy", "no_answer"].contains(llamada.status)
+                    else { continue }
+                    Task {
+                        await LocalNotificationScheduler.completed(
+                            kind: "call",
+                            id: llamada.id,
+                            title: llamada.status == "ringing" ? "Llamada entrante" : "Llamada actualizada",
+                            body: llamada.goal,
+                            route: .activity
+                        )
+                    }
+                }
+            }
+            llamadas = nuevas
+            estadosObservados = Dictionary(uniqueKeysWithValues: nuevas.map { ($0.id, $0.status) })
         } catch APIClient.APIError.servidor(let status, let mensaje) where status == 403 {
             mensajeNoDisponible = mensaje
             llamadas = []

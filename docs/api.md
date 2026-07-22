@@ -479,17 +479,21 @@ Estas rutas se montan siempre desde `edecan_api.routers.phone`; no requieren `ed
 
 | Ruta | Auth | Para qué |
 |---|---|---|
-| `GET /v1/phone/calls` | Bearer (access) | Lista llamadas del usuario, incluida cualquier confirmación pendiente. |
-| `GET /v1/phone/calls/{id}` | Bearer (access) | Devuelve llamada, eventos y transcripción telefónica. |
-| `POST /v1/phone/calls/prepare` | Bearer (access) | Body `{"to_e164":"+573001234567","goal":"Confirmar la entrega"}`. Crea un borrador; nunca contacta al proveedor. |
+| `GET /v1/phone/agent-templates` | Bearer (access) | Lista las personas reutilizables del usuario para llamadas salientes. |
+| `POST /v1/phone/agent-templates` | Bearer (access) | Crea una plantilla con `name`, `agent_name`, `persona_prompt`, `default_goal`, `opening_message` e `is_default`. La primera queda predeterminada. |
+| `PUT /v1/phone/agent-templates/{id}` | Bearer (access) | Actualiza una plantilla; nunca reescribe llamadas ya preparadas. |
+| `DELETE /v1/phone/agent-templates/{id}` | Bearer (access) | Elimina la plantilla y conserva los snapshots históricos de llamadas. |
+| `GET /v1/phone/calls` | Bearer (access) | Lista llamadas del usuario, incluida cualquier confirmación pendiente y el resumen estructurado cuando terminó. |
+| `GET /v1/phone/calls/{id}` | Bearer (access) | Devuelve llamada, resumen, eventos y transcripción telefónica. |
+| `POST /v1/phone/calls/prepare` | Bearer (access) | Body `{"to_e164":"+573001234567","goal":"Confirmar la entrega","agent_template_id":"uuid opcional"}`. Si omite `goal`, usa el de la plantilla elegida/predeterminada. Crea un borrador y snapshot; nunca contacta al proveedor. |
 | `POST /v1/phone/calls/{id}/confirm` | Bearer (access) | Body `{"confirmed_destination":true,"confirmed_goal":true,"expected_to_e164":"+573001234567","expected_goal":"Confirmar la entrega"}`. Revalida los valores vistos por el humano, confirma y persiste antes de pedir la llamada a Twilio. |
 | `DELETE /v1/phone/calls/{id}` | Bearer (access) | Cancela un borrador que todavía no salió a Twilio. |
 | `POST /v1/phone/twilio/incoming` | Firma Twilio | Recibe una llamada en el número conectado y abre un hilo telefónico separado. |
 | `POST /v1/phone/twilio/calls/{id}/voice` | Firma Twilio | Saludo y primer `<Gather>` de una llamada saliente. |
 | `POST /v1/phone/twilio/calls/{id}/gather` | Firma Twilio | Ejecuta el siguiente turno breve del asistente y devuelve TwiML. |
-| `POST /v1/phone/twilio/calls/{id}/status` | Firma Twilio | Actualiza estado y duración sin permitir regresiones por callbacks tardíos. |
+| `POST /v1/phone/twilio/calls/{id}/status` | Firma Twilio | Actualiza estado y duración sin regresiones; en el primer estado terminal persiste resumen/actividad y encola un push genérico best-effort. |
 
-La herramienta de chat `llamar_contacto` usa el mismo dispatcher transaccional. Al ser peligrosa, el agente presenta la confirmación exacta antes de ejecutarla. La conversación telefónica mantiene nombre, idioma, tono y formalidad, pero no comparte memorias ni instrucciones privadas con el interlocutor externo. `PHONE_MAX_TURNS` (default `8`) limita los turnos. Ver [`voz-telefonia.md`](./voz-telefonia.md#telefonía-oss-funcional).
+La herramienta de chat `llamar_contacto` usa el mismo dispatcher transaccional. Al ser peligrosa, el agente presenta la confirmación exacta antes de ejecutarla. La conversación telefónica mantiene nombre, idioma, tono y formalidad, pero no comparte memorias ni instrucciones privadas con el interlocutor externo. `PHONE_MAX_TURNS` (default `8`) limita los turnos. Ver [`agentes-llamadas.md`](./agentes-llamadas.md) y [`voz-telefonia.md`](./voz-telefonia.md#telefonía-oss-funcional).
 
 ### `POST /v1/consents`
 
@@ -1004,15 +1008,17 @@ de los topes de filas/columnas de `edecan_docanalysis`). Detalle completo en
 Dueño real: fase v6 (`packages/mcp`, `edecan_mcp`). Ya aterrizado y
 verificado contra el código real (`apps/api/edecan_api/routers/mcp.py`):
 
-- `GET /v1/mcp/servers` — lista los servidores MCP conectados del tenant
-  (nombre, transporte, URL/comando, estado) — **nunca** incluye `headers` ni
-  ningún otro secreto.
-- `PUT /v1/mcp/servers {nombre, transporte, url?, comando?, headers?,
+- `GET /v1/mcp/servers` — lista los servidores MCP guardados del tenant
+  (nombre, transporte, URL/comando redactado, estado y si tiene autenticación) — **nunca**
+  incluye `headers`, `env` ni ningún valor secreto.
+- `PUT /v1/mcp/servers {nombre, transporte, url?, comando?, headers?, env?,
   validate?}` → `204`. Con `validate` en `true` (default), antes de guardar
   nada hace el *handshake* MCP real (`initialize` + `tools/list`) contra el
   servidor — `400` con el detalle exacto si falla y nada se persiste;
   `validate: false` es la escotilla de escape (tests, migraciones). Emula
   upsert por `nombre`.
+  `env` solo se admite en `stdio`, se cifra con la configuración y permite
+  entregar secretos a un proceso local sin incrustarlos en `comando`.
 - `DELETE /v1/mcp/servers/{nombre}` → `204`. Idempotente (nada que borrar ya
   es un estado válido de "desconectado").
 - `GET /v1/mcp/servers/{nombre}/tools` — conecta en vivo y devuelve las

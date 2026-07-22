@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- El QR también puede ingresarse como deep link/manual; no se excluyen
          tablets, Chromebooks ni equipos sin cámara de Google Play. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -62,6 +63,18 @@
                 <data android:scheme="edecan" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".notifications.EdecanFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".notifications.LocalNotificationReceiver"
+            android:exported="false" />
 
         <!-- Solo comparte archivos que la propia app acaba de descargar en
              cacheDir/shared_artifacts; nunca expone almacenamiento general. -->

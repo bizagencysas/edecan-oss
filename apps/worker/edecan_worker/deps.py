@@ -289,7 +289,7 @@ class Deps:
         # `ARCHITECTURE.md` §15.g (pinned): `connector_accounts` es identidad
         # pura para MCP — nunca lleva la config (ni siquiera la parte
         # no-secreta). Por eso esta consulta ya NO trae `scopes`: la config
-        # completa (`{nombre, transporte, url, comando, headers}`) vive TODA
+        # completa (`{nombre, transporte, url, comando, headers, env}`) vive TODA
         # cifrada en el vault, ver el `for` de abajo.
         rows = (
             await session.execute(

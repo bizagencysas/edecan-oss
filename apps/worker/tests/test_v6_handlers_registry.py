@@ -37,10 +37,10 @@ def test_job_type_v6_pinned_esta_en_job_types():
     assert _JOB_TYPE_V6 in JOB_TYPES
 
 
-def test_job_type_v6_es_el_ultimo_de_job_types():
+def test_job_type_v6_conserva_su_posicion_de_job_types():
     # ARCHITECTURE.md §15: 12º job type, agregado al final de los 11 de
     # v1+v2+v5.
-    assert JOB_TYPES[-1] == _JOB_TYPE_V6
+    assert JOB_TYPES[11] == _JOB_TYPE_V6
 
 
 def test_handlers_conserva_los_7_v1_intactos():

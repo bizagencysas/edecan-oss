@@ -6,6 +6,8 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import httpx
+import respx
 from edecan_toolkit.autoconfiguracion import ConfigurarCredencialTool
 
 _NUEVA_FILA = [{"id": "acc-nueva", "external_account_id": "x"}]
@@ -265,3 +267,58 @@ async def test_oauth_app_reconfigurar_reemplaza_la_fila_existente(
     assert any("DELETE" in sql for sql in sqls)
     insert_params = session.llamadas[-1][1]
     assert insert_params["external_account_id"] == "gid-nuevo"
+
+
+@respx.mock
+async def test_alpaca_paper_valida_y_guarda_ambas_claves(make_ctx, make_session, make_vault):
+    respx.get("https://paper-api.alpaca.markets/v2/account").mock(
+        return_value=httpx.Response(200, json={"id": "paper-account"})
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "alpaca_paper",
+            "campos": {
+                "api_key_id": "PKTEST1234567890",
+                "secret_key": "secret-value-1234567890",
+            },
+        },
+    )
+
+    assert "verifiqué" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "environment": "paper",
+        "api_key_id": "PKTEST1234567890",
+        "secret_key": "secret-value-1234567890",
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "alpaca_paper"
+
+
+@respx.mock
+async def test_alpaca_paper_rechazada_no_se_guarda(make_ctx, make_session, make_vault):
+    respx.get("https://paper-api.alpaca.markets/v2/account").mock(
+        return_value=httpx.Response(401, json={"message": "unauthorized"})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "alpaca_paper",
+            "campos": {
+                "api_key_id": "PKTEST1234567890",
+                "secret_key": "secret-value-1234567890",
+            },
+        },
+    )
+
+    assert "No guardé nada" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []

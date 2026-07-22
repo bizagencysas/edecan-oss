@@ -80,6 +80,11 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from edecan_commerce.alpaca import (
+    AlpacaAPIError,
+    AlpacaPaperBroker,
+    resolve_alpaca_paper_client,
+)
 from edecan_commerce.budgets import estado_presupuestos, fijar_presupuesto
 from edecan_commerce.paper import PaperBroker
 from edecan_schemas.plans import FLAG_COMMERCE_ORDERS
@@ -89,7 +94,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
-from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, rate_limit
+from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, get_vault, rate_limit
 
 router = APIRouter(prefix="/v1/commerce", tags=["commerce"], dependencies=[Depends(rate_limit)])
 
@@ -266,9 +271,7 @@ async def get_order(
     session: AsyncSession = Depends(get_tenant_session),
 ) -> dict[str, Any]:
     await _expire_stale_drafts(session, current_user.tenant_id, current_user.user_id)
-    order = await _get_order_or_404(
-        session, current_user.tenant_id, current_user.user_id, order_id
-    )
+    order = await _get_order_or_404(session, current_user.tenant_id, current_user.user_id, order_id)
     return _row_to_order(order)
 
 
@@ -309,6 +312,7 @@ async def confirm_order(
     order_id: uuid.UUID,
     current_user: CurrentUser = Depends(_require_commerce_orders),
     session: AsyncSession = Depends(get_tenant_session),
+    vault: Any = Depends(get_vault),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """`draft -> confirmed`, y luego, según `kind`, ejecuta en modo paper (`trade`) o genera
@@ -355,9 +359,7 @@ async def confirm_order(
       que antes de este fix.
     """
     await _expire_stale_drafts(session, current_user.tenant_id, current_user.user_id)
-    order = await _get_order_or_404(
-        session, current_user.tenant_id, current_user.user_id, order_id
-    )
+    order = await _get_order_or_404(session, current_user.tenant_id, current_user.user_id, order_id)
     if order["status"] != "draft":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -388,9 +390,40 @@ async def confirm_order(
     kind = confirmed["kind"]
 
     if kind == "trade":
-        modo = str(
-            getattr(settings, "COMMERCE_MODE", DEFAULT_COMMERCE_MODE) or DEFAULT_COMMERCE_MODE
-        ).strip().lower()
+        modo = (
+            str(getattr(settings, "COMMERCE_MODE", DEFAULT_COMMERCE_MODE) or DEFAULT_COMMERCE_MODE)
+            .strip()
+            .lower()
+        )
+        alpaca_client = None
+        if modo in {"paper", "alpaca_paper"}:
+            alpaca_client = await resolve_alpaca_paper_client(
+                session=session,
+                vault=vault,
+                tenant_id=current_user.tenant_id,
+            )
+        if alpaca_client is not None:
+            try:
+                ejecutada = await AlpacaPaperBroker().execute(confirmed, session, alpaca_client)
+            except (AlpacaAPIError, ValueError) as exc:
+                await _record_execution_failure(
+                    session,
+                    tenant_id=current_user.tenant_id,
+                    actor_user_id=current_user.user_id,
+                    order_id=order_id,
+                    exc=exc,
+                )
+                await session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return {
+                "order": _row_to_order(ejecutada),
+                "mensaje": (
+                    "Orden enviada a Alpaca Paper después de tu confirmación. Es una "
+                    "simulación y no usa dinero real."
+                ),
+            }
         if modo == "paper":
             try:
                 ejecutada = await PaperBroker().execute(confirmed, session)
@@ -413,6 +446,20 @@ async def confirm_order(
                 "order": _row_to_order(ejecutada),
                 "mensaje": "Orden ejecutada en modo simulado (paper). No se movió dinero real.",
             }
+        if modo == "alpaca_paper":
+            exc = ValueError(
+                "Alpaca Paper no está conectado. Pega ambas credenciales paper en el "
+                "chat y vuelve a crear la orden."
+            )
+            await _record_execution_failure(
+                session,
+                tenant_id=current_user.tenant_id,
+                actor_user_id=current_user.user_id,
+                order_id=order_id,
+                exc=exc,
+            )
+            await session.commit()
+            raise HTTPException(status_code=400, detail=str(exc))
         # Nada más vuelve a usar `session` en esta rama: comitea la confirmación (+ su audit)
         # ANTES del 501 — ver el docstring de esta función.
         await session.commit()
@@ -467,9 +514,7 @@ async def cancel_order(
     session: AsyncSession = Depends(get_tenant_session),
 ) -> dict[str, Any]:
     await _expire_stale_drafts(session, current_user.tenant_id, current_user.user_id)
-    order = await _get_order_or_404(
-        session, current_user.tenant_id, current_user.user_id, order_id
-    )
+    order = await _get_order_or_404(session, current_user.tenant_id, current_user.user_id, order_id)
     if order["status"] not in ("draft", "confirmed"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

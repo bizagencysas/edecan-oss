@@ -49,7 +49,7 @@ Streamable HTTP) se reescribieron async y multi-tenant.
   es el de `edecan_browser.policy` (SSRF SIEMPRE bloqueada): un servidor MCP ejecuta tools
   arbitrarias, una superficie de mayor privilegio que leer el estado de una casa.
 - **`provider_config.py`** — `serializar_config_mcp`/`deserializar_config_mcp`: la config
-  COMPLETA de un servidor (`{nombre, transporte, url, comando, headers}`, secretos incluidos)
+  COMPLETA de un servidor (`{nombre, transporte, url, comando, headers, env}`, secretos incluidos)
   como un único blob para el `TokenVault` (`ARCHITECTURE.md` §15.g, pinned) — `connector_accounts`
   en sí queda como identidad pura (`connector_key`, `external_account_id`, `display_name`), sin
   ninguna columna de config.

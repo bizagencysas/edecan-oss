@@ -23,13 +23,16 @@ import asyncio
 import json
 import logging
 import signal
+import uuid
 from typing import Any
 
+from edecan_core.notifications import ImportantNotificationEvent
 from edecan_schemas import JobEnvelope
 
 from edecan_worker.config import get_settings
 from edecan_worker.deps import Deps, build_deps
 from edecan_worker.handlers import HANDLERS
+from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +72,7 @@ async def _requeue(deps: Deps, env: JobEnvelope) -> None:
 
 async def _propagate_terminal_failure_to_mission(
     deps: Deps, env: JobEnvelope, error_message: str
-) -> None:
+) -> uuid.UUID | None:
     """Mismo motivo/fix que `edecan_local.worker_loop._propagate_terminal_failure_to_mission`
     (modo escritorio) -- acá su equivalente para el worker hospedado (SQS):
     un job `run_mission` que agota sus reintentos y termina en la DLQ dejaba
@@ -81,18 +84,18 @@ async def _propagate_terminal_failure_to_mission(
     misión. `status NOT IN (...)` evita pisar una misión que ya llegó a un
     estado terminal por otro camino."""
     if env.type != "run_mission" or env.tenant_id is None:
-        return
+        return None
     mission_id = env.payload.get("mission_id")
     if not mission_id:
-        return
+        return None
     from sqlalchemy import text
 
     async with deps.session_factory(None) as session:
-        await session.execute(
+        result = await session.execute(
             text(
                 "UPDATE agent_missions SET status = 'error', error = :error, updated_at = now() "
                 "WHERE tenant_id = :tenant_id AND id = :id "
-                "AND status NOT IN ('done', 'error', 'cancelled')"
+                "AND status NOT IN ('done', 'error', 'cancelled') RETURNING user_id"
             ),
             {
                 "tenant_id": str(env.tenant_id),
@@ -100,6 +103,8 @@ async def _propagate_terminal_failure_to_mission(
                 "error": error_message[:2000],
             },
         )
+        row = result.mappings().first()
+        return uuid.UUID(str(row["user_id"])) if row is not None else None
 
 
 async def _handle_message(deps: Deps, message: dict[str, Any]) -> None:
@@ -134,9 +139,20 @@ async def _handle_message(deps: Deps, message: dict[str, Any]) -> None:
                 MAX_ATTEMPTS,
                 _job_ctx(env),
             )
-            await _propagate_terminal_failure_to_mission(
+            mission_user_id = await _propagate_terminal_failure_to_mission(
                 deps, env, f"{type(exc).__name__}: {exc}"
             )
+            if mission_user_id is not None:
+                await notify_important_event(
+                    deps,
+                    ImportantNotificationEvent(
+                        tenant_id=env.tenant_id,
+                        user_id=mission_user_id,
+                        kind="work_failed",
+                        event_id=uuid.UUID(str(env.payload["mission_id"])),
+                        resource_id=uuid.UUID(str(env.payload["mission_id"])),
+                    ),
+                )
         return
 
     await _delete_message(deps, receipt_handle)

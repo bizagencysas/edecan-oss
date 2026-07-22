@@ -296,16 +296,11 @@ construye).
 
 **Límites de esta ola:**
 
-- **Sin notificaciones push nativas todavía**: las tres pantallas se
-  refrescan por *polling*/al volver a entrar, no hay `FCM` empujando un
-  aviso al teléfono cuando una misión cambia de estado o un recordatorio
-  vence (sigue en el roadmap, ver el próximo bullet más abajo).
-  `EdecanApi.createReminder` manda SIEMPRE `channel = "web"`, **nunca**
-  `"mobile"` — no existe todavía una ruta de entrega dedicada del lado del
-  servidor (`send_reminder.py` solo sabe degradar `voice`/`phone` a mensaje
-  de chat, con una advertencia), así que inventar un valor de canal nuevo
-  acá no cambiaría nada real hoy y sí confundiría a un futuro lector de
-  `reminders`.
+- **FCM opcional y fallback local**: `EdecanApi.createReminder` usa
+  `channel = "mobile"`; la app registra/rota el token y lo revoca al
+  desvincular. Sin `androidApp/google-services.json`, el checkout OSS sigue
+  compilando y agenda avisos locales. Ver
+  [`notificaciones-push.md`](./notificaciones-push.md).
 - **Solo *polling*, sin SSE**: a diferencia del chat, ninguno de estos tres
   routers expone un stream — es una decisión del propio backend (§7.9/§7.6
   de `docs/roadmap.md`), no una limitación de este work package.
@@ -314,6 +309,16 @@ construye).
   el panel web hoy.
 
 ### Pantalla Remoto
+
+### Vistas previas dentro de la app
+
+Los artefactos privados del chat se descargan con Bearer y se abren en un
+diálogo propio: imágenes, texto (máximo 2 MB visibles) y PDF con `PdfRenderer`
+(máximo 20 páginas renderizadas de una vez). Otros tipos se pueden compartir
+de forma explícita mediante `FileProvider`. Las URLs públicas usan un `WebView`
+sin JavaScript, DOM storage, acceso a archivos ni contenido mixto; cada
+navegación se revalida contra el bloqueo de hosts locales/privados. No se
+delegan previews a visores externos.
 
 Control remoto del Mac/PC del tenant desde el teléfono — aplica el guardrail
 de [`control-remoto.md`](./control-remoto.md): consentimiento explícito en

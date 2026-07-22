@@ -84,6 +84,8 @@ class FakeRepo:
     memory_items: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
     memory_edges: list[dict[str, Any]] = field(default_factory=list)
     personas: dict[tuple[uuid.UUID, uuid.UUID], dict[str, Any]] = field(default_factory=dict)
+    phone_calls: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
+    phone_call_events: list[dict[str, Any]] = field(default_factory=list)
 
     # -- archivos / ingesta ---------------------------------------------------
 
@@ -212,6 +214,40 @@ class FakeRepo:
             self.conversations[conversation_id]["updated_at"] = utcnow()
         return dict(row)
 
+    # -- push de resumen de llamada -------------------------------------------
+
+    async def get_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        row = self.phone_calls.get(call_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return None
+        return dict(row)
+
+    async def claim_phone_call_summary_push(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> bool:
+        row = self.phone_calls.get(call_id)
+        if (
+            row is None
+            or row["tenant_id"] != tenant_id
+            or row.get("summary") is None
+            or row.get("summary_push_attempted_at") is not None
+        ):
+            return False
+        row["summary_push_attempted_at"] = utcnow()
+        return True
+
+    async def has_phone_call_event(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str
+    ) -> bool:
+        return any(
+            event.get("tenant_id") == tenant_id
+            and event.get("call_id") == call_id
+            and event.get("event_type") == event_type
+            for event in self.phone_call_events
+        )
+
     # -- conectores / oauth -------------------------------------------------------------
 
     async def list_expiring_oauth_tokens(
@@ -251,7 +287,10 @@ class FakeRepo:
         return [
             dict(row)
             for row in self.memory_items.values()
-            if row["tenant_id"] == tenant_id and row["user_id"] == user_id and row.get("embedding")
+            if row["tenant_id"] == tenant_id
+            and row["user_id"] == user_id
+            and row.get("embedding")
+            and row.get("superseded_at") is None
         ]
 
     async def update_memory_item_importance(
@@ -271,6 +310,34 @@ class FakeRepo:
                 del self.memory_items[memory_id]
                 deleted += 1
         return deleted
+
+    async def supersede_memory_items(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        replacements: list[tuple[uuid.UUID, uuid.UUID]],
+    ) -> int:
+        superseded = 0
+        for old_id, new_id in replacements:
+            old = self.memory_items.get(old_id)
+            new = self.memory_items.get(new_id)
+            if (
+                old is None
+                or new is None
+                or old_id == new_id
+                or old["tenant_id"] != tenant_id
+                or old["user_id"] != user_id
+                or new["tenant_id"] != tenant_id
+                or new["user_id"] != user_id
+                or old.get("superseded_at") is not None
+                or old.get("source") == "perfil_vivo"
+            ):
+                continue
+            old["superseded_at"] = utcnow()
+            old["superseded_by"] = new_id
+            superseded += 1
+        return superseded
 
     # -- memoria: extracción por LLM ---------------------------------------------------
 
@@ -301,7 +368,9 @@ class FakeRepo:
         rows = [
             dict(row)
             for row in self.memory_items.values()
-            if row["tenant_id"] == tenant_id and row["user_id"] == user_id
+            if row["tenant_id"] == tenant_id
+            and row["user_id"] == user_id
+            and row.get("superseded_at") is None
         ]
         rows.sort(key=lambda row: row.get("importance", 0.0), reverse=True)
         return rows[:limit]

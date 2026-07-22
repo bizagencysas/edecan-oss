@@ -29,6 +29,7 @@ body {
 /* Scrollbars discretos para paneles internos (lista de chat, sidebars). */
 .thin-scrollbar {
   scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225 / 0.8) transparent;
 }
 
 .thin-scrollbar::-webkit-scrollbar {
@@ -38,4 +39,8 @@ body {
 
 .thin-scrollbar::-webkit-scrollbar-thumb {
   @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}
+
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }

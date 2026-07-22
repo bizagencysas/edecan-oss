@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
 
 import { LogOutIcon, MenuIcon, XIcon } from "@/components/icons";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -10,10 +11,12 @@ import { BrandMark, NavList, Sidebar } from "./Sidebar";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { me, signOut, isLocalDesktop } = useAuth();
+  const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const isChatRoute = pathname === "/app" || pathname === "/app/";
 
   return (
-    <div className="flex min-h-screen min-w-0 max-w-full overflow-x-hidden bg-slate-50 dark:bg-slate-950">
+    <div className="flex h-dvh min-h-0 min-w-0 max-w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
       <Sidebar />
 
       {drawerOpen && (
@@ -23,7 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="absolute inset-0 bg-slate-900/50"
             onClick={() => setDrawerOpen(false)}
           />
-          <div className="relative flex h-full w-64 flex-col bg-white shadow-xl dark:bg-slate-900">
+          <div className="relative flex h-full min-h-0 w-64 flex-col overflow-hidden bg-white shadow-xl dark:bg-slate-900">
             <div className="flex items-center justify-between pr-2">
               <BrandMark />
               <button
@@ -39,8 +42,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       )}
 
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900 md:px-6">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-900 md:px-6">
           <button
             aria-label="Abrir menú"
             className="rounded-md p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 md:hidden"
@@ -65,8 +68,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
           </div>
         </header>
-        <main className="flex min-w-0 max-w-full flex-1 flex-col overflow-x-hidden overflow-y-auto p-4 md:p-6">
-          <div className="min-w-0 max-w-full">{children}</div>
+        <main
+          className={
+            isChatRoute
+              ? "flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden p-2 sm:p-3 lg:p-4"
+              : "flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-x-hidden overflow-y-auto p-4 md:p-6"
+          }
+        >
+          <div className={isChatRoute ? "h-full min-h-0 min-w-0 max-w-full" : "min-w-0 max-w-full"}>
+            {children}
+          </div>
         </main>
       </div>
     </div>

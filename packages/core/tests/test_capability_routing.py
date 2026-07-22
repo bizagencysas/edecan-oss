@@ -38,6 +38,11 @@ ALL_SPECS = [
     _spec("registrar_salud"),
     _spec("preparar_pago", "Prepara un borrador de pago."),
     _spec("crear_artefactos", "Crea archivos y proyectos reales con manifest."),
+    _spec("crear_diseno_visual", "Crea un diseño visual HTML con vista previa segura."),
+    _spec("obtener_diseno_visual", "Recupera el HTML actual de un diseño visual."),
+    _spec("refinar_diseno_visual", "Refina un diseño visual como versión nueva."),
+    _spec("historial_diseno_visual", "Lista versiones de un diseño visual."),
+    _spec("exportar_diseno_visual", "Exporta un diseño como HTML, PNG o PDF."),
     _spec("crear_pdf", "Crea un PDF."),
     _spec("crear_presentacion", "Crea PowerPoint."),
     _spec("generar_contenido", "Redacta texto."),
@@ -180,6 +185,32 @@ def test_creacion_compuesta_usa_un_solo_creator_con_manifest() -> None:
         "generar_contenido",
     }.isdisjoint(names)
     assert "publicar_social" not in names
+
+
+def test_landing_visual_usa_design_studio_versionado_en_vez_del_creator_generico() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea una landing visual para mi taller y muéstrame una vista previa.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "crear_diseno_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+        "historial_diseno_visual",
+        "exportar_diseno_visual",
+    } <= names
+    assert "crear_artefactos" not in names
+
+
+def test_refinamiento_corto_hereda_la_intencion_de_design_studio() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Haz el título más grande.",
+        recent_user_texts=["Crea una landing visual para mi taller."],
+    )
+    names = {spec.name for spec in selected}
+    assert {"obtener_diseno_visual", "refinar_diseno_visual"} <= names
 
 
 def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:

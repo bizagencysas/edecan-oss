@@ -123,9 +123,11 @@ def _mcp_handshake_responder(tools: list[dict[str, Any]] | None = None):
     `notifications/initialized` y `tools/list` — sin importar el orden
     exacto en que `HTTPTransport` los mande (los tres son POSTs a la misma
     URL, ver `HTTPTransport._post`)."""
-    tools = tools if tools is not None else [
-        {"name": "buscar", "description": "Busca cosas.", "inputSchema": {"type": "object"}}
-    ]
+    tools = (
+        tools
+        if tools is not None
+        else [{"name": "buscar", "description": "Busca cosas.", "inputSchema": {"type": "object"}}]
+    )
 
     def _responder(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -213,6 +215,7 @@ async def test_get_servers_nunca_incluye_headers(client: AsyncClient, _mounted_a
         "url": _URL,
         "comando": None,
         "estado": "active",
+        "autenticacion_configurada": True,
     }
     del cu  # solo para dejar explícito que no se usa más allá del override
 
@@ -321,6 +324,97 @@ async def test_local_mode_permite_stdio(client: AsyncClient, _mounted_app: Any) 
     assert response.status_code == 204
 
 
+@respx.mock
+async def test_stdio_env_se_guarda_cifrado_y_nunca_sale_por_get(
+    client: AsyncClient,
+    _mounted_app: Any,
+    fake_vault: FakeVault,
+) -> None:
+    _con_flag_mcp(_mounted_app)
+    _use_local_mode(_mounted_app)
+    response = await client.put(
+        "/v1/mcp/servers",
+        json={
+            "nombre": "meta-ads",
+            "transporte": "stdio",
+            "comando": "npx -y meta-ads-mcp-server",
+            "env": {"META_ADS_ACCESS_TOKEN": "secreto-meta-del-tenant"},
+            "validate": False,
+        },
+    )
+    assert response.status_code == 204
+
+    listado = await client.get("/v1/mcp/servers")
+    assert listado.status_code == 200
+    cuerpo = listado.json()[0]
+    assert cuerpo["autenticacion_configurada"] is True
+    assert "env" not in cuerpo
+    assert "secreto-meta-del-tenant" not in json.dumps(cuerpo)
+    assert json.loads(fake_vault.puts[-1][2].access_token)["env"] == {
+        "META_ADS_ACCESS_TOKEN": "secreto-meta-del-tenant"
+    }
+
+
+@respx.mock
+async def test_http_rechaza_env_local(client: AsyncClient, _mounted_app: Any) -> None:
+    _con_flag_mcp(_mounted_app)
+    response = await client.put(
+        "/v1/mcp/servers",
+        json={
+            "nombre": "remoto",
+            "transporte": "http",
+            "url": _URL,
+            "env": {"TOKEN": "no-aplica"},
+            "validate": False,
+        },
+    )
+    assert response.status_code == 400
+    assert "solo aplican" in response.json()["detail"]
+
+
+@respx.mock
+async def test_stdio_rechaza_env_reservado(client: AsyncClient, _mounted_app: Any) -> None:
+    _con_flag_mcp(_mounted_app)
+    _use_local_mode(_mounted_app)
+    response = await client.put(
+        "/v1/mcp/servers",
+        json={
+            "nombre": "meta-ads",
+            "transporte": "stdio",
+            "comando": "npx -y meta-ads-mcp-server",
+            "env": {"PATH": "/ruta/no-confiable"},
+            "validate": False,
+        },
+    )
+    assert response.status_code == 400
+    assert "PATH está reservada" in response.json()["detail"]
+
+
+@respx.mock
+async def test_get_redacta_secretos_de_comando_legacy(
+    client: AsyncClient,
+    _mounted_app: Any,
+) -> None:
+    _con_flag_mcp(_mounted_app)
+    _use_local_mode(_mounted_app)
+    response = await client.put(
+        "/v1/mcp/servers",
+        json={
+            "nombre": "legacy",
+            "transporte": "stdio",
+            "comando": "env META_TOKEN=super-secreto npx servidor --access-token otro-secreto",
+            "validate": False,
+        },
+    )
+    assert response.status_code == 204
+
+    listado = await client.get("/v1/mcp/servers")
+    comando = listado.json()[0]["comando"]
+    assert "super-secreto" not in comando
+    assert "otro-secreto" not in comando
+    assert "META_TOKEN=" in comando
+
+
 # ---------------------------------------------------------------------------
 # PUT /v1/mcp/servers — validate=true (respx)
 # ---------------------------------------------------------------------------
@@ -403,9 +497,15 @@ async def test_put_happy_204_y_audita(
     assert len(mcp_cuentas) == 1
     assert mcp_cuentas[0]["external_account_id"] == "acme"
 
-    audits = [
-        a for a in fake_repo.audit_log if a["action"] == "mcp.server.connected"  # type: ignore[attr-defined]
-    ] if hasattr(fake_repo, "audit_log") else None
+    audits = (
+        [
+            a
+            for a in fake_repo.audit_log
+            if a["action"] == "mcp.server.connected"  # type: ignore[attr-defined]
+        ]
+        if hasattr(fake_repo, "audit_log")
+        else None
+    )
     # No asumimos el nombre exacto del atributo interno de auditoría de
     # `FakeRepo` (implementación de `api_fakes.py`, fuera de las rutas de
     # este WP) — si no existe ese atributo, basta con que el PUT haya dado
@@ -464,6 +564,7 @@ async def test_put_repetido_mismo_nombre_reemplaza_sin_duplicar(
             "url": otra_url,
             "comando": None,
             "estado": "active",
+            "autenticacion_configurada": True,
         }
     ]
 

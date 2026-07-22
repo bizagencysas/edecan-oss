@@ -138,8 +138,8 @@ class Settings(BaseSettings):
 
     QUOTES_PROVIDER: str = "stub"
 
-    # Único valor operativo hoy (ROADMAP_V2.md §8.1: dinero real nunca se
-    # mueve solo) — un modo "live" queda fuera de este pinning a propósito.
+    # "paper" usa el simulador local. "alpaca_paper" usa la cuenta simulada
+    # propia del usuario. No existe un modo live en Edecán.
     COMMERCE_MODE: str = "paper"
 
     MISSIONS_MAX_STEPS: int = 8
@@ -186,6 +186,13 @@ class Settings(BaseSettings):
     EDECAN_SELF_REPAIR_TEST_COMMANDS_JSON: str = "[]"
     EDECAN_SELF_REPAIR_INSTALL_COMMANDS_JSON: str = "[]"
     EDECAN_SELF_REPAIR_COMMAND_TIMEOUT_SECONDS: int = 300
+
+    # Auditoría de seguridad local. PentestGPT es una dependencia opcional
+    # instalada y fijada por el dueño; Edecán nunca descarga ejecutables por
+    # su cuenta. Vacío = autodetectar `pentestgpt` en PATH.
+    PENTESTGPT_BINARY: str | None = None
+    PENTESTGPT_BACKEND: str = "claude"
+    PENTESTGPT_TIMEOUT_SECONDS: int = 3600
 
     # Cola de jobs en modo local: "sqs" (LocalStack/AWS real, igual que hoy) o
     # "db" (tabla `jobs` como cola, sin SQS/LocalStack — pensado para el modo

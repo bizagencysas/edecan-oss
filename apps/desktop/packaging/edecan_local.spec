@@ -164,6 +164,7 @@ EDECAN_TOOL_PACKAGES = [
     "edecan_docanalysis",
     "edecan_browser",
     "edecan_creative",
+    "edecan_design_studio",
     "edecan_messaging",
     "edecan_agents",
     "edecan_automations",

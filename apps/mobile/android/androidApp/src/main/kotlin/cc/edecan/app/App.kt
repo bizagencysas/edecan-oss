@@ -20,6 +20,9 @@ import cc.edecan.app.ui.theme.EdecanTheme
 import cc.edecan.app.vm.SessionViewModel
 import cc.edecan.app.vm.SessionViewModelContainer
 import cc.edecan.app.vm.SessionViewModelStoreOwner
+import cc.edecan.app.notifications.EdecanNotifications
+import cc.edecan.app.notifications.NotificationRoute
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * Punto de entrada composable de la app. Si el dispositivo no está
@@ -36,12 +39,20 @@ import cc.edecan.app.vm.SessionViewModelStoreOwner
 fun App(
     pairingDeepLink: String? = null,
     onPairingDeepLinkConsumed: () -> Unit = {},
+    notificationRoute: NotificationRoute? = null,
+    onNotificationRouteConsumed: () -> Unit = {},
 ) {
     EdecanTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val sessionViewModel: SessionViewModel = viewModel()
             val sessionViewModelContainer: SessionViewModelContainer = viewModel()
             val uiState by sessionViewModel.uiState.collectAsState()
+            val context = LocalContext.current
+
+            LaunchedEffect(Unit) { EdecanNotifications.initialize(context) }
+            LaunchedEffect(uiState.isPaired, uiState.sessionGeneration) {
+                if (uiState.isPaired) EdecanNotifications.refreshRemoteRegistration(context)
+            }
 
             LaunchedEffect(pairingDeepLink) {
                 pairingDeepLink?.let { raw ->
@@ -65,7 +76,11 @@ fun App(
                     CompositionLocalProvider(
                         LocalViewModelStoreOwner provides sessionOwner,
                     ) {
-                        RootNav(sessionKey = uiState.sessionGeneration)
+                        RootNav(
+                            sessionKey = uiState.sessionGeneration,
+                            notificationRoute = notificationRoute,
+                            onNotificationRouteConsumed = onNotificationRouteConsumed,
+                        )
                     }
                 }
                 else -> {

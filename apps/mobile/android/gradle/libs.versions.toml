@@ -22,6 +22,8 @@ androidxActivityCompose = "1.13.0"
 androidxCoreKtx = "1.19.0"
 androidxCamera = "1.5.3"
 mlkitBarcode = "17.3.0"
+firebaseBom = "34.16.0"
+googleServices = "4.5.0"
 
 [libraries]
 # Ktor — cliente HTTP/SSE de `shared` (commonMain + androidMain).
@@ -50,6 +52,8 @@ androidx-camera-camera2 = { module = "androidx.camera:camera-camera2", version.r
 androidx-camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "androidxCamera" }
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "androidxCamera" }
 mlkit-barcode-scanning = { module = "com.google.mlkit:barcode-scanning", version.ref = "mlkitBarcode" }
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging" }
 
 # Compose Multiplatform — coordenadas directas. Los accessors `compose.*` del
 # plugin quedaron deprecados en 1.11 y serán removidos en una versión futura.
@@ -79,3 +83,4 @@ kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+googleServices = { id = "com.google.gms.google-services", version.ref = "googleServices" }

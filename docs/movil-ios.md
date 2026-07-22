@@ -235,19 +235,10 @@ pestañas primarias, conectadas de verdad a la API real, no maquetas:
 
 ### Límites conocidos de estas 3 pantallas
 
-- **Sin push todavía, todo por *polling* o carga manual.** Ninguna de las
-  tres recibe notificaciones en tiempo real — Misiones hace *polling* activo
-  mientras algo esté en curso (ver arriba); Automatizaciones/Recordatorios
-  se cargan al entrar a la pantalla y con *pull-to-refresh*, sin *polling*
-  continuo (no hay nada "en curso" que valga la pena repetir automáticamente
-  ahí). Notificaciones push (APNs) siguen pendientes del emparejamiento por
-  dispositivo completo, igual que el resto de la app (ver la tabla de abajo).
-- **`APIClient.createReminder` nunca manda `canal: "mobile"`.** El valor
-  existe como concepto desde v5, pero la entrega push a este teléfono no
-  está conectada (`send_reminder.py` solo sabe entregar por chat hoy) — un
-  recordatorio creado desde la app usa `channel: "web"` por defecto y se
-  entrega exactamente igual que uno creado desde el panel web, hasta que esa
-  ola aterrice.
+- **Push y fallback local.** `APIClient.createReminder` usa `channel: "mobile"`;
+  la app registra/rota el token APNs y lo revoca al desvincular. Cada
+  recordatorio conserva además un aviso local. La configuración exacta y el
+  modo OSS sin credenciales están en [`notificaciones-push.md`](./notificaciones-push.md).
 - **`APIClient.completeReminder` reutiliza el status `"sent"`.** El backend
   no tiene un status "completado" propio (solo `pending|sent|cancelled`,
   `ARCHITECTURE.md` §10.3) — completar a mano desde el *swipe* pone el mismo
@@ -262,6 +253,15 @@ pestañas primarias, conectadas de verdad a la API real, no maquetas:
   pantalla no se entera hasta volver a la lista.
 
 ## Compilar por primera vez (desarrollo, sin firmar)
+
+### Vistas previas dentro de la app
+
+Los artefactos del chat se descargan con Bearer desde `/v1/files/{id}/download`
+y se muestran en un sheet propio: imagen, PDF mediante PDFKit y texto con un
+límite visual de 2 MB. Otros tipos conservan la acción explícita de compartir.
+Los enlaces HTTP(S) públicos se abren en un `WKWebView` efímero, sin JavaScript,
+y cada redirección vuelve a pasar por el bloqueo de hosts locales/privados. No
+se usa Quick Look externo.
 
 Para trabajar en el código o simplemente confirmar que compila en tu
 máquina, sin necesidad todavía de cuenta Developer ni de un iPhone físico:

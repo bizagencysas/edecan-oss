@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Protocol, runtime_checkable
@@ -41,6 +42,28 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 15.0
 _K_DEFECTO = 5
 _K_MAXIMO = 10
+_MAX_PRESENTATION_CARDS = 3
+
+_DIRECT_LINK_WORDS = {
+    "link",
+    "enlace",
+    "url",
+}
+_DIRECT_LINK_PHRASES = (
+    "sitio oficial",
+    "web oficial",
+    "pagina oficial",
+    "página oficial",
+    "google maps",
+)
+_GENERIC_CARD_TITLES = {
+    "google maps",
+    "maps",
+    "resultado web",
+    "sin titulo",
+    "sin título",
+    "untitled",
+}
 
 # `connector_key` del `TokenVault` para la credencial de búsqueda bring-your-own
 # del tenant (ver docstring del módulo). Definido acá y, por separado, en
@@ -58,6 +81,51 @@ class SearchHit:
     title: str
     url: str
     snippet: str
+
+
+def _consulta_pide_enlace_directo(consulta: str) -> bool:
+    """Los pedidos navegacionales necesitan la URL, no una parrilla de fuentes.
+
+    El contenido completo de la búsqueda sigue disponible para que el modelo
+    responda con el enlace correcto. Solo se evita convertir cada resultado en
+    una tarjeta visual redundante.
+    """
+
+    normalizada = " ".join(consulta.casefold().split())
+    palabras = set(re.findall(r"[\wáéíóúüñ]+", normalizada))
+    return bool(palabras & _DIRECT_LINK_WORDS) or any(
+        frase in normalizada for frase in _DIRECT_LINK_PHRASES
+    )
+
+
+def _hits_para_presentacion(consulta: str, hits: list[SearchHit]) -> list[SearchHit]:
+    """Selecciona pocas fuentes visuales, útiles, completas y no duplicadas."""
+
+    if _consulta_pide_enlace_directo(consulta):
+        return []
+
+    seleccionados: list[SearchHit] = []
+    vistos: set[str] = set()
+    for hit in hits:
+        titulo = " ".join(hit.title.split())
+        resumen = " ".join(hit.snippet.split())
+        partes = urlsplit(hit.url)
+        host = (partes.hostname or "").casefold()
+        if partes.scheme not in {"http", "https"} or not host:
+            continue
+        if not titulo or not resumen:
+            continue
+        if titulo.casefold() in _GENERIC_CARD_TITLES or titulo.casefold() == host:
+            continue
+
+        clave = f"{host}{partes.path.rstrip('/').casefold()}"
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        seleccionados.append(SearchHit(title=titulo, url=hit.url, snippet=resumen))
+        if len(seleccionados) >= _MAX_PRESENTATION_CARDS:
+            break
+    return seleccionados
 
 
 @runtime_checkable
@@ -368,6 +436,7 @@ class BuscarWebTool(Tool):
             if provider_name in {"brave", "tavily", "duckduckgo"}
             else "unknown"
         )
+        presentation_hits = _hits_para_presentacion(consulta, hits)
         presentation = [
             {
                 "type": "link_preview",
@@ -386,7 +455,7 @@ class BuscarWebTool(Tool):
                     }
                 ],
             }
-            for index, h in enumerate(hits[:10])
+            for index, h in enumerate(presentation_hits)
         ]
         return ToolResult(
             content="\n".join(lineas),

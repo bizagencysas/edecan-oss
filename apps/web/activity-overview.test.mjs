@@ -147,6 +147,9 @@ test("integra llamadas pendientes, activas y terminadas en la misma actividad", 
     ended_at: null,
     duration_seconds: null,
     error: null,
+    agent: null,
+    summary: null,
+    summary_generated_at: null,
     created_at: "2026-07-20T10:00:00Z",
     updated_at: "2026-07-20T10:00:00Z",
   };
@@ -157,10 +160,16 @@ test("integra llamadas pendientes, activas y terminadas en la misma actividad", 
     calls: [
       { ...common, id: "draft", status: "draft" },
       { ...common, id: "active", status: "in_progress" },
-      { ...common, id: "done", status: "completed" },
+      {
+        ...common,
+        id: "done",
+        status: "completed",
+        summary: { key_points: ["La cita quedó confirmada"] },
+      },
     ],
   });
   assert.equal(overview.attention[0].statusLabel, "Confirma la llamada");
   assert.equal(overview.current[0].statusLabel, "En llamada");
   assert.equal(overview.recent[0].statusLabel, "Finalizada");
+  assert.equal(overview.recent[0].detail, "La cita quedó confirmada");
 });

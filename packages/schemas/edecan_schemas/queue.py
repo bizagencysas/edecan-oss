@@ -45,6 +45,17 @@ JOB_TYPES: tuple[str, ...] = (
     # --- v6 (ARCHITECTURE.md §15, dueño WP-V6-01) ---------------------------
     # handler lo aporta WP-V6-05
     "process_meeting",
+    # La API persiste primero el resumen; el worker solo reclama y envía el
+    # push genérico best-effort, sin transcripción ni teléfonos en el cuerpo.
+    "notify_phone_call_summary",
+    # El webhook entrante persiste la llamada antes de encolar; el worker usa
+    # el contrato universal para actividad+preferencia+push idempotente.
+    "notify_incoming_phone_call",
+    # Eventos importantes producidos por herramientas sincrónicas del chat
+    # (diseño, publicación, exportaciones y autorreparación). El payload solo
+    # admite enums e identificadores UUID; el worker crea actividad durable y
+    # luego intenta APNs/FCM de forma best-effort.
+    "notify_important_event",
 )
 
 

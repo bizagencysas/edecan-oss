@@ -171,11 +171,13 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from edecan_core.notifications import ImportantNotificationEvent
 from edecan_core.tools import ToolRegistry
 from edecan_schemas import PLANES, JobEnvelope
 from sqlalchemy import text
 
 from edecan_worker.deps import Deps
+from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +354,24 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         )
 
         await orchestrator.run(mission, run_deps)
+
+    # El estado de la misión fue guardado por ``save_mission`` en una sesión
+    # independiente. Se relee y solo se avisa por una transición terminal;
+    # waiting_confirmation/running siguen visibles en Actividad sin ruido.
+    async with deps.session_factory(None) as session:
+        final_mission = await _load_mission(session, tenant_id, mission_id)
+    if final_mission is not None and final_mission["status"] in {"done", "error"}:
+        kind = "work_completed" if final_mission["status"] == "done" else "work_failed"
+        await notify_important_event(
+            deps,
+            ImportantNotificationEvent(
+                tenant_id=tenant_id,
+                user_id=UUID(str(final_mission["user_id"])),
+                kind=kind,
+                event_id=mission_id,
+                resource_id=mission_id,
+            ),
+        )
 
     logger.info("run_mission completado mission_id=%s tenant_id=%s", mission_id, tenant_id)
 

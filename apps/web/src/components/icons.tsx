@@ -165,7 +165,29 @@ export const PhoneIcon = (p: IconProps) =>
 
 export const ChevronDownIcon = (p: IconProps) => base(<path d="m6 9 6 6 6-6" />, p);
 
+export const ChevronLeftIcon = (p: IconProps) => base(<path d="m15 18-6-6 6-6" />, p);
+
+export const ChevronRightIcon = (p: IconProps) => base(<path d="m9 18 6-6-6-6" />, p);
+
+export const PanelLeftIcon = (p: IconProps) =>
+  base(
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </>,
+    p,
+  );
+
 export const MenuIcon = (p: IconProps) => base(<path d="M4 6h16M4 12h16M4 18h16" />, p);
+
+export const PencilIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </>,
+    p,
+  );
 
 export const UploadIcon = (p: IconProps) =>
   base(

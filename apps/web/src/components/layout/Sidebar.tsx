@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 
 import { Logo } from "@/components/Logo";
 import { ChevronDownIcon } from "@/components/icons";
+import { ASSISTANT_INTENT_EVENT } from "@/lib/assistant-intents";
+import { useAuth } from "@/lib/auth-context";
 
 import {
   ADVANCED_NAV_GROUPS,
@@ -23,7 +25,16 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 
 export function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
-  const advancedRouteActive = ADVANCED_NAV_ITEMS.some((item) => isNavItemActive(pathname, item.href));
+  const { me } = useAuth();
+  const itemIsAvailable = (item: NavItem) =>
+    !item.requiredFlag || me === null || Boolean(me.flags[item.requiredFlag]);
+  const visibleAdvancedGroups = ADVANCED_NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(itemIsAvailable),
+  })).filter((group) => group.items.length > 0);
+  const advancedRouteActive = ADVANCED_NAV_ITEMS.some(
+    (item) => itemIsAvailable(item) && isNavItemActive(pathname, item.href),
+  );
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
@@ -51,7 +62,11 @@ export function NavList({ onNavigate }: { onNavigate?: () => void }) {
   }
 
   return (
-    <nav aria-label="Navegación principal" className="flex flex-1 flex-col overflow-y-auto px-3 py-2 thin-scrollbar">
+    <nav
+      aria-label="Navegación principal"
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-3 py-2 thin-scrollbar"
+      data-testid="primary-navigation-scroll"
+    >
       <div className="space-y-0.5">
         {PRIMARY_NAV_ITEMS.map((item) => (
           <NavLink key={item.href} item={item} active={isNavItemActive(pathname, item.href)} onNavigate={onNavigate} />
@@ -72,7 +87,7 @@ export function NavList({ onNavigate }: { onNavigate?: () => void }) {
 
         {advancedOpen && (
           <div id="advanced-navigation" className="mt-2 space-y-4 pb-3">
-            {ADVANCED_NAV_GROUPS.map((group) => (
+            {visibleAdvancedGroups.map((group) => (
               <div key={group.label}>
                 <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   {group.label}
@@ -109,10 +124,19 @@ function NavLink({
   compact?: boolean;
 }) {
   const Icon = item.icon;
+
+  function handleClick(event: React.MouseEvent<HTMLAnchorElement>) {
+    if (item.assistantIntent && ["/app", "/app/"].includes(window.location.pathname)) {
+      event.preventDefault();
+      window.dispatchEvent(new CustomEvent(ASSISTANT_INTENT_EVENT, { detail: item.assistantIntent }));
+    }
+    onNavigate?.();
+  }
+
   return (
     <Link
       href={item.href}
-      onClick={onNavigate}
+      onClick={handleClick}
       className={cx(
         "flex items-center gap-2.5 rounded-lg px-3 font-medium transition-colors",
         compact ? "py-1.5 text-xs" : "py-2 text-sm",
@@ -129,7 +153,7 @@ function NavLink({
 
 export function BrandMark() {
   return (
-    <div className="px-4 py-4">
+    <div className="shrink-0 px-4 py-4">
       <Logo markClassName="h-8 w-8" wordClassName="text-base" />
     </div>
   );
@@ -137,7 +161,7 @@ export function BrandMark() {
 
 export function Sidebar() {
   return (
-    <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:flex">
+    <aside className="hidden h-dvh min-h-0 w-64 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:flex">
       <BrandMark />
       <NavList />
     </aside>

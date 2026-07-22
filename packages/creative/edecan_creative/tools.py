@@ -18,12 +18,16 @@ import io
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass, field
+from functools import lru_cache
+from html.parser import HTMLParser
 from typing import Any
 
 from docx import Document
 from edecan_core import Tool, ToolContext, ToolResult
 from edecan_core.queue import enqueue
 from fpdf import FPDF
+from PIL import Image, ImageDraw, ImageFilter
 from pptx import Presentation
 
 from ._files import Uploader, subir_archivo
@@ -340,7 +344,230 @@ def _sanitizar_pdf(texto: str) -> str:
     completo (regla dura de la plataforma: nada de red al generar un archivo) — la
     limitación de caracteres queda documentada en `docs/creatividad.md`.
     """
-    return texto.encode("latin-1", errors="replace").decode("latin-1")
+    # Las fuentes core de PDF no cubren toda la puntuacion Unicode. Convertimos
+    # explicitamente los signos editoriales frecuentes antes de caer al
+    # reemplazo final, para que un guion largo o unas comillas curvas nunca se
+    # conviertan en un signo de interrogacion dentro del documento entregado.
+    replacements = str.maketrans(
+        {
+            "—": "-",
+            "–": "-",
+            "“": '"',
+            "”": '"',
+            "‘": "'",
+            "’": "'",
+            "…": "...",
+            "•": "-",
+            "→": "->",
+            "←": "<-",
+        }
+    )
+    normalized = texto.translate(replacements)
+    # Repara el residuo que dejaban versiones anteriores al convertir un guion
+    # Unicode en `?` entre dos palabras. Los signos de interrogacion normales no
+    # usan espacios a ambos lados en espanol.
+    normalized = normalized.replace(" ? ", " - ")
+    return normalized.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _html_document_from(text: str) -> str | None:
+    fenced = re.search(r"```(?:html)?\s*(<!doctype html.*?</html>)\s*```", text, re.I | re.S)
+    if fenced:
+        return fenced.group(1)
+    direct = re.search(r"(<!doctype html.*?</html>)", text, re.I | re.S)
+    return direct.group(1) if direct else None
+
+
+@dataclass
+class _DesignedPdfContent:
+    title: str = ""
+    subtitle: str = ""
+    intro: str = ""
+    chips: list[str] = field(default_factory=list)
+    cards: list[tuple[str, str]] = field(default_factory=list)
+    closing: str = ""
+
+
+class _DesignedHtmlParser(HTMLParser):
+    """Extrae la intención visual del HTML sin imprimir su código fuente."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.content = _DesignedPdfContent()
+        self._skip_depth = 0
+        self._capture_tag: str | None = None
+        self._capture_class = ""
+        self._capture_parts: list[str] = []
+        self._pending_card_title: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in {"style", "script", "head"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag == "br" and self._capture_tag:
+            self._capture_parts.append("\n")
+            return
+        if self._capture_tag is None and tag in {"h1", "h2", "h3", "p", "span"}:
+            self._capture_tag = tag
+            self._capture_class = dict(attrs).get("class") or ""
+            self._capture_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip_depth:
+            if tag in {"style", "script", "head"}:
+                self._skip_depth -= 1
+            return
+        if self._capture_tag != tag:
+            return
+        text = " ".join("".join(self._capture_parts).split())
+        css_class = self._capture_class.split()
+        if text:
+            if tag == "h1" and not self.content.title:
+                self.content.title = text
+            elif tag == "h3":
+                self._pending_card_title = text
+            elif tag == "span" and "chip" in css_class:
+                self.content.chips.append(text)
+            elif tag == "p" and "subtitle" in css_class:
+                self.content.subtitle = text
+            elif tag == "p" and "closing" in css_class:
+                self.content.closing = text
+            elif tag == "p" and self._pending_card_title:
+                self.content.cards.append((self._pending_card_title, text))
+                self._pending_card_title = None
+            elif tag == "p" and not self.content.intro:
+                self.content.intro = text
+        self._capture_tag = None
+        self._capture_class = ""
+        self._capture_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth and self._capture_tag:
+            self._capture_parts.append(data)
+
+
+def _parse_designed_html(source: str, fallback_title: str) -> _DesignedPdfContent:
+    parser = _DesignedHtmlParser()
+    parser.feed(source)
+    parser.close()
+    content = parser.content
+    content.title = content.title or fallback_title
+    return content
+
+
+@lru_cache(maxsize=1)
+def _aurora_background() -> bytes:
+    width, height = 1240, 1754
+    base = Image.new("RGBA", (width, height), (248, 248, 252, 255))
+    glow = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(glow)
+    draw.ellipse((-260, -300, 650, 630), fill=(133, 116, 255, 115))
+    draw.ellipse((720, -180, 1440, 520), fill=(255, 164, 215, 100))
+    draw.ellipse((650, 1080, 1500, 1920), fill=(99, 200, 255, 95))
+    draw.ellipse((-360, 1180, 500, 1980), fill=(186, 223, 255, 105))
+    glow = glow.filter(ImageFilter.GaussianBlur(125))
+    composed = Image.alpha_composite(base, glow).convert("RGB")
+    output = io.BytesIO()
+    composed.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _card(pdf: FPDF, x: float, y: float, width: float, height: float) -> None:
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_draw_color(231, 228, 244)
+    pdf.rect(x, y, width, height, style="DF", round_corners=True)
+
+
+def _render_designed_pdf(fallback_title: str, source: str) -> bytes:
+    content = _parse_designed_html(source, fallback_title)
+    pdf = FPDF(unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.image(io.BytesIO(_aurora_background()), x=0, y=0, w=210, h=297)
+
+    pdf.set_text_color(108, 91, 239)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_xy(16, 18)
+    pdf.cell(178, 5, "SISTEMA OPERATIVO COGNITIVO PERSONAL", align="C")
+
+    pdf.set_text_color(32, 35, 51)
+    pdf.set_font("Helvetica", "B", 31)
+    pdf.set_xy(16, 28)
+    pdf.cell(178, 15, _sanitizar_pdf(content.title)[:60], align="C")
+    if content.subtitle:
+        pdf.set_text_color(91, 92, 110)
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.set_xy(24, 47)
+        pdf.multi_cell(162, 5, _sanitizar_pdf(content.subtitle)[:260], align="C")
+
+    intro = content.intro or "Una inteligencia personal que comprende, crea y ejecuta contigo."
+    _card(pdf, 18, 65, 174, 45)
+    pdf.set_text_color(68, 68, 86)
+    pdf.set_font("Helvetica", size=9.5)
+    pdf.set_xy(28, 74)
+    pdf.multi_cell(154, 5.2, _sanitizar_pdf(intro)[:620], align="C")
+
+    chips = content.chips[:10]
+    if chips:
+        pdf.set_text_color(111, 93, 210)
+        pdf.set_font("Helvetica", "B", 7.5)
+        rows = [chips[:5], chips[5:10]]
+        y = 118.0
+        for row in rows:
+            if not row:
+                continue
+            widths = [
+                min(32.0, max(18.0, pdf.get_string_width(_sanitizar_pdf(chip)) + 9))
+                for chip in row
+            ]
+            gap = 3.0
+            total = sum(widths) + gap * (len(widths) - 1)
+            x = (210 - total) / 2
+            for chip, width in zip(row, widths, strict=True):
+                pdf.set_fill_color(246, 243, 255)
+                pdf.set_draw_color(225, 218, 250)
+                pdf.rect(x, y, width, 8, style="DF", round_corners=True)
+                pdf.set_xy(x, y + 1.4)
+                pdf.cell(width, 5, _sanitizar_pdf(chip)[:26], align="C")
+                x += width + gap
+            y += 10
+
+    cards = content.cards[:6]
+    if not cards:
+        cards = [("Comprensión", intro), ("Ejecución", "Convierte intención en resultados útiles.")]
+    start_y = 142 if len(chips) > 5 else 134
+    card_width, card_height, gap_x, gap_y = 84.5, 34.0, 5.0, 5.0
+    for index, (heading, body) in enumerate(cards):
+        column, row = index % 2, index // 2
+        is_unpaired_last = len(cards) % 2 == 1 and index == len(cards) - 1
+        actual_width = 174.0 if is_unpaired_last else card_width
+        x = 18 if is_unpaired_last else 18 + column * (card_width + gap_x)
+        y = start_y + row * (card_height + gap_y)
+        _card(pdf, x, y, actual_width, card_height)
+        pdf.set_text_color(94, 75, 202)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_xy(x + 5, y + 5)
+        pdf.cell(actual_width - 10, 5, _sanitizar_pdf(heading)[:70])
+        pdf.set_text_color(82, 82, 99)
+        pdf.set_font("Helvetica", size=7.6)
+        pdf.set_xy(x + 5, y + 12)
+        pdf.multi_cell(actual_width - 10, 4.2, _sanitizar_pdf(body)[:320])
+
+    closing = content.closing or "Más claridad. Más capacidad. Mejores resultados."
+    closing_y = min(269.0, start_y + ((len(cards) + 1) // 2) * (card_height + gap_y) + 5)
+    pdf.set_text_color(85, 69, 185)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_xy(24, closing_y)
+    pdf.multi_cell(162, 5.5, _sanitizar_pdf(closing)[:220], align="C")
+    pdf.set_text_color(135, 128, 158)
+    pdf.set_font("Helvetica", "B", 7)
+    pdf.set_xy(16, 284)
+    pdf.cell(178, 4, "EDECÁN", align="C")
+    return bytes(pdf.output())
 
 
 def _render_pdf(titulo: str, parrafos: list[str]) -> bytes:
@@ -369,9 +596,8 @@ class CrearPdfTool(Tool):
     name = "crear_pdf"
     description = (
         "Genera un PDF con una portada (título) y un cuerpo de párrafos, y lo guarda "
-        "como archivo del usuario. Usa una fuente core (Helvetica): los caracteres "
-        "fuera de latin-1 (la mayoría de emojis y algunos símbolos tipográficos) se "
-        "sustituyen por '?'."
+        "como archivo del usuario. Cuando recibe HTML diseñado, extrae su intención "
+        "visual y genera una página A4 pulida sin imprimir HTML o CSS como texto."
     )
     input_schema = {
         "type": "object",
@@ -381,6 +607,12 @@ class CrearPdfTool(Tool):
                 "type": "array",
                 "description": "Párrafos del cuerpo del documento, en orden.",
                 "items": {"type": "string"},
+            },
+            "html": {
+                "type": "string",
+                "description": (
+                    "HTML diseñado opcional; se renderiza visualmente, nunca como código."
+                ),
             },
         },
         "required": ["titulo", "parrafos"],
@@ -397,7 +629,12 @@ class CrearPdfTool(Tool):
         if not parrafos:
             return ToolResult(content="Necesito al menos un párrafo de contenido para el PDF.")
 
-        data = _render_pdf(titulo, parrafos)
+        html_source = _html_document_from(str(args.get("html") or ""))
+        data = (
+            _render_designed_pdf(titulo, html_source)
+            if html_source
+            else _render_pdf(titulo, parrafos)
+        )
 
         filename = f"{_slug(titulo)}.pdf"
         file_id, filename = await self._uploader(ctx, data=data, filename=filename, mime=_PDF_MIME)

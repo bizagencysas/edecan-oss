@@ -1318,7 +1318,9 @@ alcanza sin ninguna migración nueva, usando `external_account_id` como el
 - La config no-secreta y los secretos (headers de auth del transporte HTTP,
   etc.) viajan JUNTOS en el mismo blob cifrado: `TokenBundle.access_token`
   (§10.5) guarda un JSON serializado `{nombre, transporte: "http"|"stdio",
-  url?, comando?, headers?}` — mismo criterio que `LLMProviderConfig`/`"ads"`/
+  url?, comando?, headers?, env?}` — `env` contiene solo variables que el
+  tenant entregó expresamente al subprocess local y nunca se devuelve por API;
+  mismo criterio que `LLMProviderConfig`/`"ads"`/
   `"vehicles"` (§12.c/§13.d): `TokenBundle.token_type = "config"` ("hay que
   `json.loads()` esto"). Cifrado AES-256-GCM vía `TokenVault` (§10.4) igual
   que cualquier otro secreto de tenant — nunca en claro, nunca en logs

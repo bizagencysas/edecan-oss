@@ -69,9 +69,59 @@ _LEXICAL_STOPWORDS = frozenset(
     }
 )
 
+_DESIGN_STUDIO_KEYWORDS = frozenset(
+    {
+        "artefacto",
+        "canvas",
+        "design",
+        "disena",
+        "disenar",
+        "diseno",
+        "html",
+        "landing",
+        "maqueta",
+        "mockup",
+        "prototipo",
+        "visual",
+    }
+)
+_DESIGN_STUDIO_TOOL_NAMES = frozenset(
+    {
+        "crear_diseno_visual",
+        "exportar_diseno_visual",
+        "historial_diseno_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+    }
+)
+
 # Los nombres son contratos internos estables de tools existentes. Las
 # palabras son resultados que diría una persona, no nombres de pantallas.
 _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (_DESIGN_STUDIO_KEYWORDS, _DESIGN_STUDIO_TOOL_NAMES),
+    (
+        frozenset(
+            {
+                "audita",
+                "auditar",
+                "auditoria",
+                "ciberseguridad",
+                "pentest",
+                "pentestgpt",
+                "seguridad",
+                "vulnerabilidad",
+                "vulnerabilidades",
+            }
+        ),
+        frozenset(
+            {
+                "auditar_seguridad_proyecto",
+                "ejecutar_pentestgpt_autorizado",
+                "diagnosticar_autorreparacion_local",
+                "gestionar_autorreparacion_local",
+            }
+        ),
+    ),
     (
         frozenset(
             {"correo", "correos", "email", "emails", "gmail", "outlook", "responde", "reply"}
@@ -157,8 +207,17 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
-                "linkedin", "tweet", "tweets", "post", "posts", "instagram",
-                "facebook", "threads", "tiktok", "contenido", "social",
+                "linkedin",
+                "tweet",
+                "tweets",
+                "post",
+                "posts",
+                "instagram",
+                "facebook",
+                "threads",
+                "tiktok",
+                "contenido",
+                "social",
             }
         ),
         frozenset({"crear_contenido_social", "generar_imagen"}),
@@ -501,8 +560,7 @@ def select_tool_specs(
             selected_names.update(tool_names)
 
     creation_intent = bool(
-        tokens.intersection(_CREATION_ACTION_WORDS)
-        and tokens.intersection(_CREATION_FORMAT_WORDS)
+        tokens.intersection(_CREATION_ACTION_WORDS) and tokens.intersection(_CREATION_FORMAT_WORDS)
     )
     publish_intent = bool(tokens.intersection({"publica", "publicalo", "publicar"}))
     if creation_intent:
@@ -510,7 +568,14 @@ def select_tool_specs(
         # mezclar generadores legacy sin evidencia en una petición compuesta.
         selected_names.difference_update(_LEGACY_CREATOR_TOOL_NAMES)
         selected_names.difference_update(_CREATION_READER_TOOL_NAMES)
-        selected_names.add("crear_artefactos")
+        if tokens.intersection(_DESIGN_STUDIO_KEYWORDS):
+            # Una landing/maqueta/prototipo visual necesita preview seguro e
+            # historial; el creador universal sigue siendo la ruta para
+            # sitios/apps multiparte que no piden un artefacto de diseño.
+            selected_names.discard("crear_artefactos")
+            selected_names.update(_DESIGN_STUDIO_TOOL_NAMES)
+        else:
+            selected_names.add("crear_artefactos")
         if not publish_intent:
             selected_names.discard("publicar_social")
 
@@ -521,9 +586,7 @@ def select_tool_specs(
     # Edecán todavía no consume.
     if publish_intent and "linkedin" in tokens:
         selected_names.discard("publicar_social")
-        selected_names.update(
-            {"crear_contenido_social", "generar_imagen", "usar_computadora"}
-        )
+        selected_names.update({"crear_contenido_social", "generar_imagen", "usar_computadora"})
 
     create_image = bool(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})

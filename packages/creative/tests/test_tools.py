@@ -325,6 +325,8 @@ async def test_crear_pdf_genera_pdf_valido(make_ctx, make_uploader):
 
 
 async def test_crear_pdf_sanea_caracteres_fuera_de_latin1_sin_reventar(make_ctx, make_uploader):
+    from pypdf import PdfReader
+
     uploader = make_uploader()
     tool = CrearPdfTool(uploader=uploader)
 
@@ -336,6 +338,40 @@ async def test_crear_pdf_sanea_caracteres_fuera_de_latin1_sin_reventar(make_ctx,
     assert len(uploader.llamadas) == 1
     assert uploader.llamadas[0]["data"][:4] == b"%PDF"
     assert resultado.data["file_id"] == str(uploader.file_id)
+    pdf = PdfReader(io.BytesIO(uploader.llamadas[0]["data"]))
+    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert 'Raya larga - y comillas "curvas".' in text
+
+
+async def test_crear_pdf_renderiza_html_diseniado_en_vez_de_imprimir_codigo(
+    make_ctx, make_uploader
+):
+    from pypdf import PdfReader
+
+    uploader = make_uploader()
+    tool = CrearPdfTool(uploader=uploader)
+    html = """```html
+<!doctype html><html><head><style>body{background:linear-gradient(red,blue)}</style></head>
+<body><h1>Edecán</h1><p class="subtitle">Tu estudio personal de IA.</p>
+<p>Comprende objetivos, crea y ejecuta resultados.</p>
+<span class="chip">Inteligente</span><span class="chip">Creativo</span>
+<h3>Diseño</h3><p>Crea documentos visuales y claros.</p>
+<h3>Ejecución</h3><p>Convierte ideas en entregables reales.</p>
+<p class="closing">Más capacidad. Mejores resultados.</p></body></html>
+```"""
+
+    resultado = await tool.run(
+        make_ctx(), {"titulo": "Edecán", "parrafos": [html], "html": html}
+    )
+
+    assert resultado.data["file_id"] == str(uploader.file_id)
+    pdf = PdfReader(io.BytesIO(uploader.llamadas[0]["data"]))
+    assert len(pdf.pages) == 1
+    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Tu estudio personal de IA" in text
+    assert "Mejores resultados" in text
+    assert "<!doctype" not in text.lower()
+    assert "linear-gradient" not in text
 
 
 async def test_crear_pdf_sin_titulo_no_sube_nada(make_ctx, make_uploader):

@@ -11,6 +11,7 @@ struct MisionesView: View {
     @Environment(SessionStore.self) private var session
     @State private var viewModel = MisionesViewModel()
     @State private var nuevoObjetivo = ""
+    @State private var estadosObservados: [String: String] = [:]
 
     var body: some View {
         Group {
@@ -29,6 +30,25 @@ struct MisionesView: View {
         }
         .onDisappear { viewModel.detenerPollingLista() }
         .refreshable { await viewModel.cargarMisiones(client: session.client) }
+        .onChange(of: viewModel.misiones.map { "\($0.id):\($0.status)" }) { _, _ in
+            let actuales = Dictionary(uniqueKeysWithValues: viewModel.misiones.map { ($0.id, $0.status) })
+            if !estadosObservados.isEmpty {
+                for mission in viewModel.misiones where
+                    estadosObservados[mission.id].map({ $0 != mission.status }) == true &&
+                    ["done", "error", "cancelled"].contains(mission.status) {
+                    Task {
+                        await LocalNotificationScheduler.completed(
+                            kind: "mission",
+                            id: mission.id,
+                            title: mission.status == "done" ? "Trabajo terminado" : "El trabajo necesita atención",
+                            body: mission.objetivo,
+                            route: .activity
+                        )
+                    }
+                }
+            }
+            estadosObservados = actuales
+        }
         .navigationDestination(for: String.self) { id in
             MisionDetalleView(missionId: id, viewModel: viewModel)
         }

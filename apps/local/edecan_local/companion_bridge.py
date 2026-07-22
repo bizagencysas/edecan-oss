@@ -1,4 +1,4 @@
-"""Puente entre la instalación local y el control remoto móvil.
+"""Puente entre la instalación local, el IDE y el control remoto móvil.
 
 En el producto instalado no existe un segundo "companion" que la persona
 deba ejecutar o emparejar: ``edecan_local`` ya corre dentro de Edecán y es el
@@ -7,9 +7,11 @@ agente de esta computadora. Este puente registra sus acciones directamente en
 
 El QR continúa siendo la credencial del teléfono. Una sesión remota exige la
 confirmación explícita en el teléfono y el backend valida tenant, sesión y
-flags antes de llegar aquí. El aprobador embebido acepta únicamente captura e
-input que incluyan el ``session_id`` inyectado por el router; jamás convierte
-las demás acciones del companion en auto-aprobadas.
+flags antes de llegar aquí. Las acciones del IDE ya llegan desde rutas
+autenticadas y gateadas del API; el puente las aprueba dentro del proceso local
+porque la app instalada no tiene una segunda terminal donde preguntar. Aun así
+siguen encerradas por ``sandbox_dir``, ``ide_enabled``, ``allowed_commands`` y
+la auditoría de :mod:`edecan_companion.actions`.
 """
 
 from __future__ import annotations
@@ -25,10 +27,24 @@ from edecan_companion.config import CompanionConfig, load_config
 logger = logging.getLogger(__name__)
 
 _REMOTE_ACTIONS = frozenset({"screenshot", "input_pointer", "input_key"})
+# Superficie exacta de `routers/ide.py`. No incluye `open_app`, portapapeles,
+# input remoto ni acciones futuras: añadir un handler al companion nunca lo
+# expone automáticamente desde el runtime instalado.
+_LOCAL_IDE_ACTIONS = frozenset(
+    {
+        "list_tree",
+        "search_files",
+        "apply_edit",
+        "read_file",
+        "write_file",
+        "run_command",
+    }
+)
+_LOCAL_ACTIONS = _REMOTE_ACTIONS | _LOCAL_IDE_ACTIONS
 
 
 class LocalCompanionBridge:
-    """Ejecutor local único, limitado a sesiones remotas validadas por API."""
+    """Ejecutor in-process para el IDE autenticado y sesiones remotas."""
 
     def __init__(self, *, app: Any, data_dir: Path) -> None:
         self._manager = app.state.companion_manager
@@ -49,13 +65,15 @@ class LocalCompanionBridge:
             requested_params: dict[str, Any],
             _config: CompanionConfig,
         ) -> bool:
+            if requested_action in _LOCAL_IDE_ACTIONS:
+                return True
             return (
                 requested_action in _REMOTE_ACTIONS
                 and isinstance(requested_params.get("session_id"), str)
                 and bool(requested_params["session_id"].strip())
             )
 
-        if action not in _REMOTE_ACTIONS:
-            logger.warning("El puente local rechazó una acción fuera de sesión remota: %s", action)
+        if action not in _LOCAL_ACTIONS:
+            logger.warning("El puente local rechazó una acción no expuesta: %s", action)
             return {"ok": False, "error": f"acción no disponible en el puente local: {action!r}"}
         return await actions.execute(action, params, self._config, approve)

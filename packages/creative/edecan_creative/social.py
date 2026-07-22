@@ -331,6 +331,13 @@ class CrearContenidoSocialTool(Tool):
                 "artifacts": artifacts,
                 "platform": platform_key,
                 "offline_visual": offline_visual,
+                # El chat solo necesita los artefactos, pero superficies
+                # dedicadas como el mini estudio móvil necesitan pintar el
+                # borrador inmediatamente sin volver a descargar y parsear
+                # el manifiesto privado.
+                "copy": copy,
+                "parts": parts,
+                "alt_text": alt_text,
             },
         )
 

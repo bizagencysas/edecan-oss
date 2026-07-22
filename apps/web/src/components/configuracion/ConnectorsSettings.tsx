@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { CheckIcon, ChevronDownIcon, KeyIcon, PlugIcon, TrashIcon } from "@/components/icons";
+import { OfficialLink, SetupStep, SetupSteps } from "@/components/configuracion/SetupGuide";
 import {
   Alert,
   Badge,
@@ -30,6 +31,11 @@ import {
   putConnectorAppCredentials,
 } from "@/lib/api";
 import type { ConnectorListItem } from "@/lib/types";
+import {
+  DIRECT_CREDENTIAL_LINKS,
+  connectionStatusLabel,
+  getConnectorGuide,
+} from "@/lib/connector-guides";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -81,7 +87,9 @@ function ConnectedAccountsList({
             <p className="truncate text-sm font-medium text-slate-700 dark:text-slate-200">
               {account.display_name || account.external_account_id || "Cuenta conectada"}
             </p>
-            <Badge variant={account.status === "active" ? "success" : "neutral"}>{account.status}</Badge>
+            <Badge variant={account.status === "active" ? "success" : "warning"}>
+              {account.status === "active" ? "Guardada" : "Requiere atención"}
+            </Badge>
           </div>
           <button
             onClick={() => onDisconnect(connectorKey, account.id)}
@@ -119,6 +127,9 @@ function BotTokenConnectorCard({
   const [botToken, setBotToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const credentialLink = DIRECT_CREDENTIAL_LINKS[
+    connector.key as keyof typeof DIRECT_CREDENTIAL_LINKS
+  ];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,7 +160,7 @@ function BotTokenConnectorCard({
         description="Pega el token de tu bot. Edecan lo guarda cifrado."
         actions={
           <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
-            {connector.accounts.length > 0 ? "Conectado" : "Falta conectar"}
+            {connector.accounts.length > 0 ? "Token guardado" : "Sin configurar"}
           </Badge>
         }
       />
@@ -163,6 +174,19 @@ function BotTokenConnectorCard({
         />
         <form onSubmit={handleSubmit} className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
           {error && <Alert variant="error">{error}</Alert>}
+          <SetupSteps>
+            <SetupStep number={1}>
+              {credentialLink ? (
+                <OfficialLink href={credentialLink.url}>{credentialLink.label}</OfficialLink>
+              ) : (
+                <>Abre la consola oficial del proveedor.</>
+              )}
+            </SetupStep>
+            <SetupStep number={2}>Crea el bot, copia su token y pégalo abajo.</SetupStep>
+            <SetupStep number={3}>
+              Edecan cifra el token. La primera operación real confirmará que el proveedor lo acepta.
+            </SetupStep>
+          </SetupSteps>
           <Field label="Token del bot" htmlFor={`bot_token_${connector.key}`}>
             <Input
               id={`bot_token_${connector.key}`}
@@ -230,7 +254,7 @@ function WhatsAppConnectorCard({
         description="Conecta el número de tu cuenta de WhatsApp Business. Edecan guarda los datos cifrados."
         actions={
           <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
-            {connector.accounts.length > 0 ? "Conectado" : "Falta conectar"}
+            {connector.accounts.length > 0 ? "Validado" : "Sin configurar"}
           </Badge>
         }
       />
@@ -244,6 +268,19 @@ function WhatsAppConnectorCard({
         />
         <form onSubmit={handleSubmit} className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
           {error && <Alert variant="error">{error}</Alert>}
+          <SetupSteps>
+            <SetupStep number={1}>
+              <OfficialLink href={DIRECT_CREDENTIAL_LINKS.whatsapp.url}>
+                {DIRECT_CREDENTIAL_LINKS.whatsapp.label}
+              </OfficialLink>
+            </SetupStep>
+            <SetupStep number={2}>
+              En WhatsApp Business Platform crea un token de usuario del sistema y copia el ID del número.
+            </SetupStep>
+            <SetupStep number={3}>
+              Edecan comprobará ambos datos contra Meta antes de guardarlos cifrados.
+            </SetupStep>
+          </SetupSteps>
           <Field label="Access token" htmlFor="whatsapp_access_token">
             <Input
               id="whatsapp_access_token"
@@ -294,6 +331,7 @@ function OAuthAppCredentialsSection({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const guide = getConnectorGuide(connector.key);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -382,10 +420,22 @@ function OAuthAppCredentialsSection({
       )}
       {open && (
         <form onSubmit={handleSubmit} className="space-y-3 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Registra tu propia app OAuth de {connector.display_name} en la consola del proveedor y pega
-            aquí el client_id (y client_secret, si aplica). Usa esta URL de redirección al registrarla:
-          </p>
+          <SetupSteps>
+            <SetupStep number={1}>
+              {guide ? (
+                <OfficialLink href={guide.consoleUrl}>{guide.consoleLabel}</OfficialLink>
+              ) : (
+                <>Abre la consola oficial de {connector.display_name}.</>
+              )}
+              {guide?.help ? <span className="mt-1 block">{guide.help}</span> : null}
+            </SetupStep>
+            <SetupStep number={2}>
+              Crea {guide?.appNoun ?? "una app OAuth"} y registra exactamente esta URL de redirección:
+            </SetupStep>
+            <SetupStep number={3}>
+              Pega aquí el Client ID y el secreto. Edecan cifra el secreto y nunca vuelve a mostrarlo.
+            </SetupStep>
+          </SetupSteps>
           {connector.oauth_redirect_uri && (
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded bg-white px-2 py-1 text-[0.7rem] text-slate-600 dark:bg-slate-900 dark:text-slate-300">
@@ -454,6 +504,8 @@ function OAuthConnectorCard({
   onDisconnect: (key: string, accountId: string) => void;
   onChanged: () => Promise<void>;
 }) {
+  const status = connectionStatusLabel(connector.accounts);
+  const guide = getConnectorGuide(connector.key);
   return (
     <Card>
       <CardHeader
@@ -465,9 +517,7 @@ function OAuthConnectorCard({
         }
         actions={
           <div className="flex items-center gap-2">
-            <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
-              {connector.accounts.length > 0 ? "Conectado" : "Falta conectar"}
-            </Badge>
+            <Badge variant={status.variant}>{status.label}</Badge>
             <Button
               size="sm"
               onClick={() => onConnect(connector.key)}
@@ -475,12 +525,17 @@ function OAuthConnectorCard({
               disabled={!connector.app_configured}
               title={connector.app_configured ? undefined : "Configura tu app OAuth primero"}
             >
-              Conectar
+              {connector.accounts.length > 0 ? "Autorizar otra" : "Autorizar cuenta"}
             </Button>
           </div>
         }
       />
       <CardBody className="space-y-3">
+        <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+          {connector.app_configured
+            ? `La app está lista. Autoriza ${guide?.accountNoun ?? "tu cuenta"} con el botón superior.`
+            : `Primero registra ${guide?.appNoun ?? "tu app OAuth"}; después Edecan abrirá la autorización oficial.`}
+        </p>
         <ConnectedAccountsList
           connectorKey={connector.key}
           accounts={connector.accounts}
@@ -662,10 +717,10 @@ function ConectoresContent({ embedded }: { embedded: boolean }) {
                       {connector.display_name}
                     </span>
                   }
-                  description="Conecta tu número de Twilio. Edecan guarda las credenciales cifradas."
+                  description="Conecta un número que ya sea tuyo en Twilio. Edecan verifica la propiedad y cifra las credenciales."
                   actions={
                     <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
-                      {connector.accounts.length > 0 ? "Conectado" : "Falta conectar"}
+                      {connector.accounts.length > 0 ? "Validado" : "Sin configurar"}
                     </Badge>
                   }
                 />
@@ -682,6 +737,19 @@ function ConectoresContent({ embedded }: { embedded: boolean }) {
                     className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
                   >
                     {twilioError && <Alert variant="error">{twilioError}</Alert>}
+                    <SetupSteps>
+                      <SetupStep number={1}>
+                        <OfficialLink href={DIRECT_CREDENTIAL_LINKS.twilio.url}>
+                          {DIRECT_CREDENTIAL_LINKS.twilio.label}
+                        </OfficialLink>
+                      </SetupStep>
+                      <SetupStep number={2}>
+                        Copia el Account SID y Auth Token, y elige un número comprado en esa misma cuenta.
+                      </SetupStep>
+                      <SetupStep number={3}>
+                        Edecan comprobará en vivo que el número pertenece a la cuenta antes de guardar.
+                      </SetupStep>
+                    </SetupSteps>
                     <Field label="Account SID" htmlFor="twilio_account_sid">
                       <Input
                         id="twilio_account_sid"

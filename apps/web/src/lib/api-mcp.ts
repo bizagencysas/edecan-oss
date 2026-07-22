@@ -33,6 +33,7 @@ export interface MCPServerOut {
   url: string | null;
   comando: string | null;
   estado: string;
+  autenticacion_configurada: boolean;
 }
 
 /** Forma exacta de `PUT /v1/mcp/servers` (`MCPServerIn`). */
@@ -42,6 +43,9 @@ export interface PutMCPServerInput {
   url?: string;
   comando?: string;
   headers?: Record<string, string>;
+  /** Variables explícitas para el subprocess local. Se cifran en el vault y
+   * nunca vuelven en GET /servers. */
+  env?: Record<string, string>;
   validate?: boolean;
 }
 

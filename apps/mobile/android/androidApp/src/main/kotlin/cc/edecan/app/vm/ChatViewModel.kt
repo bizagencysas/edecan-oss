@@ -472,6 +472,30 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         }
     }
 
+    fun renombrarConversacion(id: String, titulo: String, api: EdecanApi) {
+        val limpio = titulo.trim()
+        if (limpio.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val actualizada = api.renameConversation(id, limpio)
+                _uiState.update { estado ->
+                    estado.copy(
+                        conversaciones = estado.conversaciones.map {
+                            if (it.id == id) actualizada else it
+                        },
+                        tituloConversacion = if (estado.conversationId == id) {
+                            actualizada.title
+                        } else estado.tituloConversacion,
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(errorMensaje = error.message ?: "No pude renombrar ese chat.")
+                }
+            }
+        }
+    }
+
     internal fun subirAdjunto(local: ArchivoSubidaLocal, api: EdecanApi) {
         if (_uiState.value.adjuntosComposer.size >= MAX_ATTACHMENTS) {
             local.eliminar()

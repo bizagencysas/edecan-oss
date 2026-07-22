@@ -49,6 +49,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from edecan_core import Tool, ToolContext, ToolResult
 from edecan_schemas import TokenBundle
 from sqlalchemy import text
@@ -59,6 +60,8 @@ from sqlalchemy import text
 # `ARCHITECTURE.md`/los routers correspondientes.
 _VOICE_STT_KEY = "voice_stt"
 _VOICE_TTS_KEY = "voice_tts"
+_SEARCH_KEY = "search"
+_ALPACA_PAPER_KEY = "alpaca_paper"
 _STRIPE_KEY = "stripe"
 _TWILIO_KEY = "twilio"
 _WHATSAPP_KEY = "whatsapp"
@@ -73,6 +76,12 @@ _WHATSAPP_PHONE_NUMBER_ID_RE = re.compile(r"^\d+$")
 _WHATSAPP_TOKEN_MIN_LEN = 20
 _MIN_BOT_TOKEN_LEN = 10
 _POLLY_DEFAULT_VOICE = "Lupe"
+_SEARCH_PROVIDERS = ("brave", "tavily")
+_ELEVENLABS_MODELS = (
+    "eleven_v3",
+    "eleven_flash_v2_5",
+    "eleven_multilingual_v2",
+)
 
 _TIPOS_VALIDOS = (
     "voice_stt",
@@ -82,12 +91,12 @@ _TIPOS_VALIDOS = (
     "whatsapp",
     "bot_token",
     "oauth_app",
+    "search",
+    "alpaca_paper",
 )
 
 
-async def _find_connector_account(
-    ctx: ToolContext, connector_key: str
-) -> dict[str, Any] | None:
+async def _find_connector_account(ctx: ToolContext, connector_key: str) -> dict[str, Any] | None:
     resultado = await ctx.session.execute(
         text(
             "SELECT id, external_account_id FROM connector_accounts "
@@ -155,7 +164,8 @@ class ConfigurarCredencialTool(Tool):
         "(p. ej. 'activa ElevenLabs, esta es mi api_key: ...') sin que tenga que ir a "
         "Ajustes/Conectores a pegarla él mismo. Cubre: voz (voice_stt=Deepgram, "
         "voice_tts=ElevenLabs/Polly), Stripe, Twilio, WhatsApp Business, bots de "
-        "Telegram/Discord, y apps OAuth propias (Google/Microsoft/Meta/X/YouTube/Slack). "
+        "Telegram/Discord, búsqueda Brave/Tavily y apps OAuth propias "
+        "(Google/Microsoft/Meta/X/YouTube/Slack). "
         "Requiere confirmación porque persiste un secreto de verdad."
     )
     dangerous = True
@@ -179,11 +189,13 @@ class ConfigurarCredencialTool(Tool):
                 "type": "object",
                 "description": (
                     "Campos específicos del tipo. voice_stt: {api_key}. voice_tts: "
-                    "{provider: 'elevenlabs'|'polly', api_key?, voice_id?}. stripe: "
+                    "{provider: 'elevenlabs'|'polly', api_key?, voice_id?, model_id?, "
+                    "expressive?}. stripe: "
                     "{api_key} (debe empezar con 'rk_', nunca 'sk_'). twilio: "
                     "{account_sid, auth_token, phone_number}. whatsapp: {access_token, "
                     "phone_number_id}. bot_token: {bot_token}. oauth_app: {client_id, "
-                    "client_secret?}."
+                    "client_secret?}. search: {provider: 'brave'|'tavily', api_key}."
+                    " alpaca_paper: {api_key_id, secret_key}."
                 ),
             },
         },
@@ -216,6 +228,8 @@ class ConfigurarCredencialTool(Tool):
             "whatsapp": self._whatsapp,
             "bot_token": self._bot_token,
             "oauth_app": self._oauth_app,
+            "search": self._search,
+            "alpaca_paper": self._alpaca_paper,
         }[tipo]
         try:
             return await handler(ctx, campos, conector)
@@ -257,11 +271,22 @@ class ConfigurarCredencialTool(Tool):
 
         if provider == "elevenlabs":
             api_key = _requerido(campos, "api_key")
+            requested_model = campos.get("model_id")
+            model_id = str(requested_model or "eleven_multilingual_v2").strip()
+            if model_id not in _ELEVENLABS_MODELS:
+                raise _CampoInvalido(
+                    "Modelo de ElevenLabs desconocido. Usa eleven_v3, "
+                    "eleven_flash_v2_5 o eleven_multilingual_v2."
+                )
+            expressive = bool(campos.get("expressive", model_id == "eleven_v3"))
             config: dict[str, Any] = {
                 "provider": "elevenlabs",
                 "api_key": api_key,
                 "voice_id": voice_id,
             }
+            if requested_model is not None:
+                config["model_id"] = model_id
+                config["expressive"] = expressive and model_id == "eleven_v3"
             scopes = ["elevenlabs"]
         else:
             if not getattr(ctx.settings, "EDECAN_LOCAL_MODE", False):
@@ -283,14 +308,94 @@ class ConfigurarCredencialTool(Tool):
         )
         return ToolResult(
             content=f"Listo, conecté tu propia cuenta de {provider.title()} para texto-a-voz "
-            "(no verifiqué la key contra su API en vivo — pídeme que hable en voz alta para "
+            "(no verifiqué la key contra su API en vivo; pídeme que hable en voz alta para "
             "probarla).",
             data={"tipo": "voice_tts", "provider": provider},
         )
 
-    async def _stripe(
+    async def _search(self, ctx: ToolContext, campos: dict[str, Any], _conector: str) -> ToolResult:
+        provider = str(campos.get("provider") or "").strip().lower()
+        if provider not in _SEARCH_PROVIDERS:
+            raise _CampoInvalido("Búsqueda admite 'brave' o 'tavily'.")
+        api_key = _requerido(campos, "api_key")
+        account = await _find_or_create_connector_account(
+            ctx, _SEARCH_KEY, _SEARCH_KEY, "Búsqueda web"
+        )
+        await ctx.vault.put(
+            ctx.tenant_id,
+            account["id"],
+            TokenBundle(
+                access_token=_json({"provider": provider, "api_key": api_key}),
+                token_type="config",
+                scopes=[provider],
+            ),
+        )
+        return ToolResult(
+            content=(
+                f"Listo, conecté {provider.title()} como buscador web. La clave quedó "
+                "cifrada y no permanece visible en el chat."
+            ),
+            data={"tipo": "search", "provider": provider},
+        )
+
+    async def _alpaca_paper(
         self, ctx: ToolContext, campos: dict[str, Any], _conector: str
     ) -> ToolResult:
+        api_key_id = _requerido(campos, "api_key_id")
+        secret_key = _requerido(campos, "secret_key")
+        if len(api_key_id) < 8 or len(secret_key) < 16:
+            raise _CampoInvalido("Las credenciales de Alpaca Paper parecen incompletas.")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    "https://paper-api.alpaca.markets/v2/account",
+                    headers={
+                        "APCA-API-KEY-ID": api_key_id,
+                        "APCA-API-SECRET-KEY": secret_key,
+                    },
+                )
+        except httpx.HTTPError:
+            return ToolResult(
+                content=(
+                    "No pude contactar Alpaca Paper, así que no guardé las credenciales. "
+                    "Inténtalo de nuevo cuando tengas conexión."
+                )
+            )
+        if not 200 <= response.status_code < 300:
+            return ToolResult(
+                content=(
+                    "Alpaca Paper rechazó esas credenciales. No guardé nada. Verifica que "
+                    "sean las claves de Paper Trading, no las de live."
+                )
+            )
+        account = await _find_or_create_connector_account(
+            ctx, _ALPACA_PAPER_KEY, _ALPACA_PAPER_KEY, "Alpaca Paper Trading"
+        )
+        await ctx.vault.put(
+            ctx.tenant_id,
+            account["id"],
+            TokenBundle(
+                access_token=_json(
+                    {
+                        "environment": "paper",
+                        "api_key_id": api_key_id,
+                        "secret_key": secret_key,
+                    }
+                ),
+                token_type="config",
+                scopes=["account:read", "trading:paper"],
+            ),
+        )
+        return ToolResult(
+            content=(
+                "Listo, conecté y verifiqué tu cuenta Alpaca Paper. Edecán puede consultar "
+                "la cartera y preparar órdenes simuladas; cada orden sigue requiriendo tu "
+                "confirmación."
+            ),
+            data={"tipo": "alpaca_paper", "environment": "paper"},
+        )
+
+    async def _stripe(self, ctx: ToolContext, campos: dict[str, Any], _conector: str) -> ToolResult:
         api_key = _requerido(campos, "api_key")
         if not api_key.startswith("rk_"):
             raise _CampoInvalido(
@@ -309,9 +414,7 @@ class ConfigurarCredencialTool(Tool):
             data={"tipo": "stripe"},
         )
 
-    async def _twilio(
-        self, ctx: ToolContext, campos: dict[str, Any], _conector: str
-    ) -> ToolResult:
+    async def _twilio(self, ctx: ToolContext, campos: dict[str, Any], _conector: str) -> ToolResult:
         account_sid = _requerido(campos, "account_sid")
         auth_token = _requerido(campos, "auth_token")
         phone_number = _requerido(campos, "phone_number")
@@ -377,9 +480,7 @@ class ConfigurarCredencialTool(Tool):
                 f"bot_token demasiado corto (mínimo {_MIN_BOT_TOKEN_LEN} caracteres)."
             )
 
-        account = await _replace_connector_account(
-            ctx, conector, conector, conector.title()
-        )
+        account = await _replace_connector_account(ctx, conector, conector, conector.title())
         await ctx.vault.put(
             ctx.tenant_id,
             account["id"],

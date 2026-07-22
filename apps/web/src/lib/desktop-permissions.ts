@@ -15,6 +15,8 @@ export interface DesktopPermission {
 
 export interface DesktopPermissionsState {
   platform: "macos" | "windows" | "linux";
+  application_name: string;
+  application_path: string | null;
   permissions: DesktopPermission[];
 }
 

@@ -310,6 +310,43 @@ export type PhoneCallStatus =
   | "no_answer"
   | "cancelled";
 
+export interface PhoneAgentTemplate {
+  id: string;
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PhoneAgentTemplateInput {
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  is_default: boolean;
+}
+
+export interface PhoneCallSummary {
+  version: number;
+  status: PhoneCallStatus;
+  direction: "incoming" | "outgoing";
+  participants: Array<{
+    role: "assistant" | "external";
+    name: string | null;
+    phone_e164: string;
+  }>;
+  duration_seconds: number | null;
+  key_points: string[];
+  commitments: string[];
+  next_steps: string[];
+  transcript: { available: boolean; turn_count: number };
+}
+
 export interface PhoneCall {
   id: string;
   conversation_id: string;
@@ -317,12 +354,19 @@ export interface PhoneCall {
   from_e164: string;
   to_e164: string;
   goal: string;
+  agent: {
+    template_id: string | null;
+    template_name: string | null;
+    name: string | null;
+  } | null;
   status: PhoneCallStatus;
   confirmed_at: string | null;
   started_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
   error: string | null;
+  summary: PhoneCallSummary | null;
+  summary_generated_at: string | null;
   created_at: string;
   updated_at: string;
 }

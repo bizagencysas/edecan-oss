@@ -148,6 +148,14 @@ class Repo(Protocol):
     async def get_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> Row | None: ...
+    async def update_conversation_title(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        title: str,
+        only_if_empty: bool = False,
+    ) -> Row | None: ...
     async def delete_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> bool: ...
@@ -167,6 +175,40 @@ class Repo(Protocol):
     ) -> list[Row]: ...
 
     # -- llamadas como canal conversacional -----------------------------------
+    async def create_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str,
+        agent_name: str,
+        persona_prompt: str,
+        default_goal: str,
+        opening_message: str,
+        is_default: bool,
+    ) -> Row: ...
+    async def list_phone_agent_templates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]: ...
+    async def get_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> Row | None: ...
+    async def get_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None: ...
+    async def update_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        template_id: uuid.UUID,
+        fields: dict[str, Any],
+    ) -> Row | None: ...
+    async def clear_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None: ...
+    async def delete_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> bool: ...
     async def create_phone_call(
         self,
         *,
@@ -179,6 +221,11 @@ class Repo(Protocol):
         goal: str,
         status: str = "draft",
         provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
     ) -> Row: ...
     async def list_phone_calls(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
@@ -188,6 +235,13 @@ class Repo(Protocol):
     async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None: ...
     async def update_phone_call(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None: ...
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
     ) -> Row | None: ...
     async def add_phone_call_event(
         self,
@@ -702,7 +756,7 @@ class SqlRepo:
             """
             SELECT * FROM conversations
             WHERE tenant_id = :tenant_id AND user_id = :user_id
-            ORDER BY created_at DESC
+            ORDER BY updated_at DESC
             """,
             {"tenant_id": tenant_id, "user_id": user_id},
         )
@@ -713,6 +767,30 @@ class SqlRepo:
         return await self._first(
             "SELECT * FROM conversations WHERE tenant_id = :tenant_id AND id = :id",
             {"tenant_id": tenant_id, "id": conversation_id},
+        )
+
+    async def update_conversation_title(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        title: str,
+        only_if_empty: bool = False,
+    ) -> Row | None:
+        empty_guard = "AND BTRIM(title) = ''" if only_if_empty else ""
+        return await self._first(
+            f"""
+            UPDATE conversations
+            SET title = :title, updated_at = :now
+            WHERE tenant_id = :tenant_id AND id = :id {empty_guard}
+            RETURNING *
+            """,
+            {
+                "tenant_id": tenant_id,
+                "id": conversation_id,
+                "title": title,
+                "now": _now(),
+            },
         )
 
     async def delete_conversation(
@@ -784,6 +862,136 @@ class SqlRepo:
 
     # -- llamadas como canal conversacional -----------------------------------
 
+    async def create_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str,
+        agent_name: str,
+        persona_prompt: str,
+        default_goal: str,
+        opening_message: str,
+        is_default: bool,
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO phone_agent_templates (
+                id, tenant_id, user_id, name, agent_name, persona_prompt, default_goal,
+                opening_message, is_default, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :user_id, :name, :agent_name, :persona_prompt, :default_goal,
+                :opening_message, :is_default, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "name": name,
+                "agent_name": agent_name,
+                "persona_prompt": persona_prompt,
+                "default_goal": default_goal,
+                "opening_message": opening_message,
+                "is_default": is_default,
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def list_phone_agent_templates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]:
+        return await self._all(
+            """
+            SELECT * FROM phone_agent_templates
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+            ORDER BY is_default DESC, created_at ASC, id ASC
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id},
+        )
+
+    async def get_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM phone_agent_templates
+            WHERE tenant_id = :tenant_id AND id = :id
+            """,
+            {"tenant_id": tenant_id, "id": template_id},
+        )
+
+    async def get_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM phone_agent_templates
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND is_default
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id},
+        )
+
+    async def update_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        template_id: uuid.UUID,
+        fields: dict[str, Any],
+    ) -> Row | None:
+        allowed = {
+            "name",
+            "agent_name",
+            "persona_prompt",
+            "default_goal",
+            "opening_message",
+            "is_default",
+        }
+        clean = {key: value for key, value in fields.items() if key in allowed}
+        if not clean:
+            return await self.get_phone_agent_template(
+                tenant_id=tenant_id, template_id=template_id
+            )
+        set_clause = ", ".join(f"{key} = :{key}" for key in clean)
+        return await self._first(
+            f"UPDATE phone_agent_templates SET {set_clause}, updated_at = :now "
+            "WHERE tenant_id = :tenant_id AND id = :id RETURNING *",
+            {**clean, "tenant_id": tenant_id, "id": template_id, "now": _now()},
+        )
+
+    async def clear_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None:
+        extra = "AND id <> :except_id" if except_id is not None else ""
+        await self._exec(
+            f"""
+            UPDATE phone_agent_templates
+            SET is_default = false, updated_at = :now
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND is_default {extra}
+            """,
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "except_id": except_id,
+                "now": _now(),
+            },
+        )
+
+    async def delete_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> bool:
+        return bool(
+            await self._exec(
+                "DELETE FROM phone_agent_templates WHERE tenant_id = :tenant_id AND id = :id",
+                {"tenant_id": tenant_id, "id": template_id},
+            )
+        )
+
     async def create_phone_call(
         self,
         *,
@@ -796,15 +1004,24 @@ class SqlRepo:
         goal: str,
         status: str = "draft",
         provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
     ) -> Row:
         row = await self._first(
             """
             INSERT INTO phone_calls (
                 id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
-                goal, status, provider, provider_call_sid, created_at, updated_at
+                goal, agent_template_id, agent_template_name, agent_name, agent_prompt,
+                opening_message,
+                status, provider, provider_call_sid, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
-                :to_e164, :goal, :status, 'twilio', :provider_call_sid, :now, :now
+                :to_e164, :goal, :agent_template_id, :agent_template_name, :agent_name,
+                :agent_prompt,
+                :opening_message, :status, 'twilio', :provider_call_sid, :now, :now
             ) RETURNING *
             """,
             {
@@ -816,6 +1033,11 @@ class SqlRepo:
                 "from_e164": from_e164,
                 "to_e164": to_e164,
                 "goal": goal,
+                "agent_template_id": agent_template_id,
+                "agent_template_name": agent_template_name,
+                "agent_name": agent_name,
+                "agent_prompt": agent_prompt,
+                "opening_message": opening_message,
                 "status": status,
                 "provider_call_sid": provider_call_sid,
                 "now": _now(),
@@ -874,6 +1096,29 @@ class SqlRepo:
             f"UPDATE phone_calls SET {set_clause}, updated_at = :now "
             "WHERE tenant_id = :tenant_id AND id = :id RETURNING *",
             {**clean, "tenant_id": tenant_id, "id": call_id, "now": _now()},
+        )
+
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
+    ) -> Row | None:
+        """Guarda el primer resumen terminal; los reintentos no lo reescriben."""
+        return await self._first(
+            """
+            UPDATE phone_calls
+            SET summary = :summary ::jsonb, summary_generated_at = :now, updated_at = :now
+            WHERE tenant_id = :tenant_id AND id = :id AND summary IS NULL
+            RETURNING *
+            """,
+            {
+                "tenant_id": tenant_id,
+                "id": call_id,
+                "summary": _j(summary),
+                "now": _now(),
+            },
         )
 
     async def add_phone_call_event(
@@ -1020,7 +1265,8 @@ class SqlRepo:
             return await self._all(
                 """
                 SELECT * FROM memory_items
-                WHERE tenant_id = :tenant_id AND user_id = :user_id AND content ILIKE :q
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND superseded_at IS NULL AND content ILIKE :q
                 ORDER BY importance DESC, created_at DESC
                 LIMIT :k
                 """,
@@ -1030,6 +1276,7 @@ class SqlRepo:
             """
             SELECT * FROM memory_items
             WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND superseded_at IS NULL
             ORDER BY importance DESC, created_at DESC
             LIMIT :k
             """,

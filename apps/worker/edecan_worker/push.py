@@ -19,11 +19,11 @@ prestado. Mismo criterio de lectura (SQL parametrizado directo sobre
 `connector_accounts` + `vault.get`) que `edecan_premium.telephony.for_tenant`
 (Twilio) y `edecan_messaging._creds.resolver_credenciales`.
 
-El envío en sí es SIEMPRE best-effort (`edecan_worker.handlers.send_reminder`,
-canal `"mobile"`): el recordatorio ya quedó guardado como mensaje de chat
-ANTES de intentar el push, así que cualquier fallo de push —sin credenciales,
-sin dispositivos, red caída, token vencido— nunca hace que el job falle ni
-que el recordatorio "se pierda". `enviar_push_a_usuario` nunca lanza: siempre
+El envío en sí es SIEMPRE best-effort. Los recordatorios guardan primero su
+mensaje y `edecan_worker.universal_notifications` guarda primero una actividad
+idempotente; solo después llaman este módulo. Cualquier fallo de push —sin
+credenciales, sin dispositivos, red caída, token vencido— nunca hace que el
+resultado durable "se pierda". `enviar_push_a_usuario` nunca lanza: siempre
 devuelve un `ResultadoEnvioPush`, en el peor caso `(0, 0)` con una advertencia
 logueada.
 
@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -80,6 +81,23 @@ _FCM_TOKEN_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 _FCM_SEND_BASE_URL = "https://fcm.googleapis.com/v1/projects"
 _FCM_TOKEN_LIFETIME_SECONDS = 3600
 _FCM_TIMEOUT_SECONDS = 10.0
+
+# Solo estas claves de navegación, todas opacas, pueden acompañar a una
+# notificación. El allowlist evita que un productor termine enviando por
+# accidente prompts, nombres de archivo, resultados o errores sensibles.
+_PUSH_DATA_KEYS = frozenset(
+    {
+        "route",
+        "kind",
+        "event",
+        "event_key",
+        "chat_id",
+        "artifact_id",
+        "resource_id",
+        "deeplink",
+    }
+)
+_MAX_PUSH_DATA_VALUE_CHARS = 512
 
 # Status HTTP que, para cada plataforma, Edecán interpreta como "este
 # push_token ya no sirve, límpialo" (ver `_despachar_a_dispositivo`):
@@ -187,7 +205,12 @@ def _construir_jwt_apns(cred_apns: dict[str, Any]) -> str:
 
 
 async def enviar_apns(
-    cred_apns: dict[str, Any], push_token: str, titulo: str, cuerpo: str
+    cred_apns: dict[str, Any],
+    push_token: str,
+    titulo: str,
+    cuerpo: str,
+    *,
+    data: Mapping[str, str] | None = None,
 ) -> httpx.Response:
     """`POST /3/device/{push_token}` de APNs con un JWT de proveedor firmado
     ES256 con la `.p8` del propio tenant.
@@ -211,7 +234,10 @@ async def enviar_apns(
         "apns-topic": cred_apns["bundle_id"],
         "apns-push-type": "alert",
     }
-    body = {"aps": {"alert": {"title": titulo, "body": cuerpo}, "sound": "default"}}
+    body: dict[str, Any] = {
+        "aps": {"alert": {"title": titulo, "body": cuerpo}, "sound": "default"}
+    }
+    body.update(_normalizar_data_push(data))
 
     async with httpx.AsyncClient(timeout=_APNS_TIMEOUT_SECONDS) as client:
         return await client.post(
@@ -260,7 +286,12 @@ async def _canjear_access_token_fcm(
 
 
 async def enviar_fcm(
-    cred_fcm: dict[str, Any], push_token: str, titulo: str, cuerpo: str
+    cred_fcm: dict[str, Any],
+    push_token: str,
+    titulo: str,
+    cuerpo: str,
+    *,
+    data: Mapping[str, str] | None = None,
 ) -> httpx.Response:
     """OAuth2 JWT-bearer contra `oauth2.googleapis.com/token` (firmado RS256
     con la `private_key` del service account del propio tenant) y luego
@@ -280,15 +311,17 @@ async def enviar_fcm(
 
     async with httpx.AsyncClient(timeout=_FCM_TIMEOUT_SECONDS) as client:
         access_token = await _canjear_access_token_fcm(service_account, client=client)
+        message: dict[str, Any] = {
+            "token": push_token,
+            "notification": {"title": titulo, "body": cuerpo},
+        }
+        normalized_data = _normalizar_data_push(data)
+        if normalized_data:
+            message["data"] = normalized_data
         return await client.post(
             f"{_FCM_SEND_BASE_URL}/{project_id}/messages:send",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={
-                "message": {
-                    "token": push_token,
-                    "notification": {"title": titulo, "body": cuerpo},
-                }
-            },
+            json={"message": message},
         )
 
 
@@ -336,7 +369,12 @@ async def _limpiar_push_token(session: Any, device_id: Any) -> None:
 
 
 async def _despachar_a_dispositivo(
-    session: Any, config: dict[str, Any], dispositivo: dict[str, Any], titulo: str, cuerpo: str
+    session: Any,
+    config: dict[str, Any],
+    dispositivo: dict[str, Any],
+    titulo: str,
+    cuerpo: str,
+    data: Mapping[str, str] | None = None,
 ) -> bool:
     """`True` si el proveedor confirmó la entrega (HTTP 200). Nunca lanza:
     dependencia faltante, red caída, o cualquier otro error del proveedor
@@ -358,10 +396,18 @@ async def _despachar_a_dispositivo(
 
     try:
         if plataforma == "apns":
-            response = await enviar_apns(cred, push_token, titulo, cuerpo)
+            response = (
+                await enviar_apns(cred, push_token, titulo, cuerpo, data=data)
+                if data
+                else await enviar_apns(cred, push_token, titulo, cuerpo)
+            )
             statuses_invalidos = _APNS_TOKEN_INVALIDO_STATUSES
         else:
-            response = await enviar_fcm(cred, push_token, titulo, cuerpo)
+            response = (
+                await enviar_fcm(cred, push_token, titulo, cuerpo, data=data)
+                if data
+                else await enviar_fcm(cred, push_token, titulo, cuerpo)
+            )
             statuses_invalidos = _FCM_TOKEN_INVALIDO_STATUSES
     except Exception:
         logger.warning(
@@ -387,7 +433,13 @@ async def _despachar_a_dispositivo(
 
 
 async def enviar_push_a_usuario(
-    deps: Deps, *, tenant_id: UUID, user_id: UUID, titulo: str, cuerpo: str
+    deps: Deps,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    titulo: str,
+    cuerpo: str,
+    data: Mapping[str, str] | None = None,
 ) -> ResultadoEnvioPush:
     """Envía un push a TODOS los dispositivos `active` de `user_id` que
     tengan `push_token` registrado, despachando por `push_platform`.
@@ -395,7 +447,7 @@ async def enviar_push_a_usuario(
     SIEMPRE best-effort: nunca lanza (ver docstring del módulo) — cualquier
     ausencia de credencial/dispositivo es `ResultadoEnvioPush(0, 0)` con una
     advertencia logueada, nunca una excepción que interrumpa a quien llama
-    (`edecan_worker.handlers.send_reminder`, canal `"mobile"`). Un fallo
+    (`send_reminder` o `universal_notifications`). Un fallo
     parcial (algunos dispositivos sí, otros no) nunca frena el resto del
     lote — ver `_despachar_a_dispositivo`.
     """
@@ -421,7 +473,9 @@ async def enviar_push_a_usuario(
             enviados = 0
             fallidos = 0
             for dispositivo in dispositivos:
-                exito = await _despachar_a_dispositivo(session, config, dispositivo, titulo, cuerpo)
+                exito = await _despachar_a_dispositivo(
+                    session, config, dispositivo, titulo, cuerpo, data
+                )
                 if exito:
                     enviados += 1
                 else:
@@ -435,3 +489,21 @@ async def enviar_push_a_usuario(
             exc_info=True,
         )
         return ResultadoEnvioPush(0, 0)
+
+
+def _normalizar_data_push(data: Mapping[str, str] | None) -> dict[str, str]:
+    """Payload de navegación pequeño, textual y con claves controladas."""
+    if not data:
+        return {}
+    unknown = set(data) - _PUSH_DATA_KEYS
+    if unknown:
+        raise ValueError(f"Claves de navegación push no permitidas: {', '.join(sorted(unknown))}")
+    normalized: dict[str, str] = {}
+    for key, raw_value in data.items():
+        if not isinstance(raw_value, str):
+            raise ValueError(f"El valor push {key!r} debe ser texto.")
+        value = raw_value.strip()
+        if not value or len(value) > _MAX_PUSH_DATA_VALUE_CHARS:
+            raise ValueError(f"El valor push {key!r} está vacío o es demasiado largo.")
+        normalized[key] = value
+    return normalized

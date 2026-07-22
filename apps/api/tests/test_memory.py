@@ -81,6 +81,25 @@ async def test_list_memory_filters_by_query(client) -> None:
     assert "Cumpleaños" in results[0]["content"]
 
 
+async def test_list_memory_oculta_versiones_reemplazadas(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    created = await client.post(
+        "/v1/memory",
+        json={"kind": "fact", "content": "Google Play pendiente"},
+        headers=headers,
+    )
+    obsolete_id = uuid.UUID(created.json()["id"])
+    fake_repo.memory_items[obsolete_id]["superseded_at"] = "2026-07-22T00:00:00Z"
+    fake_repo.memory_items[obsolete_id]["superseded_by"] = uuid.uuid4()
+
+    response = await client.get("/v1/memory", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 async def test_add_memory_rejects_empty_content(client) -> None:
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     response = await client.post("/v1/memory", json={"content": ""}, headers=headers)

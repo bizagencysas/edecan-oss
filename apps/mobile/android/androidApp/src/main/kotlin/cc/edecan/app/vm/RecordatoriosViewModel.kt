@@ -64,21 +64,27 @@ class RecordatoriosViewModel : ViewModel() {
         }
     }
 
-    /** `POST /v1/reminders` — combina [fecha]/[hora] (elegidas con los
-     * *pickers* de Material3 en la zona horaria del propio dispositivo) en
-     * un `due_at` ISO-8601 con offset, y manda `canal = "web"` SIEMPRE (ver
-     * `EdecanApi.createReminder`, nunca `"mobile"`). */
-    fun crear(api: EdecanApi, texto: String, fecha: LocalDate, hora: LocalTime) {
+    /** `POST /v1/reminders` — combina [fecha]/[hora] en la zona del teléfono
+     * y usa el canal móvil; la UI agenda además el respaldo local. */
+    fun crear(
+        api: EdecanApi,
+        texto: String,
+        fecha: LocalDate,
+        hora: LocalTime,
+        onCreado: (Reminder) -> Unit = {},
+    ) {
         val limpio = texto.trim()
         if (limpio.isEmpty() || _uiState.value.creando) return
         val dueAtIso = fecha.atTime(hora).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
         viewModelScope.launch {
             _uiState.update { it.copy(creando = true, errorCrear = null) }
             try {
-                val creado = api.createReminder(texto = limpio, fecha = dueAtIso, canal = "web")
+                val creado = api.createReminder(texto = limpio, fecha = dueAtIso, canal = "mobile")
                 _uiState.update {
                     it.copy(creando = false, recordatorios = listOf(creado) + it.recordatorios)
                 }
+                val fcmDisponible = runCatching { api.pushStatus().fcm }.getOrDefault(false)
+                if (!fcmDisponible) onCreado(creado)
             } catch (e: ApiException) {
                 _uiState.update { it.copy(creando = false, errorCrear = e.message) }
             }

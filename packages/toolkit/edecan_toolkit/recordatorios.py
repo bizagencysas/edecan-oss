@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from ._util import clamp_int
 
-_CANALES_VALIDOS = ("web", "voice", "phone", "api")
+_CANALES_VALIDOS = ("mobile", "web", "voice", "phone", "api")
 _LIMITE_DEFECTO = 20
 _LIMITE_MAXIMO = 100
 
@@ -64,7 +64,7 @@ class CrearRecordatorioTool(Tool):
                 "type": "string",
                 "enum": list(_CANALES_VALIDOS),
                 "description": "Canal de entrega del recordatorio.",
-                "default": "web",
+                "default": "mobile",
             },
         },
         "required": ["mensaje", "due_at"],
@@ -83,7 +83,7 @@ class CrearRecordatorioTool(Tool):
             return ToolResult(content=str(exc))
 
         rrule = args.get("rrule") or None
-        channel = args.get("channel") or "web"
+        channel = args.get("channel") or "mobile"
         if channel not in _CANALES_VALIDOS:
             channel = "web"
 

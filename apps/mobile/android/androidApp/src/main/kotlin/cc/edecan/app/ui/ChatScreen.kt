@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -100,10 +101,13 @@ fun ChatScreen(
 ) {
     val chatState by chatViewModel.uiState.collectAsState()
     var historialAbierto by remember { mutableStateOf(false) }
+    var renombrandoChat by remember { mutableStateOf(false) }
+    var tituloNuevo by remember { mutableStateOf("") }
     var artefactoDescargandoId by remember { mutableStateOf<String?>(null) }
     var errorArtefacto by remember { mutableStateOf<String?>(null) }
     var previews by remember { mutableStateOf<Map<String, VistaPreviaPrivada>>(emptyMap()) }
     var previewsCargando by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var securePreviewTarget by remember { mutableStateOf<SecurePreviewTarget?>(null) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -123,6 +127,14 @@ fun ChatScreen(
         }
     }
 
+    securePreviewTarget?.let { target ->
+        SecurePreviewDialog(
+            target = target,
+            api = sessionViewModel.api,
+            onDismiss = { securePreviewTarget = null },
+        )
+    }
+
     LaunchedEffect(sessionViewModel.api) {
         sessionViewModel.api?.let(chatViewModel::cargar)
     }
@@ -138,6 +150,34 @@ fun ChatScreen(
             // Crear siempre vuelve al mismo hilo como borrador revisable.
             chatViewModel.actualizarBorrador(solicitud)
         }
+    }
+
+    if (renombrandoChat) {
+        AlertDialog(
+            onDismissRequest = { renombrandoChat = false },
+            title = { Text("Renombrar conversación") },
+            text = {
+                OutlinedTextField(
+                    value = tituloNuevo,
+                    onValueChange = { tituloNuevo = it.take(120) },
+                    label = { Text("Nombre") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = chatState.conversationId
+                    val api = sessionViewModel.api
+                    if (id != null && api != null) {
+                        chatViewModel.renombrarConversacion(id, tituloNuevo, api)
+                    }
+                    renombrandoChat = false
+                }) { Text("Guardar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renombrandoChat = false }) { Text("Cancelar") }
+            },
+        )
     }
 
     Scaffold(
@@ -174,6 +214,16 @@ fun ChatScreen(
                                     chatViewModel.nuevoChat()
                                 },
                             )
+                            if (chatState.conversationId != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Renombrar chat actual") },
+                                    onClick = {
+                                        historialAbierto = false
+                                        tituloNuevo = chatState.tituloConversacion.orEmpty()
+                                        renombrandoChat = true
+                                    },
+                                )
+                            }
                             chatState.conversaciones.forEach { conversation ->
                                 DropdownMenuItem(
                                     text = {
@@ -266,7 +316,9 @@ fun ChatScreen(
                                 onAction = { action ->
                                     when (action) {
                                         is ChatAction.OpenUrl -> {
-                                            if (!abrirUrlPublica(context, action.url)) {
+                                            if (esUrlPublicaSegura(action.url)) {
+                                                securePreviewTarget = SecurePreviewTarget.PublicUrl(action.url)
+                                            } else {
                                                 errorArtefacto = "No abrí ese enlace porque no es una URL pública segura."
                                             }
                                         }
@@ -284,24 +336,7 @@ fun ChatScreen(
                                     }
                                 },
                                 onAbrirArtefacto = { artefacto ->
-                                    val api = sessionViewModel.api ?: return@BurbujaMensaje
-                                    if (artefactoDescargandoId != null) return@BurbujaMensaje
-                                    artefactoDescargandoId = artefacto.fileId
-                                    errorArtefacto = null
-                                    coroutineScope.launch {
-                                        try {
-                                            val descarga = api.downloadArtifact(artefacto)
-                                            val uri = withContext(Dispatchers.IO) {
-                                                guardarArtefactoEnCache(context, descarga)
-                                            }
-                                            compartirArtefacto(context, descarga.artifact, uri)
-                                        } catch (error: Exception) {
-                                            errorArtefacto = "No se pudo descargar ${artefacto.filename}: " +
-                                                (error.message ?: "error desconocido")
-                                        } finally {
-                                            artefactoDescargandoId = null
-                                        }
-                                    }
+                                    securePreviewTarget = SecurePreviewTarget.Artifact(artefacto)
                                 },
                                 onReintentar = {
                                     sessionViewModel.api?.let { chatViewModel.reintentarMensaje(mensaje.id, it) }
@@ -538,10 +573,10 @@ private fun BurbujaMensaje(
                             CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.padding(start = 7.dp))
                         } else {
-                            Text("↓ ")
+                            Text("⌕ ")
                         }
                         Text(artefacto.filename, maxLines = 1, modifier = Modifier.weight(1f))
-                        Text(" ↗")
+                        Text(" Ver")
                     }
                 }
             }

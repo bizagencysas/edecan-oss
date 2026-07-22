@@ -36,6 +36,7 @@ El camino recomendado hoy es la app de escritorio (en construcción; ver [`roadm
 |---|---|
 | [`conectores.md`](./conectores.md) | Cómo registrar tu propia app OAuth en Google, Microsoft, Meta, X y YouTube, los scopes mínimos exactos que usa Edecán, la URL de callback y los límites de uso conocidos. Incluye creación para LinkedIn y sus vías de publicación controlada. |
 | [`voz-telefonia.md`](./voz-telefonia.md) | Diferencia entre voz web (núcleo) y telefonía (premium), y el checklist legal obligatorio para operar llamadas y SMS salientes. |
+| [`agentes-llamadas.md`](./agentes-llamadas.md) | Perfiles reutilizables de llamadas, snapshots, confirmación y cadena real hasta Twilio. |
 
 ## Cumplimiento y seguridad
 
@@ -44,6 +45,7 @@ El camino recomendado hoy es la app de escritorio (en construcción; ver [`roadm
 | [`cumplimiento/privacidad.md`](./cumplimiento/privacidad.md) | Posición frente a GDPR/CCPA/LFPDPPP/Ley 1581: derechos de los titulares, retención de datos, subencargados y plantilla de DPA. |
 | [`cumplimiento/tos-redes.md`](./cumplimiento/tos-redes.md) | Matriz por red social: qué permite cada API oficial, qué está prohibido, y el compromiso del producto. |
 | [`seguridad-modelo-amenazas.md`](./seguridad-modelo-amenazas.md) | Modelo de amenazas: activos, actores, STRIDE resumido, los tres riesgos principales y las mitigaciones ya implementadas. |
+| [`auditorias-seguridad.md`](./auditorias-seguridad.md) | Auditoría local independiente del modelo y ejecución autorizada de PentestGPT con alcance exacto. |
 | [`../SECURITY.md`](../SECURITY.md) | Política de divulgación responsable de vulnerabilidades. |
 
 ## Operación (runbooks)

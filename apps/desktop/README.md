@@ -5,7 +5,7 @@ Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán 
 1. Al arrancar, elige un puerto libre (preferencia `8765`) y lanza `edecan_local` como *sidecar* (empaquetado con PyInstaller, o desde el código fuente en modo desarrollo).
 2. Muestra una ventana de splash mientras espera a que el backend avise `EDECAN_LOCAL_READY` por stdout (máx. 60s), con un panel de error + reintentar si algo falla.
 3. Abre la ventana principal apuntando a `http://127.0.0.1:<puerto>/` — el propio backend local sirve ahí tanto la API como la web estática.
-4. Al cerrar la app (por cualquier vía: ventana, bandeja, botón "Salir"), mata el proceso del sidecar sin excepción — nunca debe quedar huérfano.
+4. En macOS, cerrar la ventana principal solo la oculta: Edecán, el backend y el acceso móvil siguen residentes en la barra de menú. **Salir completamente** desde el menú de Edecán (o Cmd+Q) apaga el sidecar de forma limpia — nunca debe quedar huérfano. Windows/Linux conservan el cierre completo salvo cuando está activa la escucha continua.
 
 Documentación completa (requisitos, build paso a paso por plataforma, dónde viven los datos, desinstalar, troubleshooting, firma de código): **[`docs/desktop.md`](../../docs/desktop.md)**. Este README es la referencia rápida de quien trabaja *en* este directorio.
 
@@ -18,7 +18,8 @@ apps/desktop/
 │   │   ├── main.rs     # entry point (boilerplate estándar de Tauri)
 │   │   ├── lib.rs       # arma la app: splash, tray, ciclo de vida
 │   │   ├── backend.rs   # todo el ciclo de vida del sidecar edecan-local
-│   │   ├── tray.rs      # menú de bandeja (Abrir/Ver datos/Salir)
+│   │   ├── lifecycle.rs # decisión pura: ocultar main o salir por completo
+│   │   ├── tray.rs      # barra residente (Abrir/navegador/datos/escucha/salir)
 │   │   ├── commands.rs  # comandos invocables desde splash (retry/quit)
 │   │   └── util.rs      # abrir URL/carpeta con la app por defecto del SO
 │   ├── splash/          # ventana de splash — HTML estático embebido
@@ -83,8 +84,8 @@ Detalle completo, por plataforma, en `docs/desktop.md`.
 
 ## Tests
 
-El crate tiene tests unitarios para helpers nativos (audio y procesamiento de
-muestras). Desde `apps/desktop/src-tauri`:
+El crate tiene tests unitarios para el ciclo residente, activación desde la
+barra y helpers nativos de audio. Desde `apps/desktop/src-tauri`:
 
 ```bash
 cargo fmt --check

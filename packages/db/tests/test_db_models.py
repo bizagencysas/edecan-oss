@@ -106,7 +106,7 @@ EXPECTED_TABLES_V6 = {
     "podcasts",
 }
 
-EXPECTED_TABLES_PHONE = {"phone_calls", "phone_call_events"}
+EXPECTED_TABLES_PHONE = {"phone_agent_templates", "phone_calls", "phone_call_events"}
 
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
@@ -123,10 +123,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 50
+    assert len(Base.metadata.tables) == 51
 
 
-def test_hay_exactamente_50_tablas_pinned():
+def test_hay_exactamente_51_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -147,7 +147,28 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     # 20 de v1 + 14 de v2 + 1 de v3 + 3 de v4 + 5 de v5 + 2 de v6 (ninguna de
     # las tablas nuevas es global, ver ROADMAP_V2.md §7.4/ARCHITECTURE.md
     # §12e/§13/§14/§15: todas tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 47
+    assert len(RLS_TABLES) == 48
+
+
+def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llamada():
+    templates = Base.metadata.tables["phone_agent_templates"]
+    assert templates.columns["persona_prompt"].nullable is False
+    assert templates.columns["default_goal"].nullable is False
+    default_index = next(
+        index for index in templates.indexes if index.name == "uq_phone_agent_templates_default"
+    )
+    assert default_index.unique is True
+    assert str(default_index.dialect_options["postgresql"]["where"]) == "is_default"
+
+    calls = Base.metadata.tables["phone_calls"].columns
+    for field in (
+        "agent_template_id",
+        "agent_template_name",
+        "agent_name",
+        "agent_prompt",
+        "opening_message",
+    ):
+        assert calls[field].nullable is True
 
 
 def test_phone_call_events_fk_compuesta_impide_cruce_de_tenant():
@@ -185,6 +206,13 @@ def test_jobs_y_audit_log_tienen_tenant_id_nullable():
     assert Base.metadata.tables["audit_log"].columns["tenant_id"].nullable is True
     for tabla in RLS_TABLES - {"jobs", "audit_log"}:
         assert Base.metadata.tables[tabla].columns["tenant_id"].nullable is False, tabla
+
+
+def test_memory_items_conserva_historial_de_reemplazos() -> None:
+    columns = Base.metadata.tables["memory_items"].columns
+    assert columns["superseded_at"].nullable is True
+    assert columns["superseded_by"].nullable is True
+    assert list(columns["superseded_by"].foreign_keys)[0].target_fullname == "memory_items.id"
 
 
 def test_persona_defaults_espejan_edecan_schemas_personaconfig():
@@ -239,6 +267,30 @@ def test_job_type_check_constraint_incluye_process_meeting_v6():
     checks = [c for c in Job.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
     sqltext = " ".join(str(c.sqltext) for c in checks)
     assert "process_meeting" in sqltext
+
+
+def test_job_type_y_columnas_para_resumen_de_llamadas():
+    checks = [c for c in Job.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
+    sqltext = " ".join(str(c.sqltext) for c in checks)
+    assert "notify_phone_call_summary" in sqltext
+
+    calls = Base.metadata.tables["phone_calls"].columns
+    assert calls["summary"].nullable is True
+    assert calls["summary_generated_at"].nullable is True
+    assert calls["summary_push_attempted_at"].nullable is True
+
+
+def test_job_type_check_incluye_notificaciones_universales():
+    checks = [c for c in Job.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
+    sqltext = " ".join(str(c.sqltext) for c in checks)
+    assert "notify_incoming_phone_call" in sqltext
+    assert "notify_important_event" in sqltext
+
+
+def test_job_type_para_notificacion_de_llamada_entrante():
+    checks = [c for c in Job.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
+    sqltext = " ".join(str(c.sqltext) for c in checks)
+    assert "notify_incoming_phone_call" in sqltext
 
 
 def test_tenant_slug_es_unico():

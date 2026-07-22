@@ -1,6 +1,6 @@
 # Conectores
 
-Edecán se integra con Google, Microsoft, Meta, X y YouTube **exclusivamente por sus APIs oficiales**, con OAuth 2.0. La plataforma (quien opera esta instancia — tú, si haces self-host) registra **una app OAuth por proveedor**; luego **cada tenant autoriza su propia cuenta** contra esa app. Los tokens resultantes nunca se comparten entre tenants y se guardan cifrados en el `TokenVault` (`ARCHITECTURE.md` §10.4). Ningún conector hace scraping ni usa endpoints no documentados — ver `packages/connectors/edecan_connectors/`.
+Edecán se integra con Google, Microsoft, Meta, X y YouTube **exclusivamente por sus APIs oficiales**, con OAuth 2.0. Cada tenant registra **su propia app OAuth por proveedor** desde **Ajustes → Conexiones** y después autoriza su propia cuenta. Los tokens resultantes nunca se comparten entre tenants y se guardan cifrados en el `TokenVault` (`ARCHITECTURE.md` §10.4). Ningún conector hace scraping ni usa endpoints no documentados — ver `packages/connectors/edecan_connectors/`.
 
 Todos los conectores comparten el mismo patrón de callback:
 
@@ -10,13 +10,28 @@ Todos los conectores comparten el mismo patrón de callback:
 
 Sustituye `{PUBLIC_BASE_URL}` por la URL pública real de tu API (en desarrollo, `http://localhost:8000`) y `{key}` por la clave del conector (`google`, `microsoft`, `meta`, `x`, `youtube`). Esa es exactamente la URL que debes registrar como "redirect URI" / "callback URL" autorizada en la consola de cada proveedor — si no coincide carácter por carácter (incluido el esquema `http`/`https` y el puerto), el proveedor rechazará el intercambio de código por token.
 
-Las credenciales de la app (client id/secret) van en tu `.env` — ver [`configuracion.md`](./configuracion.md). Nunca son credenciales de un usuario final: identifican a la aplicación, no a una persona.
+La interfaz muestra la URL de redirección exacta, un botón a la consola oficial y tres pasos: crear la app, copiar la URL y pegar Client ID/secret. El backend cifra el secreto y la API solo vuelve a mostrar el Client ID enmascarado. Un badge **App lista** significa que esas credenciales están guardadas; **Autorizada** solo aparece después de que el proveedor completó el callback de la cuenta. No se finge una comprobación de red permanente: las conexiones que sí tienen una sonda en vivo (Meta Ads, Home Assistant y MCP mediante «Comprobar ahora») la identifican expresamente como **Disponible ahora**.
+
+Las variables OAuth de `.env` que aún aparecen en documentación de despliegues antiguos no sustituyen esta configuración por tenant y no deben usarse como credencial compartida. Nunca son credenciales de un usuario final: identifican una aplicación OAuth.
+
+### Consolas oficiales directas
+
+| Conector | Crear o administrar la app |
+|---|---|
+| Google / YouTube | [Credenciales de Google Cloud](https://console.cloud.google.com/apis/credentials) |
+| Microsoft | [Registros de aplicaciones de Microsoft Entra](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) |
+| Meta | [Mis apps de Meta](https://developers.facebook.com/apps/) |
+| X | [X Developer Portal](https://developer.x.com/en/portal/dashboard) |
+| Slack | [Mis apps de Slack](https://api.slack.com/apps) |
+| Telegram | [BotFather](https://t.me/BotFather) |
+| Discord | [Discord Developer Portal](https://discord.com/developers/applications) |
+| Twilio | [Twilio Console](https://console.twilio.com/) |
 
 ---
 
 ## Google (Gmail + Calendar)
 
-**Clave del conector**: `google`. **Variables**: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
+**Clave del conector**: `google`. La app propia se guarda desde Ajustes; no se comparte por variables de plataforma.
 
 ### Crear la app OAuth
 
@@ -25,7 +40,7 @@ Las credenciales de la app (client id/secret) van en tu `.env` — ver [`configu
 3. **APIs & Services → OAuth consent screen**: tipo *External* (a menos que todos tus tenants sean de tu propio Google Workspace, en cuyo caso puede ser *Internal*). Completa nombre de la app, correo de soporte y dominios autorizados. Mientras la app esté en modo *Testing*, solo los correos que agregues como "test users" podrán autorizar — pasa a *In production* (requiere verificación de Google para scopes sensibles) cuando quieras abrirlo a cualquier tenant.
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**, tipo **Web application**.
 5. En **Authorized redirect URIs** agrega exactamente `{PUBLIC_BASE_URL}/v1/connectors/google/callback`.
-6. Copia el **Client ID** y el **Client secret** a `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` en tu `.env`.
+6. Copia el **Client ID** y el **Client secret** al formulario guiado de Google en Ajustes.
 
 ### Scopes mínimos exactos usados
 
@@ -51,7 +66,7 @@ Estos números son orientativos y **cambian con el tiempo** — confirma siempre
 
 ## Microsoft (Outlook Mail + Calendar)
 
-**Clave del conector**: `microsoft`. **Variables**: `MS_CLIENT_ID`, `MS_CLIENT_SECRET`.
+**Clave del conector**: `microsoft`. La app propia se guarda desde Ajustes.
 
 ### Crear la app OAuth
 
@@ -60,7 +75,7 @@ Estos números son orientativos y **cambian con el tiempo** — confirma siempre
 3. En **Redirect URI** elige tipo **Web** y pon exactamente `{PUBLIC_BASE_URL}/v1/connectors/microsoft/callback`.
 4. **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, agrega los scopes de la siguiente sección. Si tu tenant de Azure lo exige, otorga *Admin consent*.
 5. **Certificates & secrets → New client secret** — cópialo de inmediato (no se vuelve a mostrar).
-6. Copia el **Application (client) ID** y el secreto a `MS_CLIENT_ID`/`MS_CLIENT_SECRET`.
+6. Copia el **Application (client) ID** y el secreto al formulario guiado de Microsoft en Ajustes.
 
 ### Scopes mínimos exactos usados
 
@@ -82,14 +97,14 @@ Microsoft Graph aplica *throttling* dinámico por app y por buzón (no una cuota
 
 ## Meta (Facebook Pages e Instagram Business)
 
-**Clave del conector**: `meta`. **Variables**: `META_APP_ID`, `META_APP_SECRET`. Requiere el flag de plan `connectors.social`.
+**Clave del conector**: `meta`. La app propia se guarda desde Ajustes. Requiere el flag de plan `connectors.social`.
 
 ### Crear la app OAuth
 
 1. Entra a [Meta for Developers](https://developers.facebook.com/) → **My Apps → Create App**, tipo *Business*.
 2. Agrega el producto **Facebook Login** (o *Facebook Login for Business* si administras varias Páginas desde un Business Manager).
 3. En **Facebook Login → Settings → Valid OAuth Redirect URIs** agrega exactamente `{PUBLIC_BASE_URL}/v1/connectors/meta/callback`.
-4. **App Settings → Basic**: copia el **App ID** y el **App Secret** a `META_APP_ID`/`META_APP_SECRET`.
+4. **App Settings → Basic**: copia el **App ID** y el **App Secret** al formulario guiado de Meta en Ajustes.
 5. Mientras la app esté en modo *Development*, solo los usuarios con un rol asignado en el Business Manager (admin, developer, tester) pueden autorizar. Para operar con Páginas de terceros necesitas pasar **App Review** de Meta para los permisos avanzados (`pages_manage_posts`, `instagram_content_publish`, etc.) y, normalmente, verificación del negocio (*Business Verification*).
 
 ### Scopes mínimos exactos usados
@@ -112,13 +127,13 @@ La Graph API de Meta no usa una cuota fija por hora, sino un puntaje de uso por 
 
 ## X (API v2)
 
-**Clave del conector**: `x`. **Variables**: `X_CLIENT_ID`, `X_CLIENT_SECRET`. Requiere el flag de plan `connectors.social`.
+**Clave del conector**: `x`. La app propia se guarda desde Ajustes. Requiere el flag de plan `connectors.social`.
 
 ### Crear la app OAuth
 
 1. Entra al [X Developer Portal](https://developer.x.com/) → crea un **Project** y, dentro, una **App**.
 2. En **User authentication settings**, actívalas y configura: **App permissions** = *Read and write* (necesario para `tweet.write`); **Type of App** = *Web App, Automated App or Bot*; **Callback URI / Redirect URL** = exactamente `{PUBLIC_BASE_URL}/v1/connectors/x/callback`; completa también *Website URL* (obligatorio).
-3. En **Keys and tokens**, copia el **OAuth 2.0 Client ID** y el **Client Secret** a `X_CLIENT_ID`/`X_CLIENT_SECRET`.
+3. En **Keys and tokens**, copia el **OAuth 2.0 Client ID** y el **Client Secret** al formulario guiado de X en Ajustes.
 
 ### Scopes mínimos exactos usados
 
@@ -139,7 +154,7 @@ La API v2 de X está sujeta a los **niveles de acceso de pago** de la plataforma
 
 ## YouTube (Data API v3)
 
-**Clave del conector**: `youtube`. **Variables**: reutiliza `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` — YouTube no tiene servidor de autorización propio, usa el mismo OAuth 2.0 de Google con scopes distintos.
+**Clave del conector**: `youtube`. YouTube no tiene servidor de autorización propio: usa OAuth 2.0 de Google, pero conserva una configuración y callback propios dentro de Ajustes.
 
 ### Crear la app OAuth
 

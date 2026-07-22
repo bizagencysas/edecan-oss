@@ -114,6 +114,7 @@ from edecan_api.routers import (
     connectors,
     consents,
     contacts,
+    content_studio,
     conversations,
     files,
     finance,
@@ -428,6 +429,7 @@ def create_app() -> FastAPI:
     app.include_router(finance.router)
     app.include_router(voice.router)
     app.include_router(consents.router)
+    app.include_router(content_studio.router)
     app.include_router(phone.router)
     app.include_router(companion.router)
     app.include_router(usage.router)

@@ -8,9 +8,11 @@ service (de TU cuenta de Apple Developer) y/o TU PROPIO service account de Fireb
 Cloud Messaging (de TU proyecto de Firebase) — Edecán nunca guarda ni opera una
 credencial de plataforma de push compartida entre tenants.
 
-Cubre notificaciones push nativas para recordatorios y respuestas asíncronas. El
-registro persistente de `reminders` se complementa con un canal `mobile` nativo,
-además de los canales `web`/`voice`/`phone`/`api`.
+Cubre notificaciones push nativas para recordatorios, respuestas asíncronas,
+resúmenes de llamadas y eventos importantes: trabajo o misión terminada/fallida,
+contenido creado/publicado, diseño/exportación lista, archivo/PDF listo y
+autorreparación terminada. El registro persistente de `reminders` se complementa
+con un canal `mobile` nativo, además de los canales `web`/`voice`/`phone`/`api`.
 
 ## El push es SIEMPRE además del mensaje de chat, nunca en su lugar
 
@@ -23,29 +25,48 @@ modos queda ahí — la entrega push nunca puede hacer que se "pierda" un
 recordatorio (`apps/worker/edecan_worker/handlers/send_reminder.py`,
 `apps/worker/edecan_worker/push.py`).
 
+Una llamada terminal sigue el mismo orden: primero guarda su resumen
+estructurado y un evento de actividad; después el job
+`notify_phone_call_summary` intenta el push. El aviso solo dice que hay un
+resumen disponible en Actividad. Nunca muestra teléfono, participantes,
+objetivo, transcripción, puntos clave ni compromisos en la pantalla bloqueada.
+
+El emisor universal aplica el mismo contrato: guarda una actividad mínima en
+`audit_log`, confirma esa transacción y solo después intenta APNs/FCM. Un
+`event_key` opaco hace idempotente la transición: si el mismo job llega dos
+veces, no duplica ni la actividad ni el push. Nunca persiste o envía prompts,
+resultados, nombres de archivo o mensajes de error; el texto visible es una
+frase genérica y el payload solo contiene rutas e identificadores opacos.
+
 ## 1. Setup de APNs (iOS) — en TU cuenta de Apple Developer
 
 Coherente con que cada cliente ya compila su propia app iOS con SU PROPIO bundle
 id y SU PROPIA cuenta de Apple Developer Program de pago (ver
 [`movil-ios.md`](./movil-ios.md), "Antes de compilar para tu iPhone: bundle id y equipo"):
 
-1. Entra a **[developer.apple.com/account](https://developer.apple.com/account)**
-   → *Certificates, Identifiers & Profiles* → **Keys** → **+** (crear una key
-   nueva).
-2. Marca **Apple Push Notifications service (APNs)**, ponle un nombre (p. ej.
-   "Edecán push") y crea la key. Apple te deja **descargar el archivo `.p8`
-   UNA SOLA VEZ** — guárdalo, no lo puedes volver a descargar.
-3. Anota el **Key ID** (10 caracteres, se muestra al crear la key y queda listado
-   en *Keys*).
-4. Anota tu **Team ID** (arriba a la derecha de la consola de developer, o en
-   *Membership*).
-5. El **Bundle ID** es el mismo que usaste al compilar tu app iOS
-   (`docs/movil-ios.md`) — p. ej. `com.tuempresa.edecan`.
-6. Abre el archivo `.p8` con un editor de texto — su contenido completo
+1. Necesitas membresía activa de Apple Developer Program y un **Bundle ID
+   explícito y único** (por ejemplo `com.tuempresa.edecan`). En *Certificates,
+   Identifiers & Profiles → Identifiers*, abre ese App ID y activa **Push
+   Notifications**. En Xcode, conserva la capability *Push Notifications*;
+   este repo ya declara `aps-environment` en `EdecanApp.entitlements`.
+2. Regenera los perfiles de desarrollo/distribución después de activar la
+   capability y firma la app con tu Team. El simulador sirve para compilar y
+   probar avisos locales; el token APNs real exige una app correctamente
+   firmada e instalada.
+3. En *Certificates, Identifiers & Profiles → Keys → +*, crea una key con
+   **Apple Push Notifications service (APNs)**. Apple entrega el `.p8` una
+   sola vez. Una key de autenticación sirve para sandbox y producción y se
+   puede revocar desde la cuenta.
+4. Anota **Key ID**, **Team ID** y el Bundle ID exacto de la app.
+5. Abre el archivo `.p8` con un editor de texto — su contenido completo
    (incluidas las líneas `-----BEGIN PRIVATE KEY-----`/`-----END PRIVATE
    KEY-----`) es lo que pegas en `p8_key` al conectar (ver más abajo). Tu
    cliente HTTP se encarga de escapar los saltos de línea correctamente al
    mandar JSON — no hace falta que hagas nada especial con ellos.
+
+La guía oficial de Apple para registrar la app y tratar tokens como valores
+rotables está en [Registering your app with APNs](https://developer.apple.com/documentation/usernotifications/registering-your-app-with-apns);
+la creación de la key está en [Communicate with APNs using authentication tokens](https://developer.apple.com/help/account/capabilities/communicate-with-apns-using-authentication-tokens/).
 
 Esta clave es **tuya**: vive en tu cuenta de Apple Developer, la puedes revocar
 en cualquier momento desde *Certificates, Identifiers & Profiles* → *Keys*.
@@ -53,19 +74,34 @@ Edecán nunca pide ni almacena una credencial de push "de plataforma".
 
 ## 2. Setup de FCM (Android) — en TU proyecto de Firebase
 
-1. Entra a la **[consola de Firebase](https://console.firebase.google.com)** con
-   la cuenta de Google que administra tu proyecto (el mismo proyecto que usa tu
-   app Android, `docs/movil-android.md`) — o crea un proyecto nuevo si todavía
-   no tienes uno.
-2. **Configuración del proyecto** (ícono de engranaje) → **Cuentas de
+1. Entra a la **[consola de Firebase](https://console.firebase.google.com)** y
+   crea/elige tu proyecto. Agrega una app Android cuyo package name coincida
+   **exactamente** con `applicationId` (por defecto, el placeholder
+   `cc.edecan.app`; para distribución debes usar el tuyo).
+2. Descarga `google-services.json` y colócalo localmente en
+   `apps/mobile/android/androidApp/google-services.json`. Está ignorado por
+   Git. No se copia al backend ni se comparte entre instalaciones. Si el
+   archivo no existe, Gradle no aplica el plugin Google Services y el checkout
+   OSS sigue compilando con avisos locales.
+3. Habilita Cloud Messaging API en el proyecto. La app usa el módulo principal
+   `firebase-messaging` (no el módulo KTX, retirado del BoM moderno) y recibe
+   rotaciones en `onNewToken`.
+4. **Configuración del proyecto** (ícono de engranaje) → **Cuentas de
    servicio** → **Generar nueva clave privada**. Firebase descarga un archivo
    JSON con `type`, `project_id`, `private_key`, `client_email`, etc.
-3. Abre ese archivo y copia su contenido COMPLETO tal cual — es lo que pegas en
+5. Abre ese archivo y copia su contenido COMPLETO tal cual — es lo que pegas en
    `service_account_json` al conectar (ver más abajo; `project_id` se deriva
    automáticamente del propio JSON, no hace falta que lo repitas a mano, aunque
    puedes pasarlo explícito si prefieres).
 
-Esta clave es **tuya**: vive en tu proyecto de Firebase/GCP, la puedes revocar
+La configuración cliente y las versiones recomendadas están en la
+[guía oficial de Firebase para Android](https://firebase.google.com/docs/android/setup);
+el permiso de Android 13+ y la rotación del token están en
+[FCM para Android](https://firebase.google.com/docs/cloud-messaging/android/get-started).
+
+`google-services.json` contiene identificadores cliente, pero el JSON de la
+**cuenta de servicio sí es un secreto de servidor**: nunca se coloca dentro del
+APK. Esta clave es **tuya**: vive en tu proyecto de Firebase/GCP, la puedes revocar
 en cualquier momento desde *Cuentas de servicio* de la consola. Edecán nunca
 pide ni almacena una credencial de push "de plataforma".
 
@@ -134,19 +170,30 @@ SOLO funciona sobre un dispositivo que sea tuyo (tu propio `user_id`) y esté
 `DELETE /v1/devices/{device_id}/push-token` limpia el registro (p. ej. al
 cerrar sesión en la app o desinstalarla).
 
-### Nota honesta: el registro automático desde las apps móviles llega en la
-### siguiente ola
+Las apps ya hacen este ciclo completo:
 
-Los endpoints de arriba (`POST`/`DELETE /{id}/push-token`) ya están completos y
-funcionando — lo que **todavía no existe** es el código Swift/Kotlin dentro de
-`apps/mobile/ios`/`apps/mobile/android` que pida el token al sistema operativo
-(`UNUserNotificationCenter`/Firebase Messaging SDK) y lo mande automáticamente
-a este endpoint al arrancar la app. Mientras esa pieza aterriza, puedes
-registrar un `push_token` a mano vía la API (por ejemplo con `curl` o desde
-Configuración → un cliente HTTP cualquiera) para probar el flujo de punta a
-punta.
+- El permiso se pide desde **Tú → Avisos**, con contexto; nunca bloquea el
+  onboarding.
+- En cada arranque autorizado se solicita el token vigente y se hace `POST`.
+  `onNewToken`/el callback APNs reemplaza el anterior sin registrarlo en logs.
+- Al desvincular, la app intenta `DELETE` antes de revocar la sesión.
+- El tap acepta solo las rutas cerradas `assistant`, `activity`, `settings`,
+  `create` y `remote`; cualquier valor desconocido abre el asistente.
 
-## 5. El canal `"mobile"` en recordatorios
+## 5. Preferencias por categoría
+
+Cada persona controla sus avisos con `GET|PUT
+/v1/devices/push/preferences`. El `PUT` es parcial: `{"content": false}`
+conserva intactas las demás categorías. Los defaults razonables son:
+
+```json
+{"work":true,"content":true,"design":true,"files":true,"self_repair":true}
+```
+
+Apagar una categoría evita únicamente el push; la actividad durable permanece
+disponible para que el resultado no se pierda.
+
+## 6. El canal `"mobile"` en recordatorios
 
 `POST /v1/reminders {..., "channel": "mobile"}` (o la tool `crear_recordatorio`
 del agente, con la limitación que se explica abajo) hace que, al vencer el
@@ -156,25 +203,32 @@ con `push_token` registrado — despachando cada uno por su `push_platform`
 (APNs o FCM según corresponda). Si tienes varios dispositivos, todos reciben el
 push.
 
-**Nota para quien siga leyendo**: `packages/toolkit/edecan_toolkit/
-recordatorios.py::_CANALES_VALIDOS` (la tool que usa el chat) todavía NO incluye
-`"mobile"` en su propio allowlist — sigue quedando fuera de esta ola (ese
-paquete no forma parte de este work package), así que un recordatorio creado
-por el AGENTE con `channel="mobile"` hoy cae en silencio a `"web"` (sin push),
-mientras que uno creado directo por `POST /v1/reminders` sí lo respeta.
-Sincronizar ambos allowlists queda pendiente para un WP de seguimiento.
+La tool `crear_recordatorio` y ambos clientes móviles usan `mobile` por defecto.
+Las apps también programan una notificación local con id estable. Así un build
+sin APNs/FCM propio sigue avisando en el dispositivo y el mensaje de chat sigue
+siendo la fuente durable.
 
-## 6. API HTTP completa (`/v1/devices/*`, flag `notifications.push`)
+## 7. API HTTP completa (`/v1/devices/*`, flag `notifications.push`)
 
 | Ruta | Qué hace |
 |---|---|
 | `POST /v1/devices/{id}/push-token` | Registra `push_token`/`push_platform` de un dispositivo TUYO y `active`. `204`. `404` si no es tuyo/no existe/no está activo. |
 | `DELETE /v1/devices/{id}/push-token` | Limpia el registro de push de un dispositivo TUYO. `204`. `404` si no es tuyo/no existe. |
+| `GET /v1/devices/push/preferences` | Preferencias efectivas del usuario actual por categoría. |
+| `PUT /v1/devices/push/preferences` | Actualización parcial de preferencias por categoría. |
 | `PUT /v1/devices/push/credentials` | Pegar y validar (sin red) tu APNs y/o FCM — ver arriba. `204`. |
 | `GET /v1/devices/push/status` | Qué tienes conectado + cuántos dispositivos de tu cuenta ya registraron token. |
 | `DELETE /v1/devices/push/credentials` | Desconectar (idempotente). |
 
 ## Cómo funciona el envío por dentro (`edecan_worker.push`)
+
+Las llamadas entrantes usan el mismo contrato universal. El webhook firmado
+confirma primero `phone_calls` y un evento `incoming`; después encola solo el
+`call_id`. El worker vuelve a comprobar ambos, registra una actividad
+idempotente, consulta la preferencia `work` y recién entonces intenta un push
+con título/cuerpo genéricos y `edecan://activity/<call_id>`. Número, nombre,
+objetivo y transcripción nunca aparecen en la pantalla bloqueada. El resumen de
+cierre usa su job terminal independiente y no se genera ni se duplica aquí.
 
 - **APNs**: se construye un JWT de proveedor firmado **ES256** (`iss=team_id`,
   `iat`, header `kid=key_id`) con TU `.p8`, y se hace `POST
@@ -186,6 +240,10 @@ Sincronizar ambos allowlists queda pendiente para un WP de seguimiento.
   `private_key` de tu service account, se canjea por un access_token en
   `oauth2.googleapis.com/token`, y se hace `POST https://fcm.googleapis.com/v1/
   projects/{project_id}/messages:send`.
+- **Navegación segura**: APNs recibe la metadata opaca fuera de `aps`; FCM en
+  `message.data`. El allowlist admite `route`, `kind`, `event`, `event_key`,
+  `chat_id`, `artifact_id`, `resource_id` y `deeplink`; rechaza cualquier
+  clave arbitraria.
 - **Multi-dispositivo**: si tienes varios dispositivos con token registrado, se
   intenta el envío a TODOS — un fallo en uno (red caída, token vencido) no
   frena el envío a los demás.
@@ -207,12 +265,28 @@ docstring completo de `apps/worker/edecan_worker/push.py` para el detalle). Si
 alguna vez ves pushes de APNs que no llegan y todo lo demás (credenciales,
 token, topic) está bien, esa es la primera pista a revisar.
 
-## Qué falta / decisiones conscientes
+## Fallback OSS y decisiones conscientes
 
-- El registro automático del `push_token` desde las apps nativas (Swift/Kotlin)
-  queda para la siguiente ola — ver la nota honesta más arriba.
-- `packages/toolkit/edecan_toolkit/recordatorios.py` (la tool del agente) no
-  conoce todavía `channel="mobile"` — ver la nota de la sección 5.
+- Sin `.p8`/service account en el servidor no hay push remoto, pero la app no
+  falla: avisos locales cubren recordatorios y resultados observados por la app
+  (contenido, trabajos y llamadas). Los payloads remotos usan los mismos canales
+  y rutas.
+- Desinstalar una app no permite ejecutar el `DELETE`; APNs/FCM limpiará tokens
+  muertos cuando el proveedor los rechace. Al reinstalar, el token nuevo se
+  vuelve a registrar.
+- Los productores asíncronos `run_mission`, `generate_content` e `ingest_file`
+  ya usan el emisor universal. Otros productores backend pueden construir
+  `edecan_core.notifications.ImportantNotificationEvent`; deben entregar solo
+  después de confirmar el resultado principal.
+- Los flujos síncronos de Design Studio, publicación y autorreparación ya
+  tienen tipos de evento reservados (`design_ready`, `design_export_ready`,
+  `content_published`, `self_repair_completed`). Su punto de integración debe
+  vivir en el orquestador que confirma el turno, no dentro de la tool mientras
+  su transacción sigue abierta. El hook post-commit de esos productores queda
+  pendiente: debe publicar el contrato portable
+  `edecan_core.notifications.ImportantNotificationEvent` hacia el worker, sin
+  importar `apps/worker` desde `apps/api`. Esta frontera evita avisar «listo»
+  antes de que el artefacto o reparación sea durable.
 - No hay reintentos automáticos de un push fallido (a diferencia de los jobs en
   sí, que sí reintentan con backoff, `ARCHITECTURE.md` §10.11) — un push es un
   intento único, best-effort, por diseño: el recordatorio real (el mensaje de

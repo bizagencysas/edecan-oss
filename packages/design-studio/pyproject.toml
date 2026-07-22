@@ -1,0 +1,41 @@
+[project]
+name = "edecan-design-studio"
+version = "0.7.0"
+description = "Provider-neutral, versioned HTML design artifacts for Edecan"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "aioboto3>=13.0",
+    "edecan-core",
+    "edecan-creative",
+    "fpdf2>=2.7",
+    "Pillow>=10.1",
+]
+
+[project.optional-dependencies]
+browser-render = ["playwright>=1.40"]
+
+[project.entry-points."edecan.tools"]
+design-studio = "edecan_design_studio:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-creative = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_design_studio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

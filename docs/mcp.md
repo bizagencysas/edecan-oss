@@ -37,10 +37,12 @@ En **Configuración → Servidores MCP** (`apps/web/src/components/configuracion
 1. **Nombre** — un identificador corto para vos mismo (p. ej. `notion`, `mi-servidor`).
 2. **Transporte** — `http` (un servidor MCP remoto, lo normal) o `stdio` (un comando local — ver
    "Modo local" abajo).
-3. **URL** (transporte `http`) o **Comando** (transporte `stdio`).
+3. **URL** (servidor remoto) o **Aplicación local** (`stdio`).
 4. **Headers** (opcional, solo `http`) — pares clave/valor, típicamente `Authorization: Bearer …`
    si tu servidor lo exige. Se guardan cifrados, nunca en texto plano.
-5. **Probar y conectar** — antes de guardar nada, Edecán hace el *handshake* MCP real
+5. **Acceso secreto local** (opcional, solo `stdio`) — variables que necesita ese proceso. Los
+   valores viajan cifrados y nunca se muestran en `GET /servers` ni se incrustan en el comando.
+6. **Probar y conectar** — antes de guardar nada, Edecán hace el *handshake* MCP real
    (`initialize` + `tools/list`) contra tu servidor; si falla, ves el error exacto y nada se
    persiste — mismo principio de "pegar y validar" que el resto de credenciales
    ([`credenciales.md`](./credenciales.md)).
@@ -106,10 +108,34 @@ pedido de un tenant sería ejecución de código remoto — mismo criterio que y
 proveedores LLM tipo CLI (`claude_cli`/`codex_cli`) y Ollama (ver
 [`proveedores-llm.md`](./proveedores-llm.md)).
 
-Cuando sí se ejecuta (modo local), el subproceso arranca con un ambiente **mínimo** (solo
-`PATH`/`HOME` heredados del proceso) — nunca hereda el resto de variables de entorno del backend
-(credenciales de plataforma, claves de infraestructura, etc.). Si tu servidor MCP necesita alguna
-variable extra, pásala codificada en el propio comando (p. ej. `env MI_VAR=valor npx …`).
+Cuando sí se ejecuta (modo local), el subproceso arranca con un ambiente **mínimo**: `PATH`/`HOME`
+del proceso más únicamente las variables que la persona añadió expresamente a Edecán para ESE
+servidor. Nunca hereda el resto del ambiente del backend (credenciales de plataforma, claves de
+infraestructura, etc.). No incrustes secretos con `env MI_VAR=valor` dentro del comando: las
+configuraciones nuevas tienen campos secretos separados. Por compatibilidad, las filas antiguas
+siguen ejecutándose, pero `GET /servers` redacta asignaciones y argumentos con nombres sensibles.
+
+El stderr de un servidor local tampoco se copia literalmente a logs: un proceso de terceros podría
+repetir ahí un token que recibió. Solo se registra que hubo salida y su tamaño.
+
+## Meta Ads por MCP
+
+Edecán conserva dos caminos distintos y los presenta como tales:
+
+- **Meta Ads nativo (recomendado)**: usa la Marketing API de Meta, valida la cuenta en vivo y
+  mantiene el guardrail propio de Edecán: borrador, doble confirmación y campaña creada siempre en
+  pausa. Es la opción normal para una persona que solo quiere que Edecán trabaje.
+- **MCP local comunitario (avanzado)**: la app de escritorio ofrece una plantilla para
+  [`hashcott/meta-ads-mcp-server`](https://github.com/hashcott/meta-ads-mcp-server), etiquetada
+  claramente como tercero/no oficial y de solo lectura. El token `ads_read` se guarda como
+  `META_ADS_ACCESS_TOKEN` dentro del blob cifrado del servidor; nunca dentro del comando.
+
+Meta también opera un MCP oficial en beta en `https://mcp.facebook.com/ads`. Ese endpoint exige el
+flujo OAuth del estándar MCP. La versión actual de Edecán todavía no implementa descubrimiento y
+callback OAuth para servidores MCP remotos, así que la UI no ofrece un botón falso que vaya a
+fallar, no reutiliza un access token de Graph como si fuera un token con audiencia MCP y nunca pone
+tokens en el query string. La integración correcta futura es OAuth 2.1 + PKCE + Protected Resource
+Metadata, siguiendo la [especificación de autorización MCP](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization).
 
 ### Nombres de tool que nunca chocan con las nativas
 
@@ -134,6 +160,9 @@ para que puedas revisarlo si algo se ve raro.
 - **Solo `tools`** — el protocolo MCP también define `resources` (archivos/datos que el servidor
   expone) y `prompts` (plantillas reutilizables); esta versión de Edecán no los usa. Si tu servidor
   también los expone, Edecán los ignora por ahora.
+- **Sin OAuth interactivo para MCP remoto** — hoy HTTP acepta headers configurados por la persona;
+  servidores como el MCP oficial de Meta Ads que exigen discovery/callback OAuth todavía no se
+  pueden autorizar desde Edecán.
 - **Sin streaming** — cada llamada a una tool espera la respuesta completa; no hay soporte para
   resultados incrementales.
 - **Sin caché de sesión** — cada llamada a una tool MCP abre su propia conexión (o subproceso),

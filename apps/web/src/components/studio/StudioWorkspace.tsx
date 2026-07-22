@@ -126,8 +126,18 @@ export function StudioWorkspace() {
   const selectRevision = useCallback(async (projectId: string, revision: StudioRevision) => {
     setActiveRevisionId(revision.id);
     setSelection(null);
-    const response = await execute({ action: "read", projectId, revisionId: revision.id });
-    await showResponseArtifacts(response);
+    // El lienzo usa un render visual determinista, mientras el HTML original
+    // se conserva como segundo artefacto para descarga y edición. Así la app
+    // instalada no depende de que WebKit decida pintar un iframe Blob local.
+    const rendered = await execute({ action: "render", projectId, revisionId: revision.id });
+    const source = await runStudioAction({ action: "read", projectId, revisionId: revision.id });
+    const seen = new Set<string>();
+    const artifacts = [...rendered.artifacts, ...source.artifacts].filter((artifact) => {
+      if (seen.has(artifact.file_id)) return false;
+      seen.add(artifact.file_id);
+      return true;
+    });
+    await showResponseArtifacts({ ...rendered, artifacts });
   }, [execute, showResponseArtifacts]);
 
   const selectProject = useCallback(async (project: StudioProject) => {

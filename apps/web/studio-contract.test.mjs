@@ -28,13 +28,13 @@ test("Studio endurece proyectos, revisiones y plantillas antes de renderizarlos"
   assert.equal(studioTemplatesFromResponse(response({ templates: [{ id: "t1", mode: "unknown" }] }))[0].mode, "general");
 });
 
-test("elige HTML aislable primero y conserva imágenes como alternativa", () => {
+test("elige el render visual primero y conserva HTML como artefacto editable", () => {
   const picked = pickStudioPreviewArtifact([
     { file_id: "png", filename: "preview.png", mime: "image/png" },
     { file_id: "html", filename: "board.html", mime: "text/html" },
   ]);
-  assert.equal(picked?.file_id, "html");
-  assert.equal(picked?.kind, "html");
+  assert.equal(picked?.file_id, "png");
+  assert.equal(picked?.kind, "image");
 });
 
 test("la previsualización HTML inserta CSP sin red, scripts, formularios ni objetos", async () => {

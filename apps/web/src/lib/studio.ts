@@ -207,7 +207,11 @@ export function pickStudioPreviewArtifact(artifacts: StudioArtifact[]): StudioPr
     const kind = previewKind(artifact);
     return kind ? [{ ...artifact, kind }] : [];
   });
-  return candidates.find((item) => item.kind === "html") ?? candidates.find((item) => item.kind === "image") ?? candidates[0] ?? null;
+  // WebKit puede aceptar el Blob HTML y aun así dejar el iframe vacío. El
+  // render PNG es determinista, conserva el lienzo completo y sigue
+  // permitiendo señalar/anotar; el HTML permanece disponible como artefacto
+  // editable y descargable en el selector inferior.
+  return candidates.find((item) => item.kind === "image") ?? candidates.find((item) => item.kind === "html") ?? candidates[0] ?? null;
 }
 
 export const STUDIO_PREVIEW_CSP =

@@ -104,6 +104,8 @@ private struct ArtifactPreview: View {
             }
         } else if mime == "application/pdf" || artifact.filename.lowercased().hasSuffix(".pdf") {
             PDFPreview(data: download.data)
+        } else if isHTML(mime: mime, filename: artifact.filename) {
+            LocalHTMLPreview(data: download.data)
         } else if isText(mime: mime, filename: artifact.filename) {
             ScrollView {
                 Text(String(decoding: download.data.prefix(2_000_000), as: UTF8.self))
@@ -158,6 +160,11 @@ private struct ArtifactPreview: View {
                 filename.lowercased().hasSuffix($0)
             }
     }
+
+    private func isHTML(mime: String, filename: String) -> Bool {
+        mime == "text/html" || mime == "application/xhtml+xml" ||
+            [".html", ".htm"].contains { filename.lowercased().hasSuffix($0) }
+    }
 }
 
 private struct PDFPreview: UIViewRepresentable {
@@ -173,6 +180,66 @@ private struct PDFPreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {}
+}
+
+/// Renderiza un artefacto HTML ya descargado sin darle acceso al dispositivo
+/// ni a Internet. CSS e imágenes ``data:`` funcionan; scripts, enlaces,
+/// iframes y recursos remotos quedan bloqueados.
+private struct LocalHTMLPreview: UIViewRepresentable {
+    let data: Data
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = context.coordinator
+        view.allowsLinkPreview = false
+        let html = String(decoding: data.prefix(8_000_000), as: UTF8.self)
+        context.coordinator.lastHTML = html
+        view.loadHTMLString(html, baseURL: nil)
+        return view
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let html = String(decoding: data.prefix(8_000_000), as: UTF8.self)
+        if context.coordinator.lastHTML != html {
+            context.coordinator.lastHTML = html
+            webView.loadHTMLString(html, baseURL: nil)
+        }
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var lastHTML = ""
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
+            guard navigationAction.navigationType == .other,
+                  let scheme = navigationAction.request.url?.scheme?.lowercased(),
+                  scheme == "about" || scheme == "data"
+            else {
+                return .cancel
+            }
+            return .allow
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse
+        ) async -> WKNavigationResponsePolicy {
+            guard let scheme = navigationResponse.response.url?.scheme?.lowercased(),
+                  scheme == "about" || scheme == "data"
+            else {
+                return .cancel
+            }
+            return .allow
+        }
+    }
 }
 
 private struct SafeWebPreview: UIViewRepresentable {

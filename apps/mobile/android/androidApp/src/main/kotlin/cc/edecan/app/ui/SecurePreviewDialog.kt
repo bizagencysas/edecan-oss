@@ -151,6 +151,7 @@ private fun ArtifactBody(download: DownloadedArtifact) {
             } else PreviewUnavailable()
         }
         mime == "application/pdf" || artifact.filename.lowercase().endsWith(".pdf") -> PdfPreview(download)
+        isHtmlArtifact(mime, artifact.filename) -> LocalHtmlPreview(download.bytes)
         isTextArtifact(mime, artifact.filename) -> Text(
             text = download.bytes.copyOfRange(0, minOf(download.bytes.size, 2_000_000)).toString(Charsets.UTF_8),
             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
@@ -158,6 +159,66 @@ private fun ArtifactBody(download: DownloadedArtifact) {
         )
         else -> PreviewUnavailable()
     }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun LocalHtmlPreview(bytes: ByteArray) {
+    val html = remember(bytes) {
+        bytes.copyOfRange(0, minOf(bytes.size, 8_000_000)).toString(Charsets.UTF_8)
+    }
+    AndroidView(
+        factory = { context ->
+            CookieManager.getInstance().setAcceptCookie(false)
+            WebView(context).apply {
+                settings.javaScriptEnabled = false
+                settings.domStorageEnabled = false
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.blockNetworkLoads = true
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): Boolean = true
+
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): WebResourceResponse? {
+                        val scheme = request.url.scheme?.lowercase()
+                        if (scheme == "about" || scheme == "data") return null
+                        return WebResourceResponse(
+                            "text/plain",
+                            "UTF-8",
+                            403,
+                            "Blocked",
+                            emptyMap(),
+                            null,
+                        )
+                    }
+                }
+                tag = html.hashCode()
+                loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        update = { view ->
+            val revision = html.hashCode()
+            if (view.tag != revision) {
+                view.tag = revision
+                view.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+        onRelease = { webView ->
+            webView.stopLoading()
+            webView.loadUrl("about:blank")
+            webView.clearHistory()
+            webView.clearCache(true)
+            webView.destroy()
+        },
+    )
 }
 
 @Composable
@@ -264,6 +325,10 @@ private fun isTextArtifact(mime: String, filename: String): Boolean =
     mime.startsWith("text/") || mime == "application/json" || mime.endsWith("+json") ||
         mime == "application/xml" || mime.endsWith("+xml") ||
         listOf(".md", ".txt", ".csv", ".json", ".xml", ".yaml", ".yml").any(filename.lowercase()::endsWith)
+
+private fun isHtmlArtifact(mime: String, filename: String): Boolean =
+    mime == "text/html" || mime == "application/xhtml+xml" ||
+        listOf(".html", ".htm").any(filename.lowercase()::endsWith)
 
 private fun shareArtifact(context: Context, download: DownloadedArtifact) {
     val safeName = download.artifact.filename.replace('\\', '-').replace('/', '-').take(180).ifBlank { "archivo" }

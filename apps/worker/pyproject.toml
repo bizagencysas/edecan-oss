@@ -25,6 +25,7 @@ dependencies = [
     "edecan-docanalysis",
     "edecan-browser",
     "edecan-creative",
+    "edecan-design-studio",
     "edecan-messaging",
     "edecan-agents",
     "edecan-automations",
@@ -60,6 +61,7 @@ edecan-toolkit = { workspace = true }
 edecan-docanalysis = { workspace = true }
 edecan-browser = { workspace = true }
 edecan-creative = { workspace = true }
+edecan-design-studio = { workspace = true }
 edecan-messaging = { workspace = true }
 edecan-agents = { workspace = true }
 edecan-automations = { workspace = true }

@@ -60,7 +60,10 @@ docker info >/dev/null
   -e DATABASE_URL=postgresql+asyncpg://edecan:edecan@postgres:5432/edecan \
   migrate
 
-docker run --rm -d \
+# Keep smoke containers until the trap runs. If either process exits during
+# startup, retaining it is the only reliable way to surface its production log
+# instead of waiting on a container that ``--rm`` already erased.
+docker run -d \
   --name "$api_container" \
   --network "$network" \
   -e ENV=dev \
@@ -70,7 +73,7 @@ docker run --rm -d \
   -e LOCAL_MASTER_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
   "${project}-api:latest" >/dev/null
 
-docker run --rm -d \
+docker run -d \
   --name "$web_container" \
   --network "$network" \
   "${project}-web:latest" >/dev/null

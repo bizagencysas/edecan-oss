@@ -12,6 +12,20 @@ def test_desktop_sidecar_collects_design_studio_and_entry_point_metadata() -> No
     assert "datas.extend(copy_metadata(distribution_name))" in spec
 
 
+def test_production_api_and_worker_install_design_studio() -> None:
+    """Both isolated production runtimes must retain the complete Studio.
+
+    The API imports the Studio router directly, while delegated missions load
+    Studio tools from the worker's ``edecan.tools`` entry-point registry.
+    Workspace-wide development installs can hide either missing dependency.
+    """
+
+    for relative_path in ("apps/api/pyproject.toml", "apps/worker/pyproject.toml"):
+        manifest = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert '"edecan-design-studio"' in manifest
+        assert "edecan-design-studio = { workspace = true }" in manifest
+
+
 def test_desktop_build_packages_a_self_contained_fydesign_engine() -> None:
     """El adaptador Python solo no basta en un equipo limpio.
 

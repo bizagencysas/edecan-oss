@@ -1,7 +1,7 @@
 import type { Automation } from "./api-automatizaciones";
 import type { Mission } from "./api-misiones";
 import type { Reminder } from "./types";
-import type { PhoneCall } from "./types";
+import type { PhoneCall, PhoneCallSummary } from "./types";
 
 export type ActivityKind = "mission" | "reminder" | "automation" | "phone";
 export type ActivityTone = "attention" | "active" | "scheduled" | "complete" | "error";
@@ -16,6 +16,7 @@ export interface ActivityEntry {
   statusLabel: string;
   timestamp: string | null;
   phoneConfirmation?: { callId: string; toE164: string; goal: string };
+  phoneSummary?: PhoneCallSummary;
 }
 
 export interface ActivityOverview {
@@ -52,6 +53,25 @@ function newestFirst(a: ActivityEntry, b: ActivityEntry): number {
 
 function soonestFirst(a: ActivityEntry, b: ActivityEntry): number {
   return timestampValue(a.timestamp) - timestampValue(b.timestamp);
+}
+
+function durationLabel(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
+    return "Duración no disponible";
+  }
+  const rounded = Math.round(seconds);
+  if (rounded < 60) return `${rounded} s`;
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+  return remainingSeconds > 0 ? `${minutes} min ${remainingSeconds} s` : `${minutes} min`;
+}
+
+/** Texto breve para explicar el resumen sin exponer campos internos de telefonía. */
+export function phoneCallSummaryMeta(summary: PhoneCallSummary): string {
+  const transcript = summary.transcript.available
+    ? `${summary.transcript.turn_count} ${summary.transcript.turn_count === 1 ? "intervención guardada" : "intervenciones guardadas"}`
+    : "Sin transcripción";
+  return `${durationLabel(summary.duration_seconds)} · ${transcript}`;
 }
 
 /** Une la actividad que antes estaba repartida entre varias páginas. */
@@ -145,6 +165,12 @@ export function buildActivityOverview({
         toE164: call.to_e164,
         goal: call.goal,
       } : undefined,
+      phoneSummary: call.summary
+        ? {
+            ...call.summary,
+            duration_seconds: call.summary.duration_seconds ?? call.duration_seconds,
+          }
+        : undefined,
     });
   }
 

@@ -32,6 +32,7 @@ import cc.edecan.app.ui.CapabilitiesScreen
 import cc.edecan.app.ui.ContentStudioScreen
 import cc.edecan.app.ui.IdeScreen
 import cc.edecan.app.ui.InicioScreen
+import cc.edecan.app.ui.LlamadasScreen
 import cc.edecan.app.ui.MisionesScreen
 import cc.edecan.app.ui.NegociosScreen
 import cc.edecan.app.ui.PerfilScreen
@@ -58,6 +59,7 @@ private enum class PantallaSecundaria {
     MISIONES,
     AUTOMATIZACIONES,
     RECORDATORIOS,
+    LLAMADAS,
     REMOTO,
     VOZ,
     IDE,
@@ -124,6 +126,14 @@ fun RootNav(
             PantallaSecundaria.MISIONES -> MisionesScreen(onVolver = volver)
             PantallaSecundaria.AUTOMATIZACIONES -> AutomatizacionesScreen(onVolver = volver)
             PantallaSecundaria.RECORDATORIOS -> RecordatoriosScreen(onVolver = volver)
+            PantallaSecundaria.LLAMADAS -> LlamadasScreen(
+                onVolver = volver,
+                onPedirLlamada = {
+                    solicitudChat = "Llama a "
+                    pantallaSecundaria = null
+                    seleccion = AssistantDestination.EDECAN
+                },
+            )
             PantallaSecundaria.REMOTO -> RemotoScreen(onVolver = volver)
             PantallaSecundaria.VOZ -> VozScreen(chatViewModel = chatViewModel, onVolver = volver)
             PantallaSecundaria.IDE -> IdeScreen(onVolver = volver)
@@ -179,6 +189,7 @@ fun RootNav(
                     onAbrirMisiones = { pantallaSecundaria = PantallaSecundaria.MISIONES },
                     onAbrirAutomatizaciones = { pantallaSecundaria = PantallaSecundaria.AUTOMATIZACIONES },
                     onAbrirRecordatorios = { pantallaSecundaria = PantallaSecundaria.RECORDATORIOS },
+                    onAbrirLlamadas = { pantallaSecundaria = PantallaSecundaria.LLAMADAS },
                     onAbrirRemoto = { pantallaSecundaria = PantallaSecundaria.REMOTO },
                 )
                 AssistantDestination.YOU -> PerfilScreen(

@@ -621,6 +621,11 @@ class EdecanApi private constructor(
 
     suspend fun pushStatus(): PushStatus = conAutoRefresh { obtener("/v1/devices/push/status") }
 
+    /** Historial tenant-scoped de llamadas, incluido el resumen humano que
+     * el servidor agrega al terminar. La creación sigue naciendo del chat y
+     * conserva su confirmación explícita; esta ruta es solo lectura. */
+    suspend fun phoneCalls(): List<PhoneCall> = conAutoRefresh { obtener("/v1/phone/calls") }
+
     /** Imagen privada para preview inline. Usa el endpoint MIME-allowlisted
      * `/content`; audio/video no pasan por aquí porque Android los transmite
      * directamente con Bearer + Range desde `ChatScreen`. */

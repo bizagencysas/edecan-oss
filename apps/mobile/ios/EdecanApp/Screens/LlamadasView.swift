@@ -32,7 +32,15 @@ struct LlamadasView: View {
                 .padding()
             } else {
                 List(llamadas) { llamada in
-                    fila(llamada)
+                    NavigationLink {
+                        DetalleLlamadaView(
+                            llamada: llamada,
+                            nombreEstado: nombreEstado(llamada.status),
+                            colorEstado: color(llamada.status)
+                        )
+                    } label: {
+                        fila(llamada)
+                    }
                 }
                 .listStyle(.plain)
             }
@@ -152,5 +160,143 @@ struct LlamadasView: View {
         case "ringing", "in_progress": EdecanTheme.morado
         default: EdecanTheme.azul
         }
+    }
+}
+
+/// El historial sigue siendo una sola tarjeta ligera en Actividad. El
+/// detalle aparece solo al tocar una llamada y traduce el JSON del backend a
+/// decisiones y pendientes que una persona puede entender de un vistazo.
+private struct DetalleLlamadaView: View {
+    let llamada: PhoneCallOut
+    let nombreEstado: String
+    let colorEstado: Color
+
+    var body: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label(
+                            llamada.direction == "incoming" ? "Entrante" : "Saliente",
+                            systemImage: llamada.direction == "incoming"
+                                ? "phone.arrow.down.left.fill"
+                                : "phone.arrow.up.right.fill"
+                        )
+                        Spacer()
+                        Text(nombreEstado)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(colorEstado)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(colorEstado.opacity(0.12), in: Capsule())
+                    }
+                    Text(numeroContacto)
+                        .font(.title3.weight(.semibold))
+                    Text(llamada.goal)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                if let agente = nombreAgente {
+                    LabeledContent("Agente", value: agente)
+                }
+                if let duracion = llamada.durationSeconds ?? llamada.summary?.durationSeconds {
+                    LabeledContent(
+                        "Duración",
+                        value: Duration.seconds(duracion).formatted(.time(pattern: .minuteSecond))
+                    )
+                }
+                if let fecha = llamada.startedAt ?? llamada.createdAt {
+                    LabeledContent {
+                        Text(fecha, format: .dateTime.day().month().year().hour().minute())
+                    } label: {
+                        Text("Fecha")
+                    }
+                }
+                if let error = llamada.error, !error.isEmpty {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            if let summary = llamada.summary {
+                resumen(summary.keyPoints, titulo: "Puntos clave", vacio: "No se registraron puntos clave.")
+                resumen(summary.commitments, titulo: "Compromisos", vacio: "No quedaron compromisos.")
+                resumen(summary.nextSteps, titulo: "Próximos pasos", vacio: "No quedaron pasos pendientes.")
+
+                Section("Transcripción") {
+                    if summary.transcript.available {
+                        Label(
+                            textoTranscripcion(summary.transcript),
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(.green)
+                    } else {
+                        Label(
+                            textoTranscripcion(summary.transcript),
+                            systemImage: "xmark.circle"
+                        )
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Section("Resumen") {
+                    Label(
+                        resumenPendiente,
+                        systemImage: llamadaTerminada ? "doc.text.magnifyingglass" : "clock"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Detalle de llamada")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func resumen(_ elementos: [String], titulo: String, vacio: String) -> some View {
+        Section(titulo) {
+            if elementos.isEmpty {
+                Text(vacio).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(elementos.enumerated()), id: \.offset) { _, elemento in
+                    Label(elemento, systemImage: "checkmark")
+                }
+            }
+        }
+    }
+
+    private var numeroContacto: String {
+        llamada.direction == "incoming" ? llamada.fromE164 : llamada.toE164
+    }
+
+    private var nombreAgente: String? {
+        let nombre = llamada.agent?.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let plantilla = llamada.agent?.templateName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let nombre, !nombre.isEmpty, let plantilla, !plantilla.isEmpty {
+            return "\(nombre) · \(plantilla)"
+        }
+        if let nombre, !nombre.isEmpty { return nombre }
+        if let plantilla, !plantilla.isEmpty { return plantilla }
+        return nil
+    }
+
+    private var llamadaTerminada: Bool {
+        ["completed", "failed", "busy", "no_answer", "cancelled"].contains(llamada.status)
+    }
+
+    private var resumenPendiente: String {
+        llamadaTerminada
+            ? "Esta llamada terminó sin un resumen disponible."
+            : "El resumen aparecerá aquí cuando termine la llamada."
+    }
+
+    private func textoTranscripcion(_ transcript: PhoneCallTranscriptOut) -> String {
+        guard transcript.available else { return "No hay transcripción disponible" }
+        let turnos = transcript.turnCount
+        return turnos == 1
+            ? "Transcripción disponible · 1 intervención"
+            : "Transcripción disponible · \(turnos) intervenciones"
     }
 }

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { buildActivityOverview } from "./src/lib/activity.ts";
+import { buildActivityOverview, phoneCallSummaryMeta } from "./src/lib/activity.ts";
 
 const baseMission = {
   tenant_id: "tenant",
@@ -164,7 +165,18 @@ test("integra llamadas pendientes, activas y terminadas en la misma actividad", 
         ...common,
         id: "done",
         status: "completed",
-        summary: { key_points: ["La cita quedó confirmada"] },
+        duration_seconds: 75,
+        summary: {
+          version: 1,
+          status: "completed",
+          direction: "outgoing",
+          participants: [],
+          duration_seconds: null,
+          key_points: ["La cita quedó confirmada"],
+          commitments: ["Ana enviará la dirección"],
+          next_steps: ["Agregar la cita al calendario"],
+          transcript: { available: true, turn_count: 3 },
+        },
       },
     ],
   });
@@ -172,4 +184,50 @@ test("integra llamadas pendientes, activas y terminadas en la misma actividad", 
   assert.equal(overview.current[0].statusLabel, "En llamada");
   assert.equal(overview.recent[0].statusLabel, "Finalizada");
   assert.equal(overview.recent[0].detail, "La cita quedó confirmada");
+  assert.equal(overview.recent[0].phoneSummary?.duration_seconds, 75);
+  assert.deepEqual(overview.recent[0].phoneSummary?.commitments, ["Ana enviará la dirección"]);
+  assert.deepEqual(overview.recent[0].phoneSummary?.next_steps, ["Agregar la cita al calendario"]);
+});
+
+test("presenta duración y transcripción de forma humana", () => {
+  const base = {
+    version: 1,
+    status: "completed",
+    direction: "outgoing",
+    participants: [],
+    key_points: [],
+    commitments: [],
+    next_steps: [],
+  };
+
+  assert.equal(
+    phoneCallSummaryMeta({
+      ...base,
+      duration_seconds: 125,
+      transcript: { available: true, turn_count: 1 },
+    }),
+    "2 min 5 s · 1 intervención guardada",
+  );
+  assert.equal(
+    phoneCallSummaryMeta({
+      ...base,
+      duration_seconds: null,
+      transcript: { available: false, turn_count: 0 },
+    }),
+    "Duración no disponible · Sin transcripción",
+  );
+});
+
+test("Actividad permite abrir el resumen completo sin convertirlo en otra pantalla", () => {
+  const source = readFileSync(
+    new URL("./src/app/(app)/app/actividad/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /<details/);
+  assert.match(source, /Ver resumen completo/);
+  assert.match(source, /Puntos clave/);
+  assert.match(source, /Compromisos/);
+  assert.match(source, /Próximos pasos/);
+  assert.match(source, /phoneCallSummaryMeta\(summary\)/);
 });

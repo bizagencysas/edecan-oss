@@ -7,8 +7,6 @@
 //! conceder todo: algunos permisos muestran un diálogo y otros obligan a
 //! abrir la sección exacta de Configuración.
 
-#[cfg(target_os = "macos")]
-use serde::Deserialize;
 use serde::Serialize;
 
 use crate::listen;
@@ -273,21 +271,6 @@ fn current_application_path() -> Option<String> {
     Some(executable.display().to_string())
 }
 
-#[cfg(target_os = "macos")]
-fn current_remote_engine_path() -> Option<String> {
-    let bundle = current_application_path()?;
-    let engine = std::path::Path::new(&bundle)
-        .join("Contents")
-        .join("MacOS")
-        .join("edecan-local");
-    engine.exists().then(|| engine.display().to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn current_remote_engine_path() -> Option<String> {
-    None
-}
-
 fn reveal_application() -> Result<PermissionActionResult, String> {
     let path = current_application_path()
         .ok_or_else(|| "No se pudo localizar el archivo de Edecán.".to_string())?;
@@ -345,6 +328,17 @@ fn request_screen_recording() -> Result<PermissionActionResult, String> {
             permission_id: "screen_recording".into(),
             status: PermissionStatus::Granted,
             message: "Grabación de pantalla está permitida.".into(),
+        });
+    }
+    // Esta llamada pertenece al proceso `.app` visible y estable, no al
+    // sidecar. Es el flujo soportado por macOS para vincular el permiso al
+    // Edecán que la persona tiene abierto y evita que el helper vuelva a
+    // pedir acceso con otra identidad.
+    if unsafe { CGRequestScreenCaptureAccess() } {
+        return Ok(PermissionActionResult {
+            permission_id: "screen_recording".into(),
+            status: PermissionStatus::Granted,
+            message: "Grabación de pantalla está permitida para Edecán.".into(),
         });
     }
     let _ = reveal_application();
@@ -439,7 +433,7 @@ fn platform_name() -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct MacosRemoteEnginePermissions {
     screen_recording: bool,
     accessibility: bool,
@@ -447,15 +441,23 @@ struct MacosRemoteEnginePermissions {
 
 #[cfg(target_os = "macos")]
 fn macos_remote_engine_permissions() -> Option<MacosRemoteEnginePermissions> {
-    let engine = current_remote_engine_path()?;
-    let output = std::process::Command::new(engine)
-        .arg("--macos-permission-status")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&output.stdout).ok()
+    Some(MacosRemoteEnginePermissions {
+        screen_recording: unsafe { CGPreflightScreenCaptureAccess() },
+        accessibility: unsafe { AXIsProcessTrusted() },
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ package cc.edecan.shared
 
 import io.ktor.client.HttpClient
 import io.ktor.client.request.headers
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -47,8 +48,11 @@ class SseClient(private val json: Json = edecanJson) {
         class RespuestaInvalida :
             SseException("El servidor envió una respuesta que no se pudo interpretar.")
 
-        class Servidor(val status: Int) :
+        class Servidor(val status: Int, val retryAfterSeconds: Long? = null) :
             SseException("El servidor rechazó la conexión de chat ($status).")
+
+        class IntentoEnCurso(val retryAfterSeconds: Long = 1) :
+            SseException("Edecán sigue trabajando.")
 
         class EventoInvalido(detalle: String) :
             SseException("Edecán envió un evento de chat que no se pudo leer: $detalle")
@@ -93,11 +97,48 @@ class SseClient(private val json: Json = edecanJson) {
         }
     }
 
-    private fun validarRespuesta(response: HttpResponse) {
-        if (response.status.value !in 200..299) {
-            throw SseException.Servidor(response.status.value)
+    /**
+     * Recupera un turno idempotente que ya fue aceptado por el servidor.
+     *
+     * Este GET no vuelve a enviar el texto del usuario. Por eso Android puede
+     * persistir únicamente la UUID del intento y reanudar después de que el
+     * sistema mate el proceso, sin guardar mensajes ni credenciales en un
+     * Bundle. El servidor responde 202 mientras el agente sigue trabajando y
+     * 200 con el replay SSE exacto cuando termina.
+     */
+    fun resume(
+        client: HttpClient,
+        url: String,
+        accessToken: String,
+    ): Flow<ChatEvent> = flow {
+        try {
+            client.prepareGet(url) {
+                headers {
+                    append(HttpHeaders.Authorization, "Bearer $accessToken")
+                    append(HttpHeaders.Accept, "text/event-stream")
+                }
+            }.execute { response ->
+                if (response.status.value == 202) {
+                    throw SseException.IntentoEnCurso(response.retryAfterSeconds() ?: 1)
+                }
+                validarRespuesta(response)
+                leerBloques(response.bodyAsChannel()) { evento -> emit(evento) }
+            }
+        } catch (e: SseException) {
+            throw e
+        } catch (e: Exception) {
+            throw SseException.Conexion(e.message ?: e::class.simpleName ?: "error desconocido")
         }
     }
+
+    private fun validarRespuesta(response: HttpResponse) {
+        if (response.status.value !in 200..299) {
+            throw SseException.Servidor(response.status.value, response.retryAfterSeconds())
+        }
+    }
+
+    private fun HttpResponse.retryAfterSeconds(): Long? =
+        headers[HttpHeaders.RetryAfter]?.trim()?.toLongOrNull()?.coerceIn(1, 30)
 
     /** Lee `canal` línea por línea y alimenta [SseFrameParser] — el framing
      * SSE en sí (acumular `data:`, decidir cuándo un bloque cierra,

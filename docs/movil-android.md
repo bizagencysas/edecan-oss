@@ -197,6 +197,18 @@ UI ni renunciar a APIs nativas cuando hagan falta.
 
 ### Qué es real hoy (fase v4, además de auth/chat de la iteración anterior)
 
+- **Turnos resistentes a suspensión y cambio de red**: cada mensaje usa una
+  UUID idempotente. Si Android pierde el SSE al minimizarse, el backend
+  continúa el turno y `ChatViewModel` consulta
+  `GET /v1/conversations/{id}/message-attempts/{uuid}` hasta recibir el replay
+  completo. Al volver al primer plano el cliente despierta esa recuperación,
+  reemplaza cualquier fragmento parcial y sincroniza la conversación
+  canónica, sin reenviar el mensaje ni mostrar un fallo falso. En
+  `SavedStateHandle` solo quedan el ID de conversación y la UUID del intento:
+  el texto, los adjuntos y las posibles credenciales nunca se serializan.
+  Esto tolera suspensión, recreación del Activity y muerte recuperable del
+  proceso; no pretende mantener un socket abierto contra las restricciones
+  de batería del sistema.
 - **Negocios real**: `NegociosScreen` — KPIs del mes (`GET
   /v1/negocios/kpis`: ingresos/gastos/beneficio/nuevos clientes/facturado/
   cobrado en tarjetas), dona de "ventas por canal" dibujada a mano con

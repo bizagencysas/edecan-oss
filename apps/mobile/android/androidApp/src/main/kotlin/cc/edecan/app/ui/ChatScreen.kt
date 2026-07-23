@@ -49,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,6 +70,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import cc.edecan.app.ui.components.EmptyState
@@ -118,6 +122,7 @@ fun ChatScreen(
     var previewsCargando by remember { mutableStateOf<Set<String>>(emptySet()) }
     var securePreviewTarget by remember { mutableStateOf<SecurePreviewTarget?>(null) }
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val listaArrastrada by listState.interactionSource.collectIsDraggedAsState()
@@ -149,6 +154,16 @@ fun ChatScreen(
 
     LaunchedEffect(sessionViewModel.api) {
         sessionViewModel.api?.let(chatViewModel::cargar)
+    }
+
+    DisposableEffect(lifecycleOwner, sessionViewModel.api) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                sessionViewModel.api?.let(chatViewModel::reanudarAlVolver)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(
@@ -387,6 +402,21 @@ fun ChatScreen(
                         sessionViewModel.api?.let { chatViewModel.confirmar(aprobado = false, api = it) }
                     },
                 )
+            }
+
+            if (chatState.recuperandoTurno) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(
+                        "Edecán sigue trabajando. Recuperando la respuesta…",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
 
             (errorArtefacto ?: chatState.errorMensaje)?.let { error ->

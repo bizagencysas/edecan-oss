@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.flow.toList
@@ -81,5 +82,50 @@ class SseClientRequestTest {
         ).toList()
 
         assertEquals(listOf(ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun reanudaPorGetSinReenviarElMensaje() = runTest {
+        val client = HttpClient(MockEngine { request ->
+            assertEquals(HttpMethod.Get, request.method)
+            assertEquals("Bearer access-chat", request.headers[HttpHeaders.Authorization])
+            assertEquals(null, request.headers["Idempotency-Key"])
+            respond(
+                "data: {\"type\":\"text_delta\",\"text\":\"Terminé.\"}\n\n" +
+                    "data: {\"type\":\"done\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val events = SseClient().resume(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+            accessToken = "access-chat",
+        ).toList()
+
+        assertEquals(listOf(ChatEvent.TextDelta("Terminé."), ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun reanudarExponeElRetryAfterMientrasElTurnoSigueEnCurso() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                """{"status":"in_flight"}""",
+                HttpStatusCode.Accepted,
+                headersOf(HttpHeaders.RetryAfter, "3"),
+            )
+        })
+
+        val error = assertFailsWith<SseClient.SseException.IntentoEnCurso> {
+            SseClient().resume(
+                client = client,
+                url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+                accessToken = "access-chat",
+            ).toList()
+        }
+
+        assertEquals(3, error.retryAfterSeconds)
+        assertEquals("Edecán sigue trabajando.", error.message)
     }
 }

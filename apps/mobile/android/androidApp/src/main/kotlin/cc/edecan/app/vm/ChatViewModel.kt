@@ -20,6 +20,7 @@ import cc.edecan.shared.adjuntos
 import cc.edecan.shared.edecanJson
 import cc.edecan.shared.texto
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -252,7 +254,49 @@ data class ChatUiState(
     val herramientaMensaje: String? = null,
     val confirmacionPendiente: ConfirmacionPendiente? = null,
     val enviando: Boolean = false,
+    /** El servidor conserva el turno aunque Android pierda el socket. */
+    val recuperandoTurno: Boolean = false,
     val errorMensaje: String? = null,
+)
+
+/** Identidad mínima de un turno que el servidor ya puede estar procesando.
+ * Deliberadamente no guarda texto, adjuntos ni credenciales en el Bundle. */
+internal data class TurnoPendientePersistido(
+    val conversationId: String,
+    val idempotencyKey: String,
+)
+
+private const val PENDING_CONVERSATION_KEY = "chat_pending_conversation_id"
+private const val PENDING_IDEMPOTENCY_KEY = "chat_pending_idempotency_key"
+
+internal fun SavedStateHandle.turnoPendientePersistido(): TurnoPendientePersistido? {
+    val conversationId = get<String>(PENDING_CONVERSATION_KEY)?.takeIf { it.isNotBlank() }
+    val key = get<String>(PENDING_IDEMPOTENCY_KEY)?.takeIf { it.isNotBlank() }
+    return if (conversationId != null && key != null) TurnoPendientePersistido(conversationId, key) else null
+}
+
+/** Quita cualquier fragmento incompleto antes de consumir el replay completo.
+ * Sin este reset, los deltas que llegaron antes de minimizar se duplicarían. */
+internal fun ChatUiState.prepararReanudacion(idRespuesta: String): ChatUiState = copy(
+    recuperandoTurno = true,
+    errorMensaje = null,
+    herramientaActiva = null,
+    herramientaActivaCallId = null,
+    herramientaSegundos = 0,
+    herramientaMensaje = null,
+    mensajes = mensajes.map { mensaje ->
+        if (mensaje.id == idRespuesta) {
+            mensaje.copy(
+                texto = "",
+                enProgreso = true,
+                artefactos = emptyList(),
+                bloques = emptyList(),
+                trabajo = null,
+            )
+        } else {
+            mensaje
+        }
+    },
 )
 
 /** Aplica la lista canónica del servidor sin tocar el turno que acaba de
@@ -369,6 +413,8 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     private val tareasSubida = mutableMapOf<String, Job>()
     private val seguimientoMisiones = mutableMapOf<String, Job>()
     private val clavesIdempotencia = ClavesIntentoLogico()
+    private var turnoActivo: Job? = null
+    private var despertarReconexion: CompletableDeferred<Unit>? = null
     /** Texto crudo únicamente en memoria durante un intento reintentable. */
     private val textosPrivadosPorMensaje = mutableMapOf<String, String>()
     private var adjuntoUploader = AdjuntoUploader { api, local ->
@@ -393,13 +439,26 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         viewModelScope.launch { cargarListaInicial(api) }
     }
 
+    /** Llamado por la pantalla al volver al primer plano. Despierta un poll
+     * que Android pudo haber ralentizado y, tras recrear el proceso, recupera
+     * el intento usando solo la UUID persistida. */
+    fun reanudarAlVolver(api: EdecanApi) {
+        despertarReconexion?.complete(Unit)
+        val pendiente = savedStateHandle.turnoPendientePersistido() ?: return
+        if (turnoActivo?.isActive == true) return
+        reanudarTurnoPersistido(pendiente, api)
+    }
+
     private suspend fun cargarListaInicial(api: EdecanApi) {
         val version = ++cargaVersion
         _uiState.update { it.copy(cargandoHistorial = true, errorMensaje = null) }
         try {
             val conversaciones = api.conversations()
+            val turnoPendiente = savedStateHandle.turnoPendientePersistido()
             val actual = _uiState.value.conversationId
-            val destino = conversaciones.firstOrNull { it.id == actual } ?: conversaciones.firstOrNull()
+            val destino = conversaciones.firstOrNull { it.id == turnoPendiente?.conversationId }
+                ?: conversaciones.firstOrNull { it.id == actual }
+                ?: conversaciones.firstOrNull()
             val completa = destino?.let { api.conversation(it.id) }
             if (version != cargaVersion) return
             _uiState.update {
@@ -414,6 +473,13 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 )
             }
             iniciarSeguimientosPersistidos(api)
+            if (turnoPendiente != null && completa?.id == turnoPendiente.conversationId) {
+                if (completa.messages.lastOrNull()?.role?.equals("assistant", ignoreCase = true) == true) {
+                    limpiarTurnoPendiente(turnoPendiente.idempotencyKey)
+                } else {
+                    reanudarTurnoPersistido(turnoPendiente, api)
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -603,50 +669,58 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     }
 
     private fun enviarNuevo(texto: String, archivos: List<UploadedFile>, api: EdecanApi) {
-        viewModelScope.launch {
-            val idConversacion = try {
-                asegurarConversacion(api)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update { it.copy(errorMensaje = e.message ?: "No pude iniciar el chat.") }
-                return@launch
-            }
-            val idUsuario = idNuevo()
-            val idRespuesta = idNuevo()
-            val refs = archivos.map { ArtifactRef(it.id, it.filename, it.mime) }
-            // Un contenido nuevo inaugura otro intento lógico. Las claves de
-            // mensajes fallidos anteriores ya no deben heredarse.
-            val idempotencyKey = clavesIdempotencia.nueva(idUsuario)
-            textosPrivadosPorMensaje[idUsuario] = texto
-            actualizarBorrador("")
-            _uiState.update {
-                it.copy(
-                    mensajes = it.mensajes +
-                        MensajeUi(
-                            idUsuario,
-                            MensajeUi.Rol.USUARIO,
-                            ChatSecretRedaction.redact(texto),
-                            adjuntos = refs,
-                            estadoEntrega = EstadoEntrega.ENVIANDO,
-                        ) + MensajeUi(idRespuesta, MensajeUi.Rol.ASISTENTE, enProgreso = true),
-                    adjuntosComposer = emptyList(),
-                    enviando = true,
-                    errorMensaje = null,
-                    herramientaActiva = null,
-                    confirmacionPendiente = null,
+        val job = viewModelScope.launch {
+            try {
+                val idConversacion = try {
+                    asegurarConversacion(api)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(errorMensaje = e.message ?: "No pude iniciar el chat.") }
+                    return@launch
+                }
+                val idUsuario = idNuevo()
+                val idRespuesta = idNuevo()
+                val refs = archivos.map { ArtifactRef(it.id, it.filename, it.mime) }
+                // Un contenido nuevo inaugura otro intento lógico. Las claves de
+                // mensajes fallidos anteriores ya no deben heredarse.
+                val idempotencyKey = clavesIdempotencia.nueva(idUsuario)
+                guardarTurnoPendiente(idConversacion, idempotencyKey)
+                textosPrivadosPorMensaje[idUsuario] = texto
+                actualizarBorrador("")
+                _uiState.update {
+                    it.copy(
+                        mensajes = it.mensajes +
+                            MensajeUi(
+                                idUsuario,
+                                MensajeUi.Rol.USUARIO,
+                                ChatSecretRedaction.redact(texto),
+                                adjuntos = refs,
+                                estadoEntrega = EstadoEntrega.ENVIANDO,
+                            ) + MensajeUi(idRespuesta, MensajeUi.Rol.ASISTENTE, enProgreso = true),
+                        adjuntosComposer = emptyList(),
+                        enviando = true,
+                        recuperandoTurno = false,
+                        errorMensaje = null,
+                        herramientaActiva = null,
+                        confirmacionPendiente = null,
+                    )
+                }
+                val body = ChatMessageIn(text = texto, attachments = archivos.map { it.id })
+                correrTurno(
+                    api = api,
+                    path = "/v1/conversations/$idConversacion/messages",
+                    bodyJson = edecanJson.encodeToString(body),
+                    idRespuesta = idRespuesta,
+                    idUsuario = idUsuario,
+                    idempotencyKey = idempotencyKey,
+                    conversationId = idConversacion,
                 )
+            } finally {
+                if (turnoActivo === currentCoroutineContext()[Job]) turnoActivo = null
             }
-            val body = ChatMessageIn(text = texto, attachments = archivos.map { it.id })
-            correrTurno(
-                api,
-                "/v1/conversations/$idConversacion/messages",
-                edecanJson.encodeToString(body),
-                idRespuesta,
-                idUsuario,
-                idempotencyKey,
-            )
         }
+        turnoActivo = job
     }
 
     fun reintentarMensaje(idUsuario: String, api: EdecanApi) {
@@ -666,21 +740,78 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 errorMensaje = null,
             )
         }
-        viewModelScope.launch {
-            correrTurno(
-                api,
-                "/v1/conversations/$idConversacion/messages",
-                edecanJson.encodeToString(
-                    ChatMessageIn(
-                        textosPrivadosPorMensaje[idUsuario] ?: mensaje.texto,
-                        mensaje.adjuntos.map { it.fileId },
+        guardarTurnoPendiente(idConversacion, idempotencyKey)
+        val job = viewModelScope.launch {
+            try {
+                correrTurno(
+                    api = api,
+                    path = "/v1/conversations/$idConversacion/messages",
+                    bodyJson = edecanJson.encodeToString(
+                        ChatMessageIn(
+                            textosPrivadosPorMensaje[idUsuario] ?: mensaje.texto,
+                            mensaje.adjuntos.map { it.fileId },
+                        ),
                     ),
-                ),
-                idRespuesta,
-                idUsuario,
-                idempotencyKey,
-            )
+                    idRespuesta = idRespuesta,
+                    idUsuario = idUsuario,
+                    idempotencyKey = idempotencyKey,
+                    conversationId = idConversacion,
+                )
+            } finally {
+                if (turnoActivo === currentCoroutineContext()[Job]) turnoActivo = null
+            }
         }
+        turnoActivo = job
+    }
+
+    private fun guardarTurnoPendiente(conversationId: String, idempotencyKey: String) {
+        savedStateHandle[PENDING_CONVERSATION_KEY] = conversationId
+        savedStateHandle[PENDING_IDEMPOTENCY_KEY] = idempotencyKey
+    }
+
+    private fun limpiarTurnoPendiente(idempotencyKey: String? = null) {
+        val actual = savedStateHandle.turnoPendientePersistido()
+        if (idempotencyKey != null && actual?.idempotencyKey != idempotencyKey) return
+        savedStateHandle[PENDING_CONVERSATION_KEY] = null
+        savedStateHandle[PENDING_IDEMPOTENCY_KEY] = null
+    }
+
+    private fun reanudarTurnoPersistido(pendiente: TurnoPendientePersistido, api: EdecanApi) {
+        if (turnoActivo?.isActive == true) return
+        val state = _uiState.value
+        if (state.conversationId != pendiente.conversationId) return
+        if (state.mensajes.lastOrNull()?.rol == MensajeUi.Rol.ASISTENTE) {
+            limpiarTurnoPendiente(pendiente.idempotencyKey)
+            return
+        }
+
+        val idRespuesta = idNuevo()
+        _uiState.update {
+            it.copy(
+                mensajes = it.mensajes + MensajeUi(
+                    id = idRespuesta,
+                    rol = MensajeUi.Rol.ASISTENTE,
+                    enProgreso = true,
+                ),
+                enviando = true,
+            ).prepararReanudacion(idRespuesta)
+        }
+        val job = viewModelScope.launch {
+            try {
+                correrTurno(
+                    api = api,
+                    path = "/v1/conversations/${pendiente.conversationId}/messages",
+                    bodyJson = null,
+                    idRespuesta = idRespuesta,
+                    idUsuario = null,
+                    idempotencyKey = pendiente.idempotencyKey,
+                    conversationId = pendiente.conversationId,
+                )
+            } finally {
+                if (turnoActivo === currentCoroutineContext()[Job]) turnoActivo = null
+            }
+        }
+        turnoActivo = job
     }
 
     private suspend fun asegurarConversacion(api: EdecanApi): String {
@@ -746,39 +877,95 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     private suspend fun correrTurno(
         api: EdecanApi,
         path: String,
-        bodyJson: String,
+        bodyJson: String?,
         idRespuesta: String,
         idUsuario: String?,
         idempotencyKey: String? = null,
+        conversationId: String? = null,
     ): Boolean {
         var completado = false
+        var recuperar = bodyJson == null
+        var fallosDeConexion = 0
         try {
             var yaRefresco = false
             while (true) {
                 try {
-                    val url = api.urlCompleta(path)
                     val token = api.tokenDeAccesoValido()
-                    sseClient.stream(
-                        api.httpClientParaStream,
-                        url,
-                        token,
-                        bodyJson,
-                        idempotencyKey,
-                    ).collect { evento ->
+                    val eventos = if (recuperar) {
+                        requireNotNull(conversationId)
+                        requireNotNull(idempotencyKey)
+                        sseClient.resume(
+                            client = api.httpClientParaStream,
+                            url = api.urlCompleta(
+                                "/v1/conversations/$conversationId/message-attempts/$idempotencyKey",
+                            ),
+                            accessToken = token,
+                        )
+                    } else {
+                        sseClient.stream(
+                            client = api.httpClientParaStream,
+                            url = api.urlCompleta(path),
+                            accessToken = token,
+                            bodyJson = requireNotNull(bodyJson),
+                            idempotencyKey = idempotencyKey,
+                        )
+                    }
+                    var recibioEvento = false
+                    eventos.collect { evento ->
+                        if (!recibioEvento) {
+                            recibioEvento = true
+                            fallosDeConexion = 0
+                            _uiState.update { it.copy(recuperandoTurno = false, errorMensaje = null) }
+                        }
                         idUsuario?.let(::marcarEntregado)
                         aplicar(evento, idRespuesta, api)
                     }
                     completado = true
                     break
+                } catch (e: SseClient.SseException.IntentoEnCurso) {
+                    recuperar = true
+                    marcarRecuperando(idRespuesta)
+                    esperarReconexion(e.retryAfterSeconds * 1_000)
                 } catch (e: SseClient.SseException.Servidor) {
-                    if (e.status != 401 || yaRefresco) throw e
-                    yaRefresco = true
-                    api.refrescar()
+                    when {
+                        e.status == 401 && !yaRefresco -> {
+                            yaRefresco = true
+                            api.refrescar()
+                        }
+                        e.status == 409 && e.retryAfterSeconds != null &&
+                            idempotencyKey != null && conversationId != null -> {
+                            recuperar = true
+                            marcarRecuperando(idRespuesta)
+                            esperarReconexion(requireNotNull(e.retryAfterSeconds) * 1_000)
+                        }
+                        recuperar && e.status == 404 && bodyJson != null -> {
+                            // El POST pudo no haber llegado al servidor. Con la
+                            // misma clave y el mismo cuerpo sigue siendo seguro.
+                            recuperar = false
+                            marcarRecuperando(idRespuesta)
+                            esperarReconexion(500)
+                        }
+                        recuperar && e.status == 404 && bodyJson == null &&
+                            conversationId != null &&
+                            sincronizarSiElTurnoYaTermino(api, conversationId) -> {
+                            completado = true
+                            break
+                        }
+                        else -> throw e
+                    }
+                } catch (e: SseClient.SseException.Conexion) {
+                    if (idempotencyKey == null || conversationId == null) throw e
+                    recuperar = true
+                    fallosDeConexion += 1
+                    marcarRecuperando(idRespuesta)
+                    val espera = (500L * (1 shl minOf(fallosDeConexion - 1, 3))).coerceAtMost(4_000)
+                    esperarReconexion(espera)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            idempotencyKey?.let(::limpiarTurnoPendiente)
             _uiState.update { state ->
                 state.copy(
                     errorMensaje = e.message ?: "No pude completar el mensaje.",
@@ -792,9 +979,12 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
             }
             savedStateHandle[DRAFT_KEY] = _uiState.value.borrador
         } finally {
+            despertarReconexion?.complete(Unit)
+            despertarReconexion = null
             _uiState.update { estado ->
                 estado.copy(
                     enviando = false,
+                    recuperandoTurno = false,
                     herramientaActiva = null,
                     herramientaActivaCallId = null,
                     mensajes = estado.mensajes.mapNotNull { message ->
@@ -806,12 +996,75 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 )
             }
         }
-        if (completado && idUsuario != null) {
-            clavesIdempotencia.completar(idUsuario)
-            textosPrivadosPorMensaje.remove(idUsuario)
-            refrescarTitulosDeConversacion(api)
+        if (completado) {
+            idempotencyKey?.let(::limpiarTurnoPendiente)
+            if (idUsuario != null) {
+                clavesIdempotencia.completar(idUsuario)
+                textosPrivadosPorMensaje.remove(idUsuario)
+            }
+            if (conversationId != null) {
+                sincronizarConversacionSilenciosamente(api, conversationId)
+            } else {
+                refrescarTitulosDeConversacion(api)
+            }
         }
         return completado
+    }
+
+    private fun marcarRecuperando(idRespuesta: String) {
+        _uiState.update { estado ->
+            if (estado.recuperandoTurno) estado else estado.prepararReanudacion(idRespuesta)
+        }
+    }
+
+    private suspend fun esperarReconexion(millis: Long) {
+        val senal = CompletableDeferred<Unit>()
+        despertarReconexion = senal
+        withTimeoutOrNull(millis.coerceIn(100, 30_000)) { senal.await() }
+        if (despertarReconexion === senal) despertarReconexion = null
+    }
+
+    private suspend fun sincronizarSiElTurnoYaTermino(api: EdecanApi, conversationId: String): Boolean {
+        val conversation = try {
+            api.conversation(conversationId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return false
+        }
+        if (conversation.messages.lastOrNull()?.role?.equals("assistant", ignoreCase = true) != true) {
+            return false
+        }
+        aplicarConversacionCanonica(conversation, api)
+        return true
+    }
+
+    private suspend fun sincronizarConversacionSilenciosamente(api: EdecanApi, conversationId: String) {
+        try {
+            aplicarConversacionCanonica(api.conversation(conversationId), api)
+            refrescarTitulosDeConversacion(api)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // El replay completo ya está en pantalla. La próxima entrada al
+            // chat recuperará los IDs y metadatos canónicos.
+        }
+    }
+
+    private fun aplicarConversacionCanonica(conversation: Conversation, api: EdecanApi) {
+        _uiState.update { state ->
+            state.copy(
+                conversaciones = listOf(conversation.copy(messages = emptyList())) +
+                    state.conversaciones.filterNot { it.id == conversation.id },
+                conversationId = conversation.id,
+                tituloConversacion = conversation.title,
+                mensajes = mensajesPersistidos(conversation),
+                confirmacionPendiente = confirmacionPersistida(conversation),
+                recuperandoTurno = false,
+                errorMensaje = null,
+            )
+        }
+        iniciarSeguimientosPersistidos(api)
     }
 
     private suspend fun refrescarTitulosDeConversacion(api: EdecanApi) {
@@ -970,10 +1223,15 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         tareasSubida.clear()
         seguimientoMisiones.values.forEach(Job::cancel)
         seguimientoMisiones.clear()
+        turnoActivo?.cancel()
+        turnoActivo = null
+        despertarReconexion?.complete(Unit)
+        despertarReconexion = null
         archivosAdjuntos.values.forEach(ArchivoSubidaLocal::eliminar)
         archivosAdjuntos.clear()
         clavesIdempotencia.limpiar()
         textosPrivadosPorMensaje.clear()
+        limpiarTurnoPendiente()
         cargaVersion += 1
         _uiState.value = ChatUiState()
     }

@@ -1,6 +1,7 @@
 [package]
 name = "edecan-desktop"
 version = "0.7.4"
+default-run = "edecan-desktop"
 description = "Edecán — asistente personal de IA (app de escritorio)"
 authors = ["Edecán"]
 edition = "2021"

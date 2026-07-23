@@ -198,6 +198,10 @@ def test_release_workflow_builds_all_signed_desktop_channels() -> None:
     assert '--published-at "$RELEASE_CREATED_AT"' in workflow
     assert "gh release upload" not in workflow
     assert "--clobber" not in workflow
+    cargo_manifest = (REPO_ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'default-run = "edecan-desktop"' in cargo_manifest
     assert 'test "$VERSION" = "$WEB_VERSION"' in workflow
     assert "createUpdaterArtifacts" in shell_builder
     assert "TAURI_SIGNING_PRIVATE_KEY_PATH" in shell_builder

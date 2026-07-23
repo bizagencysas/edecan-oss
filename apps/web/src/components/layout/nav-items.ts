@@ -93,6 +93,7 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
   {
     label: "Capacidades",
     items: [
+      { href: "/app/contenido", label: "Contenido", icon: SendIcon },
       { href: "/app/studio", label: "Studio visual", icon: SparklesIcon },
       { href: "/app/conectores", label: "Conectores", icon: PlugIcon },
       { href: "/app/finanzas", label: "Finanzas", icon: WalletIcon },

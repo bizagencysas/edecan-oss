@@ -5,10 +5,7 @@ from __future__ import annotations
 import pytest
 from edecan_toolkit.contenido import GenerarContenidoTool, PublicarSocialTool
 
-# Estas redes no tienen hoy conector directo en `publicar_social`. LinkedIn sí
-# dispone de creación multimedia y publicación por sesión local aprobada; esa
-# vía pertenece a herramientas distintas.
-REDES_NO_SOPORTADAS = ["linkedin", "tiktok", ""]
+REDES_NO_SOPORTADAS = ["tiktok", ""]
 
 
 async def test_generar_contenido_devuelve_solo_texto_del_llm(make_ctx, make_llm):
@@ -52,7 +49,7 @@ async def test_publicar_social_rechaza_redes_no_soportadas(make_ctx, make_sessio
     resultado = await PublicarSocialTool().run(ctx, {"red": red, "texto": "hola mundo"})
 
     assert "no tiene un conector directo" in resultado.content
-    for red_soportada in ("meta", "x", "youtube"):
+    for red_soportada in ("linkedin", "meta", "x", "youtube"):
         assert red_soportada in resultado.content
     # El rechazo es puramente de validación: nunca llega a tocar la sesión/DB.
     assert session.llamadas == []

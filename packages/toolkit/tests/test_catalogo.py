@@ -46,8 +46,6 @@ def test_cada_tool_tiene_name_description_e_input_schema_validos():
         assert isinstance(tool.input_schema, dict)
         assert tool.input_schema.get("type") == "object"
         assert isinstance(tool.input_schema.get("properties"), dict)
-        assert "linkedin" not in tool.name.lower()
-        assert "linkedin" not in tool.description.lower()
 
 
 def test_solo_las_tools_dangerous_esperadas_lo_son():

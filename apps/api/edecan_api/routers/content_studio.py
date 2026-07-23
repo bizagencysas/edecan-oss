@@ -1,9 +1,10 @@
 """Studio creativo completo para web, escritorio y clientes móviles.
 
-La ruta social no publica ni conecta cuentas: crea borradores privados para
-revisión manual. La ruta de proyectos expone el mismo motor versionado que usa
-el chat para que web, escritorio, iOS y Android puedan mostrar lienzo,
-variantes, historial y exportaciones sin revelar herramientas ni rutas locales.
+La ruta social crea borradores privados y solo publica en una cuenta conectada
+después de una confirmación explícita. La ruta de proyectos expone el mismo
+motor versionado que usa el chat para que web, escritorio, iOS y Android puedan
+mostrar lienzo, variantes, historial y exportaciones sin revelar herramientas
+ni rutas locales.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ import re
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import aioboto3
+import httpx
+from edecan_connectors.base import ConnectorError
+from edecan_connectors.social.linkedin import create_post as create_linkedin_post
 from edecan_core import ToolContext
 from edecan_core.queue import enqueue
 from edecan_creative.social import CrearContenidoSocialTool
@@ -24,6 +29,7 @@ from edecan_design_studio.studio_tools import (
 )
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
+from edecan_schemas import FLAG_CONNECTORS_SOCIAL
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,6 +95,23 @@ class SocialContentOut(BaseModel):
     offline_visual: bool = False
     artifacts: list[SocialContentArtifactOut]
     requires_human_confirmation: bool = True
+
+
+class SocialContentPublishIn(BaseModel):
+    platform: Literal["linkedin"]
+    text: str = Field(min_length=1, max_length=3000)
+    image_file_id: UUID | None = None
+    alt_text: str = Field(default="", max_length=4086)
+    confirmed: bool = False
+
+
+class SocialContentPublishOut(BaseModel):
+    status: Literal["published"] = "published"
+    platform: Literal["linkedin"]
+    provider_id: str | None = None
+
+
+_MAX_PUBLISH_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 _STUDIO_READ_ACTIONS = frozenset(VerProyectosCreativosTool.allowed_actions)
@@ -409,6 +432,157 @@ async def create_social_content(
         alt_text=str(data.get("alt_text") or args["alt_text"]),
         offline_visual=bool(data.get("offline_visual", False)),
         artifacts=[SocialContentArtifactOut.model_validate(item) for item in artifacts],
+    )
+
+
+async def _load_private_publish_image(
+    *,
+    repo: Repo,
+    settings: Settings,
+    tenant_id: UUID,
+    file_id: UUID,
+) -> tuple[bytes, str]:
+    row = await repo.get_file(tenant_id=tenant_id, file_id=file_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No encontré la imagen seleccionada.",
+        )
+    mime = str(row.get("mime") or "")
+    if not mime.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El archivo seleccionado no es una imagen.",
+        )
+    size_bytes = int(row.get("size_bytes") or 0)
+    if size_bytes > _MAX_PUBLISH_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="La imagen supera el límite de 20 MB.",
+        )
+    s3_key = str(row.get("s3_key") or "")
+    if not s3_key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La imagen no tiene contenido almacenado.",
+        )
+
+    session = aioboto3.Session()
+    try:
+        async with session.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            endpoint_url=settings.AWS_ENDPOINT_URL,
+        ) as s3:
+            response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+            content = await response["Body"].read(_MAX_PUBLISH_IMAGE_BYTES + 1)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - clientes S3 tienen excepciones propias
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No pude leer la imagen privada para publicarla.",
+        ) from exc
+    if len(content) > _MAX_PUBLISH_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="La imagen supera el límite de 20 MB.",
+        )
+    return content, mime
+
+
+@router.post("/social/publish", response_model=SocialContentPublishOut)
+async def publish_social_content(
+    body: SocialContentPublishIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    settings: Settings = Depends(get_settings),
+    vault: Any = Depends(get_vault),
+) -> SocialContentPublishOut:
+    """Publicación puntual y confirmada mediante la API oficial de LinkedIn."""
+
+    if not current_user.tenant.flags.get(FLAG_CONNECTORS_SOCIAL, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Los conectores sociales no están habilitados en esta instalación.",
+        )
+    if not body.confirmed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Confirma esta publicación antes de enviarla a LinkedIn.",
+        )
+    accounts = await repo.list_connector_accounts(tenant_id=current_user.tenant_id)
+    account = next(
+        (
+            item
+            for item in reversed(accounts)
+            if item.get("connector_key") == "linkedin" and item.get("status") == "active"
+        ),
+        None,
+    )
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conecta tu cuenta de LinkedIn antes de publicar.",
+        )
+    bundle = await vault.get(current_user.tenant_id, account["id"])
+    if bundle is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "La autorización de LinkedIn ya no está disponible. "
+                "Vuelve a conectar la cuenta."
+            ),
+        )
+
+    image: tuple[bytes, str] | None = None
+    if body.image_file_id is not None:
+        image = await _load_private_publish_image(
+            repo=repo,
+            settings=settings,
+            tenant_id=current_user.tenant_id,
+            file_id=body.image_file_id,
+        )
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as http:
+            result = await create_linkedin_post(
+                http,
+                bundle,
+                text=body.text,
+                image=image[0] if image else None,
+                image_content_type=image[1] if image else "image/png",
+                alt_text=body.alt_text,
+            )
+    except ConnectorError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    provider_id = result.get("id")
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="content.linkedin_published",
+        target=str(provider_id or account["id"]),
+    )
+    try:
+        event_id = str(provider_id or uuid4())
+        await enqueue(
+            settings,
+            "notify_important_event",
+            {
+                "user_id": str(current_user.user_id),
+                "kind": "content_published",
+                "event_id": event_id,
+            },
+            current_user.tenant_id,
+        )
+    except Exception:
+        logger.warning("No se pudo encolar la notificación de publicación.", exc_info=True)
+    return SocialContentPublishOut(
+        platform="linkedin",
+        provider_id=str(provider_id) if provider_id else None,
     )
 
 

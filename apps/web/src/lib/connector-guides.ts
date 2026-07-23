@@ -13,15 +13,26 @@ export interface ConnectorGuide {
   appNoun: string;
   accountNoun: string;
   help: string;
+  clientSecretRequired?: boolean;
 }
 
 export const CONNECTOR_GUIDES: Readonly<Record<string, ConnectorGuide>> = {
+  linkedin: {
+    consoleUrl: "https://www.linkedin.com/developers/apps",
+    consoleLabel: "Abrir mis apps de LinkedIn",
+    appNoun: "app de LinkedIn",
+    accountNoun: "perfil de LinkedIn",
+    help:
+      "Activa “Sign in with LinkedIn using OpenID Connect” y “Share on LinkedIn”, y añade la URL de redirección de Edecán.",
+    clientSecretRequired: true,
+  },
   google: {
     consoleUrl: "https://console.cloud.google.com/apis/credentials",
     consoleLabel: "Abrir credenciales de Google Cloud",
     appNoun: "cliente OAuth",
     accountNoun: "cuenta de Google",
     help: "Activa Gmail API y Google Calendar API en el mismo proyecto.",
+    clientSecretRequired: true,
   },
   microsoft: {
     consoleUrl: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
@@ -29,6 +40,7 @@ export const CONNECTOR_GUIDES: Readonly<Record<string, ConnectorGuide>> = {
     appNoun: "aplicación",
     accountNoun: "cuenta de Microsoft",
     help: "Registra una aplicación web en Microsoft Entra y añade la URL de redirección de Edecan.",
+    clientSecretRequired: true,
   },
   meta: {
     consoleUrl: "https://developers.facebook.com/apps/",
@@ -36,6 +48,7 @@ export const CONNECTOR_GUIDES: Readonly<Record<string, ConnectorGuide>> = {
     appNoun: "app de Meta",
     accountNoun: "Facebook Pages e Instagram",
     help: "Esta conexión es para páginas y publicaciones. Meta Ads se configura en su tarjeta propia.",
+    clientSecretRequired: true,
   },
   x: {
     consoleUrl: "https://developer.x.com/en/portal/dashboard",
@@ -50,6 +63,7 @@ export const CONNECTOR_GUIDES: Readonly<Record<string, ConnectorGuide>> = {
     appNoun: "cliente OAuth",
     accountNoun: "canal de YouTube",
     help: "Activa YouTube Data API v3 en el proyecto antes de autorizar tu canal.",
+    clientSecretRequired: true,
   },
   slack: {
     consoleUrl: "https://api.slack.com/apps",
@@ -57,6 +71,7 @@ export const CONNECTOR_GUIDES: Readonly<Record<string, ConnectorGuide>> = {
     appNoun: "app de Slack",
     accountNoun: "espacio de Slack",
     help: "Crea una app desde cero y añade la URL de redirección en OAuth & Permissions.",
+    clientSecretRequired: true,
   },
 };
 

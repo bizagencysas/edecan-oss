@@ -91,8 +91,8 @@ class Tool(ABC):
       pre-aprobada, el turno se detiene y emite `confirmation_required` en
       vez de correr `run`.
 
-    `register()` de `ToolRegistry` rechaza cualquier `Tool` cuyo `name`/
-    `description` mencione la red social vetada (ARCHITECTURE.md §0.2).
+    `register()` de `ToolRegistry` no aplica políticas de proveedor: cada
+    herramienta valida su vía oficial, permisos y confirmaciones.
     """
 
     name: str

@@ -76,11 +76,12 @@ ningún call site de primera parte lo conecta hoy (detalle en `edecan_llm.router
 ## 5. Integraciones (conectores oficiales)
 
 - **Núcleo**: Google (Gmail + Calendar), Microsoft (Outlook Mail + Calendar).
-- **Sociales**: Meta (Páginas de Facebook + Instagram Business), X (API v2), YouTube (Data API v3).
+- **Sociales**: LinkedIn (OpenID + Posts/Images REST), Meta (Páginas de Facebook +
+  Instagram Business), X (API v2), YouTube (Data API v3).
 - Todas OAuth 2.0: la plataforma registra su app; **cada tenant autoriza su propia cuenta**; tokens al
-  TokenVault cifrados. REST directo con httpx (testeable con respx). LinkedIn dispone hoy de creación
-  multimedia y publicación puntual mediante una sesión local ya autorizada; un conector directo solo
-  se incorpora mediante una API oficial y scopes aprobados.
+  TokenVault cifrados. REST directo con httpx (testeable con respx). LinkedIn usa exclusivamente
+  sus productos self-service oficiales y el scope `w_member_social`; no hace scraping, contactos
+  masivos ni automatización de engagement.
 - Hosted: sociales gateadas por flag `connectors.social` (plan Pro+). Self-host: disponibles con tus propias apps OAuth.
 
 ## 6. Modos de distribución

@@ -1,5 +1,5 @@
 """Verifica que toda URL usada por el código de `edecan_connectors.social`
-apunte a dominios oficiales permitidos (Meta, X, Google/YouTube).
+apunte a dominios oficiales permitidos (LinkedIn, Meta, X, Google/YouTube).
 
 Solo se escanean los módulos de implementación en la raíz de `social/`
 (`meta.py`, `x.py`, `youtube.py`, `_util.py`, `__init__.py`), no `tests/`:
@@ -24,6 +24,8 @@ DOMINIOS_PERMITIDOS = {
     "api.twitter.com",
     "googleapis.com",
     "accounts.google.com",
+    "linkedin.com",
+    "licdn.com",
 }
 
 

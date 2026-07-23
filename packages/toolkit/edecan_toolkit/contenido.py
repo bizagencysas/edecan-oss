@@ -2,27 +2,30 @@
 
 `generar_contenido` SOLO redacta texto (nunca publica nada). `publicar_social`
 sí publica de verdad, únicamente en las redes registradas en
-`edecan_connectors.registry.CONNECTORS` que hoy soporta esta tool: Meta, X y
-YouTube. Otras redes se rechazan en este conector directo con una alternativa
-concreta; la creación multimedia y las sesiones locales autorizadas son
-capacidades separadas.
+`edecan_connectors.registry.CONNECTORS` que hoy soporta esta tool: LinkedIn,
+Meta, X y YouTube. Publicar siempre conserva el gate peligroso y necesita una
+confirmación explícita del usuario.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
+import aioboto3
 import httpx
 from edecan_connectors.registry import CONNECTORS
-from edecan_connectors.social import meta, x, youtube
+from edecan_connectors.social import linkedin, meta, x, youtube
 from edecan_core import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage, CompletionRequest
+from sqlalchemy import text
 
 from ._conectores import buscar_cuenta_conectada, resultado_falta_conexion
 
 _TIPOS_CONTENIDO = ("post", "guion", "email")
-_REDES_SOPORTADAS = ("meta", "x", "youtube")
+_REDES_SOPORTADAS = ("linkedin", "meta", "x", "youtube")
 _TIMEOUT = 30.0
+_MAX_SOCIAL_IMAGE_BYTES = 20 * 1024 * 1024
 
 _SYSTEM_PROMPT = (
     "Eres un redactor experto en marketing de contenidos en español. Escribes "
@@ -109,7 +112,7 @@ class PublicarSocialTool(Tool):
     name = "publicar_social"
     description = (
         "Publica contenido de verdad en una red social ya conectada por el tenant. "
-        "Redes soportadas: meta, x, youtube. Requiere confirmación: publica algo "
+        "Redes soportadas: linkedin, meta, x, youtube. Requiere confirmación: publica algo "
         "real y visible públicamente."
     )
     requires_flags = frozenset({"connectors.social"})
@@ -138,6 +141,17 @@ class PublicarSocialTool(Tool):
                     "URL pública del archivo de video a subir (solo si 'red' es youtube)."
                 ),
             },
+            "image_file_id": {
+                "type": "string",
+                "description": (
+                    "UUID de una imagen privada creada o subida a Edecán. "
+                    "Hoy se usa al publicar en LinkedIn."
+                ),
+            },
+            "alt_text": {
+                "type": "string",
+                "description": "Descripción accesible de la imagen, si se adjunta una.",
+            },
         },
         "required": ["red", "texto"],
     }
@@ -159,6 +173,8 @@ class PublicarSocialTool(Tool):
             return resultado_falta_conexion(red)
 
         async with httpx.AsyncClient(timeout=_TIMEOUT) as http:
+            if red == "linkedin":
+                return await _publicar_en_linkedin(ctx, texto, args, bundle, http)
             if red == "x":
                 return await _publicar_en_x(texto, bundle, http)
             if red == "meta":
@@ -178,6 +194,78 @@ def _mensaje_red_no_soportada(red: str) -> str:
 async def _publicar_en_x(texto: str, bundle: Any, http: httpx.AsyncClient) -> ToolResult:
     resultado = await x.post_tweet(http, bundle, texto)
     return ToolResult(content="Publicado en X.", data={"resultado": resultado})
+
+
+async def _cargar_imagen_privada(
+    ctx: ToolContext, raw_file_id: Any
+) -> tuple[bytes, str] | None:
+    value = str(raw_file_id or "").strip()
+    if not value:
+        return None
+    try:
+        file_id = uuid.UUID(value)
+    except ValueError as exc:
+        raise ValueError("image_file_id debe ser un UUID válido.") from exc
+
+    result = await ctx.session.execute(
+        text(
+            "SELECT s3_key, mime, size_bytes FROM files "
+            "WHERE tenant_id = :tenant_id AND id = :id"
+        ),
+        {"tenant_id": str(ctx.tenant_id), "id": str(file_id)},
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise ValueError("No encontré esa imagen privada en tu Edecán.")
+    mime = str(row.get("mime") or "")
+    if not mime.startswith("image/"):
+        raise ValueError("El archivo indicado no es una imagen.")
+    size = int(row.get("size_bytes") or 0)
+    if size > _MAX_SOCIAL_IMAGE_BYTES:
+        raise ValueError("La imagen supera el límite de 20 MB para publicación.")
+    s3_key = str(row.get("s3_key") or "")
+    if not s3_key:
+        raise ValueError("La imagen no tiene contenido almacenado.")
+
+    session = aioboto3.Session()
+    async with session.client(
+        "s3",
+        region_name=getattr(ctx.settings, "AWS_REGION", "us-east-1"),
+        endpoint_url=getattr(ctx.settings, "AWS_ENDPOINT_URL", None),
+    ) as s3:
+        response = await s3.get_object(
+            Bucket=getattr(ctx.settings, "S3_BUCKET", "edecan-files"),
+            Key=s3_key,
+        )
+        content = await response["Body"].read(_MAX_SOCIAL_IMAGE_BYTES + 1)
+    if len(content) > _MAX_SOCIAL_IMAGE_BYTES:
+        raise ValueError("La imagen supera el límite de 20 MB para publicación.")
+    return content, mime
+
+
+async def _publicar_en_linkedin(
+    ctx: ToolContext,
+    texto_publicacion: str,
+    args: dict[str, Any],
+    bundle: Any,
+    http: httpx.AsyncClient,
+) -> ToolResult:
+    try:
+        image = await _cargar_imagen_privada(ctx, args.get("image_file_id"))
+    except ValueError as exc:
+        return ToolResult(content=str(exc))
+    resultado = await linkedin.create_post(
+        http,
+        bundle,
+        text=texto_publicacion,
+        image=image[0] if image else None,
+        image_content_type=image[1] if image else "image/png",
+        alt_text=str(args.get("alt_text") or ""),
+    )
+    return ToolResult(
+        content="Publicado en LinkedIn.",
+        data={"resultado": resultado},
+    )
 
 
 async def _publicar_en_meta(texto: str, bundle: Any, http: httpx.AsyncClient) -> ToolResult:

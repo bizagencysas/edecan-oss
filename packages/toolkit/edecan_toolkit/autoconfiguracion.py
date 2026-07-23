@@ -65,7 +65,15 @@ _STRIPE_KEY = "stripe"
 _TWILIO_KEY = "twilio"
 _WHATSAPP_KEY = "whatsapp"
 _BOT_TOKEN_CONECTORES = ("telegram", "discord")
-_OAUTH_APP_CONECTORES = ("google", "microsoft", "meta", "x", "youtube", "slack")
+_OAUTH_APP_CONECTORES = (
+    "google",
+    "microsoft",
+    "linkedin",
+    "meta",
+    "x",
+    "youtube",
+    "slack",
+)
 _OAUTH_APP_SUFFIX = "__app_config"  # ver edecan_api.oauth_app_credentials
 
 _TWILIO_SID_RE = re.compile(r"^AC[0-9a-fA-F]{32}$")
@@ -238,7 +246,8 @@ class ConfigurarCredencialTool(Tool):
                 "type": "string",
                 "description": (
                     "Solo para tipo='bot_token' ('telegram'|'discord') o "
-                    "tipo='oauth_app' ('google'|'microsoft'|'meta'|'x'|'youtube'|'slack'). "
+                    "tipo='oauth_app' ('google'|'microsoft'|'linkedin'|'meta'|'x'|"
+                    "'youtube'|'slack'). "
                     "Se ignora para los demás tipos."
                 ),
             },

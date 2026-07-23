@@ -629,14 +629,12 @@ def select_tool_specs(
         if not publish_intent:
             selected_names.discard("publicar_social")
 
-    # LinkedIn ya tiene un creador multimodal, pero no un conector OAuth de
-    # primera parte. Una publicación explícita debe continuar por la sesión
-    # local que la persona ya abrió y aprobará mediante `usar_computadora`,
-    # no caer en `publicar_social` (Meta/X/YouTube) ni pedir una API key que
-    # Edecán todavía no consume.
+    # LinkedIn tiene creador multimodal y conector OAuth de primera parte.
+    # Preparar contenido sigue seleccionando el creador; publicar explícito
+    # puede usar `publicar_social`, que ya conserva el gate de confirmación.
     if publish_intent and "linkedin" in tokens:
-        selected_names.discard("publicar_social")
-        selected_names.update({"crear_contenido_social", "generar_imagen", "usar_computadora"})
+        selected_names.discard("usar_computadora")
+        selected_names.update({"crear_contenido_social", "generar_imagen", "publicar_social"})
 
     create_image = bool(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})

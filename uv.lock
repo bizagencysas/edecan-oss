@@ -1513,6 +1513,7 @@ name = "edecan-toolkit"
 version = "0.7.2"
 source = { editable = "packages/toolkit" }
 dependencies = [
+    { name = "aioboto3" },
     { name = "edecan-connectors" },
     { name = "edecan-core" },
     { name = "edecan-creative" },
@@ -1532,6 +1533,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioboto3", specifier = ">=13.0" },
     { name = "edecan-connectors", editable = "packages/connectors" },
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-creative", editable = "packages/creative" },

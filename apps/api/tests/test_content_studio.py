@@ -5,6 +5,7 @@ import uuid
 from conftest import auth_headers
 from edecan_core import ToolResult
 from edecan_llm.base import CompletionResponse, Usage
+from edecan_schemas import TokenBundle
 
 from edecan_api import deps
 from edecan_api.routers import content_studio
@@ -166,6 +167,70 @@ async def test_content_studio_rejects_unsupported_network_and_requires_auth(clie
         json={"platform": "instagram", "topic": "Una idea"},
     )
     assert response.status_code == 422
+
+
+async def test_linkedin_publish_requires_confirmation_and_uses_connected_account(
+    client, app, fake_repo, monkeypatch
+):
+    user_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    account = await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="linkedin",
+        external_account_id="person-1",
+        display_name="Ada",
+        scopes=["w_member_social"],
+    )
+
+    class FakeVault:
+        async def get(self, requested_tenant_id, account_id):  # noqa: ANN001
+            assert requested_tenant_id == tenant_id
+            assert account_id == account["id"]
+            return TokenBundle(access_token="linkedin-token", scopes=["w_member_social"])
+
+    published = []
+    queued = []
+
+    async def fake_create_post(http, bundle, **kwargs):  # noqa: ANN001
+        published.append((bundle, kwargs))
+        return {"id": "urn:li:share:123"}
+
+    async def fake_enqueue(settings, job_type, payload, requested_tenant_id):  # noqa: ANN001
+        queued.append((job_type, payload, requested_tenant_id))
+        return uuid.uuid4()
+
+    app.dependency_overrides[deps.get_vault] = lambda: FakeVault()
+    monkeypatch.setattr(content_studio, "create_linkedin_post", fake_create_post)
+    monkeypatch.setattr(content_studio, "enqueue", fake_enqueue)
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
+
+    unconfirmed = await client.post(
+        "/v1/content/social/publish",
+        headers=headers,
+        json={
+            "platform": "linkedin",
+            "text": "Una idea útil.",
+            "confirmed": False,
+        },
+    )
+    assert unconfirmed.status_code == 409
+    assert published == []
+
+    confirmed = await client.post(
+        "/v1/content/social/publish",
+        headers=headers,
+        json={
+            "platform": "linkedin",
+            "text": "Una idea útil.",
+            "confirmed": True,
+        },
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["provider_id"] == "urn:li:share:123"
+    assert published[0][0].access_token == "linkedin-token"
+    assert published[0][1]["text"] == "Una idea útil."
+    assert published[0][1]["image"] is None
+    assert fake_repo.audit_log[-1]["action"] == "content.linkedin_published"
+    assert queued[-1][1]["kind"] == "content_published"
 
 
 async def test_full_studio_api_lists_and_creates_private_projects(

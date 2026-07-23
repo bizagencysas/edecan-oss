@@ -266,7 +266,7 @@ def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
     assert {"crear_artefactos", "publicar_social", "configurar_credencial"} <= names
 
 
-def test_linkedin_crea_paquete_multimedia_y_publica_por_sesion_local_aprobada() -> None:
+def test_linkedin_crea_paquete_multimedia_y_publica_por_conector_oficial() -> None:
     selected = select_tool_specs(
         ALL_SPECS,
         "Crea un post de LinkedIn con su propia imagen y publícalo.",
@@ -279,6 +279,6 @@ def test_linkedin_crea_paquete_multimedia_y_publica_por_sesion_local_aprobada() 
         "usar_estudio_creativo_premium",
     } <= names
     assert "crear_artefactos" not in names
-    assert "usar_computadora" in names
-    assert "publicar_social" not in names
-    assert "configurar_credencial" not in names
+    assert "publicar_social" in names
+    assert "usar_computadora" not in names
+    assert "configurar_credencial" in names

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -459,15 +460,24 @@ function OAuthAppCredentialsSection({
           <Field
             label="Client secret"
             htmlFor={`app_client_secret_${connector.key}`}
-            hint="Déjalo vacío si tu app es pública / solo usa PKCE (p. ej. algunas apps de X)."
+            hint={
+              guide?.clientSecretRequired
+                ? `Es obligatorio para ${connector.display_name} y se guardará cifrado.`
+                : "Déjalo vacío si tu app es pública o solo usa PKCE, por ejemplo algunas apps de X."
+            }
           >
             <Input
               id={`app_client_secret_${connector.key}`}
               type="password"
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
-              placeholder="Client secret (opcional según el proveedor)"
+              placeholder={
+                guide?.clientSecretRequired
+                  ? "Client secret de tu app OAuth"
+                  : "Client secret, opcional según el proveedor"
+              }
               autoComplete="off"
+              required={guide?.clientSecretRequired}
             />
           </Field>
           <div className="flex items-center gap-2">
@@ -544,6 +554,14 @@ function OAuthConnectorCard({
           emptyLabel="Sin cuentas conectadas."
         />
         <OAuthAppCredentialsSection connector={connector} onChanged={onChanged} />
+        {connector.key === "linkedin" && (
+          <Link
+            href="/app/contenido"
+            className="flex items-center justify-center rounded-lg bg-brand-50 px-3 py-2 text-sm font-medium text-brand-700 hover:bg-brand-100 dark:bg-brand-950/40 dark:text-brand-300 dark:hover:bg-brand-950/70"
+          >
+            Crear posts, imágenes y plan diario
+          </Link>
+        )}
       </CardBody>
     </Card>
   );
@@ -666,7 +684,7 @@ function ConectoresContent({ embedded }: { embedded: boolean }) {
       {!embedded && (
         <PageHeader
           title="Conectores"
-          description="Google, Microsoft y redes sociales (Meta, X, YouTube), además de Twilio para llamadas y mensajes. Cada cuenta sigue siendo tuya."
+          description="Google, Microsoft y redes sociales (LinkedIn, Meta, X, YouTube), además de Twilio para llamadas y mensajes. Cada cuenta sigue siendo tuya."
         />
       )}
       {ok === "1" && (

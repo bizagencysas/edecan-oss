@@ -565,6 +565,48 @@ export async function runStudioAction(input: StudioActionInput): Promise<StudioA
   });
 }
 
+export interface SocialContentArtifact {
+  file_id: string;
+  filename: string;
+  mime: string | null;
+}
+
+export interface SocialContentResult {
+  status: "ready";
+  platform: "linkedin" | "x";
+  copy: string;
+  parts: string[];
+  alt_text: string;
+  offline_visual: boolean;
+  artifacts: SocialContentArtifact[];
+  requires_human_confirmation: boolean;
+}
+
+export async function createSocialContent(input: {
+  platform: "linkedin" | "x";
+  topic: string;
+  objective: string;
+  tone: string;
+  with_image: boolean;
+}): Promise<SocialContentResult> {
+  return apiJson<SocialContentResult>("/v1/content/social", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function publishLinkedInContent(input: {
+  text: string;
+  image_file_id?: string;
+  alt_text?: string;
+  confirmed: true;
+}): Promise<{ status: "published"; platform: "linkedin"; provider_id: string | null }> {
+  return apiJson("/v1/content/social/publish", {
+    method: "POST",
+    body: { platform: "linkedin", ...input },
+  });
+}
+
 // --- Recordatorios ---------------------------------------------------------------
 
 export async function listReminders(): Promise<Reminder[]> {

@@ -99,6 +99,7 @@ from typing import Any
 import httpx
 from edecan_connectors.base import ConnectorError
 from edecan_connectors.registry import CONNECTORS
+from edecan_connectors.social.linkedin import get_me as get_linkedin_profile
 from edecan_db.session import get_session
 from edecan_db.vault import TokenVault
 from edecan_schemas import UNLIMITED, TokenBundle
@@ -523,6 +524,8 @@ async def callback(
             )
         client_id, client_secret = creds
 
+        external_account_id: str | None = None
+        connected_display_name: str | None = None
         try:
             async with httpx.AsyncClient(timeout=20.0) as http_client:
                 bundle = await connector.exchange_code(
@@ -533,6 +536,14 @@ async def callback(
                     client_secret=client_secret,
                     code_verifier=state,
                 )
+                if key == "linkedin":
+                    profile = await get_linkedin_profile(http_client, bundle)
+                    external_account_id = str(profile["sub"])
+                    connected_display_name = str(
+                        profile.get("name")
+                        or profile.get("email")
+                        or connector.display_name
+                    )
         except ConnectorError as exc:
             # El proveedor rechazó el code, o la app del tenant está mal
             # configurada (p. ej. redirect_uri no coincide) -- nunca debe
@@ -545,8 +556,8 @@ async def callback(
         account = await repo.create_connector_account(
             tenant_id=tenant_id,
             connector_key=key,
-            external_account_id=_bundle_account_hint(bundle),
-            display_name=connector.display_name,
+            external_account_id=external_account_id or _bundle_account_hint(bundle),
+            display_name=connected_display_name or connector.display_name,
             scopes=bundle.scopes,
         )
         await vault.put(tenant_id, account["id"], bundle)

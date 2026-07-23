@@ -460,10 +460,26 @@ async def test_oauth_app_guarda_client_id_y_secret(make_ctx, make_session, make_
     assert bundle.access_token == "gsecret-456"
 
 
+async def test_oauth_app_admite_linkedin(make_ctx, make_session, make_vault):
+    session = make_session([[], [], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "oauth_app",
+            "conector": "linkedin",
+            "campos": {"client_id": "linkedin-id", "client_secret": "linkedin-secret"},
+        },
+    )
+    assert "linkedin" in resultado.content.lower()
+    assert session.llamadas[-1][1]["connector_key"] == "linkedin__app_config"
+
+
 async def test_oauth_app_conector_invalido(make_ctx, make_session, make_vault):
     ctx = make_ctx(session=make_session([]), vault=make_vault())
     resultado = await ConfigurarCredencialTool().run(
-        ctx, {"tipo": "oauth_app", "conector": "linkedin", "campos": {"client_id": "x"}}
+        ctx, {"tipo": "oauth_app", "conector": "tiktok", "campos": {"client_id": "x"}}
     )
     assert "conector" in resultado.content.lower()
 

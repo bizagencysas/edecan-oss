@@ -16,6 +16,7 @@ function source(path) {
 test("cada conector OAuth enlaza directamente a una consola HTTPS oficial", () => {
   assert.deepEqual(Object.keys(CONNECTOR_GUIDES).sort(), [
     "google",
+    "linkedin",
     "meta",
     "microsoft",
     "slack",

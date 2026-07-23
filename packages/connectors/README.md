@@ -50,13 +50,10 @@ Todas las funciones de API reciben `(http, bundle: TokenBundle, ...)` y usan
 ## Alcance de las integraciones
 
 Este paquete integra **exclusivamente APIs oficiales** que cada proveedor pone a disposición de
-terceros para este uso (correo, calendario, y opcionalmente publicación en páginas/cuentas de
-negocio propias del tenant vía el submódulo social). No hay scraping ni credenciales compartidas:
-cada tenant conecta su propia cuenta por OAuth. Por política permanente del proyecto, hay una
-plataforma específica que queda excluida **en cualquier forma** (código, scopes, URLs,
-documentación, UI) — ver `ARCHITECTURE.md` §0. Un test obligatorio en `tests/` (nombre pinned en
-`ARCHITECTURE.md` §10.8) escanea todo el código fuente de este paquete y falla el build si esa
-palabra llegara a aparecer.
+terceros para este uso (correo, calendario y publicación en cuentas propias vía el submódulo
+social). No hay scraping ni credenciales compartidas: cada tenant conecta su propia cuenta por
+OAuth. LinkedIn usa OpenID Connect, Share on LinkedIn, Posts API e Images API oficiales; no
+automatiza contactos, mensajes masivos, scraping ni engagement.
 
 ## Cómo crear tus propias apps OAuth (self-host)
 

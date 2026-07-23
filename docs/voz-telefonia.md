@@ -108,17 +108,31 @@ La API equivalente es `POST /v1/phone/calls/prepare` y luego `POST /v1/phone/cal
 
 ### Llamadas entrantes y continuidad segura
 
-Configura en el número Twilio el webhook de voz `POST {PUBLIC_BASE_URL}/v1/phone/twilio/incoming`. Los demás callbacks se construyen desde `PUBLIC_BASE_URL`:
+Al conectar un número, Edecan configura automáticamente el webhook de voz
+`POST {PUBLIC_BASE_URL}/v1/phone/twilio/incoming`. También puede repararse desde
+**Llamadas → Recibir llamadas**. Los demás callbacks se construyen desde
+`PUBLIC_BASE_URL`:
 
 - `POST /v1/phone/twilio/calls/{id}/voice` — saludo de una llamada saliente.
 - `POST /v1/phone/twilio/calls/{id}/gather` — turnos conversacionales con `<Gather input="speech">`.
 - `POST /v1/phone/twilio/calls/{id}/status` — estado y duración.
 
-Todos validan `X-Twilio-Signature`. La conversación telefónica conserva el nombre, idioma, tono y formalidad configurados del asistente, pero usa un hilo `channel="phone"` separado: un interlocutor externo no recibe memorias, instrucciones privadas, rasgos ni el estilo de relación del propietario. Los turnos y errores seguros quedan en `phone_call_events` y se consultan desde **Actividad**. `PHONE_MAX_TURNS` (default `8`) acota cada llamada. No se activa grabación.
+Todos validan `X-Twilio-Signature`. El agente predeterminado atiende las
+entrantes; un agente solicitado por nombre atiende la saliente. La conversación
+telefónica conserva su identidad, objetivo, contexto autorizado, preguntas y
+voz, pero usa un hilo `channel="phone"` separado: un interlocutor externo no
+recibe memorias, instrucciones privadas, rasgos ni el estilo de relación del
+propietario. Los turnos y errores seguros quedan en `phone_call_events` y se
+consultan desde **Actividad**. `PHONE_MAX_TURNS` (default `8`) acota cada
+llamada. No se activa grabación.
 
 ### Límites actuales
 
-El núcleo OSS usa TwiML `<Say>` + `<Gather>`: conversa por turnos y no permite interrumpir al asistente mientras habla. SMS, campañas y Media Streams con *barge-in* siguen perteneciendo a la extensión opcional legada `edecan_premium`. Ninguna prueba automatizada realiza llamadas reales.
+El núcleo OSS usa la voz ElevenLabs del tenant mediante `<Play>` y escucha con
+`<Gather>`. Si no hay TTS, degrada a `<Say>`. Conversa por turnos y todavía no
+permite interrumpir al asistente mientras habla. Media Streams con *barge-in*
+no forma parte de este flujo OSS. Ninguna prueba automatizada realiza llamadas
+reales.
 
 ## Interrupciones naturales (beta)
 

@@ -623,9 +623,7 @@ async def test_connect_twilio_allows_second_number_under_higher_plan_limit(
     app.dependency_overrides[edecan_deps.get_vault] = lambda: FakeVault()
 
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_business"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_business")
     await fake_repo.create_connector_account(
         tenant_id=tenant_id,
         connector_key="twilio",
@@ -749,13 +747,44 @@ async def test_verify_twilio_phone_ownership_ok_cuando_el_numero_esta_en_la_cuen
         auth = request.headers["authorization"]
         assert auth.startswith("Basic ")
         return httpx.Response(
-            200, json={"incoming_phone_numbers": [{"phone_number": "+525512345678"}]}
+            200,
+            json={
+                "incoming_phone_numbers": [
+                    {
+                        "phone_number": "+525512345678",
+                        "sid": "PN" + "1" * 32,
+                    }
+                ]
+            },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        await connectors_module._verify_twilio_phone_ownership(
+        phone_sid = await connectors_module._verify_twilio_phone_ownership(
             "ACsid", "token", "+525512345678", http_client=http_client
-        )  # no lanza
+        )
+    assert phone_sid == "PN" + "1" * 32
+
+
+async def test_configure_twilio_incoming_webhook_points_to_edecan() -> None:
+    seen: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"sid": "PN" + "1" * 32})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        await connectors_module._configure_twilio_incoming_webhook(
+            "AC" + "1" * 32,
+            "token",
+            "PN" + "1" * 32,
+            "https://edecan.example/v1/phone/twilio/incoming",
+            http_client=http_client,
+        )
+
+    assert seen["path"].endswith(f"/IncomingPhoneNumbers/{'PN' + '1' * 32}.json")
+    assert "VoiceUrl=https%3A%2F%2Fedecan.example%2Fv1%2Fphone%2Ftwilio%2Fincoming" in seen["body"]
+    assert "VoiceMethod=POST" in seen["body"]
 
 
 async def test_verify_twilio_phone_ownership_rechaza_credenciales_invalidas() -> None:
@@ -804,9 +833,7 @@ async def test_verify_twilio_phone_ownership_502_si_twilio_no_responde() -> None
 
 async def test_disconnect_unknown_connector_key_returns_404(client) -> None:
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_pro")
-    response = await client.delete(
-        f"/v1/connectors/no-existe/{uuid.uuid4()}", headers=headers
-    )
+    response = await client.delete(f"/v1/connectors/no-existe/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 404
 
 

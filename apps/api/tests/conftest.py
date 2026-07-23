@@ -75,6 +75,7 @@ def app(fake_repo: FakeRepo, fake_redis: FakeRedis, test_settings: Settings):
     application.dependency_overrides[edecan_deps.get_redis] = lambda: fake_redis
     application.dependency_overrides[edecan_deps.get_tenant_session] = lambda: None
     application.dependency_overrides[edecan_deps.get_vault] = lambda: None
+    application.dependency_overrides[edecan_deps.get_platform_vault] = lambda: None
     application.dependency_overrides[edecan_deps.get_streaming_vault] = lambda: None
     application.dependency_overrides[edecan_deps.get_llm_router] = lambda: None
 

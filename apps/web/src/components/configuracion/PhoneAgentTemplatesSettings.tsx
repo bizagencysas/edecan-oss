@@ -8,8 +8,20 @@ import {
   listPhoneAgentTemplates,
   updatePhoneAgentTemplate,
 } from "@/lib/api";
+import { listVoces, type VozDisponible } from "@/lib/api-voz";
 import type { PhoneAgentTemplate, PhoneAgentTemplateInput } from "@/lib/types";
-import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, Textarea } from "@/components/ui";
+import {
+  Alert,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  Checkbox,
+  Field,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui";
 
 const EMPTY_FORM: PhoneAgentTemplateInput = {
   name: "",
@@ -19,6 +31,7 @@ const EMPTY_FORM: PhoneAgentTemplateInput = {
   opening_message: "",
   knowledge_context: "",
   required_information: "",
+  voice_id: "",
   is_default: false,
 };
 
@@ -34,6 +47,7 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
       opening_message: "Te llamo para ayudarte con una gestión pendiente.",
       knowledge_context: "",
       required_information: "Nombre, motivo de contacto y mejor forma de continuar.",
+      voice_id: "",
       is_default: false,
     },
   },
@@ -48,6 +62,7 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
       opening_message: "Quisiera conocer brevemente qué necesitas y ver si podemos ayudarte.",
       knowledge_context: "",
       required_information: "Necesidad principal, presupuesto aproximado y fecha deseada.",
+      voice_id: "",
       is_default: false,
     },
   },
@@ -62,6 +77,7 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
       opening_message: "Te llamo para confirmar un pendiente y saber si necesitas hacer algún cambio.",
       knowledge_context: "",
       required_information: "Confirmación, nueva fecha solicitada y cualquier observación importante.",
+      voice_id: "",
       is_default: false,
     },
   },
@@ -76,6 +92,7 @@ function toInput(template: PhoneAgentTemplate): PhoneAgentTemplateInput {
     opening_message: template.opening_message,
     knowledge_context: template.knowledge_context ?? "",
     required_information: template.required_information ?? "",
+    voice_id: template.voice_id ?? "",
     is_default: template.is_default,
   };
 }
@@ -84,6 +101,7 @@ export function PhoneAgentTemplatesSettings({ onChanged }: { onChanged?: () => v
   const [templates, setTemplates] = useState<PhoneAgentTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<PhoneAgentTemplateInput>(EMPTY_FORM);
+  const [voices, setVoices] = useState<VozDisponible[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +122,9 @@ export function PhoneAgentTemplatesSettings({ onChanged }: { onChanged?: () => v
 
   useEffect(() => {
     void load();
+    void listVoces()
+      .then(setVoices)
+      .catch(() => setVoices([]));
   }, [load]);
 
   function newTemplate(initial: PhoneAgentTemplateInput = EMPTY_FORM) {
@@ -312,6 +333,25 @@ export function PhoneAgentTemplatesSettings({ onChanged }: { onChanged?: () => v
                 placeholder="Quisiera conocer brevemente qué necesitas y ver si podemos ayudarte."
                 maxLength={700}
               />
+            </Field>
+
+            <Field
+              label="Voz de este agente"
+              htmlFor="phone_agent_voice"
+              hint="Usará una voz de tu cuenta de ElevenLabs. Si no eliges una, usa la voz predeterminada."
+            >
+              <Select
+                id="phone_agent_voice"
+                value={form.voice_id}
+                onChange={(e) => setForm({ ...form, voice_id: e.target.value })}
+              >
+                <option value="">Voz predeterminada</option>
+                {voices.map((voice) => (
+                  <option key={voice.voice_id} value={voice.voice_id}>
+                    {voice.nombre}
+                  </option>
+                ))}
+              </Select>
             </Field>
 
             <Field

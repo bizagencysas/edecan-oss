@@ -497,6 +497,13 @@ class ConfigurarAgenteLlamadasTool(Tool):
                 "type": "string",
                 "description": "Datos y respuestas que debe preguntar durante la llamada.",
             },
+            "voice_id": {
+                "type": "string",
+                "description": (
+                    "ID exacto de una voz de ElevenLabs obtenida con listar_voces. Se omite "
+                    "para usar la voz predeterminada."
+                ),
+            },
             "predeterminado": {
                 "type": "boolean",
                 "description": "Si atiende entrantes y se usa cuando no se indica otro.",
@@ -513,6 +520,7 @@ class ConfigurarAgenteLlamadasTool(Tool):
         opening_message = _cap_str(args.get("apertura"), 700)
         knowledge_context = _cap_str(args.get("contexto_autorizado"), 6000)
         required_information = _cap_str(args.get("informacion_a_obtener"), 3000)
+        voice_id = _cap_str(args.get("voice_id"), 200)
         if not all((name, agent_name, persona_prompt, default_goal)):
             return ToolResult(
                 content=(
@@ -582,6 +590,7 @@ class ConfigurarAgenteLlamadasTool(Tool):
             "opening_message": opening_message,
             "knowledge_context": knowledge_context,
             "required_information": required_information,
+            "voice_id": voice_id or None,
             "is_default": make_default,
             "now": datetime.now(UTC),
         }
@@ -593,11 +602,12 @@ class ConfigurarAgenteLlamadasTool(Tool):
                     INSERT INTO phone_agent_templates (
                         id, tenant_id, user_id, name, agent_name, persona_prompt,
                         default_goal, opening_message, knowledge_context,
-                        required_information, is_default, created_at, updated_at
+                        required_information, voice_id, is_default, created_at, updated_at
                     ) VALUES (
                         CAST(:id AS uuid), CAST(:tenant_id AS uuid), CAST(:user_id AS uuid),
                         :name, :agent_name, :persona_prompt, :default_goal, :opening_message,
-                        :knowledge_context, :required_information, :is_default, :now, :now
+                        :knowledge_context, :required_information, :voice_id, :is_default,
+                        :now, :now
                     )
                     RETURNING id, name, agent_name, default_goal, is_default
                     """
@@ -618,6 +628,7 @@ class ConfigurarAgenteLlamadasTool(Tool):
                         opening_message = :opening_message,
                         knowledge_context = :knowledge_context,
                         required_information = :required_information,
+                        voice_id = :voice_id,
                         is_default = :is_default, updated_at = :now
                     WHERE tenant_id = CAST(:tenant_id AS uuid)
                       AND user_id = CAST(:user_id AS uuid)

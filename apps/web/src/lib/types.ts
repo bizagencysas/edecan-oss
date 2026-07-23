@@ -319,6 +319,7 @@ export interface PhoneAgentTemplate {
   opening_message: string;
   knowledge_context: string;
   required_information: string;
+  voice_id: string;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -332,6 +333,7 @@ export interface PhoneAgentTemplateInput {
   opening_message: string;
   knowledge_context: string;
   required_information: string;
+  voice_id: string;
   is_default: boolean;
 }
 

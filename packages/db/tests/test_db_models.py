@@ -156,6 +156,7 @@ def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llama
     assert templates.columns["default_goal"].nullable is False
     assert templates.columns["knowledge_context"].nullable is False
     assert templates.columns["required_information"].nullable is False
+    assert templates.columns["voice_id"].nullable is True
     default_index = next(
         index for index in templates.indexes if index.name == "uq_phone_agent_templates_default"
     )
@@ -169,6 +170,7 @@ def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llama
         "agent_name",
         "agent_prompt",
         "opening_message",
+        "voice_id",
     ):
         assert calls[field].nullable is True
 

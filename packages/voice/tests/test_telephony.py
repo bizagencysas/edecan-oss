@@ -93,3 +93,14 @@ def test_twiml_escapes_goal_and_keeps_voice_inside_one_turn() -> None:
     assert "Confirma &lt;cita&gt; &amp; hora" in xml
     assert "<Gather" in xml
     assert "https://assistant.test/gather?x=1&amp;y=2" in xml
+
+
+def test_twiml_plays_tenant_voice_without_repeating_say() -> None:
+    xml = conversation_twiml(
+        message="Texto ya sintetizado",
+        gather_url="https://assistant.test/gather",
+        play_url="https://assistant.test/audio/token",
+    )
+    assert "<Play>https://assistant.test/audio/token</Play>" in xml
+    assert "<Say" not in xml
+    assert "<Gather" in xml

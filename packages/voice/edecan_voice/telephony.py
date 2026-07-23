@@ -130,9 +130,7 @@ class TwilioVoiceClient:
         status_callback_url: str,
     ) -> TwilioCall:
         to_phone = normalize_e164(to_e164)
-        endpoint = (
-            f"{TWILIO_API_BASE}/Accounts/{self.credentials.account_sid}/Calls.json"
-        )
+        endpoint = f"{TWILIO_API_BASE}/Accounts/{self.credentials.account_sid}/Calls.json"
         payload = {
             "To": to_phone,
             "From": self.credentials.phone_number,
@@ -184,10 +182,14 @@ def conversation_twiml(
     gather_url: str,
     language: str = "es-MX",
     end_after_message: bool = False,
+    play_url: str | None = None,
 ) -> str:
     """TwiML de un turno: habla y escucha la siguiente frase, o termina."""
     root = Element("Response")
-    SubElement(root, "Say", {"language": language}).text = message
+    if play_url:
+        SubElement(root, "Play").text = play_url
+    else:
+        SubElement(root, "Say", {"language": language}).text = message
     if end_after_message:
         SubElement(root, "Hangup")
     else:
@@ -203,7 +205,8 @@ def conversation_twiml(
                 "timeout": "5",
             },
         )
-        SubElement(gather, "Say", {"language": language}).text = "Te escucho."
+        if not play_url:
+            SubElement(gather, "Say", {"language": language}).text = "Te escucho."
         SubElement(root, "Redirect", {"method": "POST"}).text = gather_url
     return _xml(root)
 

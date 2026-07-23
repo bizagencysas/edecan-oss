@@ -513,6 +513,13 @@ export async function listPhoneCalls(): Promise<PhoneCall[]> {
   return apiJson<PhoneCall[]>("/v1/phone/calls");
 }
 
+export async function setupIncomingCalls(): Promise<{
+  status: "ready";
+  phone_number: string;
+}> {
+  return apiJson("/v1/phone/incoming/setup", { method: "POST" });
+}
+
 /** Prepara una llamada y devuelve el borrador verificable. Nunca llama por sí sola. */
 export async function preparePhoneCall(input: {
   to_e164: string;

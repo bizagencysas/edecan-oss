@@ -415,6 +415,20 @@ async def get_vault(
     return TokenVault(session, build_key_provider(settings))
 
 
+async def get_platform_vault(
+    session: AsyncSession = Depends(get_platform_session, scope="function"),
+    settings: Settings = Depends(get_settings),
+) -> TokenVault:
+    """Vault para webhooks firmados que todavía no tienen sesión de usuario.
+
+    Solo debe usarse después de resolver el tenant desde un identificador
+    externo confiable y verificar la firma del proveedor. Comparte la sesión
+    de plataforma con `get_platform_repo`, evitando exigir un bearer token a
+    Twilio y manteniendo las credenciales cifradas.
+    """
+    return TokenVault(session, build_key_provider(settings))
+
+
 async def get_streaming_vault(
     session: AsyncSession = Depends(get_tenant_session, scope="request"),
     settings: Settings = Depends(get_settings),

@@ -1518,6 +1518,7 @@ class PhoneAgentTemplate(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     opening_message: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     knowledge_context: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     required_information: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
@@ -1569,6 +1570,7 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     agent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     opening_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="twilio")
     provider_call_sid: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -192,6 +192,7 @@ class Repo(Protocol):
         is_default: bool,
         knowledge_context: str = "",
         required_information: str = "",
+        voice_id: str | None = None,
     ) -> Row: ...
     async def list_phone_agent_templates(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
@@ -232,6 +233,7 @@ class Repo(Protocol):
         agent_name: str | None = None,
         agent_prompt: str | None = None,
         opening_message: str | None = None,
+        voice_id: str | None = None,
     ) -> Row: ...
     async def list_phone_calls(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
@@ -912,16 +914,17 @@ class SqlRepo:
         is_default: bool,
         knowledge_context: str = "",
         required_information: str = "",
+        voice_id: str | None = None,
     ) -> Row:
         row = await self._first(
             """
             INSERT INTO phone_agent_templates (
                 id, tenant_id, user_id, name, agent_name, persona_prompt, default_goal,
-                opening_message, knowledge_context, required_information, is_default,
+                opening_message, knowledge_context, required_information, voice_id, is_default,
                 created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :name, :agent_name, :persona_prompt, :default_goal,
-                :opening_message, :knowledge_context, :required_information, :is_default,
+                :opening_message, :knowledge_context, :required_information, :voice_id, :is_default,
                 :now, :now
             ) RETURNING *
             """,
@@ -936,6 +939,7 @@ class SqlRepo:
                 "opening_message": opening_message,
                 "knowledge_context": knowledge_context,
                 "required_information": required_information,
+                "voice_id": voice_id,
                 "is_default": is_default,
                 "now": _now(),
             },
@@ -994,6 +998,7 @@ class SqlRepo:
             "opening_message",
             "knowledge_context",
             "required_information",
+            "voice_id",
             "is_default",
         }
         clean = {key: value for key, value in fields.items() if key in allowed}
@@ -1052,19 +1057,20 @@ class SqlRepo:
         agent_name: str | None = None,
         agent_prompt: str | None = None,
         opening_message: str | None = None,
+        voice_id: str | None = None,
     ) -> Row:
         row = await self._first(
             """
             INSERT INTO phone_calls (
                 id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
                 goal, agent_template_id, agent_template_name, agent_name, agent_prompt,
-                opening_message,
+                opening_message, voice_id,
                 status, provider, provider_call_sid, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
                 :to_e164, :goal, :agent_template_id, :agent_template_name, :agent_name,
                 :agent_prompt,
-                :opening_message, :status, 'twilio', :provider_call_sid, :now, :now
+                :opening_message, :voice_id, :status, 'twilio', :provider_call_sid, :now, :now
             ) RETURNING *
             """,
             {
@@ -1081,6 +1087,7 @@ class SqlRepo:
                 "agent_name": agent_name,
                 "agent_prompt": agent_prompt,
                 "opening_message": opening_message,
+                "voice_id": voice_id,
                 "status": status,
                 "provider_call_sid": provider_call_sid,
                 "now": _now(),

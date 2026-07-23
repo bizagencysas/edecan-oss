@@ -20,6 +20,8 @@ test("Ajustes ofrece agentes de llamadas reutilizables con lenguaje humano", () 
   assert.match(settings, /Información que este agente puede usar y decir/);
   assert.match(settings, /Edecan no comparte el resto de tu memoria/);
   assert.match(settings, /Información que debe obtener/);
+  assert.match(settings, /Voz de este agente/);
+  assert.match(settings, /listVoces/);
   assert.match(settings, /ninguna plantilla puede saltarse el consentimiento ni la confirmación final/);
 });
 
@@ -34,6 +36,8 @@ test("Llamadas tiene diagnóstico, configuración guiada y dos confirmaciones", 
   assert.match(calls, /Preparar llamada/);
   assert.match(calls, /Confirmación final/);
   assert.match(calls, /Llamar ahora/);
+  assert.match(calls, /Configurar o reparar recepción/);
+  assert.match(calls, /setupIncomingCalls/);
   assert.match(calls, /confirmDestination/);
   assert.match(calls, /confirmGoal/);
   assert.match(connectors, /id="connector-twilio"/);

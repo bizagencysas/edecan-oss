@@ -28,6 +28,7 @@ import {
   listPhoneAgentTemplates,
   listPhoneCalls,
   preparePhoneCall,
+  setupIncomingCalls,
 } from "@/lib/api";
 import { getCredentials } from "@/lib/api-configuracion";
 import type { PhoneAgentTemplate, PhoneCall } from "@/lib/types";
@@ -61,7 +62,7 @@ export default function LlamadasPage() {
   const [llmReady, setLlmReady] = useState(false);
   const [ttsReady, setTtsReady] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"prepare" | "confirm" | null>(null);
+  const [busy, setBusy] = useState<"prepare" | "confirm" | "incoming" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [draft, setDraft] = useState<PhoneCall | null>(null);
@@ -172,6 +173,26 @@ export default function LlamadasPage() {
     }
   }
 
+  async function configureIncoming() {
+    setBusy("incoming");
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await setupIncomingCalls();
+      setSuccess(
+        `Listo. Las llamadas que entren a ${result.phone_number} serán atendidas por tu agente predeterminado.`,
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo configurar la recepción de llamadas.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -228,6 +249,34 @@ export default function LlamadasPage() {
           <section id="agentes" className="scroll-mt-6">
             <PhoneAgentTemplatesSettings onChanged={() => void load()} />
           </section>
+
+          <Card>
+            <CardHeader
+              title="Recibir llamadas"
+              description="Edecan configura tu número de Twilio para que el agente predeterminado atienda, transcriba y deje un resumen."
+            />
+            <CardBody>
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                    {twilioNumber ?? "Todavía no hay un número conectado"}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                    Puedes usar este botón también para reparar el webhook si cambiaste el túnel o el dominio.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={busy === "incoming"}
+                  disabled={!twilioNumber || templates.length === 0}
+                  onClick={() => void configureIncoming()}
+                >
+                  Configurar o reparar recepción
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
 
           <Card>
             <CardHeader

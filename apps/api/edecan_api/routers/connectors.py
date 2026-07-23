@@ -285,7 +285,7 @@ def _bundle_account_hint(bundle: Any) -> str:
 
 async def _verify_twilio_phone_ownership(
     account_sid: str, auth_token: str, phone_number: str, *, http_client: httpx.AsyncClient
-) -> None:
+) -> str:
     """Confirma contra la API real de Twilio que `phone_number` es un número
     de la cuenta `account_sid` (autenticada con `auth_token`) — sin esto,
     `connect_twilio` solo validaba el FORMATO de las tres credenciales
@@ -323,11 +323,49 @@ async def _verify_twilio_phone_ownership(
         numbers = response.json().get("incoming_phone_numbers") or []
     except ValueError:
         numbers = []
-    owns_number = any(entry.get("phone_number") == phone_number for entry in numbers)
-    if not owns_number:
+    owned = next((entry for entry in numbers if entry.get("phone_number") == phone_number), None)
+    if owned is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ese número no pertenece a la cuenta de Twilio indicada.",
+        )
+    phone_sid = str(owned.get("sid") or "")
+    if not phone_sid.startswith("PN"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Twilio no devolvió la identidad válida de ese número.",
+        )
+    return phone_sid
+
+
+async def _configure_twilio_incoming_webhook(
+    account_sid: str,
+    auth_token: str,
+    phone_sid: str,
+    webhook_url: str,
+    *,
+    http_client: httpx.AsyncClient,
+) -> None:
+    """Apunta el número verificado al receptor de llamadas entrantes de Edecan."""
+    try:
+        response = await http_client.post(
+            f"{_TWILIO_API_BASE}/Accounts/{account_sid}/IncomingPhoneNumbers/{phone_sid}.json",
+            data={"VoiceUrl": webhook_url, "VoiceMethod": "POST"},
+            auth=httpx.BasicAuth(account_sid, auth_token),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Verificamos el número, pero Twilio no respondió al activar las llamadas entrantes."
+            ),
+        ) from exc
+    if response.status_code not in {200, 201}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Twilio verificó el número, pero no permitió configurar su recepción de llamadas."
+            ),
         )
 
 
@@ -540,9 +578,7 @@ async def callback(
                     profile = await get_linkedin_profile(http_client, bundle)
                     external_account_id = str(profile["sub"])
                     connected_display_name = str(
-                        profile.get("name")
-                        or profile.get("email")
-                        or connector.display_name
+                        profile.get("name") or profile.get("email") or connector.display_name
                     )
         except ConnectorError as exc:
             # El proveedor rechazó el code, o la app del tenant está mal
@@ -616,6 +652,7 @@ async def connect_twilio(
     repo: Repo = Depends(get_repo),
     platform_repo: Repo = Depends(get_platform_repo),
     vault: TokenVault = Depends(get_vault),
+    settings: Settings = Depends(get_settings),
 ) -> None:
     """Guarda la cuenta de Twilio del tenant (Account SID + Auth Token + número).
 
@@ -662,9 +699,19 @@ async def connect_twilio(
     await _check_phone_number_quota(repo, tenant)
 
     async with httpx.AsyncClient(timeout=_TWILIO_VERIFY_TIMEOUT_SECONDS) as http_client:
-        await _verify_twilio_phone_ownership(
+        phone_sid = await _verify_twilio_phone_ownership(
             account_sid, auth_token, phone_number, http_client=http_client
         )
+        # Los tests y adaptadores antiguos pueden sustituir el verificador por
+        # un no-op. En producción siempre devuelve el PN SID real.
+        if phone_sid:
+            await _configure_twilio_incoming_webhook(
+                account_sid,
+                auth_token,
+                phone_sid,
+                (f"{settings.PUBLIC_BASE_URL.rstrip('/')}/v1/phone/twilio/incoming"),
+                http_client=http_client,
+            )
 
     # Chequeo aplicativo (mensaje 409 claro y testeable sin Postgres real) —
     # `platform_repo` bypassa RLS a propósito, ver su docstring. El índice
@@ -734,8 +781,7 @@ async def _verify_whatsapp_phone_ownership(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Meta rechazó el access token indicado (no autorizado para ese "
-                "phone_number_id)."
+                "Meta rechazó el access token indicado (no autorizado para ese phone_number_id)."
             ),
         )
     if response.status_code == 404:

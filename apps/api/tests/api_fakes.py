@@ -322,6 +322,7 @@ class FakeRepo:
         is_default: bool,
         knowledge_context: str = "",
         required_information: str = "",
+        voice_id: str | None = None,
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -334,6 +335,7 @@ class FakeRepo:
             "opening_message": opening_message,
             "knowledge_context": knowledge_context,
             "required_information": required_information,
+            "voice_id": voice_id,
             "is_default": is_default,
             "created_at": _now(),
             "updated_at": _now(),
@@ -419,6 +421,7 @@ class FakeRepo:
         agent_name: str | None = None,
         agent_prompt: str | None = None,
         opening_message: str | None = None,
+        voice_id: str | None = None,
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -434,6 +437,7 @@ class FakeRepo:
             "agent_name": agent_name,
             "agent_prompt": agent_prompt,
             "opening_message": opening_message,
+            "voice_id": voice_id,
             "status": status,
             "provider": "twilio",
             "provider_call_sid": provider_call_sid,

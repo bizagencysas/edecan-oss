@@ -7,20 +7,24 @@ Twilio nunca se invoca durante `prepare`.
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import httpx
 from edecan_core.persona import build_system_prompt
 from edecan_core.queue import enqueue
 from edecan_db.vault import TokenVault
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
 from edecan_schemas.plans import FLAG_VOICE_TELEPHONY, PLANES
+from edecan_voice.stubs import StubTTS
 from edecan_voice.telephony import (
     TelephonyError,
     TwilioCredentials,
@@ -41,13 +45,20 @@ from edecan_api.deps import (
     build_key_provider,
     get_current_user,
     get_platform_repo,
+    get_platform_vault,
+    get_redis,
     get_repo,
     get_vault,
     load_tenant_llm_config,
     rate_limit,
 )
 from edecan_api.repo import Repo, SqlRepo
+from edecan_api.routers.connectors import (
+    _configure_twilio_incoming_webhook,
+    _verify_twilio_phone_ownership,
+)
 from edecan_api.routers.persona import persona_from_row
+from edecan_api.routers.voice import _estimate_seconds_from_text, _tts_para_tenant
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/phone", tags=["phone"])
@@ -59,6 +70,7 @@ STATUS_ORDER = {"draft": 0, "confirmed": 1, "queued": 2, "ringing": 3, "in_progr
 PHONE_AGENT_TEMPLATE_LIMIT = 20
 PHONE_SUMMARY_JOB = "notify_phone_call_summary"
 PHONE_INCOMING_JOB = "notify_incoming_phone_call"
+PHONE_AUDIO_TTL_SECONDS = 5 * 60
 
 _COMMITMENT_MARKERS = (
     "me comprometo",
@@ -93,6 +105,7 @@ def _template_snapshot(template: dict[str, Any] | None) -> dict[str, Any]:
             "agent_name": None,
             "agent_prompt": None,
             "opening_message": None,
+            "voice_id": None,
         }
     prompt_parts = [str(template["persona_prompt"]).strip()]
     knowledge_context = str(template.get("knowledge_context") or "").strip()
@@ -119,6 +132,7 @@ def _template_snapshot(template: dict[str, Any] | None) -> dict[str, Any]:
         "agent_name": template["agent_name"],
         "agent_prompt": "\n".join(prompt_parts),
         "opening_message": template["opening_message"] or None,
+        "voice_id": template.get("voice_id") or None,
     }
 
 
@@ -149,6 +163,61 @@ def _dedupe_phrases(values: list[str], *, limit: int = 6) -> list[str]:
 
 def _sentences(text: str) -> list[str]:
     return [piece for piece in re.split(r"(?<=[.!?])\s+|\n+", text) if piece.strip()]
+
+
+def _phone_audio_cache_key(call_id: uuid.UUID, token: str) -> str:
+    return f"phone:audio:{call_id}:{token}"
+
+
+async def _twilio_play_url(
+    request: Request,
+    *,
+    repo: Repo,
+    vault: TokenVault | None,
+    redis_client: Any,
+    call: dict[str, Any],
+    text: str,
+) -> str | None:
+    """Sintetiza una respuesta con el TTS del tenant y la expone brevemente a Twilio.
+
+    El URL contiene un token aleatorio de 256 bits y caduca a los cinco
+    minutos. Los bytes viven en Redis/fakeredis, nunca en una ruta pública
+    permanente ni en la memoria de otro tenant.
+    """
+    if vault is None:
+        return None
+    try:
+        tts = await _tts_para_tenant(
+            vault,
+            repo,
+            call["tenant_id"],
+            request.app.state.settings,
+        )
+        if isinstance(tts, StubTTS):
+            return None
+        audio = await tts.synthesize(text, voice_id=call.get("voice_id") or None)
+        token = secrets.token_urlsafe(32)
+        await redis_client.set(
+            _phone_audio_cache_key(call["id"], token),
+            base64.b64encode(audio).decode("ascii"),
+            ex=PHONE_AUDIO_TTL_SECONDS,
+        )
+        await repo.add_usage_event(
+            tenant_id=call["tenant_id"],
+            kind="voice_seconds",
+            quantity=_estimate_seconds_from_text(text),
+            meta={"channel": "phone", "call_id": str(call["id"])},
+        )
+        base_url = request.app.state.settings.PUBLIC_BASE_URL.rstrip("/")
+        return f"{base_url}/v1/phone/twilio/calls/{call['id']}/audio/{token}"
+    except Exception:
+        logger.warning(
+            "phone_tts_fallback call_id=%s tenant_id=%s",
+            call.get("id"),
+            call.get("tenant_id"),
+            exc_info=True,
+        )
+        return None
 
 
 def _build_phone_call_summary(call: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -494,6 +563,7 @@ class PhoneAgentTemplateIn(BaseModel):
     opening_message: str = Field(default="", max_length=700)
     knowledge_context: str = Field(default="", max_length=6000)
     required_information: str = Field(default="", max_length=3000)
+    voice_id: str = Field(default="", max_length=200)
     is_default: bool = False
 
     @field_validator("name", "agent_name", "persona_prompt", "default_goal")
@@ -504,7 +574,12 @@ class PhoneAgentTemplateIn(BaseModel):
             raise ValueError("Este campo no puede quedar vacío.")
         return clean
 
-    @field_validator("opening_message", "knowledge_context", "required_information")
+    @field_validator(
+        "opening_message",
+        "knowledge_context",
+        "required_information",
+        "voice_id",
+    )
     @classmethod
     def _optional_text(cls, value: str) -> str:
         return value.strip()
@@ -580,6 +655,7 @@ def _template_out(row: dict[str, Any]) -> dict[str, Any]:
         "opening_message": row.get("opening_message") or "",
         "knowledge_context": row.get("knowledge_context") or "",
         "required_information": row.get("required_information") or "",
+        "voice_id": row.get("voice_id") or "",
         "is_default": bool(row.get("is_default")),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -847,6 +923,7 @@ async def create_phone_agent_template(
         opening_message=body.opening_message,
         knowledge_context=body.knowledge_context,
         required_information=body.required_information,
+        voice_id=body.voice_id or None,
         is_default=make_default,
     )
     await repo.add_audit_log(
@@ -897,6 +974,7 @@ async def update_phone_agent_template(
             "opening_message": body.opening_message,
             "knowledge_context": body.knowledge_context,
             "required_information": body.required_information,
+            "voice_id": body.voice_id or None,
             "is_default": body.is_default,
         },
     )
@@ -957,6 +1035,46 @@ async def list_calls(
         tenant_id=current_user.tenant_id, user_id=current_user.user_id
     )
     return [_out(row) for row in rows]
+
+
+@router.post("/incoming/setup", dependencies=[Depends(rate_limit)])
+async def setup_incoming_calls(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
+) -> dict[str, Any]:
+    """Configura o repara en Twilio la recepción de llamadas de este número."""
+    _require_telephony(current_user)
+    credentials = await _credentials(repo, vault, current_user.tenant_id)
+    async with httpx.AsyncClient(timeout=12.0) as http_client:
+        phone_sid = await _verify_twilio_phone_ownership(
+            credentials.account_sid,
+            credentials.auth_token,
+            credentials.phone_number,
+            http_client=http_client,
+        )
+        incoming_url = (
+            f"{request.app.state.settings.PUBLIC_BASE_URL.rstrip('/')}/v1/phone/twilio/incoming"
+        )
+        await _configure_twilio_incoming_webhook(
+            credentials.account_sid,
+            credentials.auth_token,
+            phone_sid,
+            incoming_url,
+            http_client=http_client,
+        )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="phone.incoming_configured",
+        target=credentials.phone_number,
+        meta={"provider": "twilio"},
+    )
+    return {
+        "status": "ready",
+        "phone_number": credentials.phone_number,
+    }
 
 
 @router.get("/calls/{call_id}", dependencies=[Depends(rate_limit)])
@@ -1240,7 +1358,11 @@ async def _phone_reply(
 
 @router.post("/twilio/calls/{call_id}/voice")
 async def outgoing_voice(
-    call_id: uuid.UUID, request: Request, repo: Repo = Depends(get_platform_repo)
+    call_id: uuid.UUID,
+    request: Request,
+    repo: Repo = Depends(get_platform_repo),
+    vault: TokenVault | None = Depends(get_platform_vault),
+    redis_client: Any = Depends(get_redis),
 ) -> Response:
     params = await _form(request)
     call_sid = params.get("CallSid", "")
@@ -1265,14 +1387,27 @@ async def outgoing_voice(
     opening = str(call.get("opening_message") or "").strip()
     purpose = opening or f"El motivo es: {call['goal']}"
     message = f"{identity} {purpose}"
+    play_url = await _twilio_play_url(
+        request,
+        repo=repo,
+        vault=vault,
+        redis_client=redis_client,
+        call=call,
+        text=message,
+    )
     return Response(
-        conversation_twiml(message=message, gather_url=gather_url),
+        conversation_twiml(message=message, gather_url=gather_url, play_url=play_url),
         media_type="application/xml",
     )
 
 
 @router.post("/twilio/incoming")
-async def incoming_voice(request: Request, repo: Repo = Depends(get_platform_repo)) -> Response:
+async def incoming_voice(
+    request: Request,
+    repo: Repo = Depends(get_platform_repo),
+    vault: TokenVault | None = Depends(get_platform_vault),
+    redis_client: Any = Depends(get_redis),
+) -> Response:
     """Resuelve el tenant por su número Twilio y abre una conversación telefónica."""
     params = await _form(request)
     try:
@@ -1360,10 +1495,20 @@ async def incoming_voice(request: Request, repo: Repo = Depends(get_platform_rep
         opening
         or "Esta conversación quedará registrada para poder ayudarte. ¿En qué puedo ayudarte?"
     )
+    message = f"Hola, soy {agent_name}, un asistente automatizado. {welcome}"
+    play_url = await _twilio_play_url(
+        request,
+        repo=repo,
+        vault=vault,
+        redis_client=redis_client,
+        call=call,
+        text=message,
+    )
     return Response(
         conversation_twiml(
-            message=(f"Hola, soy {agent_name}, un asistente automatizado. {welcome}"),
+            message=message,
             gather_url=gather_url,
+            play_url=play_url,
         ),
         media_type="application/xml",
     )
@@ -1371,7 +1516,11 @@ async def incoming_voice(request: Request, repo: Repo = Depends(get_platform_rep
 
 @router.post("/twilio/calls/{call_id}/gather")
 async def gather_turn(
-    call_id: uuid.UUID, request: Request, repo: Repo = Depends(get_platform_repo)
+    call_id: uuid.UUID,
+    request: Request,
+    repo: Repo = Depends(get_platform_repo),
+    vault: TokenVault | None = Depends(get_platform_vault),
+    redis_client: Any = Depends(get_redis),
 ) -> Response:
     params = await _form(request)
     call = await repo.get_phone_call_by_provider_sid(provider_call_sid=params.get("CallSid", ""))
@@ -1443,13 +1592,48 @@ async def gather_turn(
         event_type="transcript",
         payload={"role": "assistant", "text": reply},
     )
+    play_url = await _twilio_play_url(
+        request,
+        repo=repo,
+        vault=vault,
+        redis_client=redis_client,
+        call=call,
+        text=reply,
+    )
     return Response(
         conversation_twiml(
             message=reply,
             gather_url=gather_url,
             end_after_message=is_last_turn,
+            play_url=play_url,
         ),
         media_type="application/xml",
+    )
+
+
+@router.get("/twilio/calls/{call_id}/audio/{token}")
+async def phone_audio(
+    call_id: uuid.UUID,
+    token: str,
+    redis_client: Any = Depends(get_redis),
+) -> Response:
+    """Entrega a Twilio audio efímero mediante un token opaco de alta entropía."""
+    if len(token) < 32 or len(token) > 100:
+        raise HTTPException(status_code=404, detail="Audio no encontrado.")
+    encoded = await redis_client.get(_phone_audio_cache_key(call_id, token))
+    if not encoded:
+        raise HTTPException(status_code=404, detail="Audio no encontrado.")
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Audio no encontrado.") from None
+    return Response(
+        content=audio,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "private, max-age=240",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

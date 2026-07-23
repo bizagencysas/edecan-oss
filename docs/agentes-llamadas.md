@@ -1,19 +1,23 @@
 # Agentes de llamadas configurables
 
-Edecan permite guardar varios perfiles para llamadas salientes —por ejemplo,
-asistencia, ventas consultivas o seguimiento— sin convertirlos en procesos
-autónomos. Una plantilla define:
+Edecan permite guardar hasta 20 perfiles independientes para llamadas salientes
+y entrantes, por ejemplo asistencia, ventas consultivas o seguimiento. Una
+plantilla define:
 
 - un nombre interno para reconocerla;
 - el nombre con el que el agente se presenta;
 - su personalidad y forma de conversar;
 - un objetivo reutilizable;
 - una primera frase opcional;
-- si será el agente predeterminado de llamadas salientes.
+- el contexto comercial que sí puede compartir con terceros;
+- la información que debe preguntar y obtener;
+- una voz opcional de la cuenta ElevenLabs del propietario;
+- si será el agente predeterminado para entrantes y llamadas sin agente explícito.
 
-Se administran desde **Ajustes → Agentes para llamadas** o mediante
-`/v1/phone/agent-templates`. El primer perfil creado se vuelve predeterminado;
-solo puede existir uno predeterminado por usuario.
+Se administran desde **Llamadas → Agentes de llamadas**, desde el chat con
+`configurar_agente_llamadas`, o mediante `/v1/phone/agent-templates`. El primer
+perfil creado se vuelve predeterminado; solo puede existir uno predeterminado
+por usuario.
 
 ## Por qué cada llamada guarda una copia
 
@@ -41,19 +45,22 @@ Chat o API
   → confirmación explícita
   → commit en PostgreSQL
   → Twilio REST inicia la llamada
-  → webhook firmado entrega saludo
-  → TwiML Say/Gather conversa por turnos
+  → webhook firmado entrega saludo con la voz del agente
+  → TTS ElevenLabs del tenant + TwiML Play/Gather conversan por turnos
   → LLM rápido usa persona telefónica + snapshot + objetivo
   → webhook firmado de estado actualiza la verdad del proveedor
   → cierre terminal guarda resumen + actividad de forma idempotente
   → job reclama una sola vez el push genérico best-effort
 ```
 
-La ruta de chat `llamar_contacto` continúa siendo `dangerous=True`: la
-plantilla predeterminada se resuelve dentro del mismo dispatcher, pero Twilio
-solo se invoca después del gate existente. La API permite elegir otra plantilla
-con `agent_template_id` en `POST /v1/phone/calls/prepare` y omitir `goal` para
-usar su objetivo predeterminado.
+La ruta de chat `llamar_contacto` continúa siendo `dangerous=True`. Si la
+persona dice «con el agente de negocios», el dispatcher resuelve el nombre
+exacto de la plantilla. Si no existe o coincide con varios agentes, detiene la
+acción y muestra los nombres disponibles; nunca sustituye silenciosamente el
+agente solicitado por otro. Twilio solo se invoca después del gate existente.
+La API permite elegir otra plantilla con `agent_template_id` en
+`POST /v1/phone/calls/prepare` y omitir `goal` para usar su objetivo
+predeterminado.
 
 ## Resumen automático al finalizar
 
@@ -95,12 +102,19 @@ bloqueada.
 - Consentimiento, doble confirmación y auditoría siguen siendo obligatorios.
 - La plantilla no programa llamadas, no crea campañas y no decide destinatarios.
 
-## Alcance de este primer incremento
+## Llamadas entrantes y voces
 
-Los perfiles configuran las llamadas **salientes**. Las entrantes conservan la
-persona telefónica segura general. El canal OSS actual usa Twilio `<Say>` y
-`<Gather>`; `agent_name` y `persona_prompt` cambian identidad y comportamiento,
-pero todavía no asignan una voz TTS distinta por perfil.
+El agente predeterminado atiende las llamadas que llegan al número Twilio
+conectado. Al conectar un número nuevo, Edecan configura automáticamente su
+webhook de voz. El botón **Configurar o reparar recepción** repite esa operación
+de forma segura si cambió el dominio o el túnel.
+
+Cada agente puede elegir una voz de ElevenLabs. La voz queda copiada en la
+llamada junto con la identidad y el objetivo, de modo que editar la plantilla
+no cambia una llamada ya confirmada. Cada respuesta se sintetiza con la
+credencial cifrada del tenant, se conserva en Redis durante cinco minutos y se
+entrega a Twilio mediante una URL opaca de un solo tenant. Si el TTS no está
+configurado o falla, la llamada continúa con `<Say>` de Twilio.
 
 Al comenzar una llamada entrante, Edecán registra primero la llamada y su evento
 `incoming`. Después intenta un push genérico hacia Actividad, respetando la
@@ -108,8 +122,8 @@ preferencia `work`. Reintentos del webhook o del job reutilizan el mismo UUID y
 no producen un segundo push. Este aviso inicial no contiene número, nombre ni
 transcripción y es independiente del resumen estructurado que se crea al cierre.
 
-El siguiente encadenamiento productivo es exponer los nombres de plantilla al
-router de intención del chat y transportar un `agent_template_id` validado como
-argumento de `llamar_contacto`. Después puede añadirse `voice_id` por plantilla
-cuando el canal telefónico use el proveedor TTS BYO del tenant o Media Streams.
-Ninguno de esos pasos debe relajar el gate de confirmación actual.
+El motor OSS actual sigue siendo conversacional por turnos con `<Gather>`. No es
+todavía una conversación full-duplex con interrupciones naturales; alcanzar esa
+latencia requiere Media Streams, STT incremental y audio bidireccional. Esta
+limitación no relaja la selección exacta del agente, el consentimiento ni la
+doble confirmación.

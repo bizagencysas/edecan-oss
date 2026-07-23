@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 from conftest import auth_headers
@@ -22,6 +23,95 @@ class FakeGateway:
     async def create_call(self, **kwargs) -> TwilioCall:
         self.calls.append(kwargs)
         return TwilioCall(sid="CA" + "9" * 32, status="queued")
+
+
+class FakePhoneTTS:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str | None]] = []
+
+    async def synthesize(self, text: str, voice_id: str | None = None) -> bytes:
+        self.calls.append({"text": text, "voice_id": voice_id})
+        return b"real-tenant-mp3"
+
+
+class FakePhoneVault:
+    def __init__(self, token: str) -> None:
+        self.token = token
+
+    async def get(self, _tenant_id, _account_id):
+        return SimpleNamespace(access_token=self.token, scopes=[])
+
+
+async def test_phone_tts_uses_agent_voice_and_ephemeral_audio_endpoint(
+    app, client, fake_repo, fake_redis, monkeypatch
+) -> None:
+    tenant_id = uuid.uuid4()
+    call_id = uuid.uuid4()
+    tts = FakePhoneTTS()
+
+    async def fake_tts_for_tenant(*_args, **_kwargs):
+        return tts
+
+    monkeypatch.setattr(phone, "_tts_para_tenant", fake_tts_for_tenant)
+    request = SimpleNamespace(app=app)
+    url = await phone._twilio_play_url(
+        request,
+        repo=fake_repo,
+        vault=SimpleNamespace(),
+        redis_client=fake_redis,
+        call={
+            "id": call_id,
+            "tenant_id": tenant_id,
+            "voice_id": "voz-negocios",
+        },
+        text="Hola desde el agente",
+    )
+    assert url is not None
+    assert tts.calls == [{"text": "Hola desde el agente", "voice_id": "voz-negocios"}]
+
+    path = urlsplit(url).path
+    audio = await client.get(path)
+    assert audio.status_code == 200
+    assert audio.content == b"real-tenant-mp3"
+    assert audio.headers["content-type"].startswith("audio/mpeg")
+
+
+async def test_setup_incoming_calls_configures_current_twilio_number(
+    app, client, fake_repo, monkeypatch
+) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="twilio",
+        external_account_id="+573001111111",
+        display_name="+573001111111",
+        scopes=["AC" + "1" * 32],
+    )
+    app.dependency_overrides[phone.get_vault] = lambda: FakePhoneVault("t" * 32)
+    seen: dict[str, str] = {}
+
+    async def fake_verify(account_sid, auth_token, phone_number, *, http_client):
+        seen["phone_number"] = phone_number
+        return "PN" + "2" * 32
+
+    async def fake_configure(account_sid, auth_token, phone_sid, webhook_url, *, http_client):
+        seen["phone_sid"] = phone_sid
+        seen["webhook_url"] = webhook_url
+
+    monkeypatch.setattr(phone, "_verify_twilio_phone_ownership", fake_verify)
+    monkeypatch.setattr(phone, "_configure_twilio_incoming_webhook", fake_configure)
+
+    response = await client.post(
+        "/v1/phone/incoming/setup",
+        headers=auth_headers(user_id=user_id, tenant_id=tenant_id),
+    )
+    assert response.status_code == 200
+    assert response.json()["phone_number"] == "+573001111111"
+    assert seen == {
+        "phone_number": "+573001111111",
+        "phone_sid": "PN" + "2" * 32,
+        "webhook_url": "http://localhost:8000/v1/phone/twilio/incoming",
+    }
 
 
 async def _phone_ready(fake_repo, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:

@@ -204,14 +204,24 @@ mismo criterio que las deprecaciones ya existentes de
   distinto (la captura de pantalla y el permiso de Accesibilidad son del
   lado del companion en macOS/Windows/Linux, no de esta app móvil).
 
-## Firma release
+## Actualización y firma release
 
-Este esqueleto **nunca** firma un release con una key compartida (regla
-dura del repo). `androidApp/build.gradle.kts` no declara ningún
-`signingConfig` para `release` a propósito — cada cliente agrega el suyo
-propio antes de distribuir un APK real. Ver
+Este esqueleto **nunca** incluye una key compartida (regla dura del repo).
+`androidApp/build.gradle.kts` solo activa la firma release cuando recibe el
+keystore, alias y contraseñas mediante `EDECAN_ANDROID_RELEASE_*`; sin ellas
+mantiene el APK release sin firmar. Cada distribuidor usa su propio canal
+HTTPS, y la app solo entrega al instalador un APK cuyo hash, identidad,
+`versionCode` y certificado ya fueron verificados.
+
+El checkout oficial publica `android-stable.json` en la rama independiente
+`update-channels` y conserva el mismo manifiesto como asset del release
+mediante `.github/workflows/release-android.yml`. Los prereleases mueven
+únicamente `android-preview.json`. Los forks cambian el endpoint con
+`-PedecanAndroidUpdateManifestUrl=...` o
+`EDECAN_ANDROID_UPDATE_MANIFEST_URL`; las claves permanecen en secrets de CI.
+Ver
 [`../../../docs/movil-android.md`](../../../docs/movil-android.md), sección
-"Firma release con tu keystore".
+"Actualizaciones sin volver a clonar" y "Firma release con tu keystore".
 
 ## Matriz de versiones
 

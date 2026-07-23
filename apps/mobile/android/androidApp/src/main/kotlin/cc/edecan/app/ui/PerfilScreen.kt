@@ -30,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,10 @@ import cc.edecan.shared.LiveProfile
 import cc.edecan.shared.ProfileIdentity
 import cc.edecan.shared.nombrePila
 import cc.edecan.app.notifications.EdecanNotifications
+import cc.edecan.app.BuildConfig
+import cc.edecan.app.updates.AndroidUpdateManager
+import cc.edecan.app.updates.AndroidUpdateState
+import kotlinx.coroutines.launch
 
 /**
  * Pestaña personal. Igual que iOS, aquí no se administran API keys ni
@@ -65,6 +70,8 @@ fun PerfilScreen(
     var editandoPerfil by remember { mutableStateOf(false) }
     var confirmarSalida by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val updateState by AndroidUpdateManager.state.collectAsState()
+    val updateScope = rememberCoroutineScope()
     var permisoAvisos by remember { mutableStateOf(EdecanNotifications.permissionGranted(context)) }
     val pedirAvisos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permisoAvisos = granted
@@ -156,6 +163,106 @@ fun PerfilScreen(
                     )
                     if (perfilState.cargandoPerfil) {
                         CircularProgressIndicator(modifier = Modifier.padding(top = 10.dp))
+                    }
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "Actualizaciones",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Versión instalada ${BuildConfig.VERSION_NAME}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    when (val state = updateState) {
+                        AndroidUpdateState.Idle -> {
+                            Text(
+                                "Edecán comprueba el canal estable sin tocar tus datos.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Button(
+                                onClick = {
+                                    updateScope.launch {
+                                        AndroidUpdateManager.check(context, force = true)
+                                    }
+                                },
+                            ) { Text("Buscar actualización") }
+                        }
+                        AndroidUpdateState.Checking -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                CircularProgressIndicator()
+                                Text("Buscando una versión nueva…")
+                            }
+                        }
+                        is AndroidUpdateState.UpToDate -> {
+                            Text("Está al día.", color = MaterialTheme.colorScheme.primary)
+                            TextButton(
+                                onClick = {
+                                    updateScope.launch {
+                                        AndroidUpdateManager.check(context, force = true)
+                                    }
+                                },
+                            ) { Text("Comprobar otra vez") }
+                        }
+                        is AndroidUpdateState.Available -> {
+                            Text(
+                                "Edecán ${state.manifest.versionName} está disponible.",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (state.manifest.releaseNotes.isNotBlank()) {
+                                Text(
+                                    state.manifest.releaseNotes,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 5,
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    updateScope.launch { AndroidUpdateManager.download(context) }
+                                },
+                            ) { Text("Descargar actualización") }
+                        }
+                        is AndroidUpdateState.Downloading -> {
+                            Text("Descargando ${state.percent}%…")
+                            CircularProgressIndicator(progress = { state.percent / 100f })
+                        }
+                        is AndroidUpdateState.Ready -> {
+                            Text("Descarga verificada. Android te pedirá confirmación.")
+                            Button(onClick = { AndroidUpdateManager.install(context) }) {
+                                Text("Instalar ahora")
+                            }
+                        }
+                        is AndroidUpdateState.PermissionRequired -> {
+                            Text(
+                                "Permite que Edecán abra su APK firmado y vuelve aquí. Android seguirá pidiendo tu confirmación.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Button(onClick = { AndroidUpdateManager.install(context) }) {
+                                Text("Continuar instalación")
+                            }
+                        }
+                        is AndroidUpdateState.Error -> {
+                            Text(state.message, color = MaterialTheme.colorScheme.error)
+                            if (state.canRetry) {
+                                TextButton(
+                                    onClick = {
+                                        updateScope.launch {
+                                            AndroidUpdateManager.check(context, force = true)
+                                        }
+                                    },
+                                ) { Text("Reintentar") }
+                            }
+                        }
                     }
                 }
             }

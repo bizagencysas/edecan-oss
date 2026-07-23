@@ -13,6 +13,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Solo la distribución APK OSS. Android siempre muestra su propia
+         confirmación antes de reemplazar la app; Edecán no instala nada en
+         silencio. Builds de tienda deben usar el updater de su tienda y
+         eliminar este permiso mediante un manifest overlay. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- El QR también puede ingresarse como deep link/manual; no se excluyen
          tablets, Chromebooks ni equipos sin cámara de Google Play. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />

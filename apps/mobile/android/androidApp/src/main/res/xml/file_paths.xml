@@ -3,4 +3,9 @@
     <cache-path
         name="shared_artifacts"
         path="shared_artifacts/" />
+    <!-- APK ya verificado por hash, package id, versionCode y certificado.
+         Ninguna otra carpeta del teléfono se expone al instalador. -->
+    <cache-path
+        name="verified_updates"
+        path="updates/" />
 </paths>

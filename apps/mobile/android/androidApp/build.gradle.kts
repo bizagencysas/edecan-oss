@@ -28,6 +28,36 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+fun String.asBuildConfigString(): String =
+    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+// El canal es configuración de distribución, no lógica de producto. El
+// checkout oficial apunta al manifiesto estable público; un fork puede
+// reemplazarlo con `-PedecanAndroidUpdateManifestUrl=https://...` o con la
+// variable de entorno homónima en mayúsculas. La URL se compila en el APK,
+// pero nunca contiene credenciales.
+val androidUpdateManifestUrl = providers
+    .gradleProperty("edecanAndroidUpdateManifestUrl")
+    .orElse(providers.environmentVariable("EDECAN_ANDROID_UPDATE_MANIFEST_URL"))
+    .orElse(
+        "https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/android-stable.json",
+    )
+
+// Un release solo se firma si el entorno aporta el conjunto completo. Así el
+// checkout OSS sigue construyendo APKs release sin firmar, mientras CI y cada
+// fork pueden usar su propio keystore sin escribir rutas, alias ni contraseñas
+// en Git.
+val releaseKeystorePath = providers.environmentVariable("EDECAN_ANDROID_RELEASE_KEYSTORE").orNull
+val releaseKeystorePassword = providers.environmentVariable("EDECAN_ANDROID_RELEASE_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("EDECAN_ANDROID_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("EDECAN_ANDROID_RELEASE_KEY_PASSWORD").orNull
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 // El checkout OSS compila sin Firebase. Quien quiera push remoto aporta su
 // propio archivo local; el plugin solo se activa cuando ese archivo existe.
 if (file("google-services.json").isFile) {
@@ -53,6 +83,22 @@ android {
         targetSdk = 37
         versionCode = 8
         versionName = "0.7.3"
+        buildConfigField(
+            "String",
+            "UPDATE_MANIFEST_URL",
+            androidUpdateManifestUrl.get().asBuildConfigString(),
+        )
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("releaseFromEnvironment") {
+                storeFile = file(checkNotNull(releaseKeystorePath))
+                storePassword = checkNotNull(releaseKeystorePassword)
+                keyAlias = checkNotNull(releaseKeyAlias)
+                keyPassword = checkNotNull(releaseKeyPassword)
+            }
+        }
     }
 
     buildTypes {
@@ -65,6 +111,9 @@ android {
             // ese cliente agregue su propio `signingConfig` aquí,
             // `assembleRelease` genera un .apk SIN FIRMAR, instalable solo
             // tras firmarlo a mano (`apksigner`). Ver docs/movil-android.md.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("releaseFromEnvironment")
+            }
         }
     }
 
@@ -75,6 +124,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -104,6 +154,7 @@ dependencies {
     implementation(libs.mlkit.barcode.scanning)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
+    implementation(libs.kotlinx.serialization.json)
 
     // `kotlin("test-junit")` (no `kotlin("test")` a secas): `androidApp` NO
     // aplica el plugin `org.jetbrains.kotlin.android` (a propósito, ver el

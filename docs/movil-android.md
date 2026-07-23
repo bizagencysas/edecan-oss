@@ -62,13 +62,78 @@ diferencia de iOS/Apple Developer Program) — el único requisito es que el
 propio dueño del teléfono habilite la instalación, de forma explícita, la
 primera vez.
 
+## Actualizaciones sin volver a clonar
+
+La distribución APK OSS puede actualizarse desde **Tú → Actualizaciones**.
+Edecán comprueba el canal estable al abrir y al volver a primer plano (como
+máximo una vez cada cuatro horas). Si hay una versión nueva:
+
+1. muestra la versión y las notas;
+2. la persona decide si quiere descargarla;
+3. Edecán verifica HTTPS, tamaño y SHA-256;
+4. verifica que el APK tenga el mismo `applicationId`, un `versionCode`
+   superior y un certificado compatible con la app instalada;
+5. abre el instalador oficial de Android, que pide confirmación.
+
+No hay instalación silenciosa. La primera vez Android también puede pedir
+permiso para que Edecán abra su propio APK. La actualización reemplaza solo el
+binario: el emparejamiento, las conversaciones y las credenciales cifradas se
+conservan.
+
+El APK oficial consulta:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/android-stable.json
+```
+
+Un fork debe usar **su propio keystore y su propio canal**. Se configura sin
+editar código:
+
+```bash
+./gradlew :androidApp:assembleRelease \
+  -PedecanAndroidUpdateManifestUrl=https://tu-dominio.example/android-stable.json
+```
+
+También se acepta `EDECAN_ANDROID_UPDATE_MANIFEST_URL` en el entorno de build.
+No apuntes un fork al canal oficial: Android rechazará el APK por firma, como
+debe ser, pero la experiencia será confusa para sus usuarios.
+
+El workflow
+[`release-android.yml`](../.github/workflows/release-android.yml) publica un
+APK estable firmado, su `.sha256` y `android-stable.json` en cada tag final.
+Después de subir los assets inmutables, mueve únicamente ese puntero a la
+rama `update-channels`, preservando los manifiestos de escritorio. Los
+prereleases mueven `android-preview.json`, sin cambiar el canal estable.
+El APK de un canal preview se compila configurando
+`EDECAN_ANDROID_UPDATE_MANIFEST_URL` hacia:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/android-preview.json
+```
+
+La publicación reintenta de forma acotada si otro workflow mueve la misma
+rama al mismo tiempo; si no puede basarse en el último commit remoto, falla y
+no anuncia el APK. Requiere estos secrets:
+
+| Secret | Contenido |
+|---|---|
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | Keystore de distribución codificado en base64 |
+| `ANDROID_RELEASE_KEYSTORE_PASSWORD` | Contraseña del keystore |
+| `ANDROID_RELEASE_KEY_ALIAS` | Alias de la clave |
+| `ANDROID_RELEASE_KEY_PASSWORD` | Contraseña de la clave |
+
+La clave privada se decodifica en `$RUNNER_TEMP`, nunca dentro del checkout, y
+se elimina al final. `versionName` debe coincidir con el tag y `versionCode`
+debe incrementarse en cada APK publicado. El workflow no modifica ninguno de
+los dos valores automáticamente.
+
 ## Firma release con TU keystore
 
-`androidApp/build.gradle.kts` **no declara ningún `signingConfig` para
-`release`** — a propósito, regla dura del repo: nunca se firma un release
-con una key compartida. `./gradlew :androidApp:assembleRelease` hoy genera
-un `.apk` sin firmar (instalable solo tras firmarlo a mano). Para
-distribuir un release real:
+`androidApp/build.gradle.kts` **no contiene ninguna clave ni contraseña**.
+Sin las cuatro variables `EDECAN_ANDROID_RELEASE_*`,
+`./gradlew :androidApp:assembleRelease` genera un `.apk` sin firmar
+(instalable solo tras firmarlo a mano). Cuando están presentes, usa ese
+keystore local o de CI. Para distribuir un release real:
 
 **1. Genera tu propio keystore** (una sola vez; guárdalo en un lugar
 seguro, si lo pierdes no puedes volver a firmar actualizaciones de la
@@ -81,29 +146,13 @@ keytool -genkeypair -v \
   -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-**2. Agrega un `signingConfig` propio** en
-`apps/mobile/android/androidApp/build.gradle.kts` (dentro del bloque
-`android { }`, dato real, no placeholder — nunca commitees esto con tus
-contraseñas reales; usa variables de entorno o `local.properties`, ambos
-ya gitignored):
+**2. Exporta la configuración localmente** (nunca la guardes en Git):
 
-```kotlin
-android {
-    signingConfigs {
-        create("release") {
-            storeFile = file("TU_KEYSTORE_AQUI.jks")
-            storePassword = System.getenv("EDECAN_KEYSTORE_PASSWORD")
-            keyAlias = "TU_ALIAS_AQUI"
-            keyPassword = System.getenv("EDECAN_KEY_PASSWORD")
-        }
-    }
-    buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("release")
-            // ... resto de la config de `release` que ya existe.
-        }
-    }
-}
+```bash
+export EDECAN_ANDROID_RELEASE_KEYSTORE="/ruta/absoluta/TU_KEYSTORE.jks"
+export EDECAN_ANDROID_RELEASE_KEYSTORE_PASSWORD="..."
+export EDECAN_ANDROID_RELEASE_KEY_ALIAS="tu_alias"
+export EDECAN_ANDROID_RELEASE_KEY_PASSWORD="..."
 ```
 
 **3. Cambia el `applicationId`** (`cc.edecan.app` es un placeholder de

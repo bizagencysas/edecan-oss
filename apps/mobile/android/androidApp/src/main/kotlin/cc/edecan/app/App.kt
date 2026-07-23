@@ -10,8 +10,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import cc.edecan.app.nav.RootNav
@@ -23,6 +28,8 @@ import cc.edecan.app.vm.SessionViewModelStoreOwner
 import cc.edecan.app.notifications.EdecanNotifications
 import cc.edecan.app.notifications.NotificationRoute
 import androidx.compose.ui.platform.LocalContext
+import cc.edecan.app.updates.AndroidUpdateManager
+import kotlinx.coroutines.launch
 
 /**
  * Punto de entrada composable de la app. Si el dispositivo no está
@@ -48,10 +55,26 @@ fun App(
             val sessionViewModelContainer: SessionViewModelContainer = viewModel()
             val uiState by sessionViewModel.uiState.collectAsState()
             val context = LocalContext.current
+            val lifecycleOwner = LocalLifecycleOwner.current
+            val updateScope = rememberCoroutineScope()
 
             LaunchedEffect(Unit) { EdecanNotifications.initialize(context) }
             LaunchedEffect(uiState.isPaired, uiState.sessionGeneration) {
                 if (uiState.isPaired) EdecanNotifications.refreshRemoteRegistration(context)
+            }
+            // Comprobación silenciosa al abrir y al volver al primer plano.
+            // El manager aplica un intervalo de cuatro horas y un fallo aquí
+            // nunca altera el chat ni la sesión con el computador.
+            DisposableEffect(lifecycleOwner, context) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
+                        updateScope.launch {
+                            AndroidUpdateManager.check(context, force = false)
+                        }
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
             }
 
             LaunchedEffect(pairingDeepLink) {

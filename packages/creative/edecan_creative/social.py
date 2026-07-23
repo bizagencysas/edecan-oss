@@ -373,7 +373,8 @@ class CrearContenidoSocialTool(Tool):
                     offline_visual = True
                     visual_warning = (
                         "El proveedor de imágenes no respondió correctamente. "
-                        "Conservé el post y preparé una tarjeta local para que no pierdas el trabajo."
+                        "Conservé el post y preparé una tarjeta local "
+                        "para que no pierdas el trabajo."
                     )
             image_id, image_name = await self._uploader(
                 ctx, data=image, filename=f"{slug}.png", mime="image/png"

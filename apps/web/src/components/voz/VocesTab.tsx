@@ -10,7 +10,14 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { CheckIcon, MicIcon, TrashIcon, UploadIcon } from "@/components/icons";
+import {
+  CheckIcon,
+  MicIcon,
+  PlayIcon,
+  SquareIcon,
+  TrashIcon,
+  UploadIcon,
+} from "@/components/icons";
 import {
   Alert,
   Badge,
@@ -25,6 +32,7 @@ import {
   Spinner,
   Textarea,
 } from "@/components/ui";
+import { speakText } from "@/lib/api";
 import {
   ApiError,
   crearClon,
@@ -75,13 +83,26 @@ export function VocesTab() {
   const [creando, setCreando] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [revocandoId, setRevocandoId] = useState<string | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [previewPlayingId, setPreviewPlayingId] = useState<string | null>(null);
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
   const consentimientoInputRef = useRef<HTMLInputElement | null>(null);
   const muestrasInputRef = useRef<HTMLInputElement | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(
+    () => () => {
+      previewAudioRef.current?.pause();
+      if (previewObjectUrlRef.current) URL.revokeObjectURL(previewObjectUrlRef.current);
+    },
+    [],
+  );
 
   async function load() {
     setLoading(true);
@@ -154,6 +175,62 @@ export function VocesTab() {
     }
   }
 
+  function stopPreview() {
+    previewAudioRef.current?.pause();
+    previewAudioRef.current = null;
+    setPreviewPlayingId(null);
+    if (previewObjectUrlRef.current) {
+      URL.revokeObjectURL(previewObjectUrlRef.current);
+      previewObjectUrlRef.current = null;
+    }
+  }
+
+  async function previewVoice(voz: VozDisponible) {
+    if (previewPlayingId === voz.voice_id) {
+      stopPreview();
+      return;
+    }
+
+    stopPreview();
+    setPreviewLoadingId(voz.voice_id);
+    setPreviewErrors((current) => {
+      const next = { ...current };
+      delete next[voz.voice_id];
+      return next;
+    });
+    try {
+      const blob = await speakText(
+        `Hola. Soy ${voz.nombre}. Esta es una muestra de mi voz en Edecan.`,
+        voz.voice_id,
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objectUrl);
+      previewObjectUrlRef.current = objectUrl;
+      previewAudioRef.current = audio;
+      audio.onended = stopPreview;
+      audio.onerror = () => {
+        setPreviewErrors((current) => ({
+          ...current,
+          [voz.voice_id]: "El audio se generó, pero este equipo no pudo reproducirlo.",
+        }));
+        stopPreview();
+      };
+      await audio.play();
+      setPreviewPlayingId(voz.voice_id);
+    } catch (err) {
+      stopPreview();
+      setPreviewErrors((current) => ({
+        ...current,
+        [voz.voice_id]:
+          err instanceof ApiError
+            ? err.message
+            : "No se pudo generar la muestra. Revisa la conexión de ElevenLabs.",
+      }));
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  }
+
   return (
     <div>
       {error && (
@@ -192,11 +269,39 @@ export function VocesTab() {
                         <p className="truncate text-xs text-slate-400">{voz.voice_id}</p>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {voz.preview_url && (
-                        <audio controls src={voz.preview_url} className="h-8 max-w-[10rem]" />
+                    <div className="flex min-w-0 shrink-0 flex-col items-end gap-1">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          loading={previewLoadingId === voz.voice_id}
+                          onClick={() => void previewVoice(voz)}
+                          aria-label={
+                            previewPlayingId === voz.voice_id
+                              ? `Detener muestra de ${voz.nombre}`
+                              : `Escuchar muestra de ${voz.nombre}`
+                          }
+                        >
+                          {previewPlayingId === voz.voice_id ? (
+                            <>
+                              <SquareIcon className="h-3.5 w-3.5" />
+                              Detener
+                            </>
+                          ) : (
+                            <>
+                              <PlayIcon className="h-3.5 w-3.5" />
+                              Escuchar
+                            </>
+                          )}
+                        </Button>
+                        <VozBadge voz={voz} />
+                      </div>
+                      {previewErrors[voz.voice_id] && (
+                        <p className="max-w-xs text-right text-xs text-red-600 dark:text-red-400">
+                          {previewErrors[voz.voice_id]}
+                        </p>
                       )}
-                      <VozBadge voz={voz} />
                     </div>
                   </li>
                 ))}

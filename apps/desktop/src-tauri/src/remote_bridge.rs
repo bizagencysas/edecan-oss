@@ -141,12 +141,6 @@ fn write_response(
 }
 
 #[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
-}
-
-#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -157,12 +151,6 @@ fn capture_screen(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     use base64::Engine as _;
-
-    if !unsafe { CGPreflightScreenCaptureAccess() } {
-        return Err(
-            "Grabacion de pantalla no esta autorizada para la app principal de Edecan".into(),
-        );
-    }
 
     let display = params
         .get("display")
@@ -185,13 +173,27 @@ fn capture_screen(
     if include_cursor {
         command.arg("-C");
     }
-    let status = command
+    // No se usa CGPreflightScreenCaptureAccess como puerta de entrada. En
+    // macOS puede devolver `false` para una app autorizada que lanza el
+    // capturador del sistema y producir un falso bloqueo permanente. El
+    // camino que usa Jarvis y el contrato real de macOS son mas fiables:
+    // ejecutar `screencapture` desde la app responsable y validar su salida.
+    let captured = command
         .arg(&output)
-        .status()
+        .output()
         .map_err(|error| format!("no se pudo ejecutar screencapture: {error}"))?;
-    if !status.success() {
+    if !captured.status.success() {
         let _ = std::fs::remove_file(&output);
-        return Err(format!("screencapture termino con {status}"));
+        let stderr = String::from_utf8_lossy(&captured.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "sin detalle del sistema".to_string()
+        } else {
+            stderr.chars().take(240).collect()
+        };
+        return Err(format!(
+            "screencapture termino con {}: {detail}",
+            captured.status
+        ));
     }
     let image =
         std::fs::read(&output).map_err(|error| format!("no se pudo leer la captura: {error}"));

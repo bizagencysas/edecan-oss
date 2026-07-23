@@ -145,7 +145,7 @@ def test_release_workflow_builds_all_signed_desktop_channels() -> None:
     assert "Require every signed Windows updater format" in workflow
     assert 'test -s "${artifacts[0]}.sig"' in workflow
     assert "Falta la firma del updater" in workflow
-    assert "desktop-release-channels" in workflow
+    assert "group: release-update-channels" in workflow
     assert "git merge-base --is-ancestor" in workflow
     assert "no se puede retroceder" in workflow
     for signed_pattern in (

@@ -15,6 +15,8 @@ def _load_migration():
 
 def test_migration_adds_independent_agent_profiles_and_call_snapshot(monkeypatch) -> None:
     migration = _load_migration()
+    assert migration.revision == "0024_phone_agent_profiles"
+    assert len(migration.revision) <= 32
     columns: list[tuple[str, str, bool]] = []
     indexes: list[tuple[str, str, tuple[str, ...], bool, str]] = []
     statements: list[str] = []

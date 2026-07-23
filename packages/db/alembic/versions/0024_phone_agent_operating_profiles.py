@@ -3,7 +3,7 @@
 Convierte cada agente telefónico en un perfil operativo independiente y
 congela ese perfil, junto con la identidad del destinatario, en cada llamada.
 
-Revision ID: 0024_phone_agent_operating_profiles
+Revision ID: 0024_phone_agent_profiles
 Revises: 0023_phone_agent_voices
 Create Date: 2026-07-23 11:45:00.000000
 """
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0024_phone_agent_operating_profiles"
+revision: str = "0024_phone_agent_profiles"
 down_revision: str | None = "0023_phone_agent_voices"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

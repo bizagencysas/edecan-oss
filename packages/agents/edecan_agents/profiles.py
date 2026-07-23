@@ -129,6 +129,7 @@ PROFILES: dict[str, AgentProfile] = {
     # -----------------------------------------------------------------
     "research": AgentProfile(
         key="research",
+        model_alias="profundo",
         nombre="Investigación",
         descripcion=(
             "Busca y sintetiza información en la web y en los documentos del "
@@ -158,6 +159,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "data_analyst": AgentProfile(
         key="data_analyst",
+        model_alias="profundo",
         nombre="Análisis de datos",
         descripcion=(
             "Analiza tablas, PDFs y documentos del usuario: estadística "
@@ -222,6 +224,7 @@ PROFILES: dict[str, AgentProfile] = {
     # -----------------------------------------------------------------
     "ceo": AgentProfile(
         key="ceo",
+        model_alias="profundo",
         nombre="Dirección general",
         descripcion=(
             "Visión de conjunto del negocio: sintetiza finanzas, facturación "
@@ -242,6 +245,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "developer": AgentProfile(
         key="developer",
+        model_alias="profundo",
         nombre="Desarrollo",
         descripcion=(
             "Apoya tareas de programación: lee código y documentación "
@@ -287,6 +291,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "finance": AgentProfile(
         key="finance",
+        model_alias="profundo",
         nombre="Finanzas",
         descripcion="Analiza finanzas, cotiza activos y gestiona presupuestos.",
         system_prompt_extra=(
@@ -333,6 +338,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "design": AgentProfile(
         key="design",
+        model_alias="profundo",
         nombre="Diseño",
         descripcion="Genera imágenes y piezas visuales, arma documentos de presentación.",
         system_prompt_extra=(
@@ -349,6 +355,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "legal": AgentProfile(
         key="legal",
+        model_alias="profundo",
         nombre="Legal",
         descripcion=(
             "Analiza y compara contratos, redacta borradores — SIEMPRE "
@@ -452,6 +459,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "qa": AgentProfile(
         key="qa",
+        model_alias="profundo",
         nombre="Calidad (QA)",
         descripcion="Prueba software: ejecuta comandos/tests en el companion, investiga fallos.",
         system_prompt_extra=(
@@ -467,6 +475,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "security": AgentProfile(
         key="security",
+        model_alias="profundo",
         nombre="Seguridad",
         descripcion=(
             "Revisión de seguridad: analiza configuración, investiga vulnerabilidades conocidas."
@@ -485,6 +494,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "devops": AgentProfile(
         key="devops",
+        model_alias="profundo",
         nombre="DevOps",
         descripcion=(
             "Automatización de despliegue e infraestructura. Docker/K8s/"

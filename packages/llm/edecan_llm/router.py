@@ -18,7 +18,7 @@ from .vertex import VertexAIProvider
 
 logger = logging.getLogger(__name__)
 
-Alias = Literal["principal", "rapido"]
+Alias = Literal["principal", "rapido", "profundo"]
 
 _DEFAULT_MODEL_PRINCIPAL = "claude-sonnet-4-5"
 _DEFAULT_MODEL_RAPIDO = "claude-haiku-4-5"
@@ -71,7 +71,7 @@ OnUsage = Callable[[str, Usage], Awaitable[None]]
 
 
 class LLMRouter:
-    """Resuelve alias lógicos (`"principal"`, `"rapido"`) a `(LLMProvider, modelo)`.
+    """Resuelve alias lógicos a `(LLMProvider, modelo)`.
 
     Dos modos, según se pase o no `provider_config` (§12, WP-V3-03):
 
@@ -151,7 +151,7 @@ class LLMRouter:
 
     def _resolve_model(self, alias: Alias, tenant_flags: dict[str, Any]) -> str:
         if self._provider_config is not None:
-            principal, rapido = self._config_models(self._provider_config)
+            principal, rapido, profundo = self._config_models(self._provider_config)
         else:
             principal = (
                 getattr(self._settings, "ANTHROPIC_MODEL_PRINCIPAL", None)
@@ -160,6 +160,7 @@ class LLMRouter:
             rapido = (
                 getattr(self._settings, "ANTHROPIC_MODEL_RAPIDO", None) or _DEFAULT_MODEL_RAPIDO
             )
+            profundo = principal
 
         if alias == "rapido":
             return rapido
@@ -170,10 +171,23 @@ class LLMRouter:
                 )
                 return rapido
             return principal
+        if alias == "profundo":
+            if tenant_flags.get("models.premium") is False:
+                logger.info(
+                    "Degradando alias 'profundo' a modelo rápido: plan sin flag models.premium"
+                )
+                return rapido
+            return profundo
         raise ValueError(f"alias LLM desconocido: {alias!r}")
 
-    def _config_models(self, config: LLMProviderConfig) -> tuple[str, str]:
-        """Modelos `(principal, rápido)` para un `provider_config` explícito:
+    def _config_models(self, config: LLMProviderConfig) -> tuple[str, str, str]:
+        """Modelos `(principal, rápido, profundo)` para una config explícita.
+
+        `profundo` cae a `principal` cuando una configuración anterior todavía
+        no lo trae, de modo que la migración es retrocompatible y nunca deja un
+        trabajo pesado sin modelo.
+
+        Para principal y rápido:
         prefiere lo que trae la config del tenant y cae a un default sano por
         proveedor si falta.
 
@@ -195,7 +209,8 @@ class LLMRouter:
             rapido = config.model_rapido or (
                 getattr(self._settings, "ANTHROPIC_MODEL_RAPIDO", None) or _DEFAULT_MODEL_RAPIDO
             )
-            return principal, rapido
+            profundo = config.model_profundo or principal
+            return principal, rapido, profundo
 
         if config.kind == "vertex":
             principal = config.model_principal or (
@@ -203,14 +218,15 @@ class LLMRouter:
                 or _DEFAULT_VERTEX_MODEL_PRINCIPAL
             )
             rapido = config.model_rapido or (
-                getattr(self._settings, "VERTEX_MODEL_RAPIDO", None)
-                or _DEFAULT_VERTEX_MODEL_RAPIDO
+                getattr(self._settings, "VERTEX_MODEL_RAPIDO", None) or _DEFAULT_VERTEX_MODEL_RAPIDO
             )
-            return principal, rapido
+            profundo = config.model_profundo or principal
+            return principal, rapido, profundo
 
         principal = config.model_principal or ""
         rapido = config.model_rapido or principal
-        return principal, rapido
+        profundo = config.model_profundo or principal
+        return principal, rapido, profundo
 
     def _get_provider(self) -> LLMProvider:
         if self._provider is None:
@@ -294,6 +310,10 @@ class LLMRouter:
 
         if config.kind == "codex_cli":
             kwargs = self._cli_provider_kwargs(config, path_setting="CODEX_CLI_PATH")
+            if config.model_profundo and config.reasoning_effort_profundo:
+                kwargs["reasoning_effort_by_model"] = {
+                    config.model_profundo: config.reasoning_effort_profundo
+                }
             return CodexCLIProvider(**kwargs)
 
         if config.kind == "ollama":

@@ -33,3 +33,32 @@ def redact(text: str) -> str:
     for pattern in _PATTERNS:
         redacted = pattern.sub(_MASK, redacted)
     return redacted
+
+
+_INTERNAL_ERROR_MARKERS = (
+    "sqlalchemy.",
+    "asyncpg.",
+    "[sql:",
+    "background on this error",
+    "current transaction is aborted",
+    "undefinedfileerror",
+    "$libdir/",
+)
+
+
+def public_error_message(exc: BaseException) -> str:
+    """Devuelve un error útil sin publicar infraestructura o sentencias SQL.
+
+    Los errores normales del proveedor se conservan porque ayudan a corregir
+    un modelo o credencial. Los errores internos de base de datos se registran
+    completos en el servidor, pero el chat solo recibe una explicación breve.
+    """
+
+    detail = redact(str(exc))
+    normalized = detail.casefold()
+    if any(marker in normalized for marker in _INTERNAL_ERROR_MARKERS):
+        return (
+            "Edecán encontró un problema temporal con el almacenamiento local. "
+            "El detalle quedó registrado; vuelve a intentarlo."
+        )
+    return detail

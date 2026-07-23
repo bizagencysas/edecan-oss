@@ -77,6 +77,8 @@ export interface LlmCredentialStatus {
   kind: LlmKind;
   model_principal: string | null;
   model_rapido: string | null;
+  model_profundo: string | null;
+  reasoning_effort_profundo: string | null;
   base_url: string | null;
   /** Nunca la key real — p. ej. `"sk-ant-…ab12"`. */
   masked: string | null;
@@ -86,6 +88,8 @@ export interface LlmModelsOut {
   kind: LlmKind;
   model_principal: string | null;
   model_rapido: string | null;
+  model_profundo: string | null;
+  reasoning_effort_profundo: string | null;
   models: string[];
   manual_allowed: boolean;
   capabilities_managed_by_edecan: boolean;
@@ -166,6 +170,8 @@ export interface PutLlmCredentialInput {
   base_url?: string;
   model_principal?: string;
   model_rapido?: string;
+  model_profundo?: string;
+  reasoning_effort_profundo?: string;
   extra?: Record<string, unknown>;
   validate?: boolean;
 }
@@ -398,6 +404,8 @@ export async function getLlmModels(): Promise<LlmModelsOut> {
 export async function updateLlmModels(input: {
   model_principal: string;
   model_rapido?: string;
+  model_profundo?: string;
+  reasoning_effort_profundo?: string;
 }): Promise<void> {
   await apiJson<void>("/v1/credentials/llm/models", { method: "PATCH", body: input });
 }

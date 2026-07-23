@@ -1,6 +1,6 @@
 [project]
 name = "edecan-automations"
-version = "0.7.0"
+version = "0.7.1"
 description = "Edecán — automatizaciones: reglas agenda/webhook → instrucción de agente en modo headless (edecan_automations)"
 readme = "README.md"
 requires-python = ">=3.12"

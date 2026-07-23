@@ -76,14 +76,45 @@ def test_anthropic_modelos_de_la_config_tienen_prioridad_sobre_settings() -> Non
         api_key="TU_KEY_AQUI",
         model_principal="claude-opus-4-5",
         model_rapido="claude-haiku-4-5-tenant",
+        model_profundo="claude-opus-4-6",
     )
     router = LLMRouter(_settings(), provider_config=config)
 
     _, principal = router.resolve("principal", {"models.premium": True})
     _, rapido = router.resolve("rapido", {})
+    _, profundo = router.resolve("profundo", {"models.premium": True})
 
     assert principal == "claude-opus-4-5"
     assert rapido == "claude-haiku-4-5-tenant"
+    assert profundo == "claude-opus-4-6"
+
+
+def test_modelo_profundo_legacy_cae_a_principal() -> None:
+    config = LLMProviderConfig(
+        kind="anthropic",
+        api_key="TU_KEY_AQUI",
+        model_principal="claude-sonnet-4-5",
+    )
+    router = LLMRouter(_settings(), provider_config=config)
+
+    _, profundo = router.resolve("profundo", {"models.premium": True})
+
+    assert profundo == "claude-sonnet-4-5"
+
+
+def test_modelo_profundo_degrada_a_rapido_sin_premium() -> None:
+    config = LLMProviderConfig(
+        kind="anthropic",
+        api_key="TU_KEY_AQUI",
+        model_principal="claude-sonnet-4-5",
+        model_rapido="claude-haiku-4-5",
+        model_profundo="claude-opus-4-6",
+    )
+    router = LLMRouter(_settings(), provider_config=config)
+
+    _, profundo = router.resolve("profundo", {"models.premium": False})
+
+    assert profundo == "claude-haiku-4-5"
 
 
 def test_anthropic_sin_modelos_en_config_cae_a_settings() -> None:
@@ -162,7 +193,9 @@ def test_openai_compat_sin_api_key_en_config_no_filtra_la_de_plataforma() -> Non
     un servidor propio que loguee el header `Authorization`. El proveedor
     debe construirse sin credencial (`api_key == ""`) en vez de heredar la de
     plataforma."""
-    config = LLMProviderConfig(kind="openai_compat", base_url="https://servidor-del-tenant.example/v1")
+    config = LLMProviderConfig(
+        kind="openai_compat", base_url="https://servidor-del-tenant.example/v1"
+    )
     router = LLMRouter(
         _settings(OPENAI_COMPAT_API_KEY="SECRETO_REAL_DE_PLATAFORMA"), provider_config=config
     )
@@ -386,6 +419,23 @@ def test_codex_cli_sin_timeout_en_extra_ni_settings_usa_default_del_provider() -
 
     assert timeout == CODEX_CLI_DEFAULT_TIMEOUT_SECONDS
     assert timeout is not None
+
+
+def test_codex_cli_configura_reasoning_solo_para_modelo_profundo() -> None:
+    config = LLMProviderConfig(
+        kind="codex_cli",
+        model_principal="gpt-5.6-terra",
+        model_rapido="gpt-5.6-luna",
+        model_profundo="gpt-5.6-sol",
+        reasoning_effort_profundo="xhigh",
+        extra={"binary_path": "/usr/local/bin/codex"},
+    )
+    router = LLMRouter(_settings(EDECAN_LOCAL_MODE=True), provider_config=config)
+
+    provider, profundo = router.resolve("profundo", {"models.premium": True})
+
+    assert profundo == "gpt-5.6-sol"
+    assert provider._reasoning_effort_by_model == {"gpt-5.6-sol": "xhigh"}  # type: ignore[attr-defined]
 
 
 def test_cli_modelo_vacio_es_valido_usa_default_del_binario() -> None:

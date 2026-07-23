@@ -49,6 +49,8 @@ class LLMProviderConfig:
     base_url: str | None = None
     model_principal: str | None = None
     model_rapido: str | None = None
+    model_profundo: str | None = None
+    reasoning_effort_profundo: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

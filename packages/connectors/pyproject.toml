@@ -1,6 +1,6 @@
 [project]
 name = "edecan-connectors"
-version = "0.7.0"
+version = "0.7.1"
 description = "Edecán — conectores OAuth 2.0 a APIs oficiales (Google, Microsoft, sociales opcionales)"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -129,7 +129,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -214,6 +216,8 @@ class LLMCredentialsIn(BaseModel):
     base_url: str | None = None
     model_principal: str | None = None
     model_rapido: str | None = None
+    model_profundo: str | None = None
+    reasoning_effort_profundo: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
     validate_: bool = Field(default=True, alias="validate")
 
@@ -225,6 +229,8 @@ class LLMModelsIn(BaseModel):
 
     model_principal: str = Field(min_length=1, max_length=240)
     model_rapido: str | None = Field(default=None, max_length=240)
+    model_profundo: str | None = Field(default=None, max_length=240)
+    reasoning_effort_profundo: str | None = Field(default="xhigh", max_length=24)
 
 
 class VoiceSTTCredentialsIn(BaseModel):
@@ -458,6 +464,36 @@ async def _ping_ollama(base_url: str) -> None:
     await _get_with_error_handling(url, proveedor="Ollama")
 
 
+def _modelos_codex_cache() -> list[str]:
+    """Lee el catálogo local que mantiene Codex CLI sin ejecutar ni autenticar nada.
+
+    Codex CLI no expone hoy un comando estable ``models list``. Su cache sí
+    contiene el catálogo que la propia instalación ya obtuvo, incluyendo la
+    visibilidad de cada modelo. Si el formato cambia o el archivo todavía no
+    existe, Ajustes conserva el flujo manual en lugar de fallar.
+    """
+
+    codex_root = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+    cache_path = codex_root / "models_cache.json"
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return []
+
+    models: list[str] = []
+    for item in raw_models:
+        if not isinstance(item, dict) or item.get("visibility") == "hide":
+            continue
+        slug = str(item.get("slug") or "").strip()
+        if slug and slug not in models:
+            models.append(slug)
+    return models
+
+
 async def _modelos_disponibles(cfg: dict[str, Any]) -> list[str]:
     """Catálogo actual del proveedor conectado, sin exponer su credencial."""
 
@@ -479,6 +515,8 @@ async def _modelos_disponibles(cfg: dict[str, Any]) -> list[str]:
             for item in raw_models
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+    elif kind == "codex_cli":
+        return _modelos_codex_cache()
     if payload is None or kind not in {"anthropic", "openai_compat", "vertex"}:
         return []
     return discovered_model_ids(kind, payload)
@@ -601,6 +639,8 @@ def _llm_out(cfg: dict[str, Any] | None) -> dict[str, Any] | None:
         "kind": cfg.get("kind"),
         "model_principal": cfg.get("model_principal"),
         "model_rapido": cfg.get("model_rapido"),
+        "model_profundo": cfg.get("model_profundo"),
+        "reasoning_effort_profundo": cfg.get("reasoning_effort_profundo"),
         "base_url": cfg.get("base_url"),
         "masked": _masked(cfg.get("api_key")),
     }
@@ -689,7 +729,11 @@ async def get_llm_models(
         discovered = []
         error = str(exc.detail)
 
-    actuales = [cfg.get("model_principal"), cfg.get("model_rapido")]
+    actuales = [
+        cfg.get("model_principal"),
+        cfg.get("model_rapido"),
+        cfg.get("model_profundo"),
+    ]
     modelos: list[str] = []
     for modelo in [*actuales, *discovered]:
         limpio = str(modelo or "").strip()
@@ -699,6 +743,8 @@ async def get_llm_models(
         "kind": cfg.get("kind"),
         "model_principal": cfg.get("model_principal"),
         "model_rapido": cfg.get("model_rapido"),
+        "model_profundo": cfg.get("model_profundo"),
+        "reasoning_effort_profundo": cfg.get("reasoning_effort_profundo") or "xhigh",
         "models": modelos,
         "manual_allowed": True,
         "capabilities_managed_by_edecan": True,
@@ -725,7 +771,14 @@ async def update_llm_models(
 
     principal = payload.model_principal.strip()
     rapido = (payload.model_rapido or "").strip() or principal
-    if not principal or any(ord(char) < 32 for char in principal + rapido):
+    profundo = (payload.model_profundo or "").strip() or principal
+    effort = (payload.reasoning_effort_profundo or "xhigh").strip().lower()
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El esfuerzo de razonamiento no es válido.",
+        )
+    if not principal or any(ord(char) < 32 for char in principal + rapido + profundo):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="El nombre del modelo no es válido.",
@@ -733,6 +786,8 @@ async def update_llm_models(
 
     cfg["model_principal"] = principal
     cfg["model_rapido"] = rapido
+    cfg["model_profundo"] = profundo
+    cfg["reasoning_effort_profundo"] = effort
     kind = str(cfg.get("kind") or "unknown")
     await vault.put(
         current_user.tenant_id,
@@ -776,6 +831,13 @@ async def put_llm_credentials(
     base_url = (payload.base_url or "").strip() or None
     model_principal = (payload.model_principal or "").strip() or None
     model_rapido = (payload.model_rapido or "").strip() or None
+    model_profundo = (payload.model_profundo or "").strip() or None
+    reasoning_effort_profundo = (payload.reasoning_effort_profundo or "xhigh").strip().lower()
+    if reasoning_effort_profundo not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El esfuerzo de razonamiento no es válido.",
+        )
     # `vertex` tiene dos modos (ver `VertexAIProvider`/docs/proveedores-llm.md):
     # "api_key" (default, requiere `api_key`) y "service_account" (avanzado,
     # bring-your-own proyecto GCP — requiere `extra.project_id` +
@@ -847,6 +909,7 @@ async def put_llm_credentials(
             ),
         )
     model_rapido = model_rapido or model_principal
+    model_profundo = model_profundo or model_principal
 
     config_dict = {
         "kind": kind,
@@ -854,6 +917,8 @@ async def put_llm_credentials(
         "base_url": base_url,
         "model_principal": model_principal,
         "model_rapido": model_rapido,
+        "model_profundo": model_profundo,
+        "reasoning_effort_profundo": reasoning_effort_profundo,
         "extra": payload.extra or {},
     }
     account = await _find_or_create_account(

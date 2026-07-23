@@ -25,6 +25,8 @@ final class CredencialesViewModel {
     var modeloPrincipal: String = ""
     var modeloActivoPrincipal: String = ""
     var modeloActivoRapido: String = ""
+    var modeloActivoProfundo: String = ""
+    var esfuerzoProfundo: String = "xhigh"
     private(set) var guardando = false
     private(set) var guardandoModelo = false
     var errorGuardado: String?
@@ -71,6 +73,8 @@ final class CredencialesViewModel {
             catalogoModelos = catalogo
             modeloActivoPrincipal = catalogo.modelPrincipal ?? catalogo.models.first ?? ""
             modeloActivoRapido = catalogo.modelRapido ?? modeloActivoPrincipal
+            modeloActivoProfundo = catalogo.modelProfundo ?? modeloActivoPrincipal
+            esfuerzoProfundo = catalogo.reasoningEffortProfundo ?? "xhigh"
         } catch {
             errorModelo = error.localizedDescription
         }
@@ -80,6 +84,7 @@ final class CredencialesViewModel {
         guard let client else { return }
         let principal = modeloActivoPrincipal.trimmingCharacters(in: .whitespacesAndNewlines)
         let rapido = modeloActivoRapido.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profundo = modeloActivoProfundo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !principal.isEmpty else {
             errorModelo = "Escribe o elige un modelo principal."
             return
@@ -90,7 +95,12 @@ final class CredencialesViewModel {
         defer { guardandoModelo = false }
         do {
             try await client.actualizarModelosLLM(
-                LLMModelsIn(modelPrincipal: principal, modelRapido: rapido.isEmpty ? principal : rapido)
+                LLMModelsIn(
+                    modelPrincipal: principal,
+                    modelRapido: rapido.isEmpty ? principal : rapido,
+                    modelProfundo: profundo.isEmpty ? principal : profundo,
+                    reasoningEffortProfundo: esfuerzoProfundo
+                )
             )
             modeloGuardadoExitoso = true
             credenciales = try await client.credenciales()

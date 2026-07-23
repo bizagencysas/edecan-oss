@@ -119,9 +119,7 @@ class Deps:
     # parte de la identidad "de datos" de `Deps` (dos `Deps` con los mismos
     # colaboradores pero distinto estado de caché siguen siendo "iguales" a
     # efectos de test/debug), y no aporta nada útil a un `repr()`.
-    _tenant_llm_routers: dict[UUID, Any] = field(
-        default_factory=dict, repr=False, compare=False
-    )
+    _tenant_llm_routers: dict[UUID, Any] = field(default_factory=dict, repr=False, compare=False)
 
     async def llm_router_for(self, tenant_id: UUID | None) -> Any:
         """`LLMRouter` bring-your-own del tenant (WP-V3-02, `DIRECCION_ACTUAL.md`
@@ -193,15 +191,19 @@ class Deps:
 
             async with self.session_factory(None) as session:
                 row = (
-                    await session.execute(
-                        sql_text(
-                            "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
-                            "AND connector_key = :connector_key "
-                            "ORDER BY created_at DESC LIMIT 1"
-                        ),
-                        {"tenant_id": tenant_id, "connector_key": LLM_CONNECTOR_KEY},
+                    (
+                        await session.execute(
+                            sql_text(
+                                "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
+                                "AND connector_key = :connector_key "
+                                "ORDER BY created_at DESC LIMIT 1"
+                            ),
+                            {"tenant_id": tenant_id, "connector_key": LLM_CONNECTOR_KEY},
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
                 if row is None:
                     raise TenantLLMNotConnectedError(tenant_id)
 
@@ -217,6 +219,8 @@ class Deps:
                     base_url=data.get("base_url"),
                     model_principal=data.get("model_principal"),
                     model_rapido=data.get("model_rapido"),
+                    model_profundo=data.get("model_profundo"),
+                    reasoning_effort_profundo=data.get("reasoning_effort_profundo"),
                     extra=data.get("extra") or {},
                 )
 
@@ -266,8 +270,7 @@ class Deps:
             return await self._build_mcp_tools(tenant_id, session)
         except Exception:
             logger.warning(
-                "No se pudieron construir las tools MCP del tenant_id=%s; el job "
-                "sigue sin ellas.",
+                "No se pudieron construir las tools MCP del tenant_id=%s; el job sigue sin ellas.",
                 tenant_id,
                 exc_info=True,
             )
@@ -292,15 +295,19 @@ class Deps:
         # completa (`{nombre, transporte, url, comando, headers, env}`) vive TODA
         # cifrada en el vault, ver el `for` de abajo.
         rows = (
-            await session.execute(
-                sql_text(
-                    "SELECT id, external_account_id FROM connector_accounts "
-                    "WHERE tenant_id = :tenant_id AND connector_key = :connector_key "
-                    "ORDER BY created_at ASC"
-                ),
-                {"tenant_id": tenant_id, "connector_key": MCP_CONNECTOR_KEY},
+            (
+                await session.execute(
+                    sql_text(
+                        "SELECT id, external_account_id FROM connector_accounts "
+                        "WHERE tenant_id = :tenant_id AND connector_key = :connector_key "
+                        "ORDER BY created_at ASC"
+                    ),
+                    {"tenant_id": tenant_id, "connector_key": MCP_CONNECTOR_KEY},
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if not rows:
             return []
 

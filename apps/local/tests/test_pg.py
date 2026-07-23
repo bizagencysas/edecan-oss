@@ -293,6 +293,118 @@ def test_embedded_handle_cleanup_nunca_lanza_aunque_pgserver_falle() -> None:
     handle.cleanup()  # no debe propagar la excepción
 
 
+def test_runtime_postgres_es_inutil_si_desaparecio_el_vector(tmp_path: Path) -> None:
+    postgres = tmp_path / "pginstall" / "bin" / "postgres"
+    postgres.parent.mkdir(parents=True)
+    postgres.touch()
+
+    assert pg_module._postgres_runtime_is_usable(postgres) is False
+
+    vector = tmp_path / "pginstall" / "lib" / "postgresql" / "vector.dylib"
+    vector.parent.mkdir(parents=True)
+    vector.touch()
+    assert pg_module._postgres_runtime_is_usable(postgres) is True
+
+
+def test_recupera_postgres_huerfano_de_runtime_temporal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    pid = 43127
+    (pgdata / "postmaster.pid").write_text(f"{pid}\n", encoding="utf-8")
+    missing_postgres = tmp_path / "_MEI_eliminado" / "pginstall" / "bin" / "postgres"
+
+    class _FakeProcess:
+        terminated = False
+        waited = False
+
+        def is_running(self) -> bool:
+            return True
+
+        def cmdline(self) -> list[str]:
+            return [str(missing_postgres), "-D", str(pgdata)]
+
+        def exe(self) -> str:
+            return ""
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: int) -> None:
+            assert timeout == 5
+            self.waited = True
+
+        def kill(self) -> None:  # pragma: no cover - solo si no termina a tiempo
+            raise AssertionError("no debía necesitar SIGKILL")
+
+    process = _FakeProcess()
+
+    class _FakePsutil:
+        class Error(Exception):
+            pass
+
+        class TimeoutExpired(Error):
+            pass
+
+        @staticmethod
+        def Process(requested_pid: int) -> _FakeProcess:
+            assert requested_pid == pid
+            return process
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert pg_module._recover_orphaned_embedded_postgres(pgdata) is True
+    assert process.terminated is True
+    assert process.waited is True
+
+
+def test_no_toca_postgres_con_runtime_completo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    pid = 43128
+    (pgdata / "postmaster.pid").write_text(f"{pid}\n", encoding="utf-8")
+    postgres = tmp_path / "runtime" / "pginstall" / "bin" / "postgres"
+    postgres.parent.mkdir(parents=True)
+    postgres.touch()
+    vector = postgres.parent.parent / "lib" / "postgresql" / "vector.dylib"
+    vector.parent.mkdir(parents=True)
+    vector.touch()
+
+    class _FakeProcess:
+        def is_running(self) -> bool:
+            return True
+
+        def cmdline(self) -> list[str]:
+            return [str(postgres), "-D", str(pgdata)]
+
+        def exe(self) -> str:
+            return str(postgres)
+
+        def terminate(self) -> None:
+            raise AssertionError("no debe terminar un runtime completo")
+
+    process = _FakeProcess()
+
+    class _FakePsutil:
+        class Error(Exception):
+            pass
+
+        class TimeoutExpired(Error):
+            pass
+
+        @staticmethod
+        def Process(requested_pid: int) -> _FakeProcess:
+            assert requested_pid == pid
+            return process
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert pg_module._recover_orphaned_embedded_postgres(pgdata) is False
+
+
 def test_noop_handle_cleanup_no_hace_nada() -> None:
     pg_module._NoopHandle().cleanup()
 

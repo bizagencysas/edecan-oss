@@ -166,7 +166,7 @@ async def test_cada_paso_pasa_el_model_alias_del_perfil_al_agent(
 
     await orchestrator.run(_mission(), deps)  # perfiles: research, data_analyst
 
-    assert factory.model_aliases == ["principal", "principal"]
+    assert factory.model_aliases == ["profundo", "profundo"]
 
 
 async def test_agente_inexistente_cae_al_perfil_research(

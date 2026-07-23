@@ -9,6 +9,7 @@ instalada — que es como corre en el proceso real (`apps/api`).
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
@@ -37,6 +38,10 @@ class _FakeSession:
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _FakeResult:
         self.calls.append((statement, params or {}))
         return _FakeResult(self._rows)
+
+    @asynccontextmanager
+    async def begin_nested(self):
+        yield
 
 
 @pytest.mark.asyncio
@@ -108,6 +113,52 @@ async def test_search_con_embedder_ordena_por_distancia_vectorial():
     assert "superseded_at IS NULL" in str(statement)
     assert params["k"] == 3
     assert hits[0].score == pytest.approx(0.83)
+
+
+@pytest.mark.asyncio
+async def test_search_pgvector_ausente_degrada_a_texto_sin_tumbar_el_chat():
+    filas = [
+        {
+            "id": uuid4(),
+            "content": "prefiere vuelos directos",
+            "kind": "preference",
+            "importance": 0.8,
+        },
+    ]
+
+    class _SessionSinVector(_FakeSession):
+        async def execute(
+            self, statement: Any, params: dict[str, Any] | None = None
+        ) -> _FakeResult:
+            self.calls.append((statement, params or {}))
+            if "<=>" in str(statement):
+                raise RuntimeError('could not access file "$libdir/vector": No such file')
+            return _FakeResult(filas)
+
+    session = _SessionSinVector()
+    store = PgMemoryStore(session, embedder=HashEmbedder(dim=8))
+
+    hits = await store.search(uuid4(), uuid4(), "vuelos", k=4)
+
+    assert [hit.content for hit in hits] == ["prefiere vuelos directos"]
+    assert len(session.calls) == 2
+    assert "<=>" in str(session.calls[0][0])
+    assert "ILIKE" in str(session.calls[1][0])
+
+
+@pytest.mark.asyncio
+async def test_search_no_oculta_errores_sql_ajenos_a_pgvector():
+    class _SessionRota(_FakeSession):
+        async def execute(
+            self, statement: Any, params: dict[str, Any] | None = None
+        ) -> _FakeResult:
+            self.calls.append((statement, params or {}))
+            raise RuntimeError("permission denied for memory_items")
+
+    store = PgMemoryStore(_SessionRota(), embedder=HashEmbedder(dim=8))
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        await store.search(uuid4(), uuid4(), "vuelos")
 
 
 @pytest.mark.asyncio

@@ -120,9 +120,22 @@ def test_todos_los_perfiles_tienen_nombre_descripcion_y_system_prompt_no_vacios(
         assert perfil.system_prompt_extra.strip(), key
 
 
-def test_model_alias_por_defecto_es_principal():
-    for perfil in PROFILES.values():
-        assert perfil.model_alias == "principal"
+def test_model_alias_distingue_trabajo_profundo_de_tareas_creativas_rapidas():
+    profundos = {
+        "research",
+        "data_analyst",
+        "ceo",
+        "developer",
+        "finance",
+        "design",
+        "legal",
+        "qa",
+        "security",
+        "devops",
+    }
+    for key, perfil in PROFILES.items():
+        esperado = "profundo" if key in profundos else "principal"
+        assert perfil.model_alias == esperado, key
 
 
 def test_research_incluye_las_herramientas_exactas_del_wp():

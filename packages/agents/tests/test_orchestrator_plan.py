@@ -29,8 +29,8 @@ async def test_plan_json_valido_directo(make_llm_router, plan):
     assert pasos == [
         {"seq": 1, "agente": "research", "instruccion": "Busca datos de mercado", "depende_de": []}
     ]
-    # se resolvió el alias "principal" con los flags recibidos.
-    assert router.resolved[0][0] == "principal"
+    # La planificación es trabajo pesado y usa el alias profundo.
+    assert router.resolved[0][0] == "profundo"
 
 
 async def test_plan_json_envuelto_en_prosa_y_markdown(make_llm_router, plan):
@@ -162,7 +162,7 @@ async def test_plan_pasa_los_flags_al_resolve(make_llm_router, plan):
     router = make_llm_router(responses=['{"pasos": [{"agente": "research", "instruccion": "x"}]}'])
     flags = {"agents.missions": True, "models.premium": False}
     await plan(router, flags=flags)
-    assert router.resolved[0] == ("principal", flags)
+    assert router.resolved[0] == ("profundo", flags)
 
 
 # ---------------------------------------------------------------------------

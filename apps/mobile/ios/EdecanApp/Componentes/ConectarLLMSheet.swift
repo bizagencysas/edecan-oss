@@ -142,7 +142,12 @@ struct ConectarLLMSheet: View {
                         Text(modelo).tag(modelo)
                     }
                 }
-                Picker("Rápido", selection: $viewModel.modeloActivoRapido) {
+                Picker("Auxiliar rápido", selection: $viewModel.modeloActivoRapido) {
+                    ForEach(catalogo.models, id: \.self) { modelo in
+                        Text(modelo).tag(modelo)
+                    }
+                }
+                Picker("Razonamiento profundo", selection: $viewModel.modeloActivoProfundo) {
                     ForEach(catalogo.models, id: \.self) { modelo in
                         Text(modelo).tag(modelo)
                     }
@@ -156,6 +161,15 @@ struct ConectarLLMSheet: View {
                 TextField("Modelo rápido", text: $viewModel.modeloActivoRapido)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                TextField("Modelo profundo", text: $viewModel.modeloActivoProfundo)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+
+            Picker("Esfuerzo profundo", selection: $viewModel.esfuerzoProfundo) {
+                Text("Alto").tag("high")
+                Text("Muy alto").tag("xhigh")
+                Text("Máximo").tag("max")
             }
 
             if let error = viewModel.errorModelo {
@@ -171,7 +185,7 @@ struct ConectarLLMSheet: View {
                 if viewModel.guardandoModelo {
                     ProgressView()
                 } else {
-                    Text("Usar este modelo")
+                    Text("Guardar modelos")
                 }
             }
             .disabled(

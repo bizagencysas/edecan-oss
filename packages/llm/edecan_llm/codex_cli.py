@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 300
 INSTALL_URL = "https://github.com/openai/codex"
 _AUTH_HINTS = ("login", "auth", "api key")
+_VALID_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 _ISOLATION_PROMPT = (
     "Estás actuando únicamente como el motor de decisión de Edecan. "
     "No inspecciones archivos, no ejecutes comandos, no uses herramientas internas "
@@ -81,6 +82,7 @@ class CodexCLIProvider(LLMProvider):
         self,
         binary_path: str | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        reasoning_effort_by_model: dict[str, str] | None = None,
     ) -> None:
         resolved = binary_path or shutil.which("codex")
         if not resolved:
@@ -91,14 +93,17 @@ class CodexCLIProvider(LLMProvider):
             )
         self._binary_path = resolved
         self._timeout_seconds = timeout_seconds
+        self._reasoning_effort_by_model = {
+            model: effort
+            for model, effort in (reasoning_effort_by_model or {}).items()
+            if model and effort in _VALID_REASONING_EFFORTS
+        }
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
         with TemporaryDirectory(prefix="edecan-codex-images-") as image_dir:
             image_paths = materialize_request_images(req, image_dir)
             prompt = _render_codex_prompt(req, image_paths)
-            stdout, _stderr = await self._run(
-                self._args(req, image_paths=image_paths), prompt
-            )
+            stdout, _stderr = await self._run(self._args(req, image_paths=image_paths), prompt)
         return _parse_response(stdout, req)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
@@ -112,9 +117,7 @@ class CodexCLIProvider(LLMProvider):
         with TemporaryDirectory(prefix="edecan-codex-images-") as image_dir:
             image_paths = materialize_request_images(req, image_dir)
             prompt = _render_codex_prompt(req, image_paths)
-            stdout, _stderr = await self._run(
-                self._args(req, image_paths=image_paths), prompt
-            )
+            stdout, _stderr = await self._run(self._args(req, image_paths=image_paths), prompt)
 
         chunks = _parse_events(stdout, tools_requested=bool(req.tools))
         if chunks is None:
@@ -131,6 +134,9 @@ class CodexCLIProvider(LLMProvider):
         args = [self._binary_path, "exec", "--json"]
         if req.model:
             args += ["--model", req.model]
+            effort = self._reasoning_effort_by_model.get(req.model)
+            if effort:
+                args += ["--config", f'model_reasoning_effort="{effort}"']
         for image_path in image_paths or []:
             args += ["--image", image_path]
         return args
@@ -198,9 +204,7 @@ def _render_codex_prompt(req: CompletionRequest, image_paths: list[str]) -> str:
 def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:
     chunks: list[StreamChunk] = []
     if response.tool_calls:
-        chunks.extend(
-            StreamChunk(type="tool_call", tool_call=call) for call in response.tool_calls
-        )
+        chunks.extend(StreamChunk(type="tool_call", tool_call=call) for call in response.tool_calls)
     elif response.text:
         chunks.append(StreamChunk(type="text", text=response.text))
     chunks.append(StreamChunk(type="usage", usage=response.usage))

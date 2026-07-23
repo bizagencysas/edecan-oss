@@ -9,6 +9,8 @@ public struct LLMCredentialOut: Codable, Sendable, Equatable {
     public let kind: String?
     public let modelPrincipal: String?
     public let modelRapido: String?
+    public let modelProfundo: String?
+    public let reasoningEffortProfundo: String?
     public let baseURL: String?
     public let masked: String?
 
@@ -16,6 +18,8 @@ public struct LLMCredentialOut: Codable, Sendable, Equatable {
         case kind, masked
         case modelPrincipal = "model_principal"
         case modelRapido = "model_rapido"
+        case modelProfundo = "model_profundo"
+        case reasoningEffortProfundo = "reasoning_effort_profundo"
         case baseURL = "base_url"
     }
 }
@@ -79,6 +83,8 @@ public struct LLMCredentialsIn: Encodable, Sendable, Equatable {
     public var baseURL: String?
     public var modelPrincipal: String?
     public var modelRapido: String?
+    public var modelProfundo: String?
+    public var reasoningEffortProfundo: String?
     public var extra: [String: String]
     /// Antes de guardar, valida la credencial de verdad contra el proveedor
     /// (`docs/api.md`: "pegar y validar") — `true` por defecto, igual que el
@@ -91,6 +97,8 @@ public struct LLMCredentialsIn: Encodable, Sendable, Equatable {
         baseURL: String? = nil,
         modelPrincipal: String? = nil,
         modelRapido: String? = nil,
+        modelProfundo: String? = nil,
+        reasoningEffortProfundo: String? = nil,
         extra: [String: String] = [:],
         validate: Bool = true
     ) {
@@ -99,6 +107,8 @@ public struct LLMCredentialsIn: Encodable, Sendable, Equatable {
         self.baseURL = baseURL
         self.modelPrincipal = modelPrincipal
         self.modelRapido = modelRapido
+        self.modelProfundo = modelProfundo
+        self.reasoningEffortProfundo = reasoningEffortProfundo
         self.extra = extra
         self.validate = validate
     }
@@ -109,6 +119,8 @@ public struct LLMCredentialsIn: Encodable, Sendable, Equatable {
         case baseURL = "base_url"
         case modelPrincipal = "model_principal"
         case modelRapido = "model_rapido"
+        case modelProfundo = "model_profundo"
+        case reasoningEffortProfundo = "reasoning_effort_profundo"
     }
 }
 
@@ -117,6 +129,8 @@ public struct LLMModelsOut: Codable, Sendable, Equatable {
     public let kind: String
     public let modelPrincipal: String?
     public let modelRapido: String?
+    public let modelProfundo: String?
+    public let reasoningEffortProfundo: String?
     public let models: [String]
     public let manualAllowed: Bool
     public let capabilitiesManagedByEdecan: Bool
@@ -126,6 +140,8 @@ public struct LLMModelsOut: Codable, Sendable, Equatable {
         case kind, models
         case modelPrincipal = "model_principal"
         case modelRapido = "model_rapido"
+        case modelProfundo = "model_profundo"
+        case reasoningEffortProfundo = "reasoning_effort_profundo"
         case manualAllowed = "manual_allowed"
         case capabilitiesManagedByEdecan = "capabilities_managed_by_edecan"
         case discoveryError = "discovery_error"
@@ -135,15 +151,26 @@ public struct LLMModelsOut: Codable, Sendable, Equatable {
 public struct LLMModelsIn: Encodable, Sendable, Equatable {
     public let modelPrincipal: String
     public let modelRapido: String?
+    public let modelProfundo: String?
+    public let reasoningEffortProfundo: String?
 
-    public init(modelPrincipal: String, modelRapido: String? = nil) {
+    public init(
+        modelPrincipal: String,
+        modelRapido: String? = nil,
+        modelProfundo: String? = nil,
+        reasoningEffortProfundo: String? = "xhigh"
+    ) {
         self.modelPrincipal = modelPrincipal
         self.modelRapido = modelRapido
+        self.modelProfundo = modelProfundo
+        self.reasoningEffortProfundo = reasoningEffortProfundo
     }
 
     enum CodingKeys: String, CodingKey {
         case modelPrincipal = "model_principal"
         case modelRapido = "model_rapido"
+        case modelProfundo = "model_profundo"
+        case reasoningEffortProfundo = "reasoning_effort_profundo"
     }
 }
 

@@ -9,6 +9,8 @@ export function SelectorModeloLLM({ onUpdated }: { onUpdated: () => void }) {
   const [catalogo, setCatalogo] = useState<LlmModelsOut | null>(null);
   const [principal, setPrincipal] = useState("");
   const [rapido, setRapido] = useState("");
+  const [profundo, setProfundo] = useState("");
+  const [effort, setEffort] = useState("xhigh");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +24,8 @@ export function SelectorModeloLLM({ onUpdated }: { onUpdated: () => void }) {
         setCatalogo(value);
         setPrincipal(value.model_principal ?? value.models[0] ?? "");
         setRapido(value.model_rapido ?? value.model_principal ?? value.models[0] ?? "");
+        setProfundo(value.model_profundo ?? value.model_principal ?? value.models[0] ?? "");
+        setEffort(value.reasoning_effort_profundo ?? "xhigh");
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : "No se pudieron cargar los modelos.");
@@ -43,6 +47,8 @@ export function SelectorModeloLLM({ onUpdated }: { onUpdated: () => void }) {
       await updateLlmModels({
         model_principal: principal.trim(),
         model_rapido: rapido.trim() || principal.trim(),
+        model_profundo: profundo.trim() || principal.trim(),
+        reasoning_effort_profundo: effort,
       });
       setSaved(true);
       onUpdated();
@@ -67,14 +73,19 @@ export function SelectorModeloLLM({ onUpdated }: { onUpdated: () => void }) {
         </p>
       </div>
       {modelos.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-3">
           <Field label="Principal" htmlFor="llm_model_principal_select">
             <Select id="llm_model_principal_select" value={principal} onChange={(event) => setPrincipal(event.target.value)}>
               {modelos.map((model) => <option key={model} value={model}>{model}</option>)}
             </Select>
           </Field>
-          <Field label="Rápido" htmlFor="llm_model_fast_select">
+          <Field label="Auxiliar rápido" htmlFor="llm_model_fast_select" hint="Memoria, clasificación y tareas automáticas breves.">
             <Select id="llm_model_fast_select" value={rapido} onChange={(event) => setRapido(event.target.value)}>
+              {modelos.map((model) => <option key={model} value={model}>{model}</option>)}
+            </Select>
+          </Field>
+          <Field label="Razonamiento profundo" htmlFor="llm_model_deep_select" hint="Planificación, IDE, arquitectura, auditorías y trabajos largos.">
+            <Select id="llm_model_deep_select" value={profundo} onChange={(event) => setProfundo(event.target.value)}>
               {modelos.map((model) => <option key={model} value={model}>{model}</option>)}
             </Select>
           </Field>
@@ -84,20 +95,30 @@ export function SelectorModeloLLM({ onUpdated }: { onUpdated: () => void }) {
         <summary className="cursor-pointer text-xs font-medium text-brand-600 dark:text-brand-400">
           Escribir un modelo nuevo manualmente
         </summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div className="mt-3 grid gap-3 lg:grid-cols-3">
           <Field label="Modelo principal" htmlFor="llm_model_principal_manual">
             <Input id="llm_model_principal_manual" value={principal} onChange={(event) => setPrincipal(event.target.value)} autoComplete="off" />
           </Field>
           <Field label="Modelo rápido" htmlFor="llm_model_fast_manual">
             <Input id="llm_model_fast_manual" value={rapido} onChange={(event) => setRapido(event.target.value)} autoComplete="off" />
           </Field>
+          <Field label="Modelo profundo" htmlFor="llm_model_deep_manual">
+            <Input id="llm_model_deep_manual" value={profundo} onChange={(event) => setProfundo(event.target.value)} autoComplete="off" />
+          </Field>
         </div>
       </details>
+      <Field label="Esfuerzo del modo profundo" htmlFor="llm_reasoning_effort" hint="Muy alto aprovecha el reasoning del CLI para trabajos realmente complejos.">
+        <Select id="llm_reasoning_effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
+          <option value="high">Alto</option>
+          <option value="xhigh">Muy alto</option>
+          <option value="max">Máximo</option>
+        </Select>
+      </Field>
       {catalogo?.discovery_error && <Alert variant="info">No se pudo refrescar la lista; puedes escribir el modelo manualmente.</Alert>}
       {error && <Alert variant="error">{error}</Alert>}
       {saved && <Alert variant="success">Modelo actualizado.</Alert>}
       <Button size="sm" onClick={() => void guardar()} loading={saving} disabled={saving || !principal.trim()}>
-        Usar este modelo
+        Guardar modelos
       </Button>
     </div>
   );

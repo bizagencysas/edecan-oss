@@ -15,6 +15,8 @@ def test_defaults() -> None:
     assert config.base_url is None
     assert config.model_principal is None
     assert config.model_rapido is None
+    assert config.model_profundo is None
+    assert config.reasoning_effort_profundo is None
     assert config.extra == {}
 
 
@@ -37,12 +39,15 @@ def test_from_dict_completo() -> None:
         "base_url": None,
         "model_principal": "gemini-2.5-pro",
         "model_rapido": "gemini-2.5-flash",
+        "model_profundo": "gemini-2.5-pro-deep",
+        "reasoning_effort_profundo": "high",
         "extra": {"mode": "api_key"},
     }
     config = LLMProviderConfig.from_dict(d)
     assert config.kind == "vertex"
     assert config.api_key == "TU_API_KEY_AQUI"
     assert config.model_principal == "gemini-2.5-pro"
+    assert config.model_profundo == "gemini-2.5-pro-deep"
     assert config.extra == {"mode": "api_key"}
 
 
@@ -73,6 +78,8 @@ def test_to_dict_devuelve_todos_los_campos() -> None:
         "base_url": None,
         "model_principal": None,
         "model_rapido": None,
+        "model_profundo": None,
+        "reasoning_effort_profundo": None,
         "extra": {"binary_path": "/usr/local/bin/codex"},
     }
 

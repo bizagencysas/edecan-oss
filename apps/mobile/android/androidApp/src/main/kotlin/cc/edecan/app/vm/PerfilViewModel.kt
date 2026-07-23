@@ -81,6 +81,8 @@ data class PerfilUiState(
     val catalogoModelos: LlmModelsOut? = null,
     val modeloActivoPrincipal: String = "",
     val modeloActivoRapido: String = "",
+    val modeloActivoProfundo: String = "",
+    val esfuerzoProfundo: String = "xhigh",
     val actualizandoModelo: Boolean = false,
     val modeloActualizado: Boolean = false,
     val errorModelo: String? = null,
@@ -176,6 +178,9 @@ class PerfilViewModel : ViewModel() {
                             ?: credenciales.llm?.modelPrincipal.orEmpty(),
                         modeloActivoRapido = catalogo?.modelRapido
                             ?: credenciales.llm?.modelRapido.orEmpty(),
+                        modeloActivoProfundo = catalogo?.modelProfundo
+                            ?: credenciales.llm?.modelProfundo.orEmpty(),
+                        esfuerzoProfundo = catalogo?.reasoningEffortProfundo ?: "xhigh",
                     )
                 }
             } catch (e: ApiException) {
@@ -200,10 +205,23 @@ class PerfilViewModel : ViewModel() {
         }
     }
 
+    fun elegirModeloProfundo(modelo: String) {
+        _uiState.update {
+            it.copy(modeloActivoProfundo = modelo, errorModelo = null, modeloActualizado = false)
+        }
+    }
+
+    fun elegirEsfuerzoProfundo(esfuerzo: String) {
+        _uiState.update {
+            it.copy(esfuerzoProfundo = esfuerzo, errorModelo = null, modeloActualizado = false)
+        }
+    }
+
     fun actualizarModelos(api: EdecanApi) {
         if (_uiState.value.actualizandoModelo) return
         val principal = _uiState.value.modeloActivoPrincipal.trim()
         val rapido = _uiState.value.modeloActivoRapido.trim().ifBlank { principal }
+        val profundo = _uiState.value.modeloActivoProfundo.trim().ifBlank { principal }
         if (principal.isBlank()) {
             _uiState.update { it.copy(errorModelo = "Escribe o elige un modelo principal.") }
             return
@@ -213,7 +231,14 @@ class PerfilViewModel : ViewModel() {
                 it.copy(actualizandoModelo = true, errorModelo = null, modeloActualizado = false)
             }
             try {
-                api.actualizarModelosLlm(LlmModelsIn(principal, rapido))
+                api.actualizarModelosLlm(
+                    LlmModelsIn(
+                        modelPrincipal = principal,
+                        modelRapido = rapido,
+                        modelProfundo = profundo,
+                        reasoningEffortProfundo = _uiState.value.esfuerzoProfundo,
+                    ),
+                )
                 val catalogo = api.modelosLlm()
                 val credenciales = api.credentials()
                 _uiState.update {
@@ -224,6 +249,8 @@ class PerfilViewModel : ViewModel() {
                         credenciales = credenciales,
                         modeloActivoPrincipal = catalogo.modelPrincipal.orEmpty(),
                         modeloActivoRapido = catalogo.modelRapido.orEmpty(),
+                        modeloActivoProfundo = catalogo.modelProfundo.orEmpty(),
+                        esfuerzoProfundo = catalogo.reasoningEffortProfundo ?: "xhigh",
                     )
                 }
             } catch (e: ApiException) {
@@ -269,6 +296,8 @@ class PerfilViewModel : ViewModel() {
                         catalogoModelos = catalogo,
                         modeloActivoPrincipal = catalogo?.modelPrincipal.orEmpty(),
                         modeloActivoRapido = catalogo?.modelRapido.orEmpty(),
+                        modeloActivoProfundo = catalogo?.modelProfundo.orEmpty(),
+                        esfuerzoProfundo = catalogo?.reasoningEffortProfundo ?: "xhigh",
                     )
                 }
             } catch (e: ApiException) {

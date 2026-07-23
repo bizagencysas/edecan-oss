@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from edecan_core.safety import redact
+from edecan_core.safety import public_error_message, redact
 
 
 def test_redact_enmascara_clave_sk():
@@ -40,3 +40,22 @@ def test_redact_enmascara_aws_access_key():
     texto = "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
     resultado = redact(texto)
     assert "AKIAABCDEFGHIJKLMNOP" not in resultado
+
+
+def test_public_error_message_no_publica_sql_ni_parametros():
+    exc = RuntimeError(
+        "(sqlalchemy.dialects.postgresql.asyncpg.Error) could not access file "
+        '"$libdir/vector" [SQL: SELECT * FROM memory_items] [parameters: secreto]'
+    )
+
+    message = public_error_message(exc)
+
+    assert "almacenamiento local" in message
+    assert "SELECT" not in message
+    assert "parameters" not in message
+    assert "$libdir" not in message
+
+
+def test_public_error_message_conserva_error_util_de_proveedor():
+    exc = RuntimeError("Codex CLI rechazó el modelo solicitado con HTTP 400")
+    assert public_error_message(exc) == str(exc)

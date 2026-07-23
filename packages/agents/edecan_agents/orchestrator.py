@@ -5,7 +5,7 @@ al final de este docstring).
 
 Dos fases separadas, ambas expuestas como métodos públicos:
 
-- `plan(objetivo, flags, settings)`: UNA llamada al LLM (alias `"principal"`)
+- `plan(objetivo, flags, settings)`: UNA llamada al LLM (alias `"profundo"`)
   pidiéndole un plan estructurado en JSON. Parseo tolerante (acepta el JSON
   envuelto en prosa/markdown, ver `_extraer_json`), valida que cada `agente`
   sea uno de los perfiles `disponible=True` (`profiles.IMPLEMENTED_AGENT_KEYS`)
@@ -285,7 +285,7 @@ from .registry_view import RestrictedRegistry
 
 logger = logging.getLogger(__name__)
 
-_LLM_ALIAS = "principal"
+_LLM_ALIAS = "profundo"
 DEFAULT_MAX_STEPS = 8
 """Igual al default de `MISSIONS_MAX_STEPS` (`ROADMAP_V2.md` §7.5) — se
 duplica aquí como literal (no se importa `settings` real, ver `plan()`)."""
@@ -513,7 +513,7 @@ class Orchestrator:
 
             presupuesto = dict(mission.presupuesto or {})
             replans_usados = _coerce_replans_usados(presupuesto.get("replans_usados"))
-            siguiente_idx = (max((int(p["seq"]) for p in pasos_todos), default=0))
+            siguiente_idx = max((int(p["seq"]) for p in pasos_todos), default=0)
 
             while pendientes:
                 olas = _construir_olas(list(pendientes.values()), completados)

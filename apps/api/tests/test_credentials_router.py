@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -85,6 +86,36 @@ class _FakeProcess:
 
     async def wait(self) -> None:  # pragma: no cover - idem
         pass
+
+
+def test_modelos_codex_cache_descubre_solo_modelos_visibles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-5.6-sol", "visibility": "list"},
+                    {"slug": "gpt-5.6-terra", "visibility": "list"},
+                    {"slug": "modelo-interno", "visibility": "hide"},
+                    {"slug": "gpt-5.6-sol", "visibility": "list"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert credentials_module._modelos_codex_cache() == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+    ]
+
+
+def test_modelos_codex_cache_degrada_si_no_existe(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert credentials_module._modelos_codex_cache() == []
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +316,8 @@ async def test_put_llm_openai_compat_sin_validar_guarda_y_enmascara(client, app,
         "base_url": "https://api.groq.com/openai/v1",
         "model_principal": "llama-3.3-70b",
         "model_rapido": "llama-3.3-70b",
+        "model_profundo": "llama-3.3-70b",
+        "reasoning_effort_profundo": "xhigh",
         "extra": {},
     }
 
@@ -296,6 +329,8 @@ async def test_put_llm_openai_compat_sin_validar_guarda_y_enmascara(client, app,
         "kind": "openai_compat",
         "model_principal": "llama-3.3-70b",
         "model_rapido": "llama-3.3-70b",
+        "model_profundo": "llama-3.3-70b",
+        "reasoning_effort_profundo": "xhigh",
         "base_url": "https://api.groq.com/openai/v1",
         "masked": "…ABCD",
     }
@@ -545,6 +580,8 @@ async def test_put_llm_openai_compat_valida_endpoint_propio(client, app) -> None
     stored = json.loads(fake_vault.puts[0][2].access_token)
     assert stored["model_principal"] == "modelo-general-2"
     assert stored["model_rapido"] == "modelo-general-2"
+    assert stored["model_profundo"] == "modelo-general-2"
+    assert stored["reasoning_effort_profundo"] == "xhigh"
 
 
 @respx.mock
@@ -580,13 +617,19 @@ async def test_selector_modelos_descubre_y_actualiza_sin_repedir_api_key(client,
     assert catalogo.status_code == 200
     body = catalogo.json()
     assert body["models"] == ["modelo-anterior", "modelo-nuevo", "modelo-rapido"]
+    assert body["model_profundo"] == "modelo-anterior"
     assert body["manual_allowed"] is True
     assert body["capabilities_managed_by_edecan"] is True
     assert ruta.called
 
     actualizado = await client.patch(
         "/v1/credentials/llm/models",
-        json={"model_principal": "modelo-futuro-manual", "model_rapido": "modelo-rapido"},
+        json={
+            "model_principal": "modelo-futuro-manual",
+            "model_rapido": "modelo-rapido",
+            "model_profundo": "modelo-razonamiento",
+            "reasoning_effort_profundo": "xhigh",
+        },
         headers=headers,
     )
     assert actualizado.status_code == 204
@@ -594,6 +637,8 @@ async def test_selector_modelos_descubre_y_actualiza_sin_repedir_api_key(client,
     assert stored["api_key"] == "secreto-no-se-vuelve-a-pedir"
     assert stored["model_principal"] == "modelo-futuro-manual"
     assert stored["model_rapido"] == "modelo-rapido"
+    assert stored["model_profundo"] == "modelo-razonamiento"
+    assert stored["reasoning_effort_profundo"] == "xhigh"
 
 
 @respx.mock

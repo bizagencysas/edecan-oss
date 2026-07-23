@@ -564,6 +564,8 @@ data class LlmCredentialOut(
     val kind: String? = null,
     @SerialName("model_principal") val modelPrincipal: String? = null,
     @SerialName("model_rapido") val modelRapido: String? = null,
+    @SerialName("model_profundo") val modelProfundo: String? = null,
+    @SerialName("reasoning_effort_profundo") val reasoningEffortProfundo: String? = null,
     @SerialName("base_url") val baseUrl: String? = null,
     val masked: String? = null,
 )
@@ -593,6 +595,8 @@ data class LlmCredentialsIn(
     @SerialName("base_url") val baseUrl: String? = null,
     @SerialName("model_principal") val modelPrincipal: String? = null,
     @SerialName("model_rapido") val modelRapido: String? = null,
+    @SerialName("model_profundo") val modelProfundo: String? = null,
+    @SerialName("reasoning_effort_profundo") val reasoningEffortProfundo: String? = null,
     val extra: Map<String, String> = emptyMap(),
     val validate: Boolean = true,
 )
@@ -602,6 +606,8 @@ data class LlmModelsOut(
     val kind: String,
     @SerialName("model_principal") val modelPrincipal: String? = null,
     @SerialName("model_rapido") val modelRapido: String? = null,
+    @SerialName("model_profundo") val modelProfundo: String? = null,
+    @SerialName("reasoning_effort_profundo") val reasoningEffortProfundo: String? = null,
     val models: List<String> = emptyList(),
     @SerialName("manual_allowed") val manualAllowed: Boolean = true,
     @SerialName("capabilities_managed_by_edecan")
@@ -613,6 +619,8 @@ data class LlmModelsOut(
 data class LlmModelsIn(
     @SerialName("model_principal") val modelPrincipal: String,
     @SerialName("model_rapido") val modelRapido: String? = null,
+    @SerialName("model_profundo") val modelProfundo: String? = null,
+    @SerialName("reasoning_effort_profundo") val reasoningEffortProfundo: String? = "xhigh",
 )
 
 /** `GET /v1/setup/status` (`edecan_api.routers.setup`). */

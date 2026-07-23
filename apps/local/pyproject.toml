@@ -1,6 +1,6 @@
 [project]
 name = "edecan-local"
-version = "0.7.0"
+version = "0.7.1"
 description = "Local Edecan runtime bundling the API, worker, and data services for desktop use"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -17,6 +17,9 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "httpx>=0.27",
+    # Recupera de forma segura un Postgres embebido que haya sobrevivido a
+    # un cierre forzado del runtime temporal de PyInstaller.
+    "psutil>=5.9",
     # `python -m edecan_local` promete una base embebida sin configuración.
     # Mantener pgserver como extra hacía que el comando documentado fallara
     # inmediatamente en un clon limpio salvo que la persona conociera la

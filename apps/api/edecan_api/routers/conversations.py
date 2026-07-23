@@ -41,7 +41,7 @@ from edecan_core.agent import (
 )
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
-from edecan_core.safety import redact
+from edecan_core.safety import public_error_message, redact
 from edecan_core.tools import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage
 from edecan_llm.router import LLMRouter
@@ -1184,7 +1184,7 @@ async def _stream_agent_events(
                 yield _format_sse(sse_name, public_event)
     except Exception as exc:  # pragma: no cover - defensivo, no debería ocurrir en flujo normal
         logger.exception("Error inesperado corriendo el turno del agente")
-        yield _format_sse("error", {"type": "error", "message": str(exc)})
+        yield _format_sse("error", {"type": "error", "message": public_error_message(exc)})
 
 
 async def _stream_declined_confirmation(
@@ -1422,7 +1422,7 @@ async def _stream_approved_confirmation(
         yield _format_sse("message.done", {"type": "done", "usage": {}})
     except Exception as exc:  # pragma: no cover - defensivo, no debería ocurrir en flujo normal
         logger.exception("Error inesperado ejecutando la tool aprobada")
-        yield _format_sse("error", {"type": "error", "message": str(exc)})
+        yield _format_sse("error", {"type": "error", "message": public_error_message(exc)})
 
 
 async def _extra_mcp_tools_or_empty(request: Request, current_user: CurrentUser) -> list[Any]:

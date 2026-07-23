@@ -330,9 +330,7 @@ async def load_tenant_llm_config(
     try:
         repo = SqlRepo(session)
         accounts = await repo.list_connector_accounts(tenant_id=tenant_id)
-        account = next(
-            (a for a in accounts if a["connector_key"] == LLM_CONNECTOR_KEY), None
-        )
+        account = next((a for a in accounts if a["connector_key"] == LLM_CONNECTOR_KEY), None)
         if account is None:
             return None
 
@@ -348,6 +346,8 @@ async def load_tenant_llm_config(
             base_url=data.get("base_url"),
             model_principal=data.get("model_principal"),
             model_rapido=data.get("model_rapido"),
+            model_profundo=data.get("model_profundo"),
+            reasoning_effort_profundo=data.get("reasoning_effort_profundo"),
             extra=data.get("extra") or {},
         )
     except Exception:

@@ -275,6 +275,45 @@ async def test_complete_agrega_flag_model_si_req_trae_modelo(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_complete_aplica_reasoning_configurado_solo_al_modelo_profundo(
+    tmp_path: Path,
+) -> None:
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=json.dumps({"type": "agent_message", "text": "ok"}),
+        args_capture_name="args.txt",
+    )
+    provider = CodexCLIProvider(
+        binary_path=fake,
+        reasoning_effort_by_model={"gpt-5.6-sol": "xhigh"},
+    )
+
+    await provider.complete(_req(model="gpt-5.6-sol"))
+
+    args = (tmp_path / "args.txt").read_text().splitlines()
+    assert "--config" in args
+    assert args[args.index("--config") + 1] == 'model_reasoning_effort="xhigh"'
+
+
+@pytest.mark.asyncio
+async def test_complete_no_aplica_reasoning_profundo_al_modelo_principal(tmp_path: Path) -> None:
+    fake = _make_fake_cli(
+        tmp_path,
+        stdout=json.dumps({"type": "agent_message", "text": "ok"}),
+        args_capture_name="args.txt",
+    )
+    provider = CodexCLIProvider(
+        binary_path=fake,
+        reasoning_effort_by_model={"gpt-5.6-sol": "xhigh"},
+    )
+
+    await provider.complete(_req(model="gpt-5.6-terra"))
+
+    args = (tmp_path / "args.txt").read_text().splitlines()
+    assert "--config" not in args
+
+
+@pytest.mark.asyncio
 async def test_complete_aisla_codex_del_repo_y_sus_herramientas(tmp_path: Path) -> None:
     fake = _make_fake_cli(
         tmp_path,

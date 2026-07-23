@@ -124,6 +124,116 @@ def _to_asyncpg_dsn(database_url: str) -> str:
     return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
+def _postgres_vector_library_candidates(postgres_executable: Path) -> tuple[Path, ...]:
+    """Rutas posibles del módulo ``vector`` para el Postgres de ``pgserver``.
+
+    ``postgres_executable`` vive en ``pginstall/bin`` y los módulos que
+    Postgres resuelve mediante ``$libdir`` viven en
+    ``pginstall/lib/postgresql``. La extensión cambia de sufijo por sistema,
+    pero comprobar los tres hace la detección portable y fácil de probar.
+    """
+
+    module_dir = postgres_executable.parent.parent / "lib" / "postgresql"
+    return tuple(module_dir / name for name in ("vector.dylib", "vector.so", "vector.dll"))
+
+
+def _postgres_runtime_is_usable(postgres_executable: Path) -> bool:
+    """Confirma que el runtime que sostiene al servidor aún existe completo.
+
+    Un sidecar PyInstaller ``onefile`` ejecuta Postgres desde ``sys._MEIPASS``.
+    Si la app termina de forma abrupta, el postmaster puede sobrevivir después
+    de que PyInstaller borre esa carpeta temporal. El binario ya cargado sigue
+    respondiendo, pero cualquier carga tardía como ``$libdir/vector`` falla.
+    """
+
+    return postgres_executable.is_file() and any(
+        candidate.is_file()
+        for candidate in _postgres_vector_library_candidates(postgres_executable)
+    )
+
+
+def _running_embedded_postgres(data_dir: Path) -> tuple[object, Path] | None:
+    """Devuelve el proceso y ejecutable del postmaster de este ``PGDATA``.
+
+    El PID proviene de ``postmaster.pid`` pero se valida también contra el
+    argumento ``-D`` del proceso. Así nunca se termina un Postgres ajeno por
+    un PID reciclado o un archivo obsoleto.
+    """
+
+    pid_file = data_dir / "postmaster.pid"
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0])
+    except (FileNotFoundError, IndexError, ValueError, OSError):
+        return None
+
+    import psutil
+
+    try:
+        process = psutil.Process(pid)
+        if not process.is_running():
+            return None
+        command = process.cmdline()
+    except (psutil.Error, OSError):
+        return None
+    if not command:
+        return None
+
+    try:
+        data_index = command.index("-D") + 1
+        process_data_dir = Path(command[data_index]).expanduser().resolve()
+    except (ValueError, IndexError, OSError):
+        return None
+    if process_data_dir != data_dir.expanduser().resolve():
+        logger.warning("Se ignoró un postmaster.pid cuyo proceso no pertenece al PGDATA de Edecán.")
+        return None
+
+    # En macOS ``psutil.Process.exe()`` puede devolver vacío cuando la ruta
+    # temporal ya fue eliminada. ``cmdline[0]`` conserva la ruta original.
+    executable_text = command[0]
+    try:
+        reported_executable = process.exe()
+    except (psutil.Error, OSError):
+        reported_executable = ""
+    if reported_executable:
+        executable_text = reported_executable
+    return process, Path(executable_text)
+
+
+def _recover_orphaned_embedded_postgres(data_dir: Path) -> bool:
+    """Detiene un postmaster cuyo runtime temporal ya desapareció.
+
+    Devuelve ``True`` cuando hizo una recuperación. El siguiente
+    ``pgserver.get_server`` arranca el mismo cluster con el runtime extraído
+    por la ejecución actual, conservando todos los datos del usuario.
+    """
+
+    running = _running_embedded_postgres(data_dir)
+    if running is None:
+        return False
+    process, executable = running
+    if _postgres_runtime_is_usable(executable):
+        return False
+
+    import psutil
+
+    logger.warning(
+        "El Postgres embebido seguía vivo desde un runtime temporal incompleto (%s). "
+        "Se reiniciará de forma segura para restaurar pgvector.",
+        executable,
+    )
+    try:
+        process.terminate()  # type: ignore[attr-defined]
+        process.wait(timeout=5)  # type: ignore[attr-defined]
+    except psutil.TimeoutExpired:
+        process.kill()  # type: ignore[attr-defined]
+        process.wait(timeout=5)  # type: ignore[attr-defined]
+    except (psutil.Error, OSError) as exc:
+        raise RuntimeError(
+            "No se pudo reiniciar el almacenamiento local incompleto de Edecán."
+        ) from exc
+    return True
+
+
 async def _create_vector_extension(database_url: str) -> None:
     """`CREATE EXTENSION IF NOT EXISTS vector` con `asyncpg` directo, sin
     pasar por SQLAlchemy/Alembic: corre UNA vez al arrancar, antes de que
@@ -170,6 +280,11 @@ async def ensure_postgres(data_dir: Path) -> tuple[str, PostgresHandle]:
 
     pg_data_dir = _safe_pg_data_dir(Path(data_dir))
     pg_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Un cierre forzado del sidecar puede dejar Postgres vivo después de que
+    # PyInstaller elimine su directorio temporal. Reiniciarlo aquí conserva el
+    # cluster pero devuelve a ``$libdir`` sus módulos reales, incluido vector.
+    await asyncio.to_thread(_recover_orphaned_embedded_postgres, pg_data_dir)
 
     logger.info("Arrancando Postgres embebido (pgserver) en %s...", pg_data_dir)
     # `pgserver.get_server` es síncrono y bloqueante (arranca un proceso e

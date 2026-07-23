@@ -44,7 +44,7 @@ from edecan_schemas import (
 from .capability_routing import build_capability_guidance, select_tool_specs
 from .llm_types import ChatMessage, CompletionRequest
 from .persona import build_system_prompt
-from .safety import redact
+from .safety import public_error_message, redact
 from .tools.base import Tool, ToolContext, ToolResult
 from .tools.registry import ToolRegistry, _flags_satisfechos
 
@@ -307,7 +307,7 @@ class Agent:
             # se colaron en un mensaje de error (SECURITY.md); este evento sale
             # tal cual hacia el usuario final por SSE, así que nunca debe verse
             # en texto plano.
-            yield ErrorEvent(message=redact(str(exc)))
+            yield ErrorEvent(message=public_error_message(exc))
 
     async def _run_turn(
         self,
@@ -400,7 +400,7 @@ class Agent:
                 yield event
         except Exception as exc:  # noqa: BLE001 - contrato público: errores como evento
             logger.warning("No se pudo reanudar el turno pendiente", exc_info=True)
-            yield ErrorEvent(message=redact(str(exc)))
+            yield ErrorEvent(message=public_error_message(exc))
 
     async def _resume_turn(
         self,

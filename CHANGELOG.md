@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A configurable LinkedIn plan that prepares two or three distinct visual
   drafts every day, keeps publication under human review and reports its work
   through the existing activity and notification systems
+- A persistent recent-drafts view for recovering, editing and publishing
+  LinkedIn packages created manually or by the daily plan
 - Confirmed LinkedIn publication from both the content studio and the assistant
   tool layer, with tenant-scoped encrypted tokens, audit events and artifact
   ownership checks
@@ -30,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - LinkedIn publication requests route through the official connector instead
   of computer control, so the selected language model changes intelligence but
   not execution capabilities
+- The daily content plan now rotates editorial territories and formats, checks
+  recent work for repetition and separates research, writing and factual review
 - Every public package and native client now reports version 0.7.3
 
 ### Fixed

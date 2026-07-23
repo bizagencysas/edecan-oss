@@ -513,6 +513,19 @@ export async function listPhoneCalls(): Promise<PhoneCall[]> {
   return apiJson<PhoneCall[]>("/v1/phone/calls");
 }
 
+/** Prepara una llamada y devuelve el borrador verificable. Nunca llama por sí sola. */
+export async function preparePhoneCall(input: {
+  to_e164: string;
+  goal?: string;
+  agent_template_id?: string;
+  conversation_id?: string;
+}): Promise<PhoneCall> {
+  return apiJson<PhoneCall>("/v1/phone/calls/prepare", {
+    method: "POST",
+    body: input,
+  });
+}
+
 export async function confirmPhoneCall(call: PhoneCall): Promise<PhoneCall> {
   return apiJson<PhoneCall>(`/v1/phone/calls/${call.id}/confirm`, {
     method: "POST",

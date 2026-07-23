@@ -320,6 +320,8 @@ class FakeRepo:
         default_goal: str,
         opening_message: str,
         is_default: bool,
+        knowledge_context: str = "",
+        required_information: str = "",
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -330,6 +332,8 @@ class FakeRepo:
             "persona_prompt": persona_prompt,
             "default_goal": default_goal,
             "opening_message": opening_message,
+            "knowledge_context": knowledge_context,
+            "required_information": required_information,
             "is_default": is_default,
             "created_at": _now(),
             "updated_at": _now(),

@@ -17,6 +17,8 @@ const EMPTY_FORM: PhoneAgentTemplateInput = {
   persona_prompt: "",
   default_goal: "",
   opening_message: "",
+  knowledge_context: "",
+  required_information: "",
   is_default: false,
 };
 
@@ -30,6 +32,8 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
         "Sé cordial, concreta y resolutiva. Escucha primero, haz una pregunta a la vez y deja un resumen claro para continuar desde Edecan.",
       default_goal: "Entender la solicitud y acordar el siguiente paso.",
       opening_message: "Te llamo para ayudarte con una gestión pendiente.",
+      knowledge_context: "",
+      required_information: "Nombre, motivo de contacto y mejor forma de continuar.",
       is_default: false,
     },
   },
@@ -42,6 +46,8 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
         "Actúa como una asesora consultiva: entiende la necesidad antes de ofrecer, explica con claridad, nunca presiona y busca un siguiente paso concreto.",
       default_goal: "Entender la necesidad y acordar una demostración o seguimiento.",
       opening_message: "Quisiera conocer brevemente qué necesitas y ver si podemos ayudarte.",
+      knowledge_context: "",
+      required_information: "Necesidad principal, presupuesto aproximado y fecha deseada.",
       is_default: false,
     },
   },
@@ -54,6 +60,8 @@ const STARTERS: Array<{ label: string; value: PhoneAgentTemplateInput }> = [
         "Habla con calma, confirma fechas y datos de forma explícita, no inventes disponibilidad y registra cualquier cambio solicitado.",
       default_goal: "Confirmar la cita o pendiente y registrar cualquier cambio.",
       opening_message: "Te llamo para confirmar un pendiente y saber si necesitas hacer algún cambio.",
+      knowledge_context: "",
+      required_information: "Confirmación, nueva fecha solicitada y cualquier observación importante.",
       is_default: false,
     },
   },
@@ -66,11 +74,13 @@ function toInput(template: PhoneAgentTemplate): PhoneAgentTemplateInput {
     persona_prompt: template.persona_prompt,
     default_goal: template.default_goal,
     opening_message: template.opening_message,
+    knowledge_context: template.knowledge_context ?? "",
+    required_information: template.required_information ?? "",
     is_default: template.is_default,
   };
 }
 
-export function PhoneAgentTemplatesSettings() {
+export function PhoneAgentTemplatesSettings({ onChanged }: { onChanged?: () => void } = {}) {
   const [templates, setTemplates] = useState<PhoneAgentTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<PhoneAgentTemplateInput>(EMPTY_FORM);
@@ -123,6 +133,7 @@ export function PhoneAgentTemplatesSettings() {
       setSelectedId(saved.id);
       setForm(toInput(saved));
       setSuccess("Guardado. Las próximas llamadas usarán esta configuración.");
+      onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar el agente.");
     } finally {
@@ -144,6 +155,7 @@ export function PhoneAgentTemplatesSettings() {
       setForm(EMPTY_FORM);
       await load();
       setSuccess("Agente eliminado. Las llamadas anteriores no cambiaron.");
+      onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo eliminar el agente.");
     } finally {
@@ -155,7 +167,7 @@ export function PhoneAgentTemplatesSettings() {
     <Card className="lg:col-span-2">
       <CardHeader
         title="Agentes para llamadas"
-        description="Guarda formas de llamar para ventas, seguimiento o asistencia. Edecan elige el predeterminado, pero siempre te muestra el número y el objetivo antes de llamar."
+        description="Crea hasta 20 identidades separadas para ventas, negocios, marketing o asistencia. Puedes pedir una por nombre desde el chat; Edecan nunca la sustituye por otra."
       />
       <CardBody className="space-y-5">
         {error && <Alert variant="error">{error}</Alert>}
@@ -302,10 +314,38 @@ export function PhoneAgentTemplatesSettings() {
               />
             </Field>
 
+            <Field
+              label="Información que este agente puede usar y decir"
+              htmlFor="phone_agent_knowledge"
+              hint="Contexto autorizado para terceros: producto, precios, horarios, condiciones o preguntas frecuentes. Edecan no comparte el resto de tu memoria."
+            >
+              <Textarea
+                id="phone_agent_knowledge"
+                value={form.knowledge_context}
+                onChange={(e) => setForm({ ...form, knowledge_context: e.target.value })}
+                placeholder="Ofrecemos una demostración de 20 minutos. El plan inicial cuesta…"
+                maxLength={6000}
+              />
+            </Field>
+
+            <Field
+              label="Información que debe obtener"
+              htmlFor="phone_agent_required_information"
+              hint="Qué datos o respuestas debe preguntar antes de cerrar la llamada."
+            >
+              <Textarea
+                id="phone_agent_required_information"
+                value={form.required_information}
+                onChange={(e) => setForm({ ...form, required_information: e.target.value })}
+                placeholder="Necesidad principal, presupuesto, fecha estimada y próximo paso."
+                maxLength={3000}
+              />
+            </Field>
+
             <Checkbox
               checked={form.is_default}
               onChange={(e) => setForm({ ...form, is_default: e.target.checked })}
-              label="Usar este agente por defecto en llamadas salientes"
+              label="Usar este agente cuando no indique otro y para atender llamadas entrantes"
             />
 
             <div className="flex flex-wrap gap-2">
@@ -319,7 +359,7 @@ export function PhoneAgentTemplatesSettings() {
               )}
             </div>
             <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
-              Cambiar una plantilla afecta solo llamadas futuras. Cada borrador conserva la versión que revisaste, y ninguna plantilla puede saltarse el consentimiento ni la confirmación final.
+              Puedes guardar hasta 20 agentes. Cambiar una plantilla afecta solo llamadas futuras. Cada borrador conserva la versión que revisaste, y ninguna plantilla puede saltarse el consentimiento ni la confirmación final.
             </p>
           </form>
         </div>

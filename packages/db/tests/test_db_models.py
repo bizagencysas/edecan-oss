@@ -154,6 +154,8 @@ def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llama
     templates = Base.metadata.tables["phone_agent_templates"]
     assert templates.columns["persona_prompt"].nullable is False
     assert templates.columns["default_goal"].nullable is False
+    assert templates.columns["knowledge_context"].nullable is False
+    assert templates.columns["required_information"].nullable is False
     default_index = next(
         index for index in templates.indexes if index.name == "uq_phone_agent_templates_default"
     )

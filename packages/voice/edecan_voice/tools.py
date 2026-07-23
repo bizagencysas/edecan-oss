@@ -391,15 +391,273 @@ class SintetizarVozTool(Tool):
         )
 
 
+class ListarAgentesLlamadasTool(Tool):
+    """Permite que el chat conozca las identidades disponibles antes de llamar."""
+
+    name = "listar_agentes_llamadas"
+    description = (
+        "Lista los agentes telefónicos configurados por esta persona, sus nombres exactos, "
+        "objetivos y cuál atiende por defecto. Úsala antes de llamar cuando el nombre pedido "
+        "sea dudoso. Nunca inventes un agente ni sustituyas uno por otro."
+    )
+    requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
+    input_schema = {"type": "object", "properties": {}}
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        result = await ctx.session.execute(
+            sql_text(
+                """
+                SELECT id, name, agent_name, default_goal, is_default
+                FROM phone_agent_templates
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                ORDER BY is_default DESC, created_at ASC, id ASC
+                """
+            ),
+            {"tenant_id": str(ctx.tenant_id), "user_id": str(ctx.user_id)},
+        )
+        rows = [dict(row) for row in result.mappings().all()]
+        if not rows:
+            return ToolResult(
+                content=(
+                    "Todavía no hay agentes de llamada configurados. Puedo ayudarte a crear "
+                    "uno si me dices para qué sirve, cómo se presenta y qué debe conseguir."
+                ),
+                data={"agentes": []},
+            )
+        lines = [
+            (
+                f"- {row['name']} (se presenta como {row['agent_name']})"
+                f"{' · predeterminado y entrantes' if row['is_default'] else ''}: "
+                f"{row['default_goal']}"
+            )
+            for row in rows
+        ]
+        return ToolResult(
+            content="Agentes de llamada disponibles:\n" + "\n".join(lines),
+            data={
+                "agentes": [
+                    {
+                        "id": str(row["id"]),
+                        "nombre": row["name"],
+                        "identidad": row["agent_name"],
+                        "objetivo": row["default_goal"],
+                        "predeterminado": bool(row["is_default"]),
+                    }
+                    for row in rows
+                ]
+            },
+        )
+
+
+class ConfigurarAgenteLlamadasTool(Tool):
+    """Crea o actualiza una identidad telefónica a partir de lenguaje natural."""
+
+    name = "configurar_agente_llamadas"
+    description = (
+        "Crea o actualiza un agente telefónico reutilizable. Antes de invocarla, reúne con "
+        "preguntas breves lo necesario: nombre para seleccionarlo, identidad al presentarse, "
+        "función, objetivo, forma de conversar, contexto autorizado frente a terceros y datos "
+        "que debe obtener. No inventes precios, políticas ni información del negocio. Si falta "
+        "contexto esencial, pregúntalo. Un mismo nombre actualiza el agente existente."
+    )
+    requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "nombre": {
+                "type": "string",
+                "description": "Nombre exacto para pedirlo luego, por ejemplo Agente de negocios.",
+            },
+            "identidad": {
+                "type": "string",
+                "description": "Nombre con el que se presentará, por ejemplo Valentina.",
+            },
+            "personalidad": {
+                "type": "string",
+                "description": "Cómo escucha, pregunta, explica, negocia y cierra.",
+            },
+            "objetivo": {
+                "type": "string",
+                "description": "Resultado que normalmente debe conseguir.",
+            },
+            "apertura": {
+                "type": "string",
+                "description": (
+                    "Primera frase después de identificarse como asistente automatizado."
+                ),
+            },
+            "contexto_autorizado": {
+                "type": "string",
+                "description": (
+                    "Datos del negocio que sí puede usar frente a terceros. Vacío si todavía "
+                    "no hay ninguno; nunca copies memorias privadas por tu cuenta."
+                ),
+            },
+            "informacion_a_obtener": {
+                "type": "string",
+                "description": "Datos y respuestas que debe preguntar durante la llamada.",
+            },
+            "predeterminado": {
+                "type": "boolean",
+                "description": "Si atiende entrantes y se usa cuando no se indica otro.",
+            },
+        },
+        "required": ["nombre", "identidad", "personalidad", "objetivo"],
+    }
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        name = _cap_str(args.get("nombre"), 80)
+        agent_name = _cap_str(args.get("identidad"), 80)
+        persona_prompt = _cap_str(args.get("personalidad"), 4000)
+        default_goal = _cap_str(args.get("objetivo"), 500)
+        opening_message = _cap_str(args.get("apertura"), 700)
+        knowledge_context = _cap_str(args.get("contexto_autorizado"), 6000)
+        required_information = _cap_str(args.get("informacion_a_obtener"), 3000)
+        if not all((name, agent_name, persona_prompt, default_goal)):
+            return ToolResult(
+                content=(
+                    "Antes de guardar necesito el nombre del agente, cómo se presenta, su "
+                    "forma de conversar y el objetivo que debe conseguir."
+                )
+            )
+
+        existing_result = await ctx.session.execute(
+            sql_text(
+                """
+                SELECT * FROM phone_agent_templates
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND LOWER(name) = LOWER(:name)
+                LIMIT 1
+                """
+            ),
+            {
+                "tenant_id": str(ctx.tenant_id),
+                "user_id": str(ctx.user_id),
+                "name": name,
+            },
+        )
+        existing = existing_result.mappings().first()
+        make_default = bool(args.get("predeterminado"))
+        if existing is None:
+            count_result = await ctx.session.execute(
+                sql_text(
+                    """
+                    SELECT COUNT(*) AS total FROM phone_agent_templates
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id
+                    """
+                ),
+                {"tenant_id": str(ctx.tenant_id), "user_id": str(ctx.user_id)},
+            )
+            count_row = count_result.mappings().first()
+            total = int((count_row or {}).get("total", 0))
+            if total >= 20:
+                return ToolResult(
+                    content="Ya tienes 20 agentes de llamada. Elimina uno antes de crear otro."
+                )
+            make_default = make_default or total == 0
+
+        if make_default:
+            await ctx.session.execute(
+                sql_text(
+                    """
+                    UPDATE phone_agent_templates
+                    SET is_default = false, updated_at = :now
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id AND is_default
+                    """
+                ),
+                {
+                    "tenant_id": str(ctx.tenant_id),
+                    "user_id": str(ctx.user_id),
+                    "now": datetime.now(UTC),
+                },
+            )
+
+        values = {
+            "tenant_id": str(ctx.tenant_id),
+            "user_id": str(ctx.user_id),
+            "name": name,
+            "agent_name": agent_name,
+            "persona_prompt": persona_prompt,
+            "default_goal": default_goal,
+            "opening_message": opening_message,
+            "knowledge_context": knowledge_context,
+            "required_information": required_information,
+            "is_default": make_default,
+            "now": datetime.now(UTC),
+        }
+        if existing is None:
+            values["id"] = str(uuid.uuid4())
+            saved_result = await ctx.session.execute(
+                sql_text(
+                    """
+                    INSERT INTO phone_agent_templates (
+                        id, tenant_id, user_id, name, agent_name, persona_prompt,
+                        default_goal, opening_message, knowledge_context,
+                        required_information, is_default, created_at, updated_at
+                    ) VALUES (
+                        CAST(:id AS uuid), CAST(:tenant_id AS uuid), CAST(:user_id AS uuid),
+                        :name, :agent_name, :persona_prompt, :default_goal, :opening_message,
+                        :knowledge_context, :required_information, :is_default, :now, :now
+                    )
+                    RETURNING id, name, agent_name, default_goal, is_default
+                    """
+                ),
+                values,
+            )
+            action = "creado"
+        else:
+            values["id"] = str(existing["id"])
+            # Si no pidió volverlo predeterminado, conserva el estado actual.
+            values["is_default"] = make_default or bool(existing.get("is_default"))
+            saved_result = await ctx.session.execute(
+                sql_text(
+                    """
+                    UPDATE phone_agent_templates
+                    SET name = :name, agent_name = :agent_name,
+                        persona_prompt = :persona_prompt, default_goal = :default_goal,
+                        opening_message = :opening_message,
+                        knowledge_context = :knowledge_context,
+                        required_information = :required_information,
+                        is_default = :is_default, updated_at = :now
+                    WHERE tenant_id = CAST(:tenant_id AS uuid)
+                      AND user_id = CAST(:user_id AS uuid)
+                      AND id = CAST(:id AS uuid)
+                    RETURNING id, name, agent_name, default_goal, is_default
+                    """
+                ),
+                values,
+            )
+            action = "actualizado"
+        saved = saved_result.mappings().first()
+        if saved is None:
+            return ToolResult(content="No pude guardar el agente de llamada.")
+        return ToolResult(
+            content=(
+                f"Listo. El agente «{saved['name']}» quedó {action} y se presenta como "
+                f"{saved['agent_name']}. Para usarlo, di: «llama a +… con el agente "
+                f"{saved['name']} y…»."
+            ),
+            data={
+                "id": str(saved["id"]),
+                "nombre": saved["name"],
+                "identidad": saved["agent_name"],
+                "objetivo": saved["default_goal"],
+                "predeterminado": bool(saved["is_default"]),
+            },
+        )
+
+
 class LlamarContactoTool(Tool):
     """Llama solo después del gate `dangerous` del turno y del consentimiento vigente."""
 
     name = "llamar_contacto"
     description = (
         "Prepara y realiza una llamada telefónica real desde el número Twilio conectado por "
-        "el usuario. Requiere mostrar y confirmar explícitamente el número internacional y "
-        "el objetivo exacto antes de ejecutarse; también exige consentimiento de voz vigente "
-        "del destinatario. La llamada y su transcripción continúan en la misma conversación."
+        "el usuario. Si la persona menciona un agente guardado, pasa su nombre exacto en "
+        "`agente`; Edecan debe usar esa identidad y nunca sustituirla por otra. Requiere "
+        "mostrar y confirmar explícitamente el número internacional, el agente elegido y el "
+        "objetivo exacto antes de ejecutarse; también exige consentimiento de voz vigente del "
+        "destinatario. La llamada y su transcripción continúan en la misma conversación."
     )
     requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
     dangerous = True
@@ -413,6 +671,13 @@ class LlamarContactoTool(Tool):
             "objetivo": {
                 "type": "string",
                 "description": "Qué debe conseguir Edecan durante la llamada.",
+            },
+            "agente": {
+                "type": "string",
+                "description": (
+                    "Nombre de la plantilla o identidad de llamada solicitada por la persona, "
+                    "por ejemplo «Agente de negocios». Se omite solo si no pidió una concreta."
+                ),
             },
         },
         "required": ["telefono_e164", "objetivo"],
@@ -435,12 +700,19 @@ class LlamarContactoTool(Tool):
                 )
             )
         try:
-            data = await dispatcher(to_e164=destination, goal=goal)
+            dispatch_args: dict[str, Any] = {"to_e164": destination, "goal": goal}
+            agent_reference = " ".join(str(args.get("agente") or "").split()).strip()
+            if agent_reference:
+                dispatch_args["agent_ref"] = agent_reference
+            data = await dispatcher(**dispatch_args)
         except TelephonyError as exc:
             return ToolResult(content=f"No pude iniciar la llamada: {exc}")
+        agent_label = str(data.get("agent_name") or data.get("agent_template_name") or "").strip()
+        agent_sentence = f" usando a {agent_label}" if agent_label else ""
         return ToolResult(
             content=(
-                f"La llamada a {destination} quedó iniciada con el objetivo confirmado: {goal}. "
+                f"La llamada a {destination} quedó iniciada{agent_sentence} con el objetivo "
+                f"confirmado: {goal}. "
                 "Puedes seguir su estado y transcripción en Actividad."
             ),
             data={
@@ -454,4 +726,10 @@ def get_all_tools() -> list[Tool]:
     """Instancia las herramientas de voz y llamada. Consumido por
     `edecan_voice.__init__.get_all_tools` — entry point
     `[project.entry-points."edecan.tools"]` en `pyproject.toml`."""
-    return [ListarVocesTool(), SintetizarVozTool(), LlamarContactoTool()]
+    return [
+        ListarVocesTool(),
+        SintetizarVozTool(),
+        ListarAgentesLlamadasTool(),
+        ConfigurarAgenteLlamadasTool(),
+        LlamarContactoTool(),
+    ]

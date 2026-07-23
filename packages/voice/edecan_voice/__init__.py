@@ -34,7 +34,14 @@ from edecan_voice.tenant import (
     resolver_config_tts_del_tenant,
     resolver_tts_del_tenant,
 )
-from edecan_voice.tools import ListarVocesTool, LlamarContactoTool, SintetizarVozTool, get_all_tools
+from edecan_voice.tools import (
+    ConfigurarAgenteLlamadasTool,
+    ListarAgentesLlamadasTool,
+    ListarVocesTool,
+    LlamarContactoTool,
+    SintetizarVozTool,
+    get_all_tools,
+)
 
 __all__ = [
     "STTProvider",
@@ -42,6 +49,8 @@ __all__ = [
     "Transcript",
     "DeepgramSTT",
     "ElevenLabsTTS",
+    "ConfigurarAgenteLlamadasTool",
+    "ListarAgentesLlamadasTool",
     "ListarVocesTool",
     "LlamarContactoTool",
     "MuestraVoz",

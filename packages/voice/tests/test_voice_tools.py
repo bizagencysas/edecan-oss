@@ -24,6 +24,8 @@ from edecan_voice.cloning import VoiceCloningError, VozDisponible
 from edecan_voice.stubs import StubTTS
 from edecan_voice.tools import (
     VOCES_STUB,
+    ConfigurarAgenteLlamadasTool,
+    ListarAgentesLlamadasTool,
     ListarVocesTool,
     LlamarContactoTool,
     SintetizarVozTool,
@@ -50,6 +52,9 @@ class FakeResult:
 
     def first(self) -> dict[str, Any] | None:
         return self._rows[0] if self._rows else None
+
+    def all(self) -> list[dict[str, Any]]:
+        return self._rows
 
 
 @dataclass
@@ -133,7 +138,13 @@ def make_ctx():
 def test_get_all_tools_incluye_telefonia_conversacional():
     tools = get_all_tools()
     nombres = [t.name for t in tools]
-    assert nombres == ["listar_voces", "sintetizar_voz", "llamar_contacto"]
+    assert nombres == [
+        "listar_voces",
+        "sintetizar_voz",
+        "listar_agentes_llamadas",
+        "configurar_agente_llamadas",
+        "llamar_contacto",
+    ]
 
 
 def test_listar_voces_no_es_dangerous_y_gatea_voice_web():
@@ -154,6 +165,68 @@ def test_llamar_contacto_es_dangerous_y_gatea_telefonia():
     assert tool.requires_flags == frozenset({"voice.telephony"})
 
 
+def test_configurar_y_listar_agentes_gatean_telefonia_sin_ser_dangerous():
+    for tool in (ConfigurarAgenteLlamadasTool(), ListarAgentesLlamadasTool()):
+        assert tool.dangerous is False
+        assert tool.requires_flags == frozenset({"voice.telephony"})
+
+
+async def test_configurar_agente_desde_chat_guarda_contexto_autorizado(make_ctx):
+    saved_id = uuid4()
+    session = FakeSession(
+        respuestas=[
+            [],  # agente inexistente
+            [{"total": 0}],
+            [],
+            [
+                {
+                    "id": saved_id,
+                    "name": "Negocios",
+                    "agent_name": "Valentina",
+                    "default_goal": "Acordar una reunión",
+                    "is_default": True,
+                }
+            ],
+        ]
+    )
+    result = await ConfigurarAgenteLlamadasTool().run(
+        make_ctx(session=session),
+        {
+            "nombre": "Negocios",
+            "identidad": "Valentina",
+            "personalidad": "Consultiva y clara.",
+            "objetivo": "Acordar una reunión",
+            "contexto_autorizado": "La demostración dura 20 minutos.",
+            "informacion_a_obtener": "Necesidad y fecha.",
+        },
+    )
+    assert result.data["nombre"] == "Negocios"
+    insert_sql, insert_params = session.llamadas[-1]
+    assert "INSERT INTO phone_agent_templates" in insert_sql
+    assert insert_params["knowledge_context"] == "La demostración dura 20 minutos."
+    assert insert_params["required_information"] == "Necesidad y fecha."
+    assert insert_params["is_default"] is True
+
+
+async def test_listar_agentes_devuelve_nombres_exactos(make_ctx):
+    session = FakeSession(
+        respuestas=[
+            [
+                {
+                    "id": uuid4(),
+                    "name": "Agente de negocios",
+                    "agent_name": "Valentina",
+                    "default_goal": "Presentar la propuesta",
+                    "is_default": True,
+                }
+            ]
+        ]
+    )
+    result = await ListarAgentesLlamadasTool().run(make_ctx(session=session), {})
+    assert result.data["agentes"][0]["nombre"] == "Agente de negocios"
+    assert "predeterminado y entrantes" in result.content
+
+
 async def test_llamar_contacto_delega_en_dispatcher_transaccional(make_ctx):
     calls: list[dict[str, str]] = []
 
@@ -168,6 +241,20 @@ async def test_llamar_contacto_delega_en_dispatcher_transaccional(make_ctx):
     )
     assert calls == [{"to_e164": "+573001234567", "goal": "Confirmar la cita"}]
     assert result.data["status"] == "queued"
+
+    await LlamarContactoTool().run(
+        ctx,
+        {
+            "telefono_e164": "+573001234568",
+            "objetivo": "Presentar la propuesta",
+            "agente": "Negocios",
+        },
+    )
+    assert calls[-1] == {
+        "to_e164": "+573001234568",
+        "goal": "Presentar la propuesta",
+        "agent_ref": "Negocios",
+    }
 
 
 def test_ninguna_tool_de_voz_avanzada_clona_nada():

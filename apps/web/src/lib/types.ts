@@ -317,6 +317,8 @@ export interface PhoneAgentTemplate {
   persona_prompt: string;
   default_goal: string;
   opening_message: string;
+  knowledge_context: string;
+  required_information: string;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -328,6 +330,8 @@ export interface PhoneAgentTemplateInput {
   persona_prompt: string;
   default_goal: string;
   opening_message: string;
+  knowledge_context: string;
+  required_information: string;
   is_default: boolean;
 }
 
@@ -369,6 +373,11 @@ export interface PhoneCall {
   summary_generated_at: string | null;
   created_at: string;
   updated_at: string;
+  requires_confirmation?: boolean;
+  verification?: {
+    to_e164: string;
+    goal: string;
+  };
 }
 
 // --- Archivos (§10.14) -----------------------------------------------------

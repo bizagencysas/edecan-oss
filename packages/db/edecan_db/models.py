@@ -374,9 +374,7 @@ class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False, server_default="")
-    title_source: Mapped[str] = mapped_column(
-        String, nullable=False, server_default="legacy"
-    )
+    title_source: Mapped[str] = mapped_column(String, nullable=False, server_default="legacy")
     channel: Mapped[str] = mapped_column(String, nullable=False, server_default="web")
 
 
@@ -879,9 +877,7 @@ class AutomationRun(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     finished_at nullable)` — una corrida auditada de una `Automation`."""
 
     __tablename__ = "automation_runs"
-    __table_args__ = (
-        _enum_check("status", ("running", "done", "error", "waiting_confirmation")),
-    )
+    __table_args__ = (_enum_check("status", ("running", "done", "error", "waiting_confirmation")),)
 
     automation_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("automations.id", ondelete="CASCADE"), nullable=False
@@ -980,9 +976,7 @@ class Order(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     __tablename__ = "orders"
     __table_args__ = (
         _enum_check("kind", ("payment", "purchase", "trade")),
-        _enum_check(
-            "status", ("draft", "confirmed", "executed_paper", "cancelled", "expired")
-        ),
+        _enum_check("status", ("draft", "confirmed", "executed_paper", "cancelled", "expired")),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -1095,9 +1089,7 @@ class HealthLog(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 
     __tablename__ = "health_logs"
     __table_args__ = (
-        _enum_check(
-            "kind", ("medicamento", "ejercicio", "sueno", "agua", "habito", "medida")
-        ),
+        _enum_check("kind", ("medicamento", "ejercicio", "sueno", "agua", "habito", "medida")),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -1332,9 +1324,7 @@ class TimeOff(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     docstring del módulo."""
 
     __tablename__ = "time_off"
-    __table_args__ = (
-        _enum_check("status", ("pending", "approved", "rejected", "cancelled")),
-    )
+    __table_args__ = (_enum_check("status", ("pending", "approved", "rejected", "cancelled")),)
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
@@ -1358,9 +1348,7 @@ class PayrollRun(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     `dangerous=True` (§14)."""
 
     __tablename__ = "payroll_runs"
-    __table_args__ = (
-        _enum_check("status", ("draft", "approved", "paid", "cancelled")),
-    )
+    __table_args__ = (_enum_check("status", ("draft", "approved", "paid", "cancelled")),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -1528,9 +1516,9 @@ class PhoneAgentTemplate(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     persona_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     default_goal: Mapped[str] = mapped_column(Text, nullable=False)
     opening_message: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    is_default: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
+    knowledge_context: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    required_information: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
 class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):

@@ -727,84 +727,86 @@ function ConectoresContent({ embedded }: { embedded: boolean }) {
               );
             }
             return connector.key === TWILIO_CONNECTOR_KEY ? (
-              <Card key={connector.key}>
-                <CardHeader
-                  title={
-                    <span className="flex items-center gap-2">
-                      <PlugIcon className="h-4 w-4 text-brand-600" />
-                      {connector.display_name}
-                    </span>
-                  }
-                  description="Conecta un número que ya sea tuyo en Twilio. Edecan verifica la propiedad y cifra las credenciales."
-                  actions={
-                    <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
-                      {connector.accounts.length > 0 ? "Validado" : "Sin configurar"}
-                    </Badge>
-                  }
-                />
-                <CardBody className="space-y-4">
-                  <ConnectedAccountsList
-                    connectorKey={connector.key}
-                    accounts={connector.accounts}
-                    disconnectingId={disconnectingId}
-                    onDisconnect={handleDisconnect}
-                    emptyLabel="Sin números conectados."
+              <div key={connector.key} id="connector-twilio" className="scroll-mt-6">
+                <Card>
+                  <CardHeader
+                    title={
+                      <span className="flex items-center gap-2">
+                        <PlugIcon className="h-4 w-4 text-brand-600" />
+                        {connector.display_name}
+                      </span>
+                    }
+                    description="Conecta un número que ya sea tuyo en Twilio. Edecan verifica la propiedad y cifra las credenciales."
+                    actions={
+                      <Badge variant={connector.accounts.length > 0 ? "success" : "neutral"}>
+                        {connector.accounts.length > 0 ? "Validado" : "Sin configurar"}
+                      </Badge>
+                    }
                   />
-                  <form
-                    onSubmit={handleConnectTwilio}
-                    className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
-                  >
-                    {twilioError && <Alert variant="error">{twilioError}</Alert>}
-                    <SetupSteps>
-                      <SetupStep number={1}>
-                        <OfficialLink href={DIRECT_CREDENTIAL_LINKS.twilio.url}>
-                          {DIRECT_CREDENTIAL_LINKS.twilio.label}
-                        </OfficialLink>
-                      </SetupStep>
-                      <SetupStep number={2}>
-                        Copia el Account SID y Auth Token, y elige un número comprado en esa misma cuenta.
-                      </SetupStep>
-                      <SetupStep number={3}>
-                        Edecan comprobará en vivo que el número pertenece a la cuenta antes de guardar.
-                      </SetupStep>
-                    </SetupSteps>
-                    <Field label="Account SID" htmlFor="twilio_account_sid">
-                      <Input
-                        id="twilio_account_sid"
-                        value={twilioForm.account_sid}
-                        onChange={(e) => setTwilioForm({ ...twilioForm, account_sid: e.target.value })}
-                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                        autoComplete="off"
-                        required
-                      />
-                    </Field>
-                    <Field label="Auth Token" htmlFor="twilio_auth_token">
-                      <Input
-                        id="twilio_auth_token"
-                        type="password"
-                        value={twilioForm.auth_token}
-                        onChange={(e) => setTwilioForm({ ...twilioForm, auth_token: e.target.value })}
-                        placeholder="Auth Token de Twilio"
-                        autoComplete="off"
-                        required
-                      />
-                    </Field>
-                    <Field label="Número de teléfono" htmlFor="twilio_phone_number" hint="Formato E.164, p. ej. +525512345678.">
-                      <Input
-                        id="twilio_phone_number"
-                        value={twilioForm.phone_number}
-                        onChange={(e) => setTwilioForm({ ...twilioForm, phone_number: e.target.value })}
-                        placeholder="+525512345678"
-                        autoComplete="off"
-                        required
-                      />
-                    </Field>
-                    <Button type="submit" size="sm" loading={twilioSubmitting}>
-                      Conectar número
-                    </Button>
-                  </form>
-                </CardBody>
-              </Card>
+                  <CardBody className="space-y-4">
+                    <ConnectedAccountsList
+                      connectorKey={connector.key}
+                      accounts={connector.accounts}
+                      disconnectingId={disconnectingId}
+                      onDisconnect={handleDisconnect}
+                      emptyLabel="Sin números conectados."
+                    />
+                    <form
+                      onSubmit={handleConnectTwilio}
+                      className="space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
+                    >
+                      {twilioError && <Alert variant="error">{twilioError}</Alert>}
+                      <SetupSteps>
+                        <SetupStep number={1}>
+                          <OfficialLink href={DIRECT_CREDENTIAL_LINKS.twilio.url}>
+                            {DIRECT_CREDENTIAL_LINKS.twilio.label}
+                          </OfficialLink>
+                        </SetupStep>
+                        <SetupStep number={2}>
+                          Copia el Account SID y Auth Token, y elige un número comprado en esa misma cuenta.
+                        </SetupStep>
+                        <SetupStep number={3}>
+                          Edecan comprobará en vivo que el número pertenece a la cuenta antes de guardar.
+                        </SetupStep>
+                      </SetupSteps>
+                      <Field label="Account SID" htmlFor="twilio_account_sid">
+                        <Input
+                          id="twilio_account_sid"
+                          value={twilioForm.account_sid}
+                          onChange={(e) => setTwilioForm({ ...twilioForm, account_sid: e.target.value })}
+                          placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                          autoComplete="off"
+                          required
+                        />
+                      </Field>
+                      <Field label="Auth Token" htmlFor="twilio_auth_token">
+                        <Input
+                          id="twilio_auth_token"
+                          type="password"
+                          value={twilioForm.auth_token}
+                          onChange={(e) => setTwilioForm({ ...twilioForm, auth_token: e.target.value })}
+                          placeholder="Auth Token de Twilio"
+                          autoComplete="off"
+                          required
+                        />
+                      </Field>
+                      <Field label="Número de teléfono" htmlFor="twilio_phone_number" hint="Formato E.164, p. ej. +525512345678.">
+                        <Input
+                          id="twilio_phone_number"
+                          value={twilioForm.phone_number}
+                          onChange={(e) => setTwilioForm({ ...twilioForm, phone_number: e.target.value })}
+                          placeholder="+525512345678"
+                          autoComplete="off"
+                          required
+                        />
+                      </Field>
+                      <Button type="submit" size="sm" loading={twilioSubmitting}>
+                        Conectar número
+                      </Button>
+                    </form>
+                  </CardBody>
+                </Card>
+              </div>
             ) : (
               <OAuthConnectorCard
                 key={connector.key}

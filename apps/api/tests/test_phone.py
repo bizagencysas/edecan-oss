@@ -117,9 +117,7 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
     ]
 
 
-async def test_phone_agent_templates_crud_keeps_one_default_per_user(
-    client, fake_repo
-) -> None:
+async def test_phone_agent_templates_crud_keeps_one_default_per_user(client, fake_repo) -> None:
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
     assistant_payload = {
@@ -130,9 +128,7 @@ async def test_phone_agent_templates_crud_keeps_one_default_per_user(
         "opening_message": "Te llamo para ayudarte con una gestión pendiente.",
         "is_default": False,
     }
-    first = await client.post(
-        "/v1/phone/agent-templates", json=assistant_payload, headers=headers
-    )
+    first = await client.post("/v1/phone/agent-templates", json=assistant_payload, headers=headers)
     assert first.status_code == 201
     assert first.json()["is_default"] is True
 
@@ -144,9 +140,7 @@ async def test_phone_agent_templates_crud_keeps_one_default_per_user(
         "opening_message": "Quisiera conocer brevemente qué necesitas.",
         "is_default": True,
     }
-    second = await client.post(
-        "/v1/phone/agent-templates", json=sales_payload, headers=headers
-    )
+    second = await client.post("/v1/phone/agent-templates", json=sales_payload, headers=headers)
     assert second.status_code == 201
 
     other_headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id)
@@ -206,9 +200,7 @@ async def test_prepared_call_snapshots_selected_agent_and_keeps_confirmation_gat
         "opening_message": "Te llamo para confirmar tu próxima cita.",
         "is_default": True,
     }
-    template = await client.post(
-        "/v1/phone/agent-templates", json=payload, headers=headers
-    )
+    template = await client.post("/v1/phone/agent-templates", json=payload, headers=headers)
     assert template.status_code == 201
     gateway = FakeGateway()
     app.dependency_overrides[phone.get_phone_gateway] = lambda: gateway
@@ -353,9 +345,7 @@ async def test_signed_status_webhook_updates_activity_state(
     enqueued: list[dict] = []
 
     async def fake_enqueue(_settings, job_type, payload, queued_tenant_id):
-        enqueued.append(
-            {"job_type": job_type, "payload": payload, "tenant_id": queued_tenant_id}
-        )
+        enqueued.append({"job_type": job_type, "payload": payload, "tenant_id": queued_tenant_id})
         return uuid.uuid4()
 
     monkeypatch.setattr(phone, "enqueue", fake_enqueue)
@@ -398,13 +388,16 @@ async def test_signed_status_webhook_updates_activity_state(
     )
     assert duplicate_response.status_code == 204
     assert fake_repo.phone_calls[call["id"]]["summary_generated_at"] == generated_at
-    assert len(
-        [
-            event
-            for event in fake_repo.phone_call_events[call["id"]]
-            if event["event_type"] == "activity"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in fake_repo.phone_call_events[call["id"]]
+                if event["event_type"] == "activity"
+            ]
+        )
+        == 1
+    )
     activity = next(
         event
         for event in fake_repo.phone_call_events[call["id"]]
@@ -421,9 +414,7 @@ async def test_signed_status_webhook_updates_activity_state(
     # Twilio puede reintentar o entregar callbacks fuera de orden. Un evento
     # tardío nunca debe revivir una llamada que ya terminó.
     stale_params = {"CallSid": "CA" + "8" * 32, "CallStatus": "ringing"}
-    stale_signature = twilio_signature(
-        f"http://localhost:8000{path}", stale_params, "hook-token"
-    )
+    stale_signature = twilio_signature(f"http://localhost:8000{path}", stale_params, "hook-token")
     stale_response = await client.post(
         path,
         data=stale_params,
@@ -485,13 +476,16 @@ async def test_failed_call_without_transcript_still_gets_summary_when_queue_fail
         "Revisar el estado de la llamada y decidir si conviene reintentarlo."
     ]
     assert enqueue_attempts == 1
-    assert len(
-        [
-            event
-            for event in fake_repo.phone_call_events[call["id"]]
-            if event["event_type"] == "activity"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in fake_repo.phone_call_events[call["id"]]
+                if event["event_type"] == "activity"
+            ]
+        )
+        == 1
+    )
 
 
 async def test_incoming_call_and_gather_continue_same_conversation(
@@ -511,9 +505,7 @@ async def test_incoming_call_and_gather_continue_same_conversation(
     enqueued: list[dict] = []
 
     async def fake_enqueue(_settings, job_type, payload, queued_tenant_id):
-        enqueued.append(
-            {"job_type": job_type, "payload": payload, "tenant_id": queued_tenant_id}
-        )
+        enqueued.append({"job_type": job_type, "payload": payload, "tenant_id": queued_tenant_id})
         return uuid.uuid4()
 
     monkeypatch.setattr(phone, "enqueue", fake_enqueue)
@@ -553,9 +545,9 @@ async def test_incoming_call_and_gather_continue_same_conversation(
     assert repeated.status_code == 200
     assert len(fake_repo.phone_calls) == 1
     assert len(enqueued) == 1
-    assert [
-        event["event_type"] for event in fake_repo.phone_call_events[call["id"]]
-    ] == ["incoming"]
+    assert [event["event_type"] for event in fake_repo.phone_call_events[call["id"]]] == [
+        "incoming"
+    ]
 
     gather_path = f"/v1/phone/twilio/calls/{call['id']}/gather"
     gather_params = {
@@ -617,9 +609,7 @@ async def test_dispatcher_calls_provider_only_after_persistence_context_commits(
         user_id=user_id,
         public_base_url="https://assistant.test",
     )
-    result = await dispatcher.create_and_dispatch(
-        to_e164="+573002222222", goal="Confirmar la cita"
-    )
+    result = await dispatcher.create_and_dispatch(to_e164="+573002222222", goal="Confirmar la cita")
     assert result["status"] == "queued"
     assert result["agent_name"] == "Mateo"
     assert result["agent_prompt"] == "Haz preguntas claras y resume el acuerdo."
@@ -654,21 +644,22 @@ async def test_dispatcher_failure_also_persists_summary_and_schedules_safe_push(
         on_summary_ready=summary_ready,
     )
     with pytest.raises(TelephonyError, match="temporalmente no disponible"):
-        await dispatcher.create_and_dispatch(
-            to_e164="+573002222222", goal="Confirmar la cita"
-        )
+        await dispatcher.create_and_dispatch(to_e164="+573002222222", goal="Confirmar la cita")
 
     failed = next(iter(fake_repo.phone_calls.values()))
     assert failed["status"] == "failed"
     assert failed["summary"]["transcript"]["available"] is False
     assert notifications == [(tenant_id, failed["id"])]
-    assert len(
-        [
-            event
-            for event in fake_repo.phone_call_events[failed["id"]]
-            if event["event_type"] == "activity"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in fake_repo.phone_call_events[failed["id"]]
+                if event["event_type"] == "activity"
+            ]
+        )
+        == 1
+    )
 
 
 async def test_gather_hangs_up_at_configured_turn_limit(app, client, fake_repo) -> None:
@@ -693,9 +684,7 @@ async def test_gather_hangs_up_at_configured_turn_limit(app, client, fake_repo) 
     path = f"/v1/phone/twilio/calls/{call['id']}/gather"
     params = {"CallSid": "CA" + "6" * 32, "SpeechResult": "Necesito ayuda"}
     signature = twilio_signature(f"http://localhost:8000{path}", params, "hook-token")
-    response = await client.post(
-        path, data=params, headers={"X-Twilio-Signature": signature}
-    )
+    response = await client.post(path, data=params, headers={"X-Twilio-Signature": signature})
     assert response.status_code == 200
     assert "<Hangup" in response.text
     assert "<Gather" not in response.text
@@ -818,3 +807,111 @@ async def test_chat_tool_without_twilio_returns_clear_domain_message(app, fake_r
         {"telefono_e164": "+573002222222", "objetivo": "Confirmar la cita"},
     )
     assert "Conecta tu propio número de Twilio" in result.content
+
+
+async def test_chat_tool_resolves_requested_agent_by_name_and_never_substitutes(
+    app, fake_repo
+) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await _phone_ready(fake_repo, tenant_id=tenant_id, user_id=user_id)
+    business = await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Agente de negocios",
+        agent_name="Valentina",
+        persona_prompt="Habla como consultora de negocios.",
+        default_goal="Presentar una propuesta.",
+        opening_message="Te llamo para conversar sobre una oportunidad.",
+        is_default=False,
+    )
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Agente de ventas",
+        agent_name="Camila",
+        persona_prompt="Habla como asesora de ventas.",
+        default_goal="Calificar una oportunidad.",
+        opening_message="Te llamo para entender qué necesitas.",
+        is_default=True,
+    )
+
+    class Vault:
+        async def get(self, *_args):
+            return SimpleNamespace(
+                access_token='{"account_sid":"AC11111111111111111111111111111111",'
+                '"auth_token":"token","phone_number":"+573001111111"}'
+            )
+
+    recorded: dict[str, object] = {}
+
+    async def fake_create_and_dispatch(self, **kwargs):
+        recorded.update(kwargs)
+        return {
+            "id": uuid.uuid4(),
+            "conversation_id": uuid.uuid4(),
+            "status": "queued",
+            "agent_template_id": business["id"],
+            "agent_template_name": business["name"],
+            "agent_name": business["agent_name"],
+        }
+
+    original = phone.TransactionalPhoneDispatcher.create_and_dispatch
+    phone.TransactionalPhoneDispatcher.create_and_dispatch = fake_create_and_dispatch
+    try:
+        dispatcher = phone.phone_tool_dispatcher_for(
+            request=SimpleNamespace(app=app),
+            tenant_id=tenant_id,
+            user_id=user_id,
+            repo=fake_repo,
+            vault=Vault(),
+        )
+        result = await LlamarContactoTool().run(
+            SimpleNamespace(extras={"phone_call_dispatcher": dispatcher}),
+            {
+                "telefono_e164": "+573002222222",
+                "objetivo": "Presentar la empresa",
+                "agente": "negocios",
+            },
+        )
+    finally:
+        phone.TransactionalPhoneDispatcher.create_and_dispatch = original
+
+    assert recorded["agent_template_id"] == business["id"]
+    assert "Valentina" in result.content
+
+
+async def test_chat_tool_rejects_unknown_agent_instead_of_using_default(app, fake_repo) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await _phone_ready(fake_repo, tenant_id=tenant_id, user_id=user_id)
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Agente de ventas",
+        agent_name="Camila",
+        persona_prompt="Habla como asesora.",
+        default_goal="Vender.",
+        opening_message="Hola.",
+        is_default=True,
+    )
+
+    class EmptyVault:
+        async def get(self, *_args):
+            return None
+
+    dispatcher = phone.phone_tool_dispatcher_for(
+        request=SimpleNamespace(app=app),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        repo=fake_repo,
+        vault=EmptyVault(),
+    )
+    result = await LlamarContactoTool().run(
+        SimpleNamespace(extras={"phone_call_dispatcher": dispatcher}),
+        {
+            "telefono_e164": "+573002222222",
+            "objetivo": "Presentar la empresa",
+            "agente": "Agente jurídico",
+        },
+    )
+    assert "No encontré el agente" in result.content
+    assert "Agente de ventas" in result.content

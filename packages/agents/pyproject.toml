@@ -9,7 +9,7 @@ dependencies = [
     "edecan-core",
     "edecan-schemas",
     "edecan-db",
-    "sqlalchemy[asyncio]>=2.0.30",
+    "sqlalchemy[asyncio]>=2.0.51",
 ]
 
 # Entry point que consume `edecan_core.ToolRegistry.load_entry_points`

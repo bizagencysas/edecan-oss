@@ -7,7 +7,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
 dependencies = [
     "edecan-schemas",
-    "sqlalchemy[asyncio]>=2.0.30",
+    "sqlalchemy[asyncio]>=2.0.51",
     "asyncpg>=0.29",
     "alembic>=1.13",
     "pgvector>=0.3.6",

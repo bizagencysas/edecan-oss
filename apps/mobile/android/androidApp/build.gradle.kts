@@ -51,8 +51,8 @@ android {
         applicationId = "cc.edecan.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 7
-        versionName = "0.7.1"
+        versionCode = 8
+        versionName = "0.7.2"
     }
 
     buildTypes {

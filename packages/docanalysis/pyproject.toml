@@ -1,6 +1,6 @@
 [project]
 name = "edecan-docanalysis"
-version = "0.7.1"
+version = "0.7.2"
 description = "Edecán — analista de documentos: tablas, PDF, visión, gráficos SVG y reportes (edecan_docanalysis)"
 readme = "README.md"
 requires-python = ">=3.12"

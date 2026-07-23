@@ -1,6 +1,6 @@
 [project]
 name = "edecan-ads"
-version = "0.7.1"
+version = "0.7.2"
 description = "Edecán — ads: preparación de campañas publicitarias, borradores bring-your-own cuenta de ads (edecan_ads). Ver ARCHITECTURE.md §13."
 readme = "README.md"
 requires-python = ">=3.12"

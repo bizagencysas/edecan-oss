@@ -11,6 +11,7 @@ use crate::listen;
 use crate::permissions;
 use crate::startup;
 use crate::tray;
+use crate::updates;
 use crate::util;
 
 /// Botón "Reintentar" del panel de error de splash. Repite exactamente el
@@ -95,4 +96,25 @@ pub fn startup_get_state(app: AppHandle) -> Result<startup::StartupState, String
 #[tauri::command]
 pub fn startup_set_enabled(app: AppHandle, enabled: bool) -> Result<startup::StartupState, String> {
     startup::set_enabled(&app, enabled)
+}
+
+// --- Actualizaciones firmadas de la app ---------------------------------
+
+#[tauri::command]
+pub async fn desktop_update_check(
+    app: AppHandle,
+    state: tauri::State<'_, updates::DesktopUpdateState>,
+    channel: String,
+) -> Result<updates::DesktopUpdateCheckResult, String> {
+    updates::check(&app, &state, &channel).await
+}
+
+#[tauri::command]
+pub async fn desktop_update_install(
+    app: AppHandle,
+    state: tauri::State<'_, updates::DesktopUpdateState>,
+    expected_version: String,
+    channel: String,
+) -> Result<(), String> {
+    updates::install(&app, &state, &expected_version, &channel).await
 }

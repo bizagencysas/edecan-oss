@@ -52,8 +52,12 @@ $BundleOverride = @{
     bundle = @{
         externalBin = $ExternalBin
         resources = $Resources
+        createUpdaterArtifacts = (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY) -or -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PATH))
     }
 } | ConvertTo-Json -Depth 5 -Compress
+if ($BundleOverride -match '"createUpdaterArtifacts":true') {
+    Write-Host "    (firma de updater detectada: generando artefactos de actualizacion)"
+}
 $TauriArgs = @("tauri", "build", "--config", $BundleOverride)
 $TauriArgs += @("--", "--locked")
 

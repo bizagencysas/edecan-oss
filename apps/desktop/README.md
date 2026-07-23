@@ -14,6 +14,11 @@ Cascarón nativo (Rust, [Tauri v2](https://v2.tauri.app)) que empaqueta Edecán 
 
 Documentación completa (requisitos, build paso a paso por plataforma, dónde viven los datos, desinstalar, troubleshooting, firma de código): **[`docs/desktop.md`](../../docs/desktop.md)**. Este README es la referencia rápida de quien trabaja *en* este directorio.
 
+Las instalaciones que ya incluyen el actualizador no necesitan volver a clonar
+el repositorio: usan paquetes firmados desde **Ajustes → Actualizaciones**.
+Canales, primera instalación, publicación, secrets y rollback están en
+**[`docs/actualizaciones.md`](../../docs/actualizaciones.md)**.
+
 ## Estructura
 
 ```
@@ -122,3 +127,7 @@ macOS/Linux x64 con `build-app.sh` y desde Windows x64 con `build-app.ps1`, y
 prueba el artefacto generado en la plataforma correspondiente. En Windows usa
 `scripts/verify-windows-bundles.ps1`; en Linux,
 `scripts/verify-linux-bundles.sh`.
+
+Un build local no exige secretos y no genera firmas de actualización. El
+workflow de release aporta `TAURI_SIGNING_PRIVATE_KEY`, genera los paquetes
+del updater y solo mueve el canal público después de validar los tres sistemas.

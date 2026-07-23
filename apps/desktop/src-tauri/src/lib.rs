@@ -15,6 +15,7 @@ mod permissions;
 mod remote_bridge;
 mod startup;
 mod tray;
+mod updates;
 mod util;
 
 use std::sync::Mutex;
@@ -47,6 +48,10 @@ pub fn run() {
         .manage(listen::AlwaysListenRuntime::default())
         .manage(tray::TrayState::default())
         .plugin(tauri_plugin_shell::init())
+        // Los paquetes de actualización se validan con la clave pública
+        // compilada en tauri.conf.json. El manifiesto solo puede apuntar a un
+        // artefacto firmado por la clave privada de releases.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
@@ -64,6 +69,8 @@ pub fn run() {
             commands::desktop_permission_request,
             commands::startup_get_state,
             commands::startup_set_enabled,
+            commands::desktop_update_check,
+            commands::desktop_update_install,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -107,6 +114,7 @@ pub fn run() {
                 );
             }
             tray::refresh_listen_state(app.handle());
+            app.manage(updates::DesktopUpdateState::default());
 
             Ok(())
         })

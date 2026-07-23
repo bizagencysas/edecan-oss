@@ -25,6 +25,19 @@ def test_bundle_targets_are_native_and_platform_specific() -> None:
     assert linux["bundle"]["linux"]["appimage"]["bundleMediaFramework"] is True
 
 
+def test_desktop_updater_uses_signed_https_channels() -> None:
+    base = _config("tauri.conf.json")
+    updater = base["plugins"]["updater"]
+
+    assert base["bundle"]["createUpdaterArtifacts"] is False
+    assert updater["pubkey"]
+    assert updater["endpoints"] == [
+        "https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/stable.json"
+    ]
+    assert updater["windows"]["installMode"] == "passive"
+    assert updater["endpoints"][0].startswith("https://")
+
+
 def test_linux_release_builds_and_exercises_the_packaged_application() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     linux_job = workflow.split("  desktop-linux:", 1)[1].split("\n  desktop-windows:", 1)[0]
@@ -99,9 +112,57 @@ def test_windows_kills_the_process_tree_before_the_pyinstaller_parent() -> None:
 
 
 def test_release_shell_scripts_are_executable() -> None:
-    for name in ("build-app.sh", "build-backend.sh", "verify-linux-bundles.sh"):
+    for name in (
+        "build-app.sh",
+        "build-backend.sh",
+        "generate-update-manifest.py",
+        "verify-linux-bundles.sh",
+    ):
         mode = (REPO_ROOT / "apps" / "desktop" / "scripts" / name).stat().st_mode
         assert mode & stat.S_IXUSR, f"{name} must be executable in a source checkout"
+
+
+def test_release_workflow_builds_all_signed_desktop_channels() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release-desktop.yml").read_text(
+        encoding="utf-8"
+    )
+    shell_builder = (REPO_ROOT / "apps" / "desktop" / "scripts" / "build-app.sh").read_text(
+        encoding="utf-8"
+    )
+    windows_builder = (REPO_ROOT / "apps" / "desktop" / "scripts" / "build-app.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" in workflow
+    assert "needs: [macos, linux, windows]" in workflow
+    assert "generate-update-manifest.py" in workflow
+    assert "update-channels" in workflow
+    assert 'CHANNEL="preview"' in workflow
+    assert 'CHANNEL="stable"' in workflow
+    assert "verify-linux-bundles.sh" in workflow
+    assert "verify-windows-bundles.ps1" in workflow
+    assert "Require every signed Linux updater format" in workflow
+    assert "Require every signed Windows updater format" in workflow
+    assert 'test -s "${artifacts[0]}.sig"' in workflow
+    assert "Falta la firma del updater" in workflow
+    assert "desktop-release-channels" in workflow
+    assert "git merge-base --is-ancestor" in workflow
+    assert "no se puede retroceder" in workflow
+    for signed_pattern in (
+        "*.AppImage.sig",
+        "*.deb.sig",
+        "*.rpm.sig",
+        "*.exe.sig",
+        "*.msi.sig",
+    ):
+        assert signed_pattern in workflow
+    assert "if ! gh release view" in workflow
+    assert "gh release upload" in workflow
+    assert "--clobber" in workflow
+    assert 'test "$VERSION" = "$WEB_VERSION"' in workflow
+    assert "createUpdaterArtifacts" in shell_builder
+    assert "TAURI_SIGNING_PRIVATE_KEY_PATH" in shell_builder
+    assert "createUpdaterArtifacts" in windows_builder
 
 
 def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None:

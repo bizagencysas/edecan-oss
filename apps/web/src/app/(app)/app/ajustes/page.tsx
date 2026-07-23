@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { ConexionesSection } from "@/components/configuracion/ConexionesSection";
 import { DesktopPermissionsCenter } from "@/components/configuracion/DesktopPermissionsCenter";
+import { DesktopUpdateCenter } from "@/components/configuracion/DesktopUpdateCenter";
 import { PhoneAgentTemplatesSettings } from "@/components/configuracion/PhoneAgentTemplatesSettings";
 import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, PageHeader } from "@/components/ui";
 import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
@@ -207,6 +208,8 @@ export default function AjustesPage() {
         <ConexionesSection onLocalModeDetected={setLocalMode} />
 
         <DesktopPermissionsCenter />
+
+        <DesktopUpdateCenter />
 
         <PhoneAgentTemplatesSettings />
 

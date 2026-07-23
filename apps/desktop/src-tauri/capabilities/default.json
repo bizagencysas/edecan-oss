@@ -31,6 +31,8 @@
     "allow-desktop-permissions-get-state",
     "allow-desktop-permission-request",
     "allow-startup-get-state",
-    "allow-startup-set-enabled"
+    "allow-startup-set-enabled",
+    "allow-desktop-update-check",
+    "allow-desktop-update-install"
   ]
 }

@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
 import { LogOutIcon, MenuIcon, XIcon } from "@/components/icons";
+import { DesktopUpdateNotifier } from "@/components/DesktopUpdateNotifier";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAuth } from "@/lib/auth-context";
 
@@ -19,6 +20,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-dvh min-h-0 min-w-0 max-w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+      <DesktopUpdateNotifier />
       <Sidebar />
 
       {drawerOpen && (

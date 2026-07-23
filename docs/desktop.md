@@ -12,6 +12,11 @@ La aplicación local de Edecán es instalable en macOS, Windows y Linux x64: se 
 
 Código fuente de este paquete: [`apps/desktop`](../apps/desktop) (referencia técnica rápida en su propio `README.md`).
 
+Una vez instalada, la app se actualiza con paquetes firmados sin volver a
+clonar el repositorio. Consulta [actualizaciones.md](./actualizaciones.md) para
+el flujo de usuario, los canales estable/vista previa, el release automatizado
+y el rollback hacia adelante.
+
 ## 1. Arquitectura en 60 segundos
 
 ```

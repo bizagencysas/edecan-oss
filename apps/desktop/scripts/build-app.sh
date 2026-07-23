@@ -116,6 +116,15 @@ if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
   TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node","binaries/ollama"]'
 fi
 
+# Un build normal/local sigue produciendo instaladores sin exigir la clave
+# privada de releases. Cuando CI (o el mantenedor) aporta una clave Tauri,
+# se generan además los paquetes del updater y sus firmas minisign.
+TAURI_CREATE_UPDATER_ARTIFACTS=false
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+  TAURI_CREATE_UPDATER_ARTIFACTS=true
+  echo "    (firma de updater detectada: generando artefactos de actualización)"
+fi
+
 # Hardened Runtime exige que todas las librerías cargadas compartan el Team ID
 # del proceso. El sidecar PyInstaller onefile autoextrae libpython y extensiones
 # firmadas ad-hoc (sin Team ID), por lo que activar runtime con identidad `-`
@@ -124,9 +133,9 @@ fi
 # solo el build local ad-hoc recibe este override explícito y verificable.
 if [[ "$PLATFORM" == "Darwin" && "${APPLE_SIGNING_IDENTITY:-}" == "-" ]]; then
   echo "    (firma ad-hoc: Hardened Runtime desactivado para el sidecar PyInstaller local)"
-  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"},\"macOS\":{\"hardenedRuntime\":false}}}"
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"},\"createUpdaterArtifacts\":$TAURI_CREATE_UPDATER_ARTIFACTS,\"macOS\":{\"hardenedRuntime\":false}}}"
 else
-  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"}}}"
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"},\"createUpdaterArtifacts\":$TAURI_CREATE_UPDATER_ARTIFACTS}}"
 fi
 cargo tauri build --config "$TAURI_BUNDLE_CONFIG" -- --locked
 

@@ -19,6 +19,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "publisher": "Edecán",
     "copyright": "Edecán — Apache-2.0 (núcleo). Ver ../../LICENSE y ../../NOTICE.",
     "category": "Productivity",
@@ -46,6 +47,17 @@
         "windowSize": { "width": 660, "height": 400 },
         "appPosition": { "x": 180, "y": 170 },
         "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFDRTEzRDI0QzAxM0NCQkUKUldTK3l4UEFKRDNockFJOVBWenJETHlzV3c3VHlnZ2VlUFJXR3pLV2Uydm1meExyaVorOGdFaEkK",
+      "endpoints": [
+        "https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/stable.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

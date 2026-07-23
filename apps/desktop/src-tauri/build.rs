@@ -87,6 +87,8 @@ fn main() {
             "desktop_permission_request",
             "startup_get_state",
             "startup_set_enabled",
+            "desktop_update_check",
+            "desktop_update_install",
         ]),
     ))
     .expect("error corriendo tauri-build");

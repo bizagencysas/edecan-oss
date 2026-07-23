@@ -15,7 +15,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-release-${{ inputs.tag || github.ref }}
+  # Comparte el único escritor de update-channels con desktop e iOS.
+  group: release-update-channels
   cancel-in-progress: false
 
 jobs:

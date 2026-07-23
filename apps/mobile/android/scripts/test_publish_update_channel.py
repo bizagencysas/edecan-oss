@@ -5,7 +5,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("publish_update_channel.sh")
 REAL_GIT = shutil.which("git")
 assert REAL_GIT

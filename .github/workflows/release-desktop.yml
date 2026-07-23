@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Un único escritor mueve stable/preview. Evita que dos tags terminen
-  # publicando el canal al mismo tiempo.
-  group: desktop-release-channels
+  # Un único escritor global mueve los canales de escritorio, Android e iOS.
+  # Evita que dos publicadores compitan por la rama update-channels.
+  group: release-update-channels
   cancel-in-progress: false
 
 env:

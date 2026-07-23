@@ -162,7 +162,9 @@ def test_release_workflow_builds_all_signed_desktop_channels() -> None:
     assert 'test "$VERSION" = "$WEB_VERSION"' in workflow
     assert "createUpdaterArtifacts" in shell_builder
     assert "TAURI_SIGNING_PRIVATE_KEY_PATH" in shell_builder
+    assert 'TAURI_SIGNING_PRIVATE_KEY="$(<"$TAURI_SIGNING_PRIVATE_KEY_PATH")"' in shell_builder
     assert "createUpdaterArtifacts" in windows_builder
+    assert "[System.IO.File]::ReadAllText" in windows_builder
 
 
 def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None:

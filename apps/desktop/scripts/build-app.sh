@@ -116,11 +116,28 @@ if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
   TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node","binaries/ollama"]'
 fi
 
+# Tauri consume el contenido de la clave en TAURI_SIGNING_PRIVATE_KEY. Para no
+# obligar al mantenedor a copiar ese secreto al entorno o al historial del
+# shell, Edecán acepta además una ruta local protegida y carga su contenido
+# únicamente en el entorno de este proceso.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+  if [[ ! -f "$TAURI_SIGNING_PRIVATE_KEY_PATH" || ! -r "$TAURI_SIGNING_PRIVATE_KEY_PATH" ]]; then
+    echo "error: TAURI_SIGNING_PRIVATE_KEY_PATH no apunta a un archivo legible." >&2
+    exit 1
+  fi
+  export TAURI_SIGNING_PRIVATE_KEY
+  TAURI_SIGNING_PRIVATE_KEY="$(<"$TAURI_SIGNING_PRIVATE_KEY_PATH")"
+  if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+    echo "error: el archivo de firma del updater está vacío." >&2
+    exit 1
+  fi
+fi
+
 # Un build normal/local sigue produciendo instaladores sin exigir la clave
 # privada de releases. Cuando CI (o el mantenedor) aporta una clave Tauri,
 # se generan además los paquetes del updater y sus firmas minisign.
 TAURI_CREATE_UPDATER_ARTIFACTS=false
-if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   TAURI_CREATE_UPDATER_ARTIFACTS=true
   echo "    (firma de updater detectada: generando artefactos de actualización)"
 fi

@@ -48,11 +48,30 @@ if ($env:EDECAN_BUNDLE_OLLAMA -eq "1") {
     $ExternalBin += "binaries/ollama"
     $Resources["binaries/ollama-lib"] = "lib/ollama"
 }
+
+# Tauri espera el contenido de la clave privada, no una ruta. El alias de ruta
+# evita que el mantenedor tenga que copiar el secreto al historial de
+# PowerShell y solo lo carga en el entorno de este proceso.
+if (
+    [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY) -and
+    -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PATH)
+) {
+    if (-not (Test-Path -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -PathType Leaf)) {
+        throw "TAURI_SIGNING_PRIVATE_KEY_PATH no apunta a un archivo legible."
+    }
+    $env:TAURI_SIGNING_PRIVATE_KEY = [System.IO.File]::ReadAllText(
+        $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+    ).TrimEnd("`r", "`n")
+    if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+        throw "el archivo de firma del updater esta vacio."
+    }
+}
+
 $BundleOverride = @{
     bundle = @{
         externalBin = $ExternalBin
         resources = $Resources
-        createUpdaterArtifacts = (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY) -or -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PATH))
+        createUpdaterArtifacts = (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY))
     }
 } | ConvertTo-Json -Depth 5 -Compress
 if ($BundleOverride -match '"createUpdaterArtifacts":true') {

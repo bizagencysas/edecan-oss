@@ -29,4 +29,18 @@ embebido si aplica).
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+from importlib.metadata import PackageNotFoundError, version
+
+
+def _installed_version() -> str:
+    """Return the package metadata version without duplicating pyproject.toml."""
+
+    try:
+        return version("edecan-local")
+    except PackageNotFoundError:
+        # Source-only imports outside the managed workspace should remain
+        # usable, but must never claim a stale release number.
+        return "0+unknown"
+
+
+__version__ = _installed_version()

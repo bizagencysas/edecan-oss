@@ -90,6 +90,7 @@ through a hosted intermediary. Edecan follows a different model:
 | Native iOS and Android companions | Preview | iOS simulator build and Android debug APK compile from source |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
 | BYO Twilio conversational calls | Implemented | Signed webhook and injected-provider tests; no real calls in CI |
+| Local self-repair | Implemented, opt-in | Isolated Git worktree, exact-command allowlists, approval gates, tests, local commit, integration and rollback |
 
 Capabilities include tool-using chat, memory and profile consolidation,
 automations, reminders, document analysis, browser research, meetings,
@@ -125,6 +126,49 @@ that an unavailable action succeeded.
   normal human approval boundary; core repair is off by default, runs in an
   isolated Git worktree, uses allowlisted argument-vector commands, requires
   passing tests and never pushes code.
+
+## Can Edecan edit its own code?
+
+**Yes, when the owner explicitly enables it on a local source checkout.**
+This is a real tool path, not a system-prompt claim. Edecan can inspect its
+configured repository, prepare a repair in an isolated Git worktree, write
+files with optimistic SHA-256 checks, run only owner-allowlisted commands,
+create a local commit, fast-forward the tested repair into the checkout, retry
+the original request, and roll the complete repair back.
+
+It is intentionally **off by default**. A packaged desktop app that does not
+retain a Git checkout cannot rewrite its own signed application bundle. It can
+still add or update a local skill immediately, but a core source repair needs
+the public repository on the same computer:
+
+```dotenv
+EDECAN_LOCAL_MODE=true
+EDECAN_LOCAL_REPO_PATH=/absolute/path/to/edecan-oss
+EDECAN_SELF_REPAIR_ENABLED=true
+EDECAN_SELF_REPAIR_TEST_COMMANDS_JSON=[["uv","run","--all-packages","--frozen","pytest","packages/toolkit/tests"]]
+EDECAN_SELF_REPAIR_INSTALL_COMMANDS_JSON=[]
+```
+
+The repository must be clean before a core repair starts. Every mutating step
+appears as a separate confirmation in chat. Tests run without a shell and must
+match an entire configured argument vector; prefix matching is not accepted.
+The repair engine never pushes a remote.
+
+The chat commands are provider-independent:
+
+- `/fix <problem>` diagnoses first, then proposes the smallest reversible
+  repair through the normal confirmation gates.
+- `/oss <change>` works only inside the configured public OSS checkout and
+  excludes credentials, personal data and private-only infrastructure.
+- `/changes` reports status, diff and recent commits without editing, staging,
+  committing, integrating or pushing anything.
+
+The source of truth is
+[`docs/autorreparacion-local.md`](./docs/autorreparacion-local.md). Its test
+suite covers disabled mode, dirty repositories, path confinement, concurrent
+file changes, non-allowlisted command rejection, tested commits, integration,
+multi-cycle retry and rollback, and verifies that the repair engine does not
+push.
 
 ## Quickstart
 

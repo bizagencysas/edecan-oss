@@ -182,7 +182,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 "open_app" => show_and_focus_main(app),
                 "open_browser" => {
                     if let Some(url) = backend::current_local_ui_url(app) {
-                        util::open_in_default_browser(&url);
+                        let _ = util::open_in_default_browser(&url);
                     }
                 }
                 "open_data" => {

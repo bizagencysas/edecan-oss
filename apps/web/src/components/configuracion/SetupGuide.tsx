@@ -1,11 +1,28 @@
-import type { ReactNode } from "react";
+"use client";
+
+import type { MouseEvent, ReactNode } from "react";
+
+import { isTauriApp, tauriInvoke } from "@/lib/tauriListen";
 
 export function OfficialLink({ href, children }: { href: string; children: ReactNode }) {
+  function openOfficialPortal(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isTauriApp()) return;
+    event.preventDefault();
+    void tauriInvoke<void>("open_external_url", { url: href }).catch((reason) => {
+      // No reemplazamos la app por la web externa. Si el puente nativo falla,
+      // dejamos un error observable para soporte y usamos la apertura web
+      // como último recurso, que sí funciona en navegadores normales.
+      console.error("Edecán no pudo abrir el portal externo", reason);
+      window.open(href, "_blank", "noopener,noreferrer");
+    });
+  }
+
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={openOfficialPortal}
       className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700 hover:underline dark:text-brand-400"
     >
       {children} <span aria-hidden="true">↗</span>

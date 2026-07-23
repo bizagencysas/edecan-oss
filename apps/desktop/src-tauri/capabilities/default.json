@@ -22,6 +22,7 @@
     "shell:allow-stdin-write",
     "allow-retry-backend",
     "allow-quit-app",
+    "allow-open-external-url",
     "allow-always-listen-get-state",
     "allow-always-listen-record-sample",
     "allow-always-listen-train",

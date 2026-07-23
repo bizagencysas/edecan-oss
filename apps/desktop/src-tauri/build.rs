@@ -77,6 +77,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "retry_backend",
             "quit_app",
+            "open_external_url",
             "always_listen_get_state",
             "always_listen_record_sample",
             "always_listen_train",

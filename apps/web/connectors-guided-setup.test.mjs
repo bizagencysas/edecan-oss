@@ -30,6 +30,18 @@ test("cada conector OAuth enlaza directamente a una consola HTTPS oficial", () =
   }
 });
 
+test("los portales usan el puente nativo dentro de la app de escritorio", () => {
+  const setupGuide = source("./src/components/configuracion/SetupGuide.tsx");
+  assert.match(setupGuide, /isTauriApp\(\)/);
+  assert.match(setupGuide, /tauriInvoke<void>\("open_external_url"/);
+  assert.match(setupGuide, /event\.preventDefault\(\)/);
+
+  const commands = source("../desktop/src-tauri/src/commands.rs");
+  const capabilities = source("../desktop/src-tauri/capabilities/default.json");
+  assert.match(commands, /pub fn open_external_url/);
+  assert.match(capabilities, /allow-open-external-url/);
+});
+
 test("las credenciales directas usan portales oficiales y estados honestos", () => {
   assert.equal(new URL(DIRECT_CREDENTIAL_LINKS.telegram.url).hostname, "t.me");
   assert.equal(new URL(DIRECT_CREDENTIAL_LINKS.discord.url).hostname, "discord.com");

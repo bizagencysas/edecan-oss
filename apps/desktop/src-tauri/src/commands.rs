@@ -11,6 +11,7 @@ use crate::listen;
 use crate::permissions;
 use crate::startup;
 use crate::tray;
+use crate::util;
 
 /// Botón "Reintentar" del panel de error de splash. Repite exactamente el
 /// mismo camino que el arranque inicial (elige puerto, lanza, espera).
@@ -24,6 +25,17 @@ pub async fn retry_backend(app: AppHandle) {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// Abre un portal oficial en el navegador predeterminado.
+///
+/// La UI principal vive en una WebView remota (`127.0.0.1`) y WebKit no
+/// delega de forma confiable `target="_blank"`. Este puente mantiene la
+/// navegación fuera de Edecán y aplica la lista cerrada de dominios de
+/// `util::validate_external_url`.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    util::open_in_default_browser(&url)
 }
 
 // --- "Escuchar siempre" (src/listen.rs) -----------------------------------

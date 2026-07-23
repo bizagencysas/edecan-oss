@@ -54,6 +54,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::retry_backend,
             commands::quit_app,
+            commands::open_external_url,
             commands::always_listen_get_state,
             commands::always_listen_record_sample,
             commands::always_listen_train,

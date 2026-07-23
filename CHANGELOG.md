@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-23
+
+### Added
+
+- An official bring-your-own-app LinkedIn connector using OpenID Connect,
+  profile identity, image upload and the Posts API without bundling shared
+  credentials
+- A visible content studio that creates editable LinkedIn or X copy, original
+  images and downloadable artifacts with Codex, Claude, Ollama or another
+  configured model
+- A configurable LinkedIn plan that prepares two or three distinct visual
+  drafts every day, keeps publication under human review and reports its work
+  through the existing activity and notification systems
+- Confirmed LinkedIn publication from both the content studio and the assistant
+  tool layer, with tenant-scoped encrypted tokens, audit events and artifact
+  ownership checks
+
+### Changed
+
+- Connector setup now links every supported provider to its official
+  application console and explains when the OAuth client secret is mandatory
+- LinkedIn publication requests route through the official connector instead
+  of computer control, so the selected language model changes intelligence but
+  not execution capabilities
+- Every public package and native client now reports version 0.7.3
+
+### Fixed
+
+- Official provider links inside the desktop WebView now open in the operating
+  system browser through a native, allowlisted HTTPS command instead of becoming
+  dead clicks
+- LinkedIn account callbacks now persist the authorized profile identity rather
+  than a generic placeholder
+
+### Security
+
+- External portal opening rejects non-HTTPS URLs, embedded credentials and
+  domains outside the documented provider allowlist
+- LinkedIn image publication loads only tenant-owned private artifacts, caps
+  payload size, validates provider upload hosts and requires explicit
+  confirmation immediately before publishing
+
 ## [0.6.0] - 2026-07-21
 
 ### Added

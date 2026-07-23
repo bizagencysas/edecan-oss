@@ -1,6 +1,6 @@
 [project]
 name = "edecan-toolkit"
-version = "0.7.2"
+version = "0.7.3"
 description = "Edecán — herramientas de dominio del agente: agenda, correo, CRM, finanzas, documentos, research, contenido y computadora (edecan_toolkit)"
 readme = "README.md"
 requires-python = ">=3.12"

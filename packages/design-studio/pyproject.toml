@@ -1,6 +1,6 @@
 [project]
 name = "edecan-design-studio"
-version = "0.7.2"
+version = "0.7.3"
 description = "Provider-neutral, versioned HTML design artifacts for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

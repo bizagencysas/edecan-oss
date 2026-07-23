@@ -146,6 +146,7 @@ from edecan_schemas.plans import (
     FLAG_COMPANION_REMOTE_INPUT,
     FLAG_COMPANION_REMOTE_VIEW,
     FLAG_CONNECTORS_MESSAGING,
+    FLAG_CONNECTORS_SOCIAL,
     FLAG_ERP_HR,
     FLAG_ERP_INVENTORY,
     FLAG_TOOLS_ADS,
@@ -188,6 +189,7 @@ from edecan_api.routers import automations as automations_router
 from edecan_api.routers import commerce as commerce_router
 from edecan_api.routers import companion as companion_router
 from edecan_api.routers import connectors as connectors_router
+from edecan_api.routers import content_studio as content_studio_router
 from edecan_api.routers import erp as erp_router
 from edecan_api.routers import ide as ide_router
 from edecan_api.routers import mensajes as mensajes_router
@@ -304,6 +306,7 @@ _GATE_AUTOMATIONS = automations_router._require_automations_flag
 _GATE_MISSIONS = missions_router._require_agents_missions
 _GATE_VEHICLES = vehiculos_router.require_vehicles_flag
 _GATE_TELEPHONY_CONNECTORS = connectors_router._require_voice_telephony
+_GATE_SOCIAL_PUBLISH = content_studio_router._require_connectors_social
 
 MATRIZ_TOOL_ROUTER: list[_Par] = [
     # -- commerce (ROADMAP_V2.md §7.2, flag commerce.orders) -----------------
@@ -385,6 +388,14 @@ MATRIZ_TOOL_ROUTER: list[_Par] = [
         FLAG_TOOLS_VEHICLES,
         _GATE_VEHICLES,
     ),
+    # -- social publishing: chat tool and Content Studio publish through the
+    #    same official connector and must share the exact plan gate ----------
+    _Par(
+        "social:PublicarSocialTool~content_studio.py",
+        PublicarSocialTool,
+        FLAG_CONNECTORS_SOCIAL,
+        _GATE_SOCIAL_PUBLISH,
+    ),
 ]
 
 if _PREMIUM_TOOL_CLASSES:
@@ -447,7 +458,6 @@ async def test_flag_de_tool_coincide_con_gate_del_router_dedicado(par: _Par) -> 
         (ExtraerDatosWebTool, FLAG_TOOLS_BROWSER, "FLAG_TOOLS_BROWSER"),
         (CompararPreciosTool, FLAG_TOOLS_BROWSER, "FLAG_TOOLS_BROWSER"),
         (GenerarImagenTool, FLAG_TOOLS_IMAGES, "FLAG_TOOLS_IMAGES"),
-        (PublicarSocialTool, "connectors.social", "FLAG_CONNECTORS_SOCIAL"),
     ]
     + (
         [(LanzarCampanaTool, "campaigns", "FLAG_CAMPAIGNS")]
@@ -459,22 +469,21 @@ async def test_flag_de_tool_coincide_con_gate_del_router_dedicado(par: _Par) -> 
         "browser:ExtraerDatosWebTool",
         "browser:CompararPreciosTool",
         "creative:GenerarImagenTool",
-        "toolkit:PublicarSocialTool",
     ]
     + (["premium:LanzarCampanaTool"] if _PREMIUM_TOOL_CLASSES else []),
 )
 def test_flags_de_unico_punto_de_exigencia_sin_router_dedicado(
     tool_cls: type, flag: str, nombre_constante: str
 ) -> None:
-    """`tools.browser`/`tools.images`/`connectors.social`/`campaigns` no
+    """`tools.browser`/`tools.images`/`campaigns` no
     tienen (todavía) un router dedicado que gestione la MISMA capacidad por
     HTTP — `ToolRegistry.specs(flags)` (`ARCHITECTURE.md` §10.7) es el ÚNICO
     punto de exigencia hoy, así que no hay nada con qué desincronizarse
     (verificado: `navegar_web`/`extraer_datos_web`/`comparar_precios` son de
     solo lectura sin router propio; `generar_imagen` solo genera un archivo
     privado, `credentials.py` solo administra CREDENCIALES de proveedor de
-    imágenes, nunca genera; `publicar_social` es la única función que llama
-    de verdad a `edecan_connectors.social.{meta,x,youtube}`;
+    imágenes, nunca genera; `publicar_social` ya se compara con el endpoint
+    confirmado de Content Studio en `MATRIZ_TOOL_ROUTER`;
     `run_campaign_step`/`INSERT INTO campaigns` solo los produce
     `LanzarCampanaTool`, confirmado con grep). Esto NO es un hallazgo — es
     el estado esperado, documentado en `docs/seguridad-modelo-amenazas.md`.

@@ -114,6 +114,16 @@ class SocialContentPublishOut(BaseModel):
 _MAX_PUBLISH_IMAGE_BYTES = 20 * 1024 * 1024
 
 
+async def _require_connectors_social(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> None:
+    if not current_user.tenant.flags.get(FLAG_CONNECTORS_SOCIAL, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Los conectores sociales no están habilitados en esta instalación.",
+        )
+
+
 _STUDIO_READ_ACTIONS = frozenset(VerProyectosCreativosTool.allowed_actions)
 _STUDIO_WRITE_ACTIONS = frozenset(CrearEditarProyectoCreativoTool.allowed_actions)
 _STUDIO_ADMIN_ACTIONS = frozenset(AdministrarProyectoCreativoTool.allowed_actions)
@@ -491,7 +501,11 @@ async def _load_private_publish_image(
     return content, mime
 
 
-@router.post("/social/publish", response_model=SocialContentPublishOut)
+@router.post(
+    "/social/publish",
+    response_model=SocialContentPublishOut,
+    dependencies=[Depends(_require_connectors_social)],
+)
 async def publish_social_content(
     body: SocialContentPublishIn,
     current_user: CurrentUser = Depends(get_current_user),
@@ -501,11 +515,6 @@ async def publish_social_content(
 ) -> SocialContentPublishOut:
     """Publicación puntual y confirmada mediante la API oficial de LinkedIn."""
 
-    if not current_user.tenant.flags.get(FLAG_CONNECTORS_SOCIAL, False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Los conectores sociales no están habilitados en esta instalación.",
-        )
     if not body.confirmed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

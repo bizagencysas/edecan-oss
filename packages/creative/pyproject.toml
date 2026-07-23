@@ -1,6 +1,6 @@
 [project]
 name = "edecan-creative"
-version = "0.7.2"
+version = "0.7.3"
 description = "Image and office-document generation tools for Edecan"
 readme = "README.md"
 requires-python = ">=3.12"

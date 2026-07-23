@@ -1,6 +1,6 @@
 [project]
 name = "edecan-companion"
-version = "0.7.2"
+version = "0.7.3"
 description = "Edecán Companion — agente local de escritorio, opt-in: acceso controlado y auditable al equipo del usuario"
 requires-python = ">=3.12"
 readme = "README.md"

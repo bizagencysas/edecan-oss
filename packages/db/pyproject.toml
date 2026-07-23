@@ -1,6 +1,6 @@
 [project]
 name = "edecan-db"
-version = "0.7.2"
+version = "0.7.3"
 description = "Edecán — capa de datos: SQLAlchemy 2.0 async + Alembic + TokenVault (edecan_db)"
 readme = "README.md"
 license = { text = "Apache-2.0" }

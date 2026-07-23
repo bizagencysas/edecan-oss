@@ -39,6 +39,9 @@ from . import (
     generate_content,
     ingest_file,
     memory_consolidate,
+    notify_important_event,
+    notify_incoming_phone_call,
+    notify_phone_call_summary,
     run_campaign_step,
     send_reminder,
     send_reminder_scan,
@@ -57,6 +60,9 @@ HANDLERS: dict[str, Handler] = {
     "run_campaign_step": run_campaign_step.handle,
     "generate_content": generate_content.handle,
     "memory_consolidate": memory_consolidate.handle,
+    "notify_phone_call_summary": notify_phone_call_summary.handle,
+    "notify_incoming_phone_call": notify_incoming_phone_call.handle,
+    "notify_important_event": notify_important_event.handle,
 }
 
 

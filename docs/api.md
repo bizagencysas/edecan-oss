@@ -210,7 +210,8 @@ Respuesta: `Content-Type: text/event-stream`. Cada evento SSE tiene un `event:` 
 |---|---|---|
 | `message.delta` | `TextDeltaEvent` | `{"type": "text_delta", "text": "Mañana tienes..."}` |
 | `tool.start` | `ToolStartEvent` | `{"type": "tool_start", "name": "agenda_eventos", "args": {"dia": "2026-07-08"}}` |
-| `tool.end` | `ToolEndEvent` | `{"type": "tool_end", "name": "agenda_eventos", "result_preview": "2 eventos encontrados"}` |
+| `tool.progress` | `ToolProgressEvent` | `{"type": "tool_progress", "tool_call_id": "call_1", "name": "acceder_codigo_local", "elapsed_seconds": 12, "message": "Edecán sigue trabajando"}` |
+| `tool.end` | `ToolEndEvent` | `{"type": "tool_end", "name": "delegar_mision", "result_preview": "Misión creada", "mission_id": "…"}` |
 | `confirmation.required` | `ConfirmationRequiredEvent` | `{"type": "confirmation_required", "tool_call_id": "call_abc123", "name": "enviar_correo", "args": {"para": "..."}}` |
 | `message.done` | `DoneEvent` | `{"type": "done", "usage": {"input_tokens": 812, "output_tokens": 143}}` |
 | `error` | `ErrorEvent` | `{"type": "error", "message": "El proveedor LLM no respondió a tiempo"}` |
@@ -228,7 +229,7 @@ event: tool.start
 data: {"type":"tool_start","name":"agenda_eventos","args":{"dia":"2026-07-08"}}
 
 event: tool.end
-data: {"type":"tool_end","name":"agenda_eventos","result_preview":"2 eventos encontrados"}
+data: {"type":"tool_end","name":"delegar_mision","result_preview":"Misión creada","mission_id":"c0d9…"}
 
 event: message.done
 data: {"type":"done","usage":{"input_tokens":812,"output_tokens":143}}
@@ -478,17 +479,21 @@ Estas rutas se montan siempre desde `edecan_api.routers.phone`; no requieren `ed
 
 | Ruta | Auth | Para qué |
 |---|---|---|
-| `GET /v1/phone/calls` | Bearer (access) | Lista llamadas del usuario, incluida cualquier confirmación pendiente. |
-| `GET /v1/phone/calls/{id}` | Bearer (access) | Devuelve llamada, eventos y transcripción telefónica. |
-| `POST /v1/phone/calls/prepare` | Bearer (access) | Body `{"to_e164":"+573001234567","goal":"Confirmar la entrega"}`. Crea un borrador; nunca contacta al proveedor. |
+| `GET /v1/phone/agent-templates` | Bearer (access) | Lista las personas reutilizables del usuario para llamadas salientes. |
+| `POST /v1/phone/agent-templates` | Bearer (access) | Crea una plantilla con `name`, `agent_name`, `persona_prompt`, `default_goal`, `opening_message` e `is_default`. La primera queda predeterminada. |
+| `PUT /v1/phone/agent-templates/{id}` | Bearer (access) | Actualiza una plantilla; nunca reescribe llamadas ya preparadas. |
+| `DELETE /v1/phone/agent-templates/{id}` | Bearer (access) | Elimina la plantilla y conserva los snapshots históricos de llamadas. |
+| `GET /v1/phone/calls` | Bearer (access) | Lista llamadas del usuario, incluida cualquier confirmación pendiente y el resumen estructurado cuando terminó. |
+| `GET /v1/phone/calls/{id}` | Bearer (access) | Devuelve llamada, resumen, eventos y transcripción telefónica. |
+| `POST /v1/phone/calls/prepare` | Bearer (access) | Body `{"to_e164":"+573001234567","goal":"Confirmar la entrega","agent_template_id":"uuid opcional"}`. Si omite `goal`, usa el de la plantilla elegida/predeterminada. Crea un borrador y snapshot; nunca contacta al proveedor. |
 | `POST /v1/phone/calls/{id}/confirm` | Bearer (access) | Body `{"confirmed_destination":true,"confirmed_goal":true,"expected_to_e164":"+573001234567","expected_goal":"Confirmar la entrega"}`. Revalida los valores vistos por el humano, confirma y persiste antes de pedir la llamada a Twilio. |
 | `DELETE /v1/phone/calls/{id}` | Bearer (access) | Cancela un borrador que todavía no salió a Twilio. |
 | `POST /v1/phone/twilio/incoming` | Firma Twilio | Recibe una llamada en el número conectado y abre un hilo telefónico separado. |
 | `POST /v1/phone/twilio/calls/{id}/voice` | Firma Twilio | Saludo y primer `<Gather>` de una llamada saliente. |
 | `POST /v1/phone/twilio/calls/{id}/gather` | Firma Twilio | Ejecuta el siguiente turno breve del asistente y devuelve TwiML. |
-| `POST /v1/phone/twilio/calls/{id}/status` | Firma Twilio | Actualiza estado y duración sin permitir regresiones por callbacks tardíos. |
+| `POST /v1/phone/twilio/calls/{id}/status` | Firma Twilio | Actualiza estado y duración sin regresiones; en el primer estado terminal persiste resumen/actividad y encola un push genérico best-effort. |
 
-La herramienta de chat `llamar_contacto` usa el mismo dispatcher transaccional. Al ser peligrosa, el agente presenta la confirmación exacta antes de ejecutarla. La conversación telefónica mantiene nombre, idioma, tono y formalidad, pero no comparte memorias ni instrucciones privadas con el interlocutor externo. `PHONE_MAX_TURNS` (default `8`) limita los turnos. Ver [`voz-telefonia.md`](./voz-telefonia.md#telefonía-oss-funcional).
+La herramienta de chat `llamar_contacto` usa el mismo dispatcher transaccional. Al ser peligrosa, el agente presenta la confirmación exacta antes de ejecutarla. La conversación telefónica mantiene nombre, idioma, tono y formalidad, pero no comparte memorias ni instrucciones privadas con el interlocutor externo. `PHONE_MAX_TURNS` (default `8`) limita los turnos. Ver [`agentes-llamadas.md`](./agentes-llamadas.md) y [`voz-telefonia.md`](./voz-telefonia.md#telefonía-oss-funcional).
 
 ### `POST /v1/consents`
 
@@ -580,14 +585,17 @@ Flag de plan: `commerce.orders`. **Dinero real nunca se mueve solo** (ver [`dine
 ```json
 {
   "resumen": "Fundador de una startup B2B en Bogotá, le importa mucho el tiempo con su familia.",
-  "datos": {"gustos": [], "proyectos": ["Lanzamiento v2"], "metas": [], "relaciones": [], "empresas": [], "habitos": []},
+  "datos": {
+    "identidad": {"nombre_preferido": "Ana", "nombre_completo": "Ana Torres", "pronombres": "ella", "fecha_nacimiento": "", "pais": "Colombia", "ciudad": "Bogotá", "zona_horaria": "America/Bogota", "ocupacion": "Fundadora", "idioma_preferido": "Español", "forma_de_trato": "Cercano y directo", "biografia": "Construye productos B2B."},
+    "gustos": [], "proyectos": ["Lanzamiento v2"], "metas": [], "relaciones": [], "empresas": [], "habitos": []
+  },
   "version": 3,
   "updated_at": "2026-07-01T10:00:00Z"
 }
 ```
 
 - `GET /v1/perfil` — el perfil actual, o el esqueleto vacío de arriba con `"version": 0` si el usuario todavía no tiene fila (`memory_consolidate` nunca corrió, o corrió sin nada que consolidar).
-- `PUT /v1/perfil {resumen?, datos?}` — patch parcial en dos niveles: solo los campos enviados se sobreescriben, y dentro de `datos` cada una de las 6 categorías también es opcional; cuando se envía una categoría, la reemplaza entera (no es "agregar un ítem"). Incrementa `version`.
+- `PUT /v1/perfil {resumen?, datos?}` — patch parcial en dos niveles. `datos.identidad` contiene los campos declarados por la persona y también admite patch parcial; la consolidación automática los conserva siempre. Las 6 categorías aprendidas se reemplazan como listas completas. Incrementa `version`.
 - `DELETE /v1/perfil` → `204`. Borra la fila y su espejo en `memory_items` (`source: "perfil_vivo"`), para que el perfil deje de inyectarse en turnos futuros.
 - `POST /v1/perfil/rebuild` → `202`. Encola el mismo job `memory_consolidate` que corre tras cada turno de chat (no uno especial "solo perfil"); la reconstrucción ocurre async en el worker.
 
@@ -660,12 +668,12 @@ Ambos endpoints comparten el mismo criterio fail-closed que `PUT /v1/credentials
 
 ### `/v1/credentials/images` y `/v1/credentials/search` — bring-your-own de imágenes y búsqueda, por tenant
 
-Corrección posterior y separada de la sección anterior (auditoría riesgo-legal-tos, en DOS tiempos): `edecan_creative.providers.get_image_provider`/`edecan_toolkit.research.get_search_provider` no tenían NINGÚN mecanismo bring-your-own — siempre usaban `IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de plataforma; un hallazgo posterior de esa misma auditoría encontró que, aun con `get_tenant_image_provider`/`get_tenant_search_provider` ya bring-your-own, esas dos funciones TODAVÍA caían a esa config de plataforma cuando el tenant no conectaba nada. Hoy `GenerarImagenTool`/`BuscarWebTool` resuelven vía `get_tenant_image_provider(ctx)`/`get_tenant_search_provider(ctx)`: **(1) tenant** — credencial propia en el `TokenVault` (`connector_key` `"images"`/`"search"`); si no, **(2) stub** — `StubImageProvider`/`StubSearch`, offline y gratis. Igual que LLM y voz (arriba), estas dos YA NO conservan ningún paso de plataforma: `get_image_provider(ctx.settings)`/`get_search_provider(ctx.settings)` (que sí leen `IMAGES_*`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de `Settings`) deliberadamente no se llaman desde este resolver bring-your-own. Son funciones opcionales que arrancan en modo stub/gratuito por defecto, no el "cerebro" del asistente — por eso, a diferencia de LLM, degradan a stub en vez de cortar con `HTTPException(400)` — ver [`credenciales.md`](./credenciales.md#orden-de-resolución-imágenes-y-búsqueda-web-tenant--stub--sin-paso-de-plataforma) para el detalle completo.
+`GenerarImagenTool` y `BuscarWebTool` resuelven sus proveedores por tenant, nunca con una key compartida de plataforma. Sin proveedor de imágenes, Edecán usa un resultado de demostración claramente marcado. Sin proveedor de búsqueda, usa `DuckDuckGoSearch`: internet real sin API key. Brave y Tavily quedan como conexiones opcionales. Ver [`credenciales.md`](./credenciales.md#orden-de-resolución-imágenes-y-búsqueda-web--sin-paso-de-plataforma).
 
 #### `PUT /v1/credentials/images`
 
 ```json
-{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-1", "validate": true}
+{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-2", "validate": true}
 ```
 
 Los tres campos son obligatorios (`400` si falta alguno). `base_url` acepta cualquier endpoint compatible con `POST {base_url}/images/generations` (contrato de OpenAI Images) — mismo criterio que `kind: "openai_compat"` de LLM. `validate` (default `true`) hace `GET {base_url}/models` antes de guardar (reutiliza el mismo ping que `openai_compat`); `400` con el detalle exacto si el proveedor rechaza la credencial.
@@ -684,7 +692,7 @@ Los tres campos son obligatorios (`400` si falta alguno). `base_url` acepta cual
 
 #### `DELETE /v1/credentials/search`
 
-`204 No Content`, idempotente. El tenant vuelve a caer al stub offline (`StubSearch`) — nunca a un proveedor de búsqueda de plataforma.
+`204 No Content`, idempotente. El tenant vuelve a DuckDuckGo real sin clave, nunca a un proveedor de búsqueda de plataforma.
 
 ### `/v1/setup` — wizard de primer arranque
 
@@ -1000,15 +1008,17 @@ de los topes de filas/columnas de `edecan_docanalysis`). Detalle completo en
 Dueño real: fase v6 (`packages/mcp`, `edecan_mcp`). Ya aterrizado y
 verificado contra el código real (`apps/api/edecan_api/routers/mcp.py`):
 
-- `GET /v1/mcp/servers` — lista los servidores MCP conectados del tenant
-  (nombre, transporte, URL/comando, estado) — **nunca** incluye `headers` ni
-  ningún otro secreto.
-- `PUT /v1/mcp/servers {nombre, transporte, url?, comando?, headers?,
+- `GET /v1/mcp/servers` — lista los servidores MCP guardados del tenant
+  (nombre, transporte, URL/comando redactado, estado y si tiene autenticación) — **nunca**
+  incluye `headers`, `env` ni ningún valor secreto.
+- `PUT /v1/mcp/servers {nombre, transporte, url?, comando?, headers?, env?,
   validate?}` → `204`. Con `validate` en `true` (default), antes de guardar
   nada hace el *handshake* MCP real (`initialize` + `tools/list`) contra el
   servidor — `400` con el detalle exacto si falla y nada se persiste;
   `validate: false` es la escotilla de escape (tests, migraciones). Emula
   upsert por `nombre`.
+  `env` solo se admite en `stdio`, se cifra con la configuración y permite
+  entregar secretos a un proceso local sin incrustarlos en `comando`.
 - `DELETE /v1/mcp/servers/{nombre}` → `204`. Idempotente (nada que borrar ya
   es un estado válido de "desconectado").
 - `GET /v1/mcp/servers/{nombre}/tools` — conecta en vivo y devuelve las

@@ -96,14 +96,20 @@ _HASH_SUFFIX_LEN = 6
 @dataclass(frozen=True)
 class MCPServerConfig:
     """Config NO secreta de un servidor MCP del tenant — `ARCHITECTURE.md`
-    §15 `provider_config {nombre, transporte, url?, comando?}`. Los headers
-    (secretos) viajan aparte, ver `vault_headers_por_slug` en
-    `construir_tools_mcp`."""
+    §15 `provider_config {nombre, transporte, url?, comando?, env?}`. Los
+    headers HTTP viajan aparte; `env` solo contiene variables explícitas del
+    subprocess local y permanece en el mismo blob cifrado."""
 
     nombre: str
     transporte: str  # "http" | "stdio"
     url: str | None = None
     comando: str | None = None
+    # Variables que la persona configura explícitamente para un servidor
+    # stdio. Viven dentro del mismo blob cifrado que el resto de la config y
+    # nunca se devuelven por API. Esto evita el patrón inseguro
+    # `env TOKEN=secreto comando`, donde el secreto terminaría visible en el
+    # campo `comando` de GET /v1/mcp/servers.
+    env: dict[str, str] | None = None
 
 
 def sanear_slug(texto: str) -> str:
@@ -145,7 +151,7 @@ def _normalizar_input_schema(schema: Any) -> dict[str, Any]:
 def _build_transport(config: MCPServerConfig, headers: dict[str, str]) -> MCPTransport:
     if config.transporte == "stdio":
         comando = shlex.split(config.comando or "")
-        return StdioTransport(comando)
+        return StdioTransport(comando, env=config.env)
     return HTTPTransport(config.url or "", headers=headers)
 
 

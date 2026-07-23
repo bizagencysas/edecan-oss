@@ -69,9 +69,104 @@ _LEXICAL_STOPWORDS = frozenset(
     }
 )
 
+_DESIGN_STUDIO_KEYWORDS = frozenset(
+    {
+        "ad",
+        "ads",
+        "anuncio",
+        "anuncios",
+        "artefacto",
+        "avatar",
+        "banner",
+        "brand",
+        "branding",
+        "campana",
+        "canvas",
+        "carrusel",
+        "carruseles",
+        "coleccion",
+        "colecciones",
+        "corpus",
+        "deck",
+        "design",
+        "disena",
+        "disenar",
+        "diseno",
+        "edicion",
+        "edita",
+        "editar",
+        "foto",
+        "fotos",
+        "fotografia",
+        "html",
+        "imagen",
+        "imagenes",
+        "landing",
+        "logo",
+        "maqueta",
+        "mockup",
+        "moodboard",
+        "paleta",
+        "plantilla",
+        "plantillas",
+        "producto",
+        "productos",
+        "prototipo",
+        "reel",
+        "reels",
+        "storyboard",
+        "tipografia",
+        "tokens",
+        "tiktok",
+        "video",
+        "videos",
+        "visual",
+    }
+)
+_DESIGN_STUDIO_TOOL_NAMES = frozenset(
+    {
+        "administrar_proyecto_creativo",
+        "crear_coleccion_visual",
+        "crear_editar_proyecto_creativo",
+        "crear_diseno_visual",
+        "exportar_diseno_visual",
+        "historial_diseno_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+        "usar_estudio_creativo",
+        "usar_estudio_creativo_premium",
+        "ver_estudio_creativo",
+        "ver_proyectos_creativos",
+    }
+)
+
 # Los nombres son contratos internos estables de tools existentes. Las
 # palabras son resultados que diría una persona, no nombres de pantallas.
 _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (_DESIGN_STUDIO_KEYWORDS, _DESIGN_STUDIO_TOOL_NAMES),
+    (
+        frozenset(
+            {
+                "audita",
+                "auditar",
+                "auditoria",
+                "ciberseguridad",
+                "pentest",
+                "pentestgpt",
+                "seguridad",
+                "vulnerabilidad",
+                "vulnerabilidades",
+            }
+        ),
+        frozenset(
+            {
+                "auditar_seguridad_proyecto",
+                "ejecutar_pentestgpt_autorizado",
+                "diagnosticar_autorreparacion_local",
+                "gestionar_autorreparacion_local",
+            }
+        ),
+    ),
     (
         frozenset(
             {"correo", "correos", "email", "emails", "gmail", "outlook", "responde", "reply"}
@@ -140,7 +235,7 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "docx",
             }
         ),
-        frozenset({"consultar_documentos"}),
+        frozenset({"consultar_documentos", "leer_archivo"}),
     ),
     (
         frozenset({"csv", "excel", "xlsx", "tabla", "tablas"}),
@@ -148,17 +243,26 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     ),
     (
         frozenset({"pdf"}),
-        frozenset({"consultar_documentos", "extraer_tablas_pdf"}),
+        frozenset({"consultar_documentos", "editar_pdf", "extraer_tablas_pdf", "leer_archivo"}),
     ),
     (
         frozenset({"imagen", "imagenes", "foto", "fotos"}),
-        frozenset({"analizar_imagen", "generar_imagen", "crear_contenido_social"}),
+        frozenset({"analizar_imagen", "generar_imagen", "crear_contenido_social", "leer_archivo"}),
     ),
     (
         frozenset(
             {
-                "linkedin", "tweet", "tweets", "post", "posts", "instagram",
-                "facebook", "threads", "tiktok", "contenido", "social",
+                "linkedin",
+                "tweet",
+                "tweets",
+                "post",
+                "posts",
+                "instagram",
+                "facebook",
+                "threads",
+                "tiktok",
+                "contenido",
+                "social",
             }
         ),
         frozenset({"crear_contenido_social", "generar_imagen"}),
@@ -420,6 +524,11 @@ _CREATION_FORMAT_WORDS = frozenset(
         "aplicacion",
         "aplicaciones",
         "copy",
+        "carrusel",
+        "carruseles",
+        "coleccion",
+        "colecciones",
+        "deck",
         "diapositivas",
         "documento",
         "documentos",
@@ -501,8 +610,7 @@ def select_tool_specs(
             selected_names.update(tool_names)
 
     creation_intent = bool(
-        tokens.intersection(_CREATION_ACTION_WORDS)
-        and tokens.intersection(_CREATION_FORMAT_WORDS)
+        tokens.intersection(_CREATION_ACTION_WORDS) and tokens.intersection(_CREATION_FORMAT_WORDS)
     )
     publish_intent = bool(tokens.intersection({"publica", "publicalo", "publicar"}))
     if creation_intent:
@@ -510,17 +618,38 @@ def select_tool_specs(
         # mezclar generadores legacy sin evidencia en una petición compuesta.
         selected_names.difference_update(_LEGACY_CREATOR_TOOL_NAMES)
         selected_names.difference_update(_CREATION_READER_TOOL_NAMES)
-        selected_names.add("crear_artefactos")
+        if tokens.intersection(_DESIGN_STUDIO_KEYWORDS):
+            # Una landing/maqueta/prototipo visual necesita preview seguro e
+            # historial; el creador universal sigue siendo la ruta para
+            # sitios/apps multiparte que no piden un artefacto de diseño.
+            selected_names.discard("crear_artefactos")
+            selected_names.update(_DESIGN_STUDIO_TOOL_NAMES)
+        else:
+            selected_names.add("crear_artefactos")
         if not publish_intent:
             selected_names.discard("publicar_social")
+
+    # LinkedIn ya tiene un creador multimodal, pero no un conector OAuth de
+    # primera parte. Una publicación explícita debe continuar por la sesión
+    # local que la persona ya abrió y aprobará mediante `usar_computadora`,
+    # no caer en `publicar_social` (Meta/X/YouTube) ni pedir una API key que
+    # Edecán todavía no consume.
+    if publish_intent and "linkedin" in tokens:
+        selected_names.discard("publicar_social")
+        selected_names.update({"crear_contenido_social", "generar_imagen", "usar_computadora"})
 
     create_image = bool(
         tokens.intersection({"crea", "crear", "genera", "generar", "dibuja", "ilustra"})
         and tokens.intersection({"foto", "imagen", "ilustracion", "dibujo"})
     )
+    edit_image = bool(
+        tokens.intersection({"edita", "editar", "mejora", "retoca", "retocar"})
+        and tokens.intersection({"foto", "fotos", "imagen", "imagenes"})
+    )
     if create_image:
         selected_names.add("generar_imagen")
-        selected_names.discard("analizar_imagen")
+        if not edit_image:
+            selected_names.discard("analizar_imagen")
 
     # Extensiones MCP y futuras tools no aparecen necesariamente en la tabla
     # anterior. Un match por nombre (una palabra distintiva) o por al menos
@@ -603,8 +732,9 @@ Sigue esta escalera invisible, en orden y sin saltarte niveles:
 
 Para peticiones compuestas, usa todas las capacidades pertinentes y conserva las partes
 independientes que sí puedas completar. No respondas "no puedo" antes de revisar esta escalera.
-Tampoco prometas que puedes hacer "cualquier cosa": si ningún nivel aplica, di exactamente qué
-capacidad o permiso falta. Nunca afirmes que una acción ocurrió sin un resultado real de tool.
+Si ningún nivel resuelve todavía el objetivo, conviértelo en un camino de habilitación concreto:
+di qué capacidad, conexión o permiso falta y cuál es el siguiente paso. Nunca afirmes que una
+acción ocurrió sin un resultado real de tool.
 Al crear, no llames Word/PDF/PowerPoint/sitio/app a una respuesta de texto: usa el creador de
 artefactos y menciona solo archivos que su manifest marque como creados. Crear es privado y local;
 publicar o desplegar es un efecto externo separado y conserva su confirmación oficial.
@@ -637,9 +767,9 @@ Follow this invisible ladder in order:
    repair. It also requires confirmation, never pushes, and never changes another machine.
 
 For compound requests, use every relevant capability and preserve independent parts you can
-complete. Do not say "I can't" before checking this ladder. Do not promise "anything" either:
-state the exact missing capability or permission when no level applies. Never claim an action
-happened without a real tool result.
+complete. Do not say "I can't" before checking this ladder. If no level solves the objective yet,
+turn it into a concrete enablement path: state the missing capability, connection, or permission
+and the next step. Never claim an action happened without a real tool result.
 For creation requests, never label plain text as Word, PDF, PowerPoint, a website, or an app. Use
 the artifact creator and mention only files marked as created by its manifest. Creation is private;
 publishing or deploying is a separate external effect that keeps its official confirmation gate.

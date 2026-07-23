@@ -178,6 +178,39 @@ async def test_fetch_skill_con_subpath_prueba_prefijo_subpath_primero(http):
 
 
 @respx.mock
+async def test_fetch_skill_id_de_indice_resuelve_monorepo_skills(http):
+    respx.get("https://raw.githubusercontent.com/anthropics/skills/HEAD/pdf/SKILL.md").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://raw.githubusercontent.com/anthropics/skills/HEAD/skills/pdf/SKILL.md").mock(
+        return_value=httpx.Response(200, text="---\nname: pdf\n---\ncontenido")
+    )
+
+    archivo = await fetch_skill("anthropics", "skills", "pdf", http)
+
+    assert archivo.url.endswith("/skills/pdf/SKILL.md")
+
+
+@respx.mock
+async def test_fetch_skill_id_openai_resuelve_coleccion_curada(http):
+    base = "https://raw.githubusercontent.com/openai/skills/HEAD"
+    for ruta in (
+        "pdf/SKILL.md",
+        "skills/pdf/SKILL.md",
+        ".claude/skills/pdf/SKILL.md",
+        ".agents/skills/pdf/SKILL.md",
+    ):
+        respx.get(f"{base}/{ruta}").mock(return_value=httpx.Response(404))
+    respx.get(f"{base}/skills/.curated/pdf/SKILL.md").mock(
+        return_value=httpx.Response(200, text="---\nname: pdf\n---\ncontenido")
+    )
+
+    archivo = await fetch_skill("openai", "skills", "pdf", http)
+
+    assert archivo.url.endswith("/skills/.curated/pdf/SKILL.md")
+
+
+@respx.mock
 async def test_fetch_skill_404_en_primera_cae_a_skills_repo(http):
     respx.get("https://raw.githubusercontent.com/acme/repo/HEAD/SKILL.md").mock(
         return_value=httpx.Response(404)
@@ -370,7 +403,7 @@ def test_parse_capabilities_tipo_inesperado_es_vacio():
 
 
 def test_parse_capabilities_items_vacios_se_descartan():
-    texto = "---\nname: x\nallowed-tools: \"enviar_correo, , usar_computadora\"\n---\ncuerpo"
+    texto = '---\nname: x\nallowed-tools: "enviar_correo, , usar_computadora"\n---\ncuerpo'
     assert parse_capabilities(texto) == ["enviar_correo", "usar_computadora"]
 
 
@@ -432,7 +465,7 @@ async def test_install_from_source_nombre_humano_se_acepta_sin_slugificar_todavi
 @respx.mock
 async def test_install_from_source_nombre_solo_simbolos_rechazado(http):
     respx.get("https://raw.githubusercontent.com/acme/repo/HEAD/SKILL.md").mock(
-        return_value=httpx.Response(200, text="---\nname: \"!!! ??? ...\"\n---\ncuerpo")
+        return_value=httpx.Response(200, text='---\nname: "!!! ??? ..."\n---\ncuerpo')
     )
     with pytest.raises(FuenteInvalidaError):
         await install_from_source("acme/repo", http=http)

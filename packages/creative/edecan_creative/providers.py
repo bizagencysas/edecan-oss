@@ -45,6 +45,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 from io import BytesIO
 from typing import Any, Protocol, runtime_checkable
 
@@ -69,6 +70,75 @@ _LINE_HEIGHT_PX = 14
 # dependencia en sentido contrario — igual criterio que `LLM_CONNECTOR_KEY`,
 # duplicado entre `apps/api/edecan_api/deps.py` y `apps/worker/edecan_worker/deps.py`).
 IMAGES_CONNECTOR_KEY = "images"
+
+
+class ImageProviderRequestError(RuntimeError):
+    """Fallo público, acotado y sin credenciales devuelto por el proveedor.
+
+    ``httpx.HTTPStatusError`` por sí solo pierde el cuerpo JSON que explica el
+    parámetro rechazado. Eso obligaba al LLM a adivinar la causa del 400. Esta
+    excepción conserva únicamente estado, código, parámetro y mensaje seguro.
+    """
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        model: str,
+        message: str,
+        code: str | None = None,
+        param: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.model = model
+        self.code = code
+        self.param = param
+        self.request_id = request_id
+        details = [f"HTTP {status_code}", f"modelo={model}"]
+        if code:
+            details.append(f"código={code}")
+        if param:
+            details.append(f"parámetro={param}")
+        if request_id:
+            details.append(f"request_id={request_id}")
+        super().__init__(f"{', '.join(details)}: {message}")
+
+
+_SECRET_IN_ERROR_RE = re.compile(
+    r"\b(?:sk[-_][A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _safe_provider_error(response: httpx.Response, *, model: str) -> ImageProviderRequestError:
+    """Traduce el error upstream sin reflejar secretos ni cuerpos enormes."""
+
+    message = "El proveedor rechazó la petición de generación."
+    code: str | None = None
+    param: str | None = None
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            candidate = str(error.get("message") or "").strip()
+            if candidate:
+                message = candidate
+            code = str(error.get("code") or "").strip() or None
+            param = str(error.get("param") or "").strip() or None
+    except ValueError:
+        candidate = response.text.strip()
+        if candidate:
+            message = candidate
+    message = _SECRET_IN_ERROR_RE.sub("[credencial protegida]", message)[:500]
+    return ImageProviderRequestError(
+        status_code=response.status_code,
+        model=model,
+        message=message,
+        code=code,
+        param=param,
+        request_id=response.headers.get("x-request-id"),
+    )
 
 
 @runtime_checkable
@@ -159,7 +229,7 @@ def _draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, ancho: int, alto: i
 
 class OpenAICompatImagesProvider:
     """Habla con cualquier endpoint compatible con `POST {base_url}/images/generations`
-    (contrato de OpenAI Images: `{model, prompt, size, response_format}`).
+    (contrato de OpenAI Images: `{model, prompt, size}`).
 
     Se activa con `IMAGES_PROVIDER=openai_compat` + `IMAGES_BASE_URL` +
     `IMAGES_API_KEY` + `IMAGES_MODEL` configurados por el tenant/operador
@@ -196,10 +266,10 @@ class OpenAICompatImagesProvider:
             "model": self._model,
             "prompt": prompt,
             "size": size,
-            "response_format": "b64_json",
         }
         response = await self._client.post("/images/generations", json=body, headers=headers)
-        response.raise_for_status()
+        if not 200 <= response.status_code < 300:
+            raise _safe_provider_error(response, model=self._model)
         data = response.json()
         items = data.get("data") or []
         b64 = items[0].get("b64_json") if items else None

@@ -40,6 +40,7 @@ from edecan_schemas.chat import (
     PrefillMessageAction,
     TextDeltaEvent,
     ToolEndEvent,
+    ToolProgressEvent,
     ToolStartEvent,
 )
 from edecan_schemas.commerce import ORDER_KINDS, ORDER_STATUSES, OrderOut
@@ -100,7 +101,7 @@ from edecan_schemas.plans import (
     UNLIMITED,
     PlanDef,
 )
-from edecan_schemas.profile import LiveProfile, ProfileData
+from edecan_schemas.profile import LiveProfile, ProfileData, ProfileIdentity
 from edecan_schemas.queue import JOB_TYPES, JobEnvelope
 from edecan_schemas.tokens import TokenBundle
 from edecan_schemas.tools import ToolCallData, ToolResultData, ToolSpec
@@ -181,12 +182,14 @@ __all__ = [
     "RelationshipStyle",
     "PlanDef",
     "ProfileData",
+    "ProfileIdentity",
     "RemoteSessionOut",
     "ScheduleTrigger",
     "TenantOut",
     "TextDeltaEvent",
     "ToolCallData",
     "ToolEndEvent",
+    "ToolProgressEvent",
     "ToolResultData",
     "ToolSpec",
     "ToolStartEvent",

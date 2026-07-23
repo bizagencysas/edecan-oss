@@ -1,7 +1,9 @@
 "use client";
 
 /**
- * Tarjeta "Conectar Amadeus" — pegar y validar (2 campos + selector test/production),
+ * Conector heredado de Amadeus para instalaciones que todavía tengan acceso
+ * Enterprise. La UI principal ya usa Edecán Viajes sin credenciales y no
+ * muestra este formulario a conexiones nuevas.
  * mismo patrón que `SelectorLLM`/`SelectorVoz`/`SelectorCasaInteligente`
  * (`DIRECCION_ACTUAL.md`, "Principio de UX no negociable"; `docs/viajes.md`;
  * `apps/api/edecan_api/routers/viajes.py`).
@@ -17,7 +19,7 @@ import { useState } from "react";
 import { Alert, Button, Field, Input, Select } from "@/components/ui";
 import { ApiError, putViajesCredentials, type ViajesEnvironment } from "@/lib/api-viajes";
 
-const ENLACE_AMADEUS = "https://developers.amadeus.com/register";
+const ENLACE_AMADEUS = "https://developers.amadeus.com/enterprise-apis";
 
 function mensajeError(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -57,15 +59,14 @@ export function ConectarAmadeus({ onConnected }: { onConnected?: () => void }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-400">
-        Opcional — conecta tu propia app de Amadeus for Developers (self-service, gratis) para
-        buscar vuelos y hoteles reales, y consultar horarios de vuelos. Sin esto, la búsqueda
-        sigue funcionando con datos de ejemplo en modo offline.
+        Compatibilidad heredada para cuentas Amadeus Enterprise existentes. Edecán ya busca
+        vuelos y hoteles reales sin esta conexión.
       </p>
       {resultado && <Alert variant={resultado.ok ? "success" : "error"}>{resultado.mensaje}</Alert>}
       <Field
         label="API Key de Amadeus"
         htmlFor="viajes_amadeus_key"
-        hint="La sacas gratis en tu cuenta de Amadeus for Developers (self-service)."
+        hint="Solo para una cuenta Amadeus Enterprise que ya tengas activa."
       >
         <Input
           id="viajes_amadeus_key"
@@ -109,7 +110,7 @@ export function ConectarAmadeus({ onConnected }: { onConnected?: () => void }) {
           rel="noreferrer"
           className="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400"
         >
-          Sacar mis credenciales de Amadeus →
+          Portal de Amadeus Enterprise →
         </a>
       </div>
       <Button size="sm" onClick={() => void conectar()} loading={busy} disabled={!puedeConectar}>

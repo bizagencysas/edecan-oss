@@ -38,7 +38,7 @@ from .errors import (
     ProviderDownError,
     RateLimitedError,
 )
-from .model_selection import ModelChoice, choose_discovered_models
+from .model_selection import ModelChoice, choose_discovered_models, discovered_model_ids
 from .ollama import OllamaProvider
 from .openai_compat import OpenAICompatProvider
 from .prompted_tools import parse_tool_call, render_prompt, render_tools_block
@@ -71,6 +71,7 @@ __all__ = [
     "VertexAIProvider",
     "detect_local_providers",
     "choose_discovered_models",
+    "discovered_model_ids",
     "parse_tool_call",
     "render_prompt",
     "render_tools_block",

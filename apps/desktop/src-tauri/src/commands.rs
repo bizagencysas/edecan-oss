@@ -8,6 +8,9 @@ use tauri::AppHandle;
 
 use crate::backend;
 use crate::listen;
+use crate::permissions;
+use crate::startup;
+use crate::tray;
 
 /// Botón "Reintentar" del panel de error de splash. Repite exactamente el
 /// mismo camino que el arranque inicial (elige puerto, lanza, espera).
@@ -37,15 +40,47 @@ pub async fn always_listen_record_sample(app: AppHandle, index: u8) -> Result<()
 
 #[tauri::command]
 pub async fn always_listen_train(app: AppHandle, wake_label: String) -> Result<(), String> {
-    listen::train(app, wake_label).await
+    let result = listen::train(app.clone(), wake_label).await;
+    tray::refresh_listen_state(&app);
+    result
 }
 
 #[tauri::command]
 pub fn always_listen_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    listen::set_enabled(app, enabled)
+    let result = listen::set_enabled(app.clone(), enabled);
+    tray::refresh_listen_state(&app);
+    result
 }
 
 #[tauri::command]
 pub fn always_listen_reset_training(app: AppHandle) -> Result<(), String> {
-    listen::reset_training(app)
+    let result = listen::reset_training(app.clone());
+    tray::refresh_listen_state(&app);
+    result
+}
+
+// --- Centro de permisos del sistema operativo ---------------------------
+
+#[tauri::command]
+pub fn desktop_permissions_get_state() -> permissions::DesktopPermissionsState {
+    permissions::get_state()
+}
+
+#[tauri::command]
+pub async fn desktop_permission_request(
+    permission_id: String,
+) -> Result<permissions::PermissionActionResult, String> {
+    permissions::request(permission_id).await
+}
+
+// --- Asistente residente al iniciar sesión -------------------------------
+
+#[tauri::command]
+pub fn startup_get_state(app: AppHandle) -> Result<startup::StartupState, String> {
+    startup::get_state(&app)
+}
+
+#[tauri::command]
+pub fn startup_set_enabled(app: AppHandle, enabled: bool) -> Result<startup::StartupState, String> {
+    startup::set_enabled(&app, enabled)
 }

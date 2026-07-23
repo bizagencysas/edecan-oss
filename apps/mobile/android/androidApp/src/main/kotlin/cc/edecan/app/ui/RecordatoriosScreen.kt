@@ -48,6 +48,8 @@ import cc.edecan.app.vm.pendientes
 import cc.edecan.shared.Reminder
 import java.time.LocalDate
 import java.time.LocalTime
+import androidx.compose.ui.platform.LocalContext
+import cc.edecan.app.notifications.EdecanNotifications
 
 private val ETIQUETAS_ESTADO_RECORDATORIO = mapOf(
     "pending" to "Pendiente",
@@ -71,6 +73,7 @@ fun RecordatoriosScreen(
 ) {
     val uiState by recordatoriosViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
+    val context = LocalContext.current
 
     LaunchedEffect(api) { api?.let { recordatoriosViewModel.cargar(it) } }
 
@@ -86,7 +89,13 @@ fun RecordatoriosScreen(
             FormularioNuevoRecordatorio(
                 creando = uiState.creando,
                 error = uiState.errorCrear,
-                onCrear = { texto, fecha, hora -> api?.let { recordatoriosViewModel.crear(it, texto, fecha, hora) } },
+                onCrear = { texto, fecha, hora ->
+                    api?.let {
+                        recordatoriosViewModel.crear(it, texto, fecha, hora) { reminder ->
+                            EdecanNotifications.scheduleReminder(context, reminder)
+                        }
+                    }
+                },
             )
 
             uiState.errorLista?.let { error ->

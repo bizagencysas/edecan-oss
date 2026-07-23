@@ -272,22 +272,24 @@ async def test_rechaza_mime_que_no_es_video(make_ctx, fake_s3, make_archivo):
     assert "no parece un video" in resultado.content
 
 
-async def test_proveedor_no_anthropic_nunca_toca_ffmpeg_ni_llama_al_llm(
-    make_ctx, fake_s3, make_archivo, make_llm
+async def test_proveedor_openai_compatible_recibe_frames_por_contrato_comun(
+    make_ctx, fake_s3, make_archivo, make_llm, fake_ffmpeg
 ):
     fake_s3.archivo = make_archivo(contenido=_VIDEO_BYTES, filename="clip.mp4", mime="video/mp4")
     llm = make_llm(proveedor_nombre="openai_compat")
     ctx = make_ctx(llm=llm)
-    # A propósito, sin configurar `fake_ffmpeg`/`sin_ffmpeg`: si la tool
-    # llegara a revisar/usar ffmpeg antes que el proveedor, este test fallaría
-    # de forma flaky (depende de si el host tiene ffmpeg real) en vez de
-    # fallar limpio — confirma que el chequeo de proveedor corta primero.
+    fake_ffmpeg(n_frames=2)
 
     resultado = await AnalizarVideoTool().run(ctx, {"archivo": str(uuid4())})
 
-    assert "proveedor LLM con soporte de visión" in resultado.content
-    assert "openai_compat" in resultado.content
-    assert llm.llamadas == []
+    assert resultado.content == "respuesta de prueba"
+    assert len(llm.llamadas) == 1
+    image_blocks = [
+        block
+        for block in llm.llamadas[0][2].messages[0].content
+        if block.get("type") == "image"
+    ]
+    assert len(image_blocks) == 2
 
 
 async def test_ffmpeg_ausente_devuelve_mensaje_instructivo_sin_traceback(

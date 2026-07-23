@@ -134,9 +134,15 @@ async def test_send_reminder_channel_mobile_crea_mensaje_y_llama_al_push(monkeyp
 
     llamadas: list[dict] = []
 
-    async def _fake_enviar_push_a_usuario(deps, *, tenant_id, user_id, titulo, cuerpo):
+    async def _fake_enviar_push_a_usuario(deps, *, tenant_id, user_id, titulo, cuerpo, data):
         llamadas.append(
-            {"tenant_id": tenant_id, "user_id": user_id, "titulo": titulo, "cuerpo": cuerpo}
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "titulo": titulo,
+                "cuerpo": cuerpo,
+                "data": data,
+            }
         )
         return send_reminder_module.push.ResultadoEnvioPush(enviados=1, fallidos=0)
 
@@ -171,6 +177,11 @@ async def test_send_reminder_channel_mobile_crea_mensaje_y_llama_al_push(monkeyp
     assert llamadas[0]["user_id"] == user_id
     assert llamadas[0]["titulo"] == send_reminder_module.TITULO_PUSH
     assert llamadas[0]["cuerpo"] == "Recoger el paquete"
+    assert llamadas[0]["data"] == {
+        "route": "activity",
+        "kind": "reminder",
+        "resource_id": str(reminder_id),
+    }
 
 
 async def test_send_reminder_channel_mobile_push_falla_no_revienta_el_job(monkeypatch) -> None:
@@ -181,7 +192,7 @@ async def test_send_reminder_channel_mobile_push_falla_no_revienta_el_job(monkey
     fake_repo = FakeRepo()
     monkeypatch.setattr(send_reminder_module, "SqlRepo", lambda session: fake_repo)
 
-    async def _push_que_revienta(deps, *, tenant_id, user_id, titulo, cuerpo):
+    async def _push_que_revienta(deps, *, tenant_id, user_id, titulo, cuerpo, data):
         raise RuntimeError("bug hipotético en push.py")
 
     monkeypatch.setattr(send_reminder_module.push, "enviar_push_a_usuario", _push_que_revienta)

@@ -454,6 +454,7 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
                 ).collect { evento ->
                     when (evento) {
                         is ChatEvent.TextDelta -> textoAcumulado.append(evento.text)
+                        is ChatEvent.ToolProgress -> Unit
                         is ChatEvent.ConfirmationRequired ->
                             confirmacion = ConfirmacionPendiente(
                                 evento.toolCallId,
@@ -601,7 +602,6 @@ class VozViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        super.onCleared()
         grabador?.let { recorder ->
             try {
                 recorder.stop()

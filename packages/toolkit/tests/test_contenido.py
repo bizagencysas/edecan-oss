@@ -5,10 +5,9 @@ from __future__ import annotations
 import pytest
 from edecan_toolkit.contenido import GenerarContenidoTool, PublicarSocialTool
 
-# "linkedin" es, deliberadamente, el ejemplo canónico de red NO soportada:
-# ARCHITECTURE.md §0.2 la excluye para siempre de `edecan_connectors` — pero
-# esta prueba solo verifica el comportamiento de rechazo genérico de
-# `publicar_social`, nunca implementa ni menciona esa red en código de producción.
+# Estas redes no tienen hoy conector directo en `publicar_social`. LinkedIn sí
+# dispone de creación multimedia y publicación por sesión local aprobada; esa
+# vía pertenece a herramientas distintas.
 REDES_NO_SOPORTADAS = ["linkedin", "tiktok", ""]
 
 
@@ -52,7 +51,7 @@ async def test_publicar_social_rechaza_redes_no_soportadas(make_ctx, make_sessio
 
     resultado = await PublicarSocialTool().run(ctx, {"red": red, "texto": "hola mundo"})
 
-    assert "no es una red soportada" in resultado.content
+    assert "no tiene un conector directo" in resultado.content
     for red_soportada in ("meta", "x", "youtube"):
         assert red_soportada in resultado.content
     # El rechazo es puramente de validación: nunca llega a tocar la sesión/DB.

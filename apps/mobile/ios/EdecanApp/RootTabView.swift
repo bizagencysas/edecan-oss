@@ -54,6 +54,7 @@ final class TabRouter {
 /// `glassEffect` real y el fallback, no en la tab bar misma.
 struct RootTabView: View {
     @State private var router = TabRouter()
+    @Environment(PushNotificationCoordinator.self) private var push
 
     var body: some View {
         @Bindable var router = router
@@ -78,6 +79,19 @@ struct RootTabView: View {
                 NavigationStack { RemotoView() }
                     .environment(router)
             }
+        }
+        .onChange(of: push.rutaPendiente) { _, route in
+            guard let route else { return }
+            switch route {
+            case .assistant: router.seleccion = .edecan
+            case .activity: router.seleccion = .activity
+            case .settings: router.seleccion = .settings
+            case .create:
+                router.pedir("Crea ")
+            case .remote:
+                router.mostrarRemoto()
+            }
+            push.rutaPendiente = nil
         }
     }
 }

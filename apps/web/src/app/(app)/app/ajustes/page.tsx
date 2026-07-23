@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { ConexionesSection } from "@/components/configuracion/ConexionesSection";
+import { DesktopPermissionsCenter } from "@/components/configuracion/DesktopPermissionsCenter";
+import { PhoneAgentTemplatesSettings } from "@/components/configuracion/PhoneAgentTemplatesSettings";
 import { Alert, Button, Card, CardBody, CardHeader, Checkbox, Field, Input, PageHeader } from "@/components/ui";
 import { ADVANCED_NAV_GROUPS } from "@/components/layout/nav-items";
 import {
@@ -25,7 +27,7 @@ import {
 import { PERSONA_DEFAULT, type RelationshipStyle } from "@/lib/types";
 
 export default function AjustesPage() {
-  const { me, signOut } = useAuth();
+  const { me, signOut, isLocalDesktop } = useAuth();
   const [localMode, setLocalMode] = useState<boolean | null>(null);
 
   const [totpSecret, setTotpSecret] = useState<string | null>(null);
@@ -204,6 +206,10 @@ export default function AjustesPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ConexionesSection onLocalModeDetected={setLocalMode} />
 
+        <DesktopPermissionsCenter />
+
+        <PhoneAgentTemplatesSettings />
+
         <Card className="lg:col-span-2">
           <CardHeader
             title="Cómo quieres que Edecan te acompañe"
@@ -302,17 +308,22 @@ export default function AjustesPage() {
         <Card>
           <CardHeader title="Cuenta" />
           <CardBody className="space-y-2 text-sm">
-            <Row label="Correo" value={me?.user.email ?? "—"} />
+            <Row
+              label={isLocalDesktop ? "Instalación" : "Correo"}
+              value={isLocalDesktop ? "Este Edecán pertenece a esta computadora" : (me?.user.email ?? "—")}
+            />
             <Row label="Cuenta creada" value={formatDateTime(me?.tenant.created_at)} />
-            <div className="pt-2">
-              <Button variant="secondary" onClick={signOut}>
-                Cerrar sesión
-              </Button>
-            </div>
+            {!isLocalDesktop && (
+              <div className="pt-2">
+                <Button variant="secondary" onClick={signOut}>
+                  Cerrar sesión
+                </Button>
+              </div>
+            )}
           </CardBody>
         </Card>
 
-        <Card>
+        {!isLocalDesktop && <Card>
           <CardHeader
             title="Protege tu cuenta"
             description="Añade un segundo código al iniciar sesión. Es opcional y puedes quitarlo cuando quieras."
@@ -391,7 +402,7 @@ export default function AjustesPage() {
               </div>
             </form>
           </CardBody>
-        </Card>
+        </Card>}
 
         {localMode === false && (
           <Card>

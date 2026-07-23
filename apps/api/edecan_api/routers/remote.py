@@ -101,7 +101,7 @@ columna ya es vocabulario abierto, sin `CHECK constraint`
 ## Contrato de degradación con el companion (`screenshot`)
 
 La acción `screenshot` conserva el contrato de WP-V2-08 y lo amplía en v0.5:
-`{display?, format?, quality?, max_width?} -> {image_b64, width, height,
+`{display?, format?, quality?, max_width?, include_cursor?} -> {image_b64, width, height,
 mime, origin_x, origin_y}`. Ese WP aterrizó
 `apps/companion/edecan_companion/actions.py::_screenshot` MIENTRAS este WP
 estaba en curso — el contrato de degradación de abajo sigue siendo necesario
@@ -257,8 +257,14 @@ _ERROR_PREFIX_INPUT_PLATFORM_UNSUPPORTED = (
 # un 422 automático y descriptivo si el cliente manda un valor fuera de este
 # vocabulario, sin que el companion tenga que enterarse siquiera.
 PointerAccion = Literal[
-    "move", "click", "double_click", "right_click",
-    "mouse_down", "mouse_up", "drag", "scroll",
+    "move",
+    "click",
+    "double_click",
+    "right_click",
+    "mouse_down",
+    "mouse_up",
+    "drag",
+    "scroll",
 ]
 MouseButton = Literal["left", "right", "middle"]
 SpecialKey = Literal[
@@ -490,9 +496,7 @@ class KeyInputIn(BaseModel):
     @model_validator(mode="after")
     def _exactly_one_of_texto_or_tecla(self) -> KeyInputIn:
         if (self.texto is None) == (self.tecla is None):
-            raise ValueError(
-                "Envía exactamente uno de 'texto' o 'tecla' (no ambos, no ninguno)."
-            )
+            raise ValueError("Envía exactamente uno de 'texto' o 'tecla' (no ambos, no ninguno).")
         return self
 
 
@@ -504,9 +508,7 @@ SessionInputIn = Annotated[PointerInputIn | KeyInputIn, Field(discriminator="tip
 # ---------------------------------------------------------------------------
 
 
-@router.post(
-    "/sessions", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit)]
-)
+@router.post("/sessions", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit)])
 async def create_session(
     body: SessionCreateIn,
     request: Request,
@@ -534,8 +536,8 @@ async def create_session(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "No tienes un companion conectado. Empareja uno en /app/ajustes "
-                "antes de iniciar una sesión de vista remota."
+                "Tu computadora no está disponible ahora. Abre Edecán en ella y "
+                "vuelve a intentarlo."
             ),
         )
 
@@ -574,9 +576,7 @@ async def get_session(
     current_user: CurrentUser = Depends(_require_remote_view),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    session = await repo.get_remote_session(
-        tenant_id=current_user.tenant_id, session_id=session_id
-    )
+    session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
@@ -590,9 +590,7 @@ def _translate_companion_error(error: str) -> HTTPException:
     if error.startswith(_ERROR_PREFIX_UNSUPPORTED):
         return HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "El companion de esta máquina no soporta captura de pantalla; actualízalo."
-            ),
+            detail=("El companion de esta máquina no soporta captura de pantalla; actualízalo."),
         )
     if error.startswith(_ERROR_PREFIX_IDE_DISABLED):
         return HTTPException(
@@ -643,9 +641,7 @@ async def get_frame(
     # `AttributeError: '...' object has no attribute 'commit'` en cuanto se ejercitaba de
     # verdad (ver `test_frame_denied_commits_audit_evidence_before_raising_403`) — el fix
     # nunca llegó a funcionar hasta este rename.
-    session = await repo.get_remote_session(
-        tenant_id=current_user.tenant_id, session_id=session_id
-    )
+    session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
@@ -667,14 +663,19 @@ async def get_frame(
     if manager is None or not manager.is_connected(current_user.tenant_id):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="El companion se desconectó. Vuelve a emparejarlo en /app/ajustes.",
+            detail="La computadora se desconectó. Abre Edecán en ella y vuelve a intentarlo.",
         )
 
     try:
         resultado = await manager.send_command(
             current_user.tenant_id,
             _SCREENSHOT_ACTION,
-            {"format": "jpeg", "quality": quality, "max_width": max_width},
+            {
+                "format": "jpeg",
+                "quality": quality,
+                "max_width": max_width,
+                "session_id": str(session_id),
+            },
         )
     except CompanionError as exc:
         raise HTTPException(
@@ -774,9 +775,7 @@ async def end_session(
     current_user: CurrentUser = Depends(_require_remote_view),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    session = await repo.get_remote_session(
-        tenant_id=current_user.tenant_id, session_id=session_id
-    )
+    session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
@@ -870,9 +869,7 @@ async def send_input(
     del módulo para el detalle completo de los 4 candados y los códigos de
     error. `db_session` sigue el MISMO criterio de nombrado que `get_frame`
     (nunca `session`, para no sombrear la variable local de abajo)."""
-    session = await repo.get_remote_session(
-        tenant_id=current_user.tenant_id, session_id=session_id
-    )
+    session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
@@ -882,13 +879,13 @@ async def send_input(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 "Esta sesión no es de control remoto: créala con "
-                "POST /v1/remote/sessions {\"kind\": \"control\"} para poder enviar input."
+                'POST /v1/remote/sessions {"kind": "control"} para poder enviar input.'
             ),
         )
     if session["status"] == "denied":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="El usuario denegó esta sesión de control remoto en su companion.",
+            detail="Esta sesión de control remoto fue denegada.",
         )
     if session["status"] == "ended":
         raise HTTPException(
@@ -910,7 +907,7 @@ async def send_input(
     if manager is None or not manager.is_connected(current_user.tenant_id):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="El companion se desconectó. Vuelve a emparejarlo en /app/ajustes.",
+            detail="La computadora se desconectó. Abre Edecán en ella y vuelve a intentarlo.",
         )
 
     # `session_id` SIEMPRE viaja en los params (aunque `actions._input_pointer`/
@@ -948,7 +945,9 @@ async def send_input(
             if body.modifiers:
                 params["modifiers"] = body.modifiers
             audit_meta = {
-                "tipo": "key", "clave": "tecla", "tecla": body.tecla,
+                "tipo": "key",
+                "clave": "tecla",
+                "tecla": body.tecla,
                 "modifiers": body.modifiers,
             }
 

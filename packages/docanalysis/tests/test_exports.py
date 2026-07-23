@@ -4,7 +4,7 @@ firmas que espera consumir `apps/api/edecan_api/routers/analista.py`.
 
 Los tests DE COMPORTAMIENTO de cada función viven junto a su módulo (`test_s3.py`,
 `test_tablas.py`, `test_graficos.py`, `test_forecast.py`) — este archivo solo confirma que el
-`__init__.py` del paquete re-exporta cada nombre pinned y que las 8 tools de chat existentes
+`__init__.py` del paquete re-exporta cada nombre pinned y que las tools de chat existentes
 (ROADMAP_V2.md §7.7 + WP-V3-14 + WP-V5-12) siguen intactas junto a la superficie nueva.
 """
 
@@ -69,6 +69,8 @@ def test_all_lista_exactamente_los_nombres_publicos_nuevos_y_viejos():
         "ExtraerTablasPdfTool",
         "GenerarGraficoTool",
         "PredecirSerieTool",
+        "EditarPdfTool",
+        "LeerArchivoTool",
         "get_all_tools",
     }
     assert set(edecan_docanalysis.__all__) == nuevos | tools_de_siempre
@@ -76,10 +78,12 @@ def test_all_lista_exactamente_los_nombres_publicos_nuevos_y_viejos():
         assert hasattr(edecan_docanalysis, nombre), f"{nombre} está en __all__ pero no existe"
 
 
-def test_get_all_tools_sigue_devolviendo_las_8_tools_de_siempre():
+def test_get_all_tools_incluye_lectura_y_edicion_sin_perder_tools_previas():
     """La superficie nueva es aditiva — `get_all_tools()` (lo único que consume
     `ToolRegistry.load_entry_points`, ARCHITECTURE.md §10.7) no cambia."""
     nombres = [tool.name for tool in edecan_docanalysis.get_all_tools()]
-    assert len(nombres) == 8
+    assert len(nombres) == 10
+    assert "leer_archivo" in nombres
+    assert "editar_pdf" in nombres
     assert "predecir_serie" in nombres
     assert "detectar_anomalias" in nombres

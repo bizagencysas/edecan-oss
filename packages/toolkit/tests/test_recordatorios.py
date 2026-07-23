@@ -17,13 +17,13 @@ async def test_crear_recordatorio_inserta_y_confirma(make_ctx, make_session):
 
     assert "Llamar al banco" in resultado.content
     assert resultado.data["id"] == "11111111-1111-1111-1111-111111111111"
-    assert resultado.data["channel"] == "web"
+    assert resultado.data["channel"] == "mobile"
 
     sql, params = session.llamadas[0]
     assert "INSERT INTO reminders" in sql
     assert "RETURNING id" in sql
     assert params["message"] == "Llamar al banco"
-    assert params["channel"] == "web"
+    assert params["channel"] == "mobile"
     assert params["rrule"] is None
 
 

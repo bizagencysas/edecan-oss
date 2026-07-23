@@ -18,12 +18,21 @@
  */
 
 import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
-import { clearTokens, getAccessToken, getRefreshToken, hasSession, setTokens } from "./tokens";
+import { createSingleFlight } from "./single-flight";
+import {
+  clearTokens,
+  getAccessToken,
+  getDesktopCapability,
+  getRefreshToken,
+  hasSession,
+  setTokens,
+} from "./tokens";
 import { isPublicAuthRoute } from "./auth-route-policy";
 import { buildChatMessageInput } from "./chat-attachments";
 import { parseAgentEvent } from "./chat-blocks";
 import { SseDataParser } from "./sse";
 import type { DevicePairingOut } from "./device-pairing";
+import type { StudioActionInput, StudioActionResponse } from "./studio";
 import type {
   AgentEvent,
   Contact,
@@ -39,6 +48,8 @@ import type {
   MemoryImportItem,
   MemoryItem,
   PersonaConfig,
+  PhoneAgentTemplate,
+  PhoneAgentTemplateInput,
   PhoneCall,
   Reminder,
   StripeStatus,
@@ -108,7 +119,7 @@ async function rawFetch(path: string, init: RequestInit, skipAuth: boolean): Pro
 function redirectToLogin(): void {
   if (typeof window === "undefined" || hasSession()) return;
   if (window.location.pathname !== "/login") {
-    window.location.assign("/login");
+    window.location.assign("/login/");
   }
 }
 
@@ -158,8 +169,25 @@ async function apiJson<T>(path: string, init: JsonRequestInit = {}): Promise<T> 
 }
 
 // ---------------------------------------------------------------------------
-// Auth (§10.12) — `register`/`login`/`refresh` no llevan Bearer propio
+// Auth (§10.12) — estas rutas no llevan Bearer propio
 // ---------------------------------------------------------------------------
+
+const runLocalDesktopSession = createSingleFlight<TokenPair>();
+
+export async function openLocalDesktopSession(): Promise<TokenPair> {
+  return runLocalDesktopSession(async () => {
+    const capability = getDesktopCapability();
+    if (!capability) {
+      throw new Error("No se pudo verificar esta aplicación de Edecán.");
+    }
+    const pair = await apiJson<TokenPair>("/v1/auth/local", {
+      method: "POST",
+      headers: { "X-Edecan-Desktop-Capability": capability },
+    });
+    setTokens(pair.access_token, pair.refresh_token);
+    return pair;
+  });
+}
 
 export async function register(email: string, password: string, tenantName: string): Promise<TokenPair> {
   const pair = await apiJson<TokenPair>("/v1/auth/register", {
@@ -246,6 +274,13 @@ export async function createConversation(title?: string): Promise<ConversationOu
 
 export async function getConversation(id: string): Promise<ConversationOut> {
   return apiJson<ConversationOut>(`/v1/conversations/${id}`);
+}
+
+export async function renameConversation(id: string, title: string): Promise<ConversationOut> {
+  return apiJson<ConversationOut>(`/v1/conversations/${id}`, {
+    method: "PATCH",
+    body: { title },
+  });
 }
 
 export async function deleteConversation(id: string): Promise<void> {
@@ -445,6 +480,34 @@ export async function grantConsent(input: {
   return apiJson<ConsentOut>("/v1/consents", { method: "POST", body: input });
 }
 
+/** Personas reutilizables para las llamadas salientes del asistente. */
+export async function listPhoneAgentTemplates(): Promise<PhoneAgentTemplate[]> {
+  return apiJson<PhoneAgentTemplate[]>("/v1/phone/agent-templates");
+}
+
+export async function createPhoneAgentTemplate(
+  input: PhoneAgentTemplateInput,
+): Promise<PhoneAgentTemplate> {
+  return apiJson<PhoneAgentTemplate>("/v1/phone/agent-templates", {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function updatePhoneAgentTemplate(
+  id: string,
+  input: PhoneAgentTemplateInput,
+): Promise<PhoneAgentTemplate> {
+  return apiJson<PhoneAgentTemplate>(`/v1/phone/agent-templates/${id}`, {
+    method: "PUT",
+    body: input,
+  });
+}
+
+export async function deletePhoneAgentTemplate(id: string): Promise<void> {
+  await apiJson<void>(`/v1/phone/agent-templates/${id}`, { method: "DELETE" });
+}
+
 /** Llamadas del asistente, incluidas entrantes, salientes y borradores por confirmar. */
 export async function listPhoneCalls(): Promise<PhoneCall[]> {
   return apiJson<PhoneCall[]>("/v1/phone/calls");
@@ -490,6 +553,16 @@ export async function uploadFile(file: File, signal?: AbortSignal): Promise<File
   formData.append("file", file);
   const res = await authedFetch("/v1/files", { method: "POST", body: formData, signal });
   return parseJsonOrThrow<FileOut>(res);
+}
+
+// --- Studio visual -------------------------------------------------------------
+
+/** Contrato autenticado y tenant-isolated del editor visual avanzado. */
+export async function runStudioAction(input: StudioActionInput): Promise<StudioActionResponse> {
+  return apiJson<StudioActionResponse>("/v1/content/studio/actions", {
+    method: "POST",
+    body: input,
+  });
 }
 
 // --- Recordatorios ---------------------------------------------------------------

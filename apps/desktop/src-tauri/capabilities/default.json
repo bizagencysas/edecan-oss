@@ -26,6 +26,10 @@
     "allow-always-listen-record-sample",
     "allow-always-listen-train",
     "allow-always-listen-set-enabled",
-    "allow-always-listen-reset-training"
+    "allow-always-listen-reset-training",
+    "allow-desktop-permissions-get-state",
+    "allow-desktop-permission-request",
+    "allow-startup-get-state",
+    "allow-startup-set-enabled"
   ]
 }

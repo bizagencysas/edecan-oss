@@ -345,6 +345,32 @@ async def test_stdio_transport_el_subproceso_solo_hereda_path_y_home(
         assert env_recibido_por_el_subproceso.get("HOME") == os.environ["HOME"]
 
 
+async def test_stdio_transport_solo_agrega_env_explicito_del_servidor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECRETO_DE_PLATAFORMA", "nunca-debe-cruzar")
+    transport = StdioTransport(
+        [sys.executable, "-c", _STDIO_ENV_DUMP_SCRIPT],
+        env={
+            "META_ADS_ACCESS_TOKEN": "token-del-tenant",
+            "PATH": "/ruta/no-confiable",
+            "HOME": "/inicio/no-confiable",
+        },
+    )
+    try:
+        response = await transport.send(MCPRequest(method="dump_env", params={}, id=1))
+    finally:
+        await transport.close()
+
+    env_recibido = response.result["env"]
+    assert env_recibido["META_ADS_ACCESS_TOKEN"] == "token-del-tenant"
+    assert "SECRETO_DE_PLATAFORMA" not in env_recibido
+    if "PATH" in os.environ:
+        assert env_recibido["PATH"] == os.environ["PATH"]
+    if "HOME" in os.environ:
+        assert env_recibido["HOME"] == os.environ["HOME"]
+
+
 async def test_stdio_transport_command_vacio_lanza_valueerror() -> None:
     with pytest.raises(ValueError):
         StdioTransport([])

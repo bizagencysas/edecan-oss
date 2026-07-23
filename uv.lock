@@ -21,6 +21,7 @@ members = [
     "edecan-core",
     "edecan-creative",
     "edecan-db",
+    "edecan-design-studio",
     "edecan-docanalysis",
     "edecan-evals",
     "edecan-llm",
@@ -698,6 +699,7 @@ dependencies = [
     { name = "edecan-core" },
     { name = "edecan-creative" },
     { name = "edecan-db" },
+    { name = "edecan-design-studio" },
     { name = "edecan-docanalysis" },
     { name = "edecan-llm" },
     { name = "edecan-mcp" },
@@ -745,6 +747,7 @@ requires-dist = [
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-creative", editable = "packages/creative" },
     { name = "edecan-db", editable = "packages/db" },
+    { name = "edecan-design-studio", editable = "packages/design-studio" },
     { name = "edecan-docanalysis", editable = "packages/docanalysis" },
     { name = "edecan-llm", editable = "packages/llm" },
     { name = "edecan-mcp", editable = "packages/mcp" },
@@ -1057,6 +1060,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pypdf" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "respx" },
@@ -1079,6 +1083,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pypdf", specifier = ">=5" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "respx", specifier = ">=0.21" },
@@ -1126,6 +1131,50 @@ dev = [
 ]
 
 [[package]]
+name = "edecan-design-studio"
+version = "0.7.0"
+source = { editable = "packages/design-studio" }
+dependencies = [
+    { name = "aioboto3" },
+    { name = "edecan-core" },
+    { name = "edecan-creative" },
+    { name = "edecan-docanalysis" },
+    { name = "edecan-llm" },
+    { name = "fpdf2" },
+    { name = "pillow" },
+]
+
+[package.optional-dependencies]
+browser-render = [
+    { name = "playwright" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aioboto3", specifier = ">=13.0" },
+    { name = "edecan-core", editable = "packages/core" },
+    { name = "edecan-creative", editable = "packages/creative" },
+    { name = "edecan-docanalysis", editable = "packages/docanalysis" },
+    { name = "edecan-llm", editable = "packages/llm" },
+    { name = "fpdf2", specifier = ">=2.7" },
+    { name = "pillow", specifier = ">=10.1" },
+    { name = "playwright", marker = "extra == 'browser-render'", specifier = ">=1.40" },
+]
+provides-extras = ["browser-render"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+]
+
+[[package]]
 name = "edecan-docanalysis"
 version = "0.7.0"
 source = { editable = "packages/docanalysis" }
@@ -1135,9 +1184,12 @@ dependencies = [
     { name = "edecan-db" },
     { name = "edecan-llm" },
     { name = "edecan-schemas" },
+    { name = "fpdf2" },
     { name = "httpx" },
     { name = "openpyxl" },
     { name = "pypdf" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
@@ -1154,9 +1206,12 @@ requires-dist = [
     { name = "edecan-db", editable = "packages/db" },
     { name = "edecan-llm", editable = "packages/llm" },
     { name = "edecan-schemas", editable = "packages/schemas" },
+    { name = "fpdf2", specifier = ">=2.7" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pypdf", specifier = ">=4.0" },
+    { name = "python-docx", specifier = ">=1.1" },
+    { name = "python-pptx", specifier = ">=1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
 ]
 
@@ -1243,6 +1298,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "edecan-api" },
+    { name = "edecan-companion", extra = ["remote-control"] },
     { name = "edecan-core" },
     { name = "edecan-db" },
     { name = "edecan-schemas" },
@@ -1264,6 +1320,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "edecan-api", editable = "apps/api" },
+    { name = "edecan-companion", extras = ["remote-control"], editable = "apps/companion" },
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-db", editable = "packages/db" },
     { name = "edecan-schemas", editable = "packages/schemas" },
@@ -1496,6 +1553,7 @@ version = "0.7.0"
 source = { editable = "packages/travel" }
 dependencies = [
     { name = "edecan-core" },
+    { name = "edecan-mcp" },
     { name = "httpx" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
@@ -1510,6 +1568,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "edecan-core", editable = "packages/core" },
+    { name = "edecan-mcp", editable = "packages/mcp" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
 ]
@@ -1590,6 +1649,7 @@ dependencies = [
     { name = "edecan-core" },
     { name = "edecan-creative" },
     { name = "edecan-db" },
+    { name = "edecan-design-studio" },
     { name = "edecan-docanalysis" },
     { name = "edecan-llm" },
     { name = "edecan-mcp" },
@@ -1632,6 +1692,7 @@ requires-dist = [
     { name = "edecan-core", editable = "packages/core" },
     { name = "edecan-creative", editable = "packages/creative" },
     { name = "edecan-db", editable = "packages/db" },
+    { name = "edecan-design-studio", editable = "packages/design-studio" },
     { name = "edecan-docanalysis", editable = "packages/docanalysis" },
     { name = "edecan-llm", editable = "packages/llm" },
     { name = "edecan-mcp", editable = "packages/mcp" },

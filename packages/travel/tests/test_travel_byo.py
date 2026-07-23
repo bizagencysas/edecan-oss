@@ -18,7 +18,7 @@ credencial pasada SIEMPRE por el constructor. Aplicando la pregunta correcta que
 `HOTFIXES_PENDIENTES.md` ("¿este proveedor tiene AL MENOS UN campo de credencial que
 el tenant deba traer, y qué pasa si llega vacío?"): sí — `api_key`/`api_secret`
 (Amadeus) y `api_key` (AfterShip) — y la respuesta es que un campo vacío/faltante
-SIEMPRE degrada a `StubTravelProvider`/`StubTrackingProvider`
+SIEMPRE degrada a `EdecanTravelProvider`/`StubTrackingProvider`
 (`packages/travel/tests/test_providers.py` ya cubre exhaustivamente esos casos);
 jamás existe un nivel intermedio de "credencial de plataforma" al que algo pueda
 caer, porque no existe ningún campo `AMADEUS_*`/`AFTERSHIP_*` en
@@ -39,9 +39,10 @@ from types import SimpleNamespace
 import httpx
 import respx
 from edecan_travel.amadeus import AMADEUS_TEST_BASE_URL, AmadeusClient
+from edecan_travel.native import EdecanTravelProvider
 from edecan_travel.providers import (
+    ResilientTravelProvider,
     StubTrackingProvider,
-    StubTravelProvider,
     get_tenant_tracking_provider,
     get_tenant_travel_provider,
 )
@@ -212,7 +213,8 @@ async def test_get_tenant_travel_provider_nunca_toca_ctx_settings_con_credencial
 
     provider = await get_tenant_travel_provider(ctx)
 
-    assert isinstance(provider, AmadeusClient)
+    assert isinstance(provider, ResilientTravelProvider)
+    assert isinstance(provider._primary, AmadeusClient)  # noqa: SLF001
 
 
 async def test_get_tenant_travel_provider_nunca_toca_ctx_settings_sin_cuenta_conectada(
@@ -220,7 +222,7 @@ async def test_get_tenant_travel_provider_nunca_toca_ctx_settings_sin_cuenta_con
 ):
     ctx = make_ctx(session=make_session([[]]), settings=_SettingsVeneno())
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
 async def test_get_tenant_tracking_provider_nunca_toca_ctx_settings_con_credencial_real(

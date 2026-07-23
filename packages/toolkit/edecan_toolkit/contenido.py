@@ -2,10 +2,10 @@
 
 `generar_contenido` SOLO redacta texto (nunca publica nada). `publicar_social`
 sí publica de verdad, únicamente en las redes registradas en
-`edecan_connectors.registry.CONNECTORS` que además soporta esta tool: Meta, X
-y YouTube. Esas tres son, y seguirán siendo, las únicas integraciones sociales
-de la plataforma (ver ARCHITECTURE.md §0.2 y §5) — cualquier otra red se
-rechaza con un mensaje claro en vez de intentar nada.
+`edecan_connectors.registry.CONNECTORS` que hoy soporta esta tool: Meta, X y
+YouTube. Otras redes se rechazan en este conector directo con una alternativa
+concreta; la creación multimedia y las sesiones locales autorizadas son
+capacidades separadas.
 """
 
 from __future__ import annotations
@@ -168,9 +168,10 @@ class PublicarSocialTool(Tool):
 
 def _mensaje_red_no_soportada(red: str) -> str:
     return (
-        f"'{red}' no es una red soportada. Esta herramienta solo publica en "
-        f"{', '.join(_REDES_SOPORTADAS)} — son las únicas integraciones sociales de la "
-        "plataforma y no se añadirá ninguna otra red (ver ARCHITECTURE.md §0.2 y §5)."
+        f"'{red}' no tiene un conector directo configurado en esta instalación. Esta herramienta "
+        f"publica hoy en {', '.join(_REDES_SOPORTADAS)}. Edecán todavía puede crear el paquete "
+        "multimedia para la red pedida y, con confirmación, continuar en una sesión local ya "
+        "abierta."
     )
 
 

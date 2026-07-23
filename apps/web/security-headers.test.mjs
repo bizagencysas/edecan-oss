@@ -16,6 +16,8 @@ test("la CSP productiva limita conexiones al origen de API configurado", () => {
   assert.match(csp, /connect-src 'self' https:\/\/api\.example\.com(?:;|$)/);
   assert.doesNotMatch(csp, /unsafe-eval|ws:\/\/localhost:\*/);
   assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /frame-src blob:/);
+  assert.doesNotMatch(csp, /frame-src[^;]*https?:/);
   assert.match(csp, /media-src 'self' data: blob:/);
 });
 

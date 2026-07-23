@@ -483,9 +483,9 @@ salud del negocio, y plan de aprendizaje de un tema.
 `packages/agents/edecan_agents/profiles.py` pueden hacer de verdad hoy con sus `allowed_tools` reales
 (`research`: `buscar_web`/`navegar_web`/`extraer_datos_web`; `data_analyst`: `analizar_tabla`/
 `calculadora`; `content`: `generar_contenido`; `legal`: `analizar_contrato`/`generar_borrador_legal`;
-`ceo`: `resumen_finanzas`/`estado_negocio`) — ninguna promete una integración que no existe (nunca
-LinkedIn, nunca "publica esto por mí" sin aprobación explícita, nunca conectar una plataforma que Edecán
-no soporta). El `Orchestrator.plan()` sigue siendo quien decide qué perfil(es) usar para cada paso; las
+`ceo`: `resumen_finanzas`/`estado_negocio`) — pueden crear contenido para cualquier red, incluido
+LinkedIn. Publicar usa la integración disponible o una sesión local autorizada y conserva la
+confirmación puntual de la herramienta. El `Orchestrator.plan()` sigue siendo quien decide qué perfil(es) usar para cada paso; las
 plantillas no fuerzan un agente, solo redactan un objetivo claro y concreto para que el planificador lo
 divida bien.
 

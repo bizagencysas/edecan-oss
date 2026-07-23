@@ -548,6 +548,62 @@ async def test_put_llm_openai_compat_valida_endpoint_propio(client, app) -> None
 
 
 @respx.mock
+async def test_selector_modelos_descubre_y_actualiza_sin_repedir_api_key(client, app) -> None:
+    ruta = respx.get("https://miendpoint.example.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "modelo-nuevo", "created": 2},
+                    {"id": "modelo-rapido", "created": 1},
+                ]
+            },
+        )
+    )
+    fake_vault = _install_vault(app)
+    tenant_id = uuid.uuid4()
+    headers = _headers(tenant_id=tenant_id)
+    conectado = await client.put(
+        "/v1/credentials/llm",
+        json={
+            "kind": "openai_compat",
+            "base_url": "https://miendpoint.example.com/v1",
+            "api_key": "secreto-no-se-vuelve-a-pedir",
+            "model_principal": "modelo-anterior",
+            "validate": False,
+        },
+        headers=headers,
+    )
+    assert conectado.status_code == 204
+
+    catalogo = await client.get("/v1/credentials/llm/models", headers=headers)
+    assert catalogo.status_code == 200
+    body = catalogo.json()
+    assert body["models"] == ["modelo-anterior", "modelo-nuevo", "modelo-rapido"]
+    assert body["manual_allowed"] is True
+    assert body["capabilities_managed_by_edecan"] is True
+    assert ruta.called
+
+    actualizado = await client.patch(
+        "/v1/credentials/llm/models",
+        json={"model_principal": "modelo-futuro-manual", "model_rapido": "modelo-rapido"},
+        headers=headers,
+    )
+    assert actualizado.status_code == 204
+    stored = json.loads(fake_vault.puts[-1][2].access_token)
+    assert stored["api_key"] == "secreto-no-se-vuelve-a-pedir"
+    assert stored["model_principal"] == "modelo-futuro-manual"
+    assert stored["model_rapido"] == "modelo-rapido"
+
+
+@respx.mock
+async def test_selector_modelos_sin_llm_conectado_devuelve_404(client, app) -> None:
+    _install_vault(app)
+    response = await client.get("/v1/credentials/llm/models", headers=_headers())
+    assert response.status_code == 404
+
+
+@respx.mock
 async def test_put_llm_descubre_mejor_modelo_anthropic(client, app) -> None:
     respx.get("https://api.anthropic.com/v1/models").mock(
         return_value=httpx.Response(
@@ -905,9 +961,7 @@ async def test_delete_voice_tts_credentials(client, app, fake_repo) -> None:
     _install_vault(app)
     tenant_id = uuid.uuid4()
     headers = _headers(tenant_id=tenant_id)
-    await client.put(
-        "/v1/credentials/voice/tts", json={"provider": "polly"}, headers=headers
-    )
+    await client.put("/v1/credentials/voice/tts", json={"provider": "polly"}, headers=headers)
 
     response = await client.delete("/v1/credentials/voice/tts", headers=headers)
     assert response.status_code == 204

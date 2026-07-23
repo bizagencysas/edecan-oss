@@ -25,9 +25,16 @@ import json
 import logging
 import shutil
 from collections.abc import AsyncIterator
+from tempfile import TemporaryDirectory
 
 from .base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
 from .errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
+from .multimodal import cli_image_context, materialize_request_images
+from .output_safety import (
+    VISIBLE_OUTPUT_CONTRACT_ES,
+    is_potential_internal_prefix,
+    sanitize_visible_assistant_text,
+)
 from .prompted_tools import parse_tool_call, render_prompt
 
 logger = logging.getLogger(__name__)
@@ -58,39 +65,177 @@ class ClaudeCLIProvider(LLMProvider):
         self._timeout_seconds = timeout_seconds
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
-        args = self._base_args("json")
-        if req.model:
-            args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, render_prompt(req))
+        with TemporaryDirectory(prefix="edecan-claude-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            args = self._base_args("json", image_dir=image_dir if image_paths else None)
+            if req.model:
+                args += ["--model", req.model]
+            stdout, _stderr = await self._run(
+                args, _render_cli_prompt(req, image_paths=image_paths)
+            )
         return _parse_response(stdout, req)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
-        """Intenta `--output-format stream-json`; si no se reconoce el
-        formato de salida (versión distinta del CLI, u otro motivo), degrada
-        a una sola respuesta completa (`complete()`) emitida como un único
-        chunk `text` + `usage` + `stop` — documentado en el punto 3 del
-        paquete WP-V3-03.
+        """Lee ``stream-json`` mientras Claude todavía está generando.
+
+        ``--include-partial-messages`` hace que Claude CLI publique deltas de
+        texto reales. La salida se consume línea por línea, sin
+        ``communicate()``, para que web, iOS y Android reciban el primer texto
+        antes de que termine la respuesta completa.
         """
-        args = self._base_args("stream-json", verbose=True)
-        if req.model:
-            args += ["--model", req.model]
-        stdout, _stderr = await self._run(args, render_prompt(req))
-
-        chunks = _parse_stream_json(stdout, tools_requested=bool(req.tools))
-        if chunks is None:
-            logger.info(
-                "Claude CLI: --output-format stream-json no reconocido en esta "
-                "versión del binario; degradando a una única respuesta (complete())."
+        with TemporaryDirectory(prefix="edecan-claude-images-") as image_dir:
+            image_paths = materialize_request_images(req, image_dir)
+            args = self._base_args(
+                "stream-json", verbose=True, image_dir=image_dir if image_paths else None
             )
-            response = _parse_response(stdout, req)
-            chunks = _response_to_chunks(response)
-        for chunk in chunks:
-            yield chunk
+            args.append("--include-partial-messages")
+            if req.model:
+                args += ["--model", req.model]
+            prompt = _render_cli_prompt(req, image_paths=image_paths)
+            async for chunk in self._stream_process(args, prompt, req):
+                yield chunk
 
-    def _base_args(self, output_format: str, *, verbose: bool = False) -> list[str]:
+    async def _stream_process(
+        self, args: list[str], prompt: str, req: CompletionRequest
+    ) -> AsyncIterator[StreamChunk]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise CLINotInstalledError(
+                f"Claude CLI no está instalado en {self._binary_path!r}. "
+                f"Instálalo desde {INSTALL_URL}.",
+                provider=self.name,
+            ) from exc
+
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stderr_task = asyncio.create_task(process.stderr.read())
+        raw_lines: list[str] = []
+        full_text_parts: list[str] = []
+        usage = Usage()
+        recognized = False
+        partial_seen = False
+        gate = _VisibleStreamGate(tools_requested=bool(req.tools))
+
+        try:
+            process.stdin.write(prompt.encode("utf-8"))
+            await process.stdin.drain()
+            process.stdin.close()
+
+            async with asyncio.timeout(self._timeout_seconds):
+                while line_bytes := await process.stdout.readline():
+                    line = line_bytes.decode("utf-8", errors="replace")
+                    raw_lines.append(line)
+                    event = _safe_json_object(line.strip())
+                    if event is None:
+                        continue
+
+                    event_type = event.get("type")
+                    texts: list[str] = []
+                    if event_type == "stream_event":
+                        stream_event = event.get("event") or {}
+                        delta = stream_event.get("delta") or {}
+                        if (
+                            stream_event.get("type") == "content_block_delta"
+                            and delta.get("type") == "text_delta"
+                            and delta.get("text")
+                        ):
+                            texts.append(str(delta["text"]))
+                            recognized = True
+                            partial_seen = True
+                    elif event_type == "assistant" and not partial_seen:
+                        message = event.get("message") or {}
+                        for block in message.get("content") or []:
+                            if block.get("type") == "text" and block.get("text"):
+                                texts.append(str(block["text"]))
+                                recognized = True
+                    elif event_type == "result":
+                        recognized = True
+                        usage_data = event.get("usage") or {}
+                        usage = Usage(
+                            input_tokens=int(usage_data.get("input_tokens") or 0),
+                            output_tokens=int(usage_data.get("output_tokens") or 0),
+                        )
+                        if not full_text_parts and event.get("result"):
+                            texts.append(str(event["result"]))
+
+                    for text in texts:
+                        full_text_parts.append(text)
+                        for visible in gate.feed(text):
+                            yield StreamChunk(type="text", text=visible)
+
+                await process.wait()
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise LLMError(
+                f"Claude CLI no respondió en {self._timeout_seconds}s. Si tu "
+                "máquina o el modelo elegido son lentos, sube "
+                "LLM_CLI_TIMEOUT_SECONDS.",
+                provider=self.name,
+            ) from exc
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            # Consumir stderr tambien en timeout/cancelacion evita dejar una
+            # tarea pendiente o una excepcion de pipe sin recuperar.
+            stderr_bytes = await stderr_task
+
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        stdout = "".join(raw_lines)
+        if process.returncode != 0:
+            self._raise_process_error(process.returncode or 1, stdout, stderr)
+
+        if not recognized:
+            logger.info(
+                "Claude CLI: stream-json no reconocido; usando la salida completa."
+            )
+            for chunk in _response_to_chunks(_parse_response(stdout, req)):
+                yield chunk
+            return
+
+        full_text = "".join(full_text_parts)
+        tool_call = parse_tool_call(full_text) if req.tools and full_text else None
+        if tool_call is not None:
+            # El gate retiene JSON desde el primer carácter, por lo que nunca
+            # aparece como texto visible antes de convertirse en tool_call.
+            yield StreamChunk(type="tool_call", tool_call=tool_call)
+        else:
+            for visible in gate.finish():
+                yield StreamChunk(type="text", text=visible)
+        yield StreamChunk(type="usage", usage=usage)
+        yield StreamChunk(type="stop")
+
+    def _base_args(
+        self, output_format: str, *, verbose: bool = False, image_dir: str | None = None
+    ) -> list[str]:
         args = [self._binary_path, "-p", "--output-format", output_format]
         if verbose:
             args.append("--verbose")
+        if image_dir:
+            # Solo Read y solo sobre el directorio temporal de este turno.
+            # Claude ve la imagen sin recibir acceso general al computador.
+            args += [
+                "--tools",
+                "Read",
+                "--allowedTools",
+                "Read",
+                "--permission-mode",
+                "dontAsk",
+                "--add-dir",
+                image_dir,
+            ]
         return args
 
     async def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
@@ -126,19 +271,63 @@ class ClaudeCLIProvider(LLMProvider):
         stderr = stderr_bytes.decode("utf-8", errors="replace")
 
         if process.returncode != 0:
-            combined = f"{stderr}\n{stdout}".lower()
-            if any(hint in combined for hint in _AUTH_HINTS):
-                raise CLINotAuthenticatedError(
-                    "Claude CLI no está autenticado: corre `claude login` en una "
-                    "terminal y vuelve a intentar.",
-                    provider=self.name,
-                )
-            raise LLMError(
-                f"Claude CLI terminó con código {process.returncode}: "
-                f"{stderr.strip() or stdout.strip()}",
+            self._raise_process_error(process.returncode, stdout, stderr)
+        return stdout, stderr
+
+    def _raise_process_error(self, returncode: int, stdout: str, stderr: str) -> None:
+        combined = f"{stderr}\n{stdout}".lower()
+        if any(hint in combined for hint in _AUTH_HINTS):
+            raise CLINotAuthenticatedError(
+                "Claude CLI no está autenticado: corre `claude login` en una "
+                "terminal y vuelve a intentar.",
                 provider=self.name,
             )
-        return stdout, stderr
+        raise LLMError(
+            f"Claude CLI terminó con código {returncode}: "
+            f"{stderr.strip() or stdout.strip()}",
+            provider=self.name,
+        )
+
+
+class _VisibleStreamGate:
+    """Retiene solo el prefijo ambiguo de una respuesta en streaming."""
+
+    def __init__(self, *, tools_requested: bool) -> None:
+        self._tools_requested = tools_requested
+        self._buffer = ""
+        self._released = False
+
+    def feed(self, text: str) -> list[str]:
+        if not text:
+            return []
+        if self._released:
+            return [text]
+        self._buffer += text
+        stripped = self._buffer.lstrip()
+        if self._tools_requested and (stripped.startswith("{") or stripped.startswith("```")):
+            return []
+        sanitized = sanitize_visible_assistant_text(self._buffer)
+        if sanitized != self._buffer.strip():
+            if is_potential_internal_prefix(sanitized):
+                return []
+            self._released = True
+            return [sanitized] if sanitized else []
+        if is_potential_internal_prefix(self._buffer):
+            return []
+        self._released = True
+        return [self._buffer]
+
+    def finish(self) -> list[str]:
+        if self._released:
+            return []
+        stripped = self._buffer.lstrip()
+        if self._tools_requested and (stripped.startswith("{") or stripped.startswith("```")):
+            return []
+        visible = sanitize_visible_assistant_text(self._buffer)
+        if is_potential_internal_prefix(visible):
+            return []
+        self._released = True
+        return [visible] if visible else []
 
 
 def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:
@@ -150,6 +339,12 @@ def _response_to_chunks(response: CompletionResponse) -> list[StreamChunk]:
     chunks.append(StreamChunk(type="usage", usage=response.usage))
     chunks.append(StreamChunk(type="stop"))
     return chunks
+
+
+def _render_cli_prompt(req: CompletionRequest, *, image_paths: list[str] | None = None) -> str:
+    image_context = cli_image_context(image_paths or [])
+    pieces = [VISIBLE_OUTPUT_CONTRACT_ES, render_prompt(req), image_context]
+    return "\n\n".join(piece for piece in pieces if piece)
 
 
 def _parse_response(stdout: str, req: CompletionRequest) -> CompletionResponse:
@@ -169,6 +364,8 @@ def _parse_response(stdout: str, req: CompletionRequest) -> CompletionResponse:
     else:
         text = stdout.strip()
         usage = Usage()
+
+    text = sanitize_visible_assistant_text(text)
 
     if req.tools:
         tool_call = parse_tool_call(text)
@@ -231,6 +428,10 @@ def _parse_stream_json(stdout: str, *, tools_requested: bool) -> list[StreamChun
         return None
 
     full_text = "".join(c.text or "" for c in text_chunks)
+    visible_text = sanitize_visible_assistant_text(full_text)
+    if visible_text != full_text:
+        text_chunks = [StreamChunk(type="text", text=visible_text)]
+        full_text = visible_text
     tool_call = parse_tool_call(full_text) if tools_requested and full_text else None
     if tool_call is not None:
         chunks: list[StreamChunk] = [StreamChunk(type="tool_call", tool_call=tool_call)]

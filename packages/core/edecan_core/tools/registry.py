@@ -1,9 +1,9 @@
 """`ToolRegistry` — registro de herramientas del agente (ARCHITECTURE.md §10.7).
 
-Rechaza cualquier `Tool` cuyo `name`/`description` mencione la red social
-vetada (ARCHITECTURE.md §0.2), filtra `specs()` por los flags de plan del
-tenant y descubre herramientas de otros paquetes (`edecan_toolkit`,
-`premium/`) vía el grupo de entry points `"edecan.tools"`.
+Filtra `specs()` por los flags de plan del tenant y descubre herramientas de
+otros paquetes (`edecan_toolkit`, `premium/`) vía el grupo de entry points
+`"edecan.tools"`. Las políticas de cada integración se aplican en la propia
+tool o conector; el registro no veta capacidades por palabras en su nombre.
 """
 
 from __future__ import annotations
@@ -20,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ENTRY_POINT_GROUP = "edecan.tools"
 
-_FORBIDDEN_PLATFORM = "linkedin"
-
-
 class ToolRegistry:
     """Registro en memoria de las `Tool` disponibles para el agente."""
 
@@ -30,20 +27,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
-        """Registra `tool` (sobreescribe si ya había una con el mismo `name`).
-
-        Lanza `ValueError` si "linkedin" (sin distinguir mayúsculas/minúsculas)
-        aparece en `tool.name` o `tool.description` — guardrail permanente de
-        ARCHITECTURE.md §0.2: esta plataforma está excluida en cualquier
-        forma, y ninguna herramienta (core, toolkit o premium) puede
-        integrarla ni mencionarla.
-        """
-        haystack = f"{tool.name} {tool.description}".lower()
-        if _FORBIDDEN_PLATFORM in haystack:
-            raise ValueError(
-                f"Herramienta rechazada: '{tool.name}' menciona una plataforma no permitida "
-                "(ver ARCHITECTURE.md §0.2)."
-            )
+        """Registra `tool` (sobreescribe si ya había una con el mismo `name`)."""
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:

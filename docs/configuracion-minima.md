@@ -19,11 +19,11 @@ se autenticó el CLI.
 |---|---:|---|
 | Chat, memoria, archivos, creación local y herramientas con Codex CLI | **0** | Solo `codex login` |
 | Voz nativa en iOS/Android | **0** | Reconocimiento y lectura del sistema |
-| Búsqueda real en Internet | **1** | Brave **o** Tavily |
+| Búsqueda real en Internet | **0** | DuckDuckGo funciona de fábrica; Brave o Tavily son opcionales |
 | Imágenes generadas por IA | **1** | Un proveedor compatible de imágenes |
-| Internet + imágenes, perfil recomendado | **2** | Una búsqueda + una imagen |
+| Internet + imágenes, perfil recomendado | **1** | Solo un proveedor de imágenes |
 | Voz cloud de mayor calidad | **2 opcionales** | Deepgram (STT) + ElevenLabs (TTS) |
-| Vuelos y hoteles reales | **2 credenciales** | Amadeus API key + secret |
+| Vuelos y hoteles reales | **0** | La capa de viajes de Edecán usa Kiwi, Trivago y Skiplagged |
 | Rastreo de paquetes | **1 opcional** | AfterShip |
 | Llamadas telefónicas | **2 credenciales + 1 número** | Twilio Account SID, Auth Token y número |
 | Gmail, Calendar y YouTube | **1 app OAuth** | Client ID + client secret de Google |
@@ -32,9 +32,9 @@ se autenticó el CLI.
 Las parejas OAuth, el SID de Twilio y los secretos de proveedor son
 credenciales, pero no todas se llaman “API key”. Por eso no existe un total
 honesto para “todo”: depende de qué cuentas y servicios quieras conectar.
-Edecan funciona primero y degrada de forma visible a demostración cuando una
-capacidad opcional no tiene proveedor; nunca presenta datos de ejemplo como
-resultados en vivo.
+Edecan funciona primero. Internet y viajes tienen proveedores públicos reales
+sin clave; otras capacidades opcionales degradan de forma visible a una
+demostración y nunca presentan datos de ejemplo como resultados en vivo.
 
 ## Codex CLI en el computador
 

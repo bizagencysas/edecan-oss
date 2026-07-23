@@ -6,25 +6,159 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime
 
 from conftest import auth_headers
 from edecan_schemas import ArtifactRef, ToolEndEvent
+
+
+def test_automatic_title_summarizes_api_setup_without_copying_the_message() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    title = conversations_module._automatic_conversation_title(
+        "Configura la API key de X es [credencial protegida]. Luego pruébala."
+    )
+
+    assert title == "Configurar API Key - X"
+    assert "credencial" not in title.lower()
+
+
+def test_automatic_title_is_a_short_intent_instead_of_the_opening_sentence() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    assert (
+        conversations_module._automatic_conversation_title(
+            "Que pasaría si yo empezara a hacer 15 flexiones diarias con 15"
+        )
+        == "Hacer 15 flexiones diarias"
+    )
+    assert (
+        conversations_module._automatic_conversation_title(
+            "How do I explain a friend in one paragraph who you are and what you make"
+        )
+        == "Explicar quién es Edecán"
+    )
 
 
 def test_tool_end_with_artifact_is_json_serializable_for_history() -> None:
     import edecan_api.routers.conversations as conversations_module
 
     file_id = uuid.uuid4()
+    mission_id = uuid.uuid4()
     event = ToolEndEvent(
         name="crear_artefactos",
         result_preview="Creado",
         artifacts=[ArtifactRef(file_id=file_id, filename="reporte.pdf", mime="application/pdf")],
+        mission_id=mission_id,
     )
 
     serialized = conversations_module._event_to_dict(event)
 
     assert serialized["artifacts"][0]["file_id"] == str(file_id)
+    assert serialized["mission_id"] == str(mission_id)
     json.dumps(serialized)  # regresión: antes lanzaba UUID is not JSON serializable
+
+
+async def test_design_tool_end_enqueues_uuid_only_notification(monkeypatch) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    artifact_id = uuid.uuid4()
+    queued = []
+
+    async def fake_enqueue(settings, job_type, payload, queued_tenant_id):  # noqa: ANN001
+        queued.append((job_type, payload, queued_tenant_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(conversations_module, "enqueue", fake_enqueue)
+    await conversations_module._enqueue_tool_notification(
+        settings=object(),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        event={
+            "type": "tool_end",
+            "tool_call_id": "provider-free-text-id",
+            "name": "crear_diseno_visual",
+            "result_preview": "Diseño listo",
+            "artifacts": [{"file_id": str(artifact_id), "filename": "privado.html"}],
+        },
+    )
+
+    assert queued == [
+        (
+            "notify_important_event",
+            {
+                "user_id": str(user_id),
+                "kind": "design_ready",
+                "event_id": str(artifact_id),
+                "artifact_id": str(artifact_id),
+            },
+            tenant_id,
+        )
+    ]
+
+
+async def test_failed_tool_end_never_enqueues_notification(monkeypatch) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    async def forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("un fallo no se anuncia como terminado")
+
+    monkeypatch.setattr(conversations_module, "enqueue", forbidden)
+    await conversations_module._enqueue_tool_notification(
+        settings=object(),
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        event={
+            "type": "tool_end",
+            "tool_call_id": "call-1",
+            "name": "gestionar_autorreparacion_local",
+            "result_preview": "Error: no se pudo aplicar",
+        },
+    )
+
+
+async def test_fydesign_completion_notifies_mobile_without_listing_every_tool(monkeypatch) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    queued = []
+
+    async def fake_enqueue(settings, job_type, payload, queued_tenant_id):  # noqa: ANN001
+        queued.append((job_type, payload, queued_tenant_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(conversations_module, "enqueue", fake_enqueue)
+    await conversations_module._enqueue_tool_notification(
+        settings=object(),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        event={
+            "type": "tool_end",
+            "tool_call_id": "studio-call-1",
+            "name": "fydesign_video_ad",
+            "result_preview": "Video listo",
+            "artifacts": [],
+        },
+    )
+
+    assert queued[0][0] == "notify_important_event"
+    assert queued[0][1]["kind"] == "design_ready"
+    assert queued[0][1]["chat_id"] == str(conversation_id)
+    assert queued[0][2] == tenant_id
+
+
+def test_fydesign_health_does_not_emit_completion_notification() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    assert conversations_module._notification_kind_for_tool("fydesign_health") is None
 
 
 async def _create_conversation(client, headers: dict[str, str]) -> str:
@@ -88,6 +222,159 @@ async def test_post_message_streams_sse_and_persists_assistant_turn(
     assert llm_events[0]["quantity"] == 19  # 12 + 7
 
 
+async def test_first_message_names_conversation_without_waiting_for_second_llm(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    class ScriptedAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            yield {"type": "text_delta", "text": "Claro."}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "Planifica mi viaje familiar a Madrid. Incluye hoteles."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    row = fake_repo.conversations[uuid.UUID(conversation_id)]
+    assert row["title"] == "Planificar viaje familiar a Madrid"
+
+
+async def test_inline_credential_never_reaches_llm_history_or_sse(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    llm_runs = 0
+
+    class ForbiddenAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            nonlocal llm_runs
+            llm_runs += 1
+            raise AssertionError("La credencial no debe llegar al LLM")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(conversations_module, "Agent", ForbiddenAgent)
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+    secret = "sk_proj_super_secret_1234567890"
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": f"Mira, mi API key de ElevenLabs es {secret}. Configúrala."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert llm_runs == 0
+    assert secret not in response.text
+    assert "[credencial protegida]" in response.text
+    stored = fake_repo.messages[uuid.UUID(conversation_id)]
+    assert [message["role"] for message in stored] == ["user", "assistant"]
+    assert secret not in json.dumps(stored, default=str)
+    assert secret not in fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
+    assert (
+        fake_repo.conversations[uuid.UUID(conversation_id)]["title"]
+        == "Configurar API Key - ElevenLabs"
+    )
+    assert fake_repo.audit_log[-1]["action"] == "credentials.chat.failed"
+
+
+async def test_secret_without_configuration_intent_is_redacted_before_llm_and_storage(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    seen_user_text: list[str] = []
+
+    class InspectingAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            seen_user_text.append(kwargs["user_text"])
+            yield {"type": "text_delta", "text": "Entendido."}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", InspectingAgent)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+    secret = "sk-proj-example-secret-1234567890"
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": f"Seguro la pusiste mal. Esta es {secret}."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert seen_user_text and secret not in seen_user_text[0]
+    stored = fake_repo.messages[uuid.UUID(conversation_id)]
+    assert secret not in json.dumps(stored, default=str)
+    assert "[REDACTED]" in json.dumps(stored, default=str)
+
+
+def test_historical_secret_is_redacted_when_serialized_or_sent_back_to_llm() -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    secret = "sk-proj-historical-secret-1234567890"
+    row = {
+        "id": uuid.uuid4(),
+        "role": "user",
+        "content": {"text": f"Clave antigua: {secret}"},
+        "tool_calls": [{"result": {"debug": f"Bearer {secret}"}}],
+        "created_at": datetime.now(UTC),
+    }
+
+    outgoing = conversations_module._message_out(row)
+    history = conversations_module._rows_to_chat_messages([row])
+
+    assert secret not in json.dumps(outgoing, default=str)
+    assert secret not in str(history[0].content)
+    assert "[REDACTED]" in json.dumps(outgoing, default=str)
+
+
+async def test_conversation_can_be_renamed_and_is_tenant_scoped(client) -> None:
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+
+    renamed = await client.patch(
+        f"/v1/conversations/{conversation_id}",
+        json={"title": "  Lanzamiento   de Edecán  "},
+        headers=headers,
+    )
+
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "Lanzamiento de Edecán"
+    other_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
+    )
+    denied = await client.patch(
+        f"/v1/conversations/{conversation_id}",
+        json={"title": "No permitido"},
+        headers=other_headers,
+    )
+    assert denied.status_code == 404
+
+
 async def test_post_message_idempotency_replays_exact_sse_without_duplicate_side_effects(
     client, fake_repo, monkeypatch
 ) -> None:
@@ -107,9 +394,7 @@ async def test_post_message_idempotency_replays_exact_sse_without_duplicate_side
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     key = str(uuid.uuid4())
     headers["Idempotency-Key"] = key
     conversation_id = await _create_conversation(client, headers)
@@ -167,18 +452,14 @@ async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disc
     )
     first = await anext(stream)
     assert first == "event: message.delta\ndata: first\n\n"
-    in_flight = await conversations_module._load_idempotency_record(
-        fake_redis, redis_key=redis_key
-    )
+    in_flight = await conversations_module._load_idempotency_record(fake_redis, redis_key=redis_key)
     assert in_flight is not None and in_flight["status"] == "in_flight"
 
     # Simula que el transporte se desconecta después del primer token. Cerrar
     # el consumidor debe esperar al productor y dejar el replay completo.
     asyncio.get_running_loop().call_soon(release.set)
     await stream.aclose()
-    completed = await conversations_module._load_idempotency_record(
-        fake_redis, redis_key=redis_key
-    )
+    completed = await conversations_module._load_idempotency_record(fake_redis, redis_key=redis_key)
     assert completed is not None
     assert completed == {
         "status": "completed",
@@ -204,9 +485,7 @@ async def test_post_message_idempotency_rejects_same_key_with_different_body(
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     conversation_id = await _create_conversation(client, headers)
 
@@ -247,9 +526,7 @@ async def test_post_message_idempotency_rejects_concurrent_in_flight_retry(
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", SlowAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     conversation_id = await _create_conversation(client, headers)
     url = f"/v1/conversations/{conversation_id}/messages"
@@ -286,9 +563,7 @@ async def test_post_message_idempotency_is_scoped_per_conversation(client, monke
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = str(uuid.uuid4())
     first_conversation = await _create_conversation(client, headers)
     second_conversation = await _create_conversation(client, headers)
@@ -309,9 +584,7 @@ async def test_post_message_idempotency_is_scoped_per_conversation(client, monke
 
 
 async def test_post_message_rejects_malformed_idempotency_uuid(client) -> None:
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
     headers["Idempotency-Key"] = "no-es-uuid"
     conversation_id = await _create_conversation(client, headers)
 
@@ -476,6 +749,75 @@ async def test_list_conversations_is_scoped_per_tenant(client) -> None:
     assert len(response_b.json()) == 0
 
 
+async def test_list_conversations_replaces_legacy_long_message_copy(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    first_message = (
+        "Configura la API key de X es [credencial protegida]. "
+        "Luego comprueba que la integración responda correctamente."
+    )
+    legacy_title = first_message[:62]
+    fake_repo.conversations[conversation_id]["title"] = legacy_title
+    fake_repo.conversations[conversation_id]["title_source"] = "legacy"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": first_message},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Configurar API Key - X"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "auto"
+
+
+async def test_list_conversations_preserves_legacy_manual_title(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    fake_repo.conversations[conversation_id]["title"] = "Viaje familiar"
+    fake_repo.conversations[conversation_id]["title_source"] = "legacy"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": "Quiero comparar vuelos y hoteles para viajar con mi familia."},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Viaje familiar"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "manual"
+
+
+async def test_list_conversations_improves_existing_automatic_title(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = uuid.UUID(await _create_conversation(client, headers))
+    first_message = "How do I explain a friend in one paragraph who you are and what you make"
+    fake_repo.conversations[conversation_id]["title"] = first_message[:72]
+    fake_repo.conversations[conversation_id]["title_source"] = "auto"
+    await fake_repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content={"text": first_message},
+    )
+
+    response = await client.get("/v1/conversations", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Explicar quién es Edecán"
+    assert fake_repo.conversations[conversation_id]["title_source"] == "auto"
+
+
 # --------------------------------------------------------------------------
 # GET /{id} y DELETE /{id}
 # --------------------------------------------------------------------------
@@ -511,9 +853,7 @@ async def test_get_conversation_recovers_only_public_pending_confirmation(
     import edecan_api.routers.conversations as conversations_module
 
     tenant_id = uuid.uuid4()
-    headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
-    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
     conversation_uuid = uuid.UUID(conversation_id)
     await conversations_module._store_pending_confirmation(
@@ -563,9 +903,7 @@ async def test_get_conversation_recovers_only_public_pending_confirmation(
         headers=headers,
     )
     assert declined.status_code == 200
-    after_consumption = await client.get(
-        f"/v1/conversations/{conversation_id}", headers=headers
-    )
+    after_consumption = await client.get(f"/v1/conversations/{conversation_id}", headers=headers)
     assert after_consumption.json()["pending_confirmation"] is None
 
 

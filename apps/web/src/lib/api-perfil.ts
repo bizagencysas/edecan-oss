@@ -17,9 +17,23 @@ import { API_BASE_URL, ApiError } from "./api";
 import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
 import { getAccessToken } from "./tokens";
 
-/** Mismas 6 categorías que `edecan_core.memory.profile.CAMPOS_DATOS` /
- * `edecan_schemas.profile.ProfileData`. */
+export interface IdentidadPerfil {
+  nombre_preferido: string;
+  nombre_completo: string;
+  pronombres: string;
+  fecha_nacimiento: string;
+  pais: string;
+  ciudad: string;
+  zona_horaria: string;
+  ocupacion: string;
+  idioma_preferido: string;
+  forma_de_trato: string;
+  biografia: string;
+}
+
+/** Identidad declarada más las seis categorías que Edecán aprende. */
 export interface DatosPerfil {
+  identidad: IdentidadPerfil;
   gustos: string[];
   proyectos: string[];
   metas: string[];
@@ -28,7 +42,9 @@ export interface DatosPerfil {
   habitos: string[];
 }
 
-export const CATEGORIAS_PERFIL: Array<{ campo: keyof DatosPerfil; label: string }> = [
+export type CategoriaPerfil = Exclude<keyof DatosPerfil, "identidad">;
+
+export const CATEGORIAS_PERFIL: Array<{ campo: CategoriaPerfil; label: string }> = [
   { campo: "gustos", label: "Gustos" },
   { campo: "proyectos", label: "Proyectos" },
   { campo: "metas", label: "Metas" },
@@ -121,7 +137,7 @@ export async function getPerfilVivo(): Promise<PerfilVivo> {
 
 export interface PerfilPatch {
   resumen?: string;
-  datos?: Partial<DatosPerfil>;
+  datos?: Partial<Omit<DatosPerfil, "identidad">> & { identidad?: Partial<IdentidadPerfil> };
 }
 
 /** `PUT /v1/perfil` — patch parcial: solo lo que mandes se sobreescribe; en

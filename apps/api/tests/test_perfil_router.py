@@ -149,6 +149,7 @@ async def test_get_perfil_sin_fila_devuelve_esqueleto_vacio(
     assert body["version"] == 0
     assert body["updated_at"] is None
     assert set(body["datos"].keys()) == {
+        "identidad",
         "gustos",
         "proyectos",
         "metas",
@@ -156,7 +157,8 @@ async def test_get_perfil_sin_fila_devuelve_esqueleto_vacio(
         "empresas",
         "habitos",
     }
-    assert all(v == [] for v in body["datos"].values())
+    assert body["datos"]["identidad"]["nombre_preferido"] == ""
+    assert all(body["datos"][campo] == [] for campo in perfil_module.CAMPOS_DATOS)
 
 
 async def test_get_perfil_con_fila_devuelve_su_contenido(
@@ -266,6 +268,65 @@ async def test_put_perfil_patch_parcial_de_datos_no_toca_otras_categorias(
     datos_guardados = json.loads(params["datos"])
     assert datos_guardados["gustos"] == ["Le gusta el té"]
     assert datos_guardados["proyectos"] == ["Proyecto X"]  # intacto, no vino en el body
+
+
+async def test_put_perfil_guarda_identidad_sin_pisar_categorias(
+    client: AsyncClient, fake_session: FakeSession
+) -> None:
+    existente = _fila_perfil()
+    actualizada = {
+        **existente,
+        "datos": {
+            **existente["datos"],
+            "identidad": {
+                "nombre_preferido": "Isacc",
+                "forma_de_trato": "Cercano y directo",
+            },
+        },
+        "version": 4,
+    }
+    fake_session.respuestas = [[existente], [actualizada]]
+
+    response = await client.put(
+        "/v1/perfil",
+        json={
+            "datos": {
+                "identidad": {
+                    "nombre_preferido": "Isacc",
+                    "forma_de_trato": "Cercano y directo",
+                }
+            }
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    _, params = fake_session.llamadas[1]
+    datos_guardados = json.loads(params["datos"])
+    assert datos_guardados["identidad"]["nombre_preferido"] == "Isacc"
+    assert datos_guardados["identidad"]["forma_de_trato"] == "Cercano y directo"
+    assert datos_guardados["gustos"] == ["Le gusta el café"]
+
+
+async def test_profile_context_for_incluye_identidad_y_sintesis(fake_session: FakeSession) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    fila = _fila_perfil(tenant_id=tenant_id, user_id=user_id)
+    fila["datos"] = {
+        **fila["datos"],
+        "identidad": {
+            "nombre_preferido": "Isacc",
+            "idioma_preferido": "Español de Venezuela",
+            "forma_de_trato": "De tú y directo",
+        },
+    }
+    fake_session.respuestas = [[fila]]
+
+    context = await perfil_module.profile_context_for(fake_session, tenant_id, user_id)
+
+    assert "Nombre preferido: Isacc" in context
+    assert "Idioma preferido: Español de Venezuela" in context
+    assert "Cómo quiere que le hables: De tú y directo" in context
+    assert "Síntesis del perfil vivo: Prefieres respuestas breves." in context
 
 
 async def test_put_perfil_sin_body_conserva_todo_pero_incrementa_version(

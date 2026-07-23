@@ -32,9 +32,34 @@ struct ChatEventTests {
         #expect(evento == .toolStart(name: "hora_actual", args: [:]))
     }
 
+    @Test func toolProgressMuestraAvanceSinExponerRazonamiento() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_progress","tool_call_id":"call-1","name":"construir_app","elapsed_seconds":12,"message":"Edecán sigue trabajando"}"#
+        )
+        #expect(
+            evento == .toolProgress(
+                toolCallId: "call-1",
+                name: "construir_app",
+                elapsedSeconds: 12,
+                message: "Edecán sigue trabajando"
+            )
+        )
+    }
+
     @Test func toolEnd() throws {
         let evento = try decodificar(#"{"type":"tool_end","name":"agenda_eventos","result_preview":"2 eventos encontrados"}"#)
         #expect(evento == .toolEnd(name: "agenda_eventos", resultPreview: "2 eventos encontrados", artifacts: []))
+    }
+
+    @Test func toolEndVinculaMisionAsincronaAlMismoChat() throws {
+        let evento = try decodificar(
+            #"{"type":"tool_end","name":"delegar_mision","result_preview":"Misión creada","mission_id":"22222222-2222-4222-a222-222222222222"}"#
+        )
+        guard case .toolEnd(_, _, _, _, _, _, let missionId) = evento else {
+            Issue.record("se esperaba .toolEnd")
+            return
+        }
+        #expect(missionId == "22222222-2222-4222-a222-222222222222")
     }
 
     @Test func toolEndConArtefactosDescargables() throws {
@@ -71,6 +96,68 @@ struct ChatEventTests {
         #expect(evento == .done(usage: nil))
     }
 
+    @Test func messageDoneConUsageVacioNoRompe() throws {
+        let evento = try decodificar(#"{"type":"done","usage":{}}"#)
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func messageDoneCapturadoDelRelayPublico() throws {
+        let evento = try SSEClient.decodificarEvento(
+            nombre: "message.done",
+            payload: #"{"type": "done", "usage": {"input_tokens": 10243, "output_tokens": 6}}"#
+        )
+        #expect(evento == .done(usage: Usage(inputTokens: 10243, outputTokens: 6)))
+    }
+
+    @Test func marcadorDoneAlternativoNoInvalidaLaRespuestaRecibida() throws {
+        let evento = try SSEClient.decodificarEvento(
+            nombre: "message.done\r",
+            payload: "[DONE]"
+        )
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func marcadorDoneSinNombreTambienCierraElTurno() throws {
+        let evento = try SSEClient.decodificarEvento(nombre: nil, payload: "[DONE]")
+        #expect(evento == .done(usage: nil))
+    }
+
+    @Test func estadoTerminalAceptaUnSoloDone() throws {
+        var terminal = SSETerminalState()
+        let aceptoDelta = terminal.aceptar(.textDelta(text: "hola"))
+        let aceptoDone = terminal.aceptar(.done(usage: nil))
+        let aceptoDuplicado = terminal.aceptar(.textDelta(text: "duplicado"))
+        #expect(aceptoDelta)
+        #expect(aceptoDone)
+        #expect(terminal.finalizado)
+        #expect(!aceptoDuplicado)
+        try terminal.validarCierre()
+    }
+
+    @Test func estadoTerminalRechazaConexionTruncada() {
+        let terminal = SSETerminalState()
+        #expect(throws: SSEClient.SSEError.self) {
+            try terminal.validarCierre()
+        }
+    }
+
+    @Test func errorDelAgenteTambienEsUnCierreTerminalValido() throws {
+        var terminal = SSETerminalState()
+        let acepto = terminal.aceptar(.error(message: "Proveedor no disponible"))
+        #expect(acepto)
+        #expect(terminal.finalizado)
+        try terminal.validarCierre()
+    }
+
+    @Test func eventoDeContenidoMalformadoSigueFallando() {
+        #expect(throws: SSEClient.SSEError.self) {
+            try SSEClient.decodificarEvento(
+                nombre: "message.delta",
+                payload: "{json roto"
+            )
+        }
+    }
+
     @Test func error() throws {
         let evento = try decodificar(#"{"type":"error","message":"El proveedor LLM no respondió a tiempo"}"#)
         #expect(evento == .error(message: "El proveedor LLM no respondió a tiempo"))
@@ -99,7 +186,7 @@ struct ChatEventTests {
             #"{"type":"tool_end","tool_call_id":"call-42","name":"buscar_viaje","result_preview":"Opciones listas","blocks_version":1,"blocks":[{"type":"link_preview","schema_version":1,"url":"https://example.com/oferta","title":"Guia del destino","site_name":"Example","source_mode":"live","actions":[{"id":"link.open","label":"Abrir","action":"open_url","url":"https://example.com/oferta"}]},{"type":"flight","offer_id":"F1","airline":"Avianca","origin":"BOG","destination":"MAD","departure":"2026-08-01T10:00:00Z","arrival":"2026-08-02T05:00:00Z","stops":0,"price":"650.00","currency":"USD","source_mode":"live","provider":"Amadeus","actions":[{"id":"flight.draft","label":"Preparar","action":"prefill_message","message":"Prepara el borrador sin reservar."}]},{"type":"hotel","offer_id":"H1","name":"Hotel Central","city":"Madrid","checkin":"2026-08-02","checkout":"2026-08-05","rating":"4.7","price":"420.00","currency":"USD","source_mode":"demo","actions":[{"id":"hotel.activity","label":"Ver actividad","action":"open_screen","screen":"activity"}]},{"type":"media","media_kind":"image","artifact":{"file_id":"018f7f4c-07f4-7ed0-93c8-cf0525d1092b","filename":"mapa.png","mime":"image/png"},"alt":"Mapa de Madrid"}]}"#
         )
 
-        guard case .toolEnd(let toolCallId, _, _, _, let version, let blocks) = evento else {
+        guard case .toolEnd(let toolCallId, _, _, _, let version, let blocks, _) = evento else {
             Issue.record("se esperaba .toolEnd")
             return
         }
@@ -146,7 +233,7 @@ struct ChatEventTests {
         let evento = try decodificar(
             #"{"type":"tool_end","name":"tool_futura","result_preview":"ok","blocks":[{"type":"timeline_3d","schema_version":2,"fallback_text":"Resultado disponible en texto."}]}"#
         )
-        guard case .toolEnd(_, _, _, _, _, let blocks) = evento,
+        guard case .toolEnd(_, _, _, _, _, let blocks, _) = evento,
               case .unsupported(let type, let fallback) = blocks.first
         else {
             Issue.record("se esperaba bloque unsupported")
@@ -160,7 +247,7 @@ struct ChatEventTests {
         let evento = try decodificar(
             #"{"type":"tool_end","name":"enlace","result_preview":"ok","blocks":[{"type":"link_preview","url":"https://example.com","title":"Example","actions":[{"id":"future","label":"Teleportar","action":"teleport","destination":"moon"}]}]}"#
         )
-        guard case .toolEnd(_, _, _, _, _, let blocks) = evento,
+        guard case .toolEnd(_, _, _, _, _, let blocks, _) = evento,
               case .linkPreview(let link) = blocks.first,
               case .unsupported(let id, let label, let action) = link.actions.first
         else {

@@ -83,7 +83,8 @@ class PgMemoryStore:
                 """
                 SELECT id, content, kind, importance, 1 - (embedding <=> :q ::vector) AS score
                 FROM memory_items
-                WHERE tenant_id = :tenant_id AND user_id = :user_id AND embedding IS NOT NULL
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND embedding IS NOT NULL AND superseded_at IS NULL
                 ORDER BY embedding <=> :q ::vector
                 LIMIT :k
                 """
@@ -105,7 +106,8 @@ class PgMemoryStore:
                 """
                 SELECT id, content, kind, importance
                 FROM memory_items
-                WHERE tenant_id = :tenant_id AND user_id = :user_id AND content ILIKE :q
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND superseded_at IS NULL AND content ILIKE :q
                 ORDER BY importance DESC, created_at DESC
                 LIMIT :k
                 """

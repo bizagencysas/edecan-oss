@@ -29,9 +29,11 @@ class FakeRepo:
         self.tenants: dict[uuid.UUID, Row] = {}
         self.users: dict[uuid.UUID, Row] = {}
         self.memberships: list[Row] = []
+        self.local_owner: tuple[uuid.UUID, uuid.UUID] | None = None
         self.personas: dict[tuple[uuid.UUID, uuid.UUID], Row] = {}
         self.conversations: dict[uuid.UUID, Row] = {}
         self.messages: dict[uuid.UUID, list[Row]] = {}
+        self.phone_agent_templates: dict[uuid.UUID, Row] = {}
         self.phone_calls: dict[uuid.UUID, Row] = {}
         self.phone_call_events: dict[uuid.UUID, list[Row]] = {}
         self.phone_consents: list[Row] = []
@@ -156,6 +158,61 @@ class FakeRepo:
         )
         return matches[0]["user_id"] if matches else None
 
+    async def get_first_active_owner(self) -> Row | None:
+        matches = sorted(
+            (
+                membership
+                for membership in self.memberships
+                if membership["role"] == "owner"
+                and self.tenants.get(membership["tenant_id"], {}).get("status") == "active"
+            ),
+            key=lambda row: row["created_at"],
+        )
+        if not matches:
+            return None
+        membership = matches[0]
+        user = self.users[membership["user_id"]]
+        tenant = self.tenants[membership["tenant_id"]]
+        return {
+            "user_id": user["id"],
+            "email": user["email"],
+            "tenant_id": tenant["id"],
+            "plan_key": tenant["plan_key"],
+            "owner_count": len(matches),
+        }
+
+    async def get_local_owner(self) -> Row | None:
+        if self.local_owner is None:
+            return None
+        user_id, tenant_id = self.local_owner
+        user = self.users.get(user_id)
+        tenant = self.tenants.get(tenant_id)
+        membership = next(
+            (
+                row
+                for row in self.memberships
+                if row["user_id"] == user_id
+                and row["tenant_id"] == tenant_id
+                and row["role"] == "owner"
+            ),
+            None,
+        )
+        if user is None or tenant is None or membership is None or tenant["status"] != "active":
+            return None
+        return {
+            "user_id": user_id,
+            "email": user["email"],
+            "tenant_id": tenant_id,
+            "plan_key": tenant["plan_key"],
+        }
+
+    async def set_local_owner(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Row:
+        if self.local_owner is None:
+            self.local_owner = (user_id, tenant_id)
+        owner = await self.get_local_owner()
+        assert owner is not None
+        return owner
+
     # -- personas -----------------------------------------------------------
 
     async def create_persona_default(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
@@ -205,6 +262,7 @@ class FakeRepo:
             "tenant_id": tenant_id,
             "user_id": user_id,
             "title": title,
+            "title_source": "manual" if title and title.strip() else "auto_pending",
             "channel": channel,
             "created_at": _now(),
             "updated_at": _now(),
@@ -219,10 +277,126 @@ class FakeRepo:
             for r in self.conversations.values()
             if r["tenant_id"] == tenant_id and r["user_id"] == user_id
         ]
-        rows.sort(key=lambda r: r["created_at"], reverse=True)
+        rows.sort(key=lambda r: r["updated_at"], reverse=True)
         return [dict(r) for r in rows]
 
+    async def list_conversation_title_refresh_candidates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]:
+        candidates: list[Row] = []
+        for row in self.conversations.values():
+            if row["tenant_id"] != tenant_id or row["user_id"] != user_id:
+                continue
+            if row.get("title_source", "legacy") not in {"legacy", "auto"}:
+                continue
+            first_user = next(
+                (
+                    message.get("content")
+                    for message in self.messages.get(row["id"], [])
+                    if message.get("role") == "user"
+                ),
+                None,
+            )
+            candidates.append(
+                {
+                    "id": row["id"],
+                    "title": row.get("title", ""),
+                    "title_source": row.get("title_source", "legacy"),
+                    "first_user_content": first_user,
+                }
+            )
+        return candidates
+
     # -- llamadas como canal conversacional -----------------------------------
+
+    async def create_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str,
+        agent_name: str,
+        persona_prompt: str,
+        default_goal: str,
+        opening_message: str,
+        is_default: bool,
+    ) -> Row:
+        row: Row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "name": name,
+            "agent_name": agent_name,
+            "persona_prompt": persona_prompt,
+            "default_goal": default_goal,
+            "opening_message": opening_message,
+            "is_default": is_default,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.phone_agent_templates[row["id"]] = row
+        return dict(row)
+
+    async def list_phone_agent_templates(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Row]:
+        rows = [
+            row
+            for row in self.phone_agent_templates.values()
+            if row["tenant_id"] == tenant_id and row["user_id"] == user_id
+        ]
+        rows.sort(key=lambda row: (not row["is_default"], row["created_at"], row["id"]))
+        return [dict(row) for row in rows]
+
+    async def get_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> Row | None:
+        row = self.phone_agent_templates.get(template_id)
+        return dict(row) if row is not None and row["tenant_id"] == tenant_id else None
+
+    async def get_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        rows = await self.list_phone_agent_templates(tenant_id=tenant_id, user_id=user_id)
+        return next((row for row in rows if row["is_default"]), None)
+
+    async def update_phone_agent_template(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        template_id: uuid.UUID,
+        fields: dict[str, Any],
+    ) -> Row | None:
+        row = self.phone_agent_templates.get(template_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return None
+        row.update(fields)
+        row["updated_at"] = _now()
+        return dict(row)
+
+    async def clear_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None:
+        for row in self.phone_agent_templates.values():
+            if (
+                row["tenant_id"] == tenant_id
+                and row["user_id"] == user_id
+                and row["id"] != except_id
+            ):
+                row["is_default"] = False
+                row["updated_at"] = _now()
+
+    async def delete_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
+    ) -> bool:
+        row = self.phone_agent_templates.get(template_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return False
+        del self.phone_agent_templates[template_id]
+        for call in self.phone_calls.values():
+            if call.get("agent_template_id") == template_id:
+                call["agent_template_id"] = None
+        return True
 
     async def create_phone_call(
         self,
@@ -236,6 +410,11 @@ class FakeRepo:
         goal: str,
         status: str = "draft",
         provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -246,6 +425,11 @@ class FakeRepo:
             "from_e164": from_e164,
             "to_e164": to_e164,
             "goal": goal,
+            "agent_template_id": agent_template_id,
+            "agent_template_name": agent_template_name,
+            "agent_name": agent_name,
+            "agent_prompt": agent_prompt,
+            "opening_message": opening_message,
             "status": status,
             "provider": "twilio",
             "provider_call_sid": provider_call_sid,
@@ -254,6 +438,9 @@ class FakeRepo:
             "ended_at": None,
             "duration_seconds": None,
             "error": None,
+            "summary": None,
+            "summary_generated_at": None,
+            "summary_push_attempted_at": None,
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -294,6 +481,22 @@ class FakeRepo:
             return None
         row.update(fields)
         row["updated_at"] = _now()
+        return dict(row)
+
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
+    ) -> Row | None:
+        row = self.phone_calls.get(call_id)
+        if row is None or row["tenant_id"] != tenant_id or row.get("summary") is not None:
+            return None
+        now = _now()
+        row["summary"] = summary
+        row["summary_generated_at"] = now
+        row["updated_at"] = now
         return dict(row)
 
     async def add_phone_call_event(
@@ -359,6 +562,30 @@ class FakeRepo:
         if row is not None and row["tenant_id"] == tenant_id:
             return dict(row)
         return None
+
+    async def update_conversation_title(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        title: str,
+        only_if_empty: bool = False,
+        source: str | None = None,
+    ) -> Row | None:
+        row = self.conversations.get(conversation_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return None
+        if (
+            only_if_empty
+            and str(row.get("title") or "").strip()
+            and row.get("title_source") != "auto_pending"
+        ):
+            return None
+        row["title"] = title
+        if source is not None:
+            row["title_source"] = source
+        row["updated_at"] = _now()
+        return dict(row)
 
     async def delete_conversation(
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
@@ -455,7 +682,9 @@ class FakeRepo:
         rows = [
             r
             for r in self.memory_items.values()
-            if r["tenant_id"] == tenant_id and r["user_id"] == user_id
+            if r["tenant_id"] == tenant_id
+            and r["user_id"] == user_id
+            and r.get("superseded_at") is None
         ]
         if q:
             rows = [r for r in rows if q.lower() in r["content"].lower()]

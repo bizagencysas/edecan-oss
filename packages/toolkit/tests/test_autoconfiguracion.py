@@ -6,6 +6,8 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import httpx
+import respx
 from edecan_toolkit.autoconfiguracion import ConfigurarCredencialTool
 
 _NUEVA_FILA = [{"id": "acc-nueva", "external_account_id": "x"}]
@@ -41,6 +43,124 @@ async def test_tipo_desconocido_devuelve_error(make_ctx, make_session):
     ctx = make_ctx(session=make_session([]))
     resultado = await ConfigurarCredencialTool().run(ctx, {"tipo": "bitcoin", "campos": {}})
     assert "desconocido" in resultado.content.lower()
+
+
+@respx.mock
+async def test_llm_openai_valida_descubre_modelos_y_guarda(
+    make_ctx, make_session, make_vault
+):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-example", "created": 2},
+                    {"id": "gpt-example-mini", "created": 3},
+                    {"id": "text-embedding-example", "created": 4},
+                ]
+            },
+        )
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "llm", "campos": {"provider": "openai", "api_key": "sk-test"}},
+    )
+
+    assert "verifiqué OpenAI" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "kind": "openai_compat",
+        "api_key": "sk-test",
+        "base_url": "https://api.openai.com/v1",
+        "model_principal": "gpt-example",
+        "model_rapido": "gpt-example-mini",
+        "extra": {"provider_label": "openai"},
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "llm"
+
+
+@respx.mock
+async def test_llm_rechazado_no_guarda_clave(make_ctx, make_session, make_vault):
+    respx.get("https://api.deepseek.com/models").mock(
+        return_value=httpx.Response(401, json={"error": "invalid"})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "llm", "campos": {"provider": "deepseek", "api_key": "sk-test"}},
+    )
+
+    assert "No guardé nada" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []
+
+
+@respx.mock
+async def test_images_openai_descubre_modelo_y_guarda(make_ctx, make_session, make_vault):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-text", "created": 10},
+                    {"id": "gpt-image-2-2026-04-21", "created": 30},
+                    {"id": "gpt-image-2", "created": 20},
+                    {"id": "gpt-image-1", "created": 40},
+                ]
+            },
+        )
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {"tipo": "images", "campos": {"provider": "openai", "api_key": "sk-test"}},
+    )
+
+    assert "crear imágenes" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test",
+        "model": "gpt-image-2",
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "images"
+
+
+@respx.mock
+async def test_images_openai_no_guarda_un_modelo_solicitado_que_no_existe(
+    make_ctx, make_session, make_vault
+):
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-image-2"}]})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "images",
+            "campos": {
+                "provider": "openai",
+                "api_key": "sk-test",
+                "model": "modelo-inventado",
+            },
+        },
+    )
+
+    assert "no anunció" in resultado.content
+    assert vault.puts == []
 
 
 async def test_voice_stt_guarda_deepgram(make_ctx, make_session, make_vault):
@@ -114,6 +234,110 @@ async def test_voice_tts_polly_en_modo_local_se_acepta(
     assert "polly" in resultado.content.lower()
     _tenant, _account, bundle = vault.puts[0]
     assert json.loads(bundle.access_token)["provider"] == "polly"
+
+
+async def test_studio_guarda_fal_en_vault_local(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "fal", "api_key": "fal-test-secret"},
+        },
+    )
+
+    assert "conecté fal" in resultado.content
+    assert session.llamadas[-1][1]["connector_key"] == "fydesign"
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {"env": {"FAL_KEY": "fal-test-secret"}}
+    assert vault.puts[0][2].token_type == "studio_config"
+
+
+async def test_studio_mezcla_proveedores_sin_borrar_el_anterior(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    previous = SimpleNamespace(
+        access_token=json.dumps({"env": {"FAL_KEY": "fal-existing"}})
+    )
+    session = make_session([[{"id": "acc-studio", "external_account_id": "fydesign"}]])
+    vault = make_vault(bundle=previous)
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "muapi", "api_key": "muapi-test-secret"},
+        },
+    )
+
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "env": {
+            "FAL_KEY": "fal-existing",
+            "MUAPI_API_KEY": "muapi-test-secret",
+        }
+    }
+
+
+async def test_studio_guarda_github_para_aprender_repositorios(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=True),
+    )
+
+    await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "github", "api_key": "github-test-secret"},
+        },
+    )
+
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {"env": {"GITHUB_TOKEN": "github-test-secret"}}
+
+
+async def test_studio_no_se_configura_fuera_de_la_app_local(
+    make_ctx, make_session, make_vault, fake_settings
+):
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(
+        session=session,
+        vault=vault,
+        settings=fake_settings(EDECAN_LOCAL_MODE=False),
+    )
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "studio",
+            "campos": {"provider": "openai", "api_key": "sk-test-secret"},
+        },
+    )
+
+    assert "app local" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []
 
 
 async def test_stripe_rechaza_secret_key(make_ctx, make_session, make_vault):
@@ -265,3 +489,58 @@ async def test_oauth_app_reconfigurar_reemplaza_la_fila_existente(
     assert any("DELETE" in sql for sql in sqls)
     insert_params = session.llamadas[-1][1]
     assert insert_params["external_account_id"] == "gid-nuevo"
+
+
+@respx.mock
+async def test_alpaca_paper_valida_y_guarda_ambas_claves(make_ctx, make_session, make_vault):
+    respx.get("https://paper-api.alpaca.markets/v2/account").mock(
+        return_value=httpx.Response(200, json={"id": "paper-account"})
+    )
+    session = make_session([[], _NUEVA_FILA])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "alpaca_paper",
+            "campos": {
+                "api_key_id": "PKTEST1234567890",
+                "secret_key": "secret-value-1234567890",
+            },
+        },
+    )
+
+    assert "verifiqué" in resultado.content
+    config = json.loads(vault.puts[0][2].access_token)
+    assert config == {
+        "environment": "paper",
+        "api_key_id": "PKTEST1234567890",
+        "secret_key": "secret-value-1234567890",
+    }
+    assert session.llamadas[-1][1]["connector_key"] == "alpaca_paper"
+
+
+@respx.mock
+async def test_alpaca_paper_rechazada_no_se_guarda(make_ctx, make_session, make_vault):
+    respx.get("https://paper-api.alpaca.markets/v2/account").mock(
+        return_value=httpx.Response(401, json={"message": "unauthorized"})
+    )
+    session = make_session([])
+    vault = make_vault()
+    ctx = make_ctx(session=session, vault=vault)
+
+    resultado = await ConfigurarCredencialTool().run(
+        ctx,
+        {
+            "tipo": "alpaca_paper",
+            "campos": {
+                "api_key_id": "PKTEST1234567890",
+                "secret_key": "secret-value-1234567890",
+            },
+        },
+    )
+
+    assert "No guardé nada" in resultado.content
+    assert vault.puts == []
+    assert session.llamadas == []

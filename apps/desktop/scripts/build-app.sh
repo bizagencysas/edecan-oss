@@ -8,11 +8,11 @@
 # (`cargo tauri build` — app+dmg en macOS, AppImage+deb+rpm en Linux): punto de
 # entrada reproducible para armar un release real.
 #
-# Este script NO firma código ni notariza en macOS — eso es responsabilidad
-# de quien empaqueta, con SU PROPIO Developer ID (bring-your-own, ver
-# docs/desktop.md "Firma de código"). Sin firmar, el .dmg/.app resultante
-# dispara Gatekeeper en Macs distintas a la que lo compiló (clic derecho →
-# Abrir la primera vez) — también documentado ahí.
+# En macOS, si no se aporta un Developer ID, Tauri aplica una firma ad-hoc.
+# No identifica a un desarrollador ni elimina el aviso de Gatekeeper, pero sí
+# deja el bundle internamente íntegro (incluido el sidecar) y evita distribuir
+# una app con un sello de recursos inválido. Firma Developer ID y notarización
+# siguen siendo bring-your-own; ver docs/desktop.md "Firma de código".
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,19 @@ PLATFORM="$(uname -s)"
 ARCH="$(uname -m)"
 
 case "$PLATFORM" in
-  Darwin) PLATFORM_LABEL="macOS" ;;
+  Darwin)
+    PLATFORM_LABEL="macOS"
+    if [[ -n "${EDECAN_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+      export APPLE_SIGNING_IDENTITY="$EDECAN_MACOS_CODESIGN_IDENTITY"
+    fi
+    # Un bundle sin firma exterior hereda la firma del ejecutable y falla
+    # `codesign --verify --deep --strict`. `-` es la identidad ad-hoc nativa
+    # de codesign. Una identidad real definida por el empaquetador siempre
+    # tiene prioridad.
+    if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+      export APPLE_SIGNING_IDENTITY="-"
+    fi
+    ;;
   Linux)
     if [[ "$ARCH" != "x86_64" && "$ARCH" != "amd64" ]]; then
       echo "error: el instalador Linux local-first requiere x86_64 (detectado: $ARCH)." >&2
@@ -87,7 +99,9 @@ echo "==> [1/2] Empaquetando el backend (scripts/build-backend.sh)…"
 echo "==> [2/2] cargo tauri build (instalador nativo de esta plataforma)…"
 cd "$DESKTOP_DIR/src-tauri"
 # `tauri.conf.json` -> `bundle.externalBin` SOLO lista `binaries/edecan-local`
-# por defecto (Ollama es opcional, ver `download-ollama.sh`/
+# por defecto. Esta build siempre suma `binaries/fydesign-node` y el recurso
+# `../packaging/studio-engine`, ambos creados por build-studio-engine.sh.
+# Ollama es opcional (ver `download-ollama.sh`/
 # `EDECAN_BUNDLE_OLLAMA` arriba y docs/desktop.md) — Tauri exige que TODOS
 # los binarios listados en `externalBin` existan para el target triple de
 # esta build, así que si acá se pidió el binario de Ollama (mismo
@@ -96,21 +110,24 @@ cd "$DESKTOP_DIR/src-tauri"
 # particular — nunca al archivo base, para que la build sin Ollama (la que
 # corre por defecto) no lo exija. El override se pasa explícitamente al CLI
 # con `cargo tauri build --config <json>`.
-TAURI_BUILD_ARGS=()
+TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node"]'
 if [[ "${EDECAN_BUNDLE_OLLAMA:-0}" == "1" ]]; then
   echo "    (EDECAN_BUNDLE_OLLAMA=1: sumando binaries/ollama a externalBin para esta build)"
-  TAURI_BUILD_ARGS+=(
-    --config
-    '{"bundle":{"externalBin":["binaries/edecan-local","binaries/ollama"]}}'
-  )
+  TAURI_EXTERNAL_BIN_JSON='["binaries/edecan-local","binaries/fydesign-node","binaries/ollama"]'
 fi
-if (( ${#TAURI_BUILD_ARGS[@]} )); then
-  cargo tauri build "${TAURI_BUILD_ARGS[@]}" -- --locked
+
+# Hardened Runtime exige que todas las librerías cargadas compartan el Team ID
+# del proceso. El sidecar PyInstaller onefile autoextrae libpython y extensiones
+# firmadas ad-hoc (sin Team ID), por lo que activar runtime con identidad `-`
+# produce una app que pasa `codesign --verify` pero muere al arrancar. Una firma
+# Developer ID real conserva el default endurecido de Tauri y puede notarizarse;
+# solo el build local ad-hoc recibe este override explícito y verificable.
+if [[ "$PLATFORM" == "Darwin" && "${APPLE_SIGNING_IDENTITY:-}" == "-" ]]; then
+  echo "    (firma ad-hoc: Hardened Runtime desactivado para el sidecar PyInstaller local)"
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"},\"macOS\":{\"hardenedRuntime\":false}}}"
 else
-  # Bash 3.2 (incluido por macOS) trata la expansión de un array vacío como
-  # variable no definida cuando `set -u` está activo. Ejecutar la variante sin
-  # argumentos evita que el instalador de doble clic falle al final del build.
-  cargo tauri build -- --locked
+  TAURI_BUNDLE_CONFIG="{\"bundle\":{\"externalBin\":$TAURI_EXTERNAL_BIN_JSON,\"resources\":{\"../packaging/studio-engine\":\"studio-engine\"}}}"
 fi
+cargo tauri build --config "$TAURI_BUNDLE_CONFIG" -- --locked
 
 echo "==> Listo. Instaladores de $PLATFORM_LABEL en src-tauri/target/release/bundle/."

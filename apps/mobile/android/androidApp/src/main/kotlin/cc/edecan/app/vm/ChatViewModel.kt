@@ -7,10 +7,12 @@ import cc.edecan.shared.ArtifactRef
 import cc.edecan.shared.ChatBlock
 import cc.edecan.shared.ChatEvent
 import cc.edecan.shared.ChatMessageIn
+import cc.edecan.shared.ChatSecretRedaction
 import cc.edecan.shared.ConfirmIn
 import cc.edecan.shared.Conversation
 import cc.edecan.shared.EdecanApi
 import cc.edecan.shared.Message
+import cc.edecan.shared.MissionDetail
 import cc.edecan.shared.SseClient
 import cc.edecan.shared.UploadContent
 import cc.edecan.shared.UploadedFile
@@ -20,6 +22,7 @@ import cc.edecan.shared.texto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,9 +103,119 @@ data class MensajeUi(
     val artefactos: List<ArtifactRef> = emptyList(),
     val bloques: List<ChatBlock> = emptyList(),
     val adjuntos: List<ArtifactRef> = emptyList(),
+    val trabajo: TrabajoUi? = null,
     val estadoEntrega: EstadoEntrega? = null,
 ) {
     enum class Rol { USUARIO, ASISTENTE }
+}
+
+data class PasoTrabajoUi(
+    val id: String,
+    val nombre: String,
+    val estado: Estado = Estado.EJECUTANDO,
+    val detalle: String? = null,
+    val segundos: Int = 0,
+) {
+    enum class Estado { EJECUTANDO, COMPLETADO, ERROR }
+}
+
+data class TrabajoUi(
+    val activo: Boolean = true,
+    val segundos: Int = 0,
+    val pasos: List<PasoTrabajoUi> = emptyList(),
+    val missionId: String? = null,
+    val missionStatus: String? = null,
+    val missionError: String? = null,
+)
+
+internal val TrabajoUi.tituloEstado: String
+    get() = when (missionStatus) {
+        "waiting_confirmation" -> "Necesita tu aprobación"
+        "error" -> "El trabajo encontró un error"
+        "cancelled" -> "Trabajo cancelado"
+        "done" -> "Trabajo completado"
+        else -> if (activo) "Edecán está trabajando" else "Trabajo completado"
+    }
+
+private fun TrabajoUi?.vincularMision(missionId: String): TrabajoUi =
+    (this ?: TrabajoUi()).copy(activo = true, missionId = missionId, missionStatus = "planning")
+
+private fun TrabajoUi?.actualizarMision(detail: MissionDetail): TrabajoUi {
+    val actual = this ?: TrabajoUi()
+    val pasos = actual.pasos.toMutableList()
+    detail.steps.forEach { step ->
+        val id = "mission:${step.seq}"
+        val estado = when (step.status) {
+            "done", "skipped" -> PasoTrabajoUi.Estado.COMPLETADO
+            "error" -> PasoTrabajoUi.Estado.ERROR
+            else -> PasoTrabajoUi.Estado.EJECUTANDO
+        }
+        val item = PasoTrabajoUi(
+            id = id,
+            nombre = step.instruccion,
+            estado = estado,
+            detalle = step.resultado,
+        )
+        val index = pasos.indexOfFirst { it.id == id }
+        if (index >= 0) pasos[index] = item else pasos += item
+    }
+    return actual.copy(
+        activo = detail.mission.status == "planning" || detail.mission.status == "running",
+        pasos = pasos,
+        missionId = detail.mission.id,
+        missionStatus = detail.mission.status,
+        missionError = detail.mission.error,
+    )
+}
+
+private fun TrabajoUi?.iniciarPaso(toolCallId: String?, nombre: String): TrabajoUi {
+    val actual = this ?: TrabajoUi()
+    val id = toolCallId ?: "$nombre-${actual.pasos.size}"
+    if (actual.pasos.any { it.id == id }) return actual.copy(activo = true)
+    return actual.copy(
+        activo = true,
+        pasos = actual.pasos + PasoTrabajoUi(id = id, nombre = nombre),
+    )
+}
+
+private fun TrabajoUi?.actualizarPaso(
+    toolCallId: String?,
+    nombre: String,
+    segundos: Int,
+    detalle: String,
+): TrabajoUi {
+    val iniciado = iniciarPaso(toolCallId, nombre)
+    val indice = iniciado.pasos.indexOfLast {
+        (toolCallId != null && it.id == toolCallId) ||
+            (toolCallId == null && it.nombre == nombre && it.estado == PasoTrabajoUi.Estado.EJECUTANDO)
+    }
+    if (indice < 0) return iniciado
+    val pasos = iniciado.pasos.toMutableList()
+    pasos[indice] = pasos[indice].copy(
+        segundos = maxOf(pasos[indice].segundos, segundos),
+        detalle = detalle,
+    )
+    return iniciado.copy(activo = true, segundos = maxOf(iniciado.segundos, segundos), pasos = pasos)
+}
+
+private fun TrabajoUi?.completarPaso(
+    toolCallId: String?,
+    nombre: String,
+    resultado: String,
+): TrabajoUi {
+    val actual = iniciarPaso(toolCallId, nombre)
+    val indice = actual.pasos.indexOfLast {
+        (toolCallId != null && it.id == toolCallId) ||
+            (toolCallId == null && it.nombre == nombre && it.estado == PasoTrabajoUi.Estado.EJECUTANDO)
+    }
+    if (indice < 0) return actual
+    val pasos = actual.pasos.toMutableList()
+    val fallo = resultado.trim().startsWith("error:", ignoreCase = true)
+    pasos[indice] = pasos[indice].copy(
+        estado = if (fallo) PasoTrabajoUi.Estado.ERROR else PasoTrabajoUi.Estado.COMPLETADO,
+        detalle = resultado.trim().ifBlank { null },
+    )
+    return actual.copy(pasos = pasos)
 }
 
 data class ConfirmacionPendiente(val toolCallId: String, val nombre: String, val argumentos: String)
@@ -135,10 +248,26 @@ data class ChatUiState(
     val adjuntosComposer: List<AdjuntoComposerUi> = emptyList(),
     val herramientaActiva: String? = null,
     val herramientaActivaCallId: String? = null,
+    val herramientaSegundos: Int = 0,
+    val herramientaMensaje: String? = null,
     val confirmacionPendiente: ConfirmacionPendiente? = null,
     val enviando: Boolean = false,
     val errorMensaje: String? = null,
 )
+
+/** Aplica la lista canónica del servidor sin tocar el turno que acaba de
+ * renderizarse. El backend asigna el título después del primer mensaje, por
+ * eso Android debe refrescar esta metadata al terminar el stream igual que
+ * web e iOS. */
+internal fun ChatUiState.conConversacionesActualizadas(
+    actualizadas: List<Conversation>,
+): ChatUiState {
+    val title = actualizadas.firstOrNull { it.id == conversationId }?.title
+    return copy(
+        conversaciones = actualizadas,
+        tituloConversacion = title ?: tituloConversacion,
+    )
+}
 
 internal fun aplicarFinDeHerramienta(
     estado: ChatUiState,
@@ -146,6 +275,9 @@ internal fun aplicarFinDeHerramienta(
     nuevos: List<ArtifactRef>,
     bloquesNuevos: List<ChatBlock> = emptyList(),
     toolCallId: String? = null,
+    nombre: String = "herramienta",
+    resultado: String = "",
+    missionId: String? = null,
 ): ChatUiState = estado.copy(
     herramientaActiva = if (
         estado.herramientaActivaCallId == null || toolCallId == null ||
@@ -155,6 +287,14 @@ internal fun aplicarFinDeHerramienta(
         estado.herramientaActivaCallId == null || toolCallId == null ||
         estado.herramientaActivaCallId == toolCallId
     ) null else estado.herramientaActivaCallId,
+    herramientaSegundos = if (
+        estado.herramientaActivaCallId == null || toolCallId == null ||
+        estado.herramientaActivaCallId == toolCallId
+    ) 0 else estado.herramientaSegundos,
+    herramientaMensaje = if (
+        estado.herramientaActivaCallId == null || toolCallId == null ||
+        estado.herramientaActivaCallId == toolCallId
+    ) null else estado.herramientaMensaje,
     mensajes = estado.mensajes.map { mensaje ->
         if (mensaje.id != idRespuesta) return@map mensaje
         val ids = mensaje.artefactos.mapTo(mutableSetOf()) { it.fileId }
@@ -163,6 +303,9 @@ internal fun aplicarFinDeHerramienta(
         mensaje.copy(
             artefactos = mensaje.artefactos + nuevos.filter { ids.add(it.fileId) },
             bloques = bloques,
+            trabajo = mensaje.trabajo.completarPaso(toolCallId, nombre, resultado).let { trabajo ->
+                missionId?.let(trabajo::vincularMision) ?: trabajo
+            },
         )
     },
 )
@@ -180,22 +323,37 @@ internal fun mensajesPersistidos(conversation: Conversation): List<MensajeUi> =
                 estadoEntrega = EstadoEntrega.ENTREGADO,
             )
             "assistant" -> {
-                val ends = message.toolEndsPersistidos()
+                val eventos = message.toolEventsPersistidos()
+                val ends = eventos.filterIsInstance<ChatEvent.ToolEnd>()
+                val trabajo = eventos.fold<ChatEvent, TrabajoUi?>(null) { actual, evento ->
+                    when (evento) {
+                        is ChatEvent.ToolStart -> actual.iniciarPaso(evento.toolCallId, evento.name)
+                        is ChatEvent.ToolEnd -> actual.completarPaso(
+                            evento.toolCallId, evento.name, evento.resultPreview,
+                        ).let { trabajo ->
+                            evento.missionId?.let(trabajo::vincularMision) ?: trabajo
+                        }
+                        else -> actual
+                    }
+                }?.let { work ->
+                    if (work.missionId == null) work.copy(activo = false) else work
+                }
                 MensajeUi(
                     id = message.id,
                     rol = MensajeUi.Rol.ASISTENTE,
                     texto = message.texto,
                     artefactos = ends.flatMap { it.artifacts }.distinctBy { it.fileId },
                     bloques = ends.filter { it.blocksVersion == 1 }.flatMap { it.blocks }.distinct(),
+                    trabajo = trabajo,
                 )
             }
             else -> null
         }
     }
 
-private fun Message.toolEndsPersistidos(): List<ChatEvent.ToolEnd> =
+private fun Message.toolEventsPersistidos(): List<ChatEvent> =
     (toolCalls as? JsonArray).orEmpty().mapNotNull { raw ->
-        runCatching { edecanJson.decodeFromJsonElement<ChatEvent>(raw) }.getOrNull() as? ChatEvent.ToolEnd
+        runCatching { edecanJson.decodeFromJsonElement<ChatEvent>(raw) }.getOrNull()
     }
 
 class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
@@ -209,7 +367,10 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     private var cargaVersion = 0L
     private val archivosAdjuntos = mutableMapOf<String, ArchivoSubidaLocal>()
     private val tareasSubida = mutableMapOf<String, Job>()
+    private val seguimientoMisiones = mutableMapOf<String, Job>()
     private val clavesIdempotencia = ClavesIntentoLogico()
+    /** Texto crudo únicamente en memoria durante un intento reintentable. */
+    private val textosPrivadosPorMensaje = mutableMapOf<String, String>()
     private var adjuntoUploader = AdjuntoUploader { api, local ->
         api.uploadFile(local.contenido(), local.filename, local.mime)
     }
@@ -252,6 +413,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                     historialInicializado = true,
                 )
             }
+            iniciarSeguimientosPersistidos(api)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -275,6 +437,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
     fun abrirConversacion(id: String, api: EdecanApi) {
         val version = ++cargaVersion
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         viewModelScope.launch {
             _uiState.update { it.copy(cargandoHistorial = true, errorMensaje = null) }
             try {
@@ -292,6 +455,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                         confirmacionPendiente = confirmacionPersistida(conversation),
                     )
                 }
+                iniciarSeguimientosPersistidos(api)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -312,6 +476,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         if (_uiState.value.enviando) return
         cargaVersion += 1
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         _uiState.update {
             it.copy(
                 conversationId = null,
@@ -323,6 +488,30 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 errorMensaje = null,
                 cargandoHistorial = false,
             )
+        }
+    }
+
+    fun renombrarConversacion(id: String, titulo: String, api: EdecanApi) {
+        val limpio = titulo.trim()
+        if (limpio.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val actualizada = api.renameConversation(id, limpio)
+                _uiState.update { estado ->
+                    estado.copy(
+                        conversaciones = estado.conversaciones.map {
+                            if (it.id == id) actualizada else it
+                        },
+                        tituloConversacion = if (estado.conversationId == id) {
+                            actualizada.title
+                        } else estado.tituloConversacion,
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(errorMensaje = error.message ?: "No pude renombrar ese chat.")
+                }
+            }
         }
     }
 
@@ -429,6 +618,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
             // Un contenido nuevo inaugura otro intento lógico. Las claves de
             // mensajes fallidos anteriores ya no deben heredarse.
             val idempotencyKey = clavesIdempotencia.nueva(idUsuario)
+            textosPrivadosPorMensaje[idUsuario] = texto
             actualizarBorrador("")
             _uiState.update {
                 it.copy(
@@ -436,7 +626,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                         MensajeUi(
                             idUsuario,
                             MensajeUi.Rol.USUARIO,
-                            texto,
+                            ChatSecretRedaction.redact(texto),
                             adjuntos = refs,
                             estadoEntrega = EstadoEntrega.ENVIANDO,
                         ) + MensajeUi(idRespuesta, MensajeUi.Rol.ASISTENTE, enProgreso = true),
@@ -481,7 +671,10 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 api,
                 "/v1/conversations/$idConversacion/messages",
                 edecanJson.encodeToString(
-                    ChatMessageIn(mensaje.texto, mensaje.adjuntos.map { it.fileId }),
+                    ChatMessageIn(
+                        textosPrivadosPorMensaje[idUsuario] ?: mensaje.texto,
+                        mensaje.adjuntos.map { it.fileId },
+                    ),
                 ),
                 idRespuesta,
                 idUsuario,
@@ -573,7 +766,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                         idempotencyKey,
                     ).collect { evento ->
                         idUsuario?.let(::marcarEntregado)
-                        aplicar(evento, idRespuesta)
+                        aplicar(evento, idRespuesta, api)
                     }
                     completado = true
                     break
@@ -613,8 +806,25 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                 )
             }
         }
-        if (completado && idUsuario != null) clavesIdempotencia.completar(idUsuario)
+        if (completado && idUsuario != null) {
+            clavesIdempotencia.completar(idUsuario)
+            textosPrivadosPorMensaje.remove(idUsuario)
+            refrescarTitulosDeConversacion(api)
+        }
         return completado
+    }
+
+    private suspend fun refrescarTitulosDeConversacion(api: EdecanApi) {
+        try {
+            val actualizadas = api.conversations()
+            _uiState.update { it.conConversacionesActualizadas(actualizadas) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // El mensaje ya terminó y quedó persistido. Un fallo secundario al
+            // refrescar el nombre no debe convertirlo en un envío fallido; la
+            // próxima carga de historial recuperará la metadata canónica.
+        }
     }
 
     private fun marcarEntregado(idUsuario: String) {
@@ -625,20 +835,58 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         }
     }
 
-    private fun aplicar(evento: ChatEvent, idRespuesta: String) {
+    private fun aplicar(evento: ChatEvent, idRespuesta: String, api: EdecanApi) {
         when (evento) {
             is ChatEvent.TextDelta -> actualizarRespuesta(idRespuesta) { it.copy(texto = it.texto + evento.text) }
             is ChatEvent.ToolStart -> _uiState.update {
-                it.copy(herramientaActiva = evento.name, herramientaActivaCallId = evento.toolCallId)
-            }
-            is ChatEvent.ToolEnd -> _uiState.update {
-                aplicarFinDeHerramienta(
-                    it,
-                    idRespuesta,
-                    evento.artifacts,
-                    evento.blocks.takeIf { evento.blocksVersion == 1 } ?: emptyList(),
-                    evento.toolCallId,
+                it.copy(
+                    herramientaActiva = evento.name,
+                    herramientaActivaCallId = evento.toolCallId,
+                    herramientaSegundos = 0,
+                    herramientaMensaje = null,
+                    mensajes = it.mensajes.map { mensaje ->
+                        if (mensaje.id == idRespuesta) {
+                            mensaje.copy(trabajo = mensaje.trabajo.iniciarPaso(evento.toolCallId, evento.name))
+                        } else mensaje
+                    },
                 )
+            }
+            is ChatEvent.ToolProgress -> _uiState.update {
+                val corresponde = it.herramientaActivaCallId == null || evento.toolCallId == null ||
+                    it.herramientaActivaCallId == evento.toolCallId
+                if (!corresponde) it else it.copy(
+                    herramientaActiva = evento.name,
+                    herramientaActivaCallId = evento.toolCallId ?: it.herramientaActivaCallId,
+                    herramientaSegundos = maxOf(it.herramientaSegundos, evento.elapsedSeconds),
+                    herramientaMensaje = evento.message,
+                    mensajes = it.mensajes.map { mensaje ->
+                        if (mensaje.id == idRespuesta) {
+                            mensaje.copy(
+                                trabajo = mensaje.trabajo.actualizarPaso(
+                                    evento.toolCallId,
+                                    evento.name,
+                                    evento.elapsedSeconds,
+                                    evento.message,
+                                ),
+                            )
+                        } else mensaje
+                    },
+                )
+            }
+            is ChatEvent.ToolEnd -> {
+                _uiState.update {
+                    aplicarFinDeHerramienta(
+                        it,
+                        idRespuesta,
+                        evento.artifacts,
+                        evento.blocks.takeIf { evento.blocksVersion == 1 } ?: emptyList(),
+                        evento.toolCallId,
+                        evento.name,
+                        evento.resultPreview,
+                        evento.missionId,
+                    )
+                }
+                evento.missionId?.let { iniciarSeguimientoMision(it, idRespuesta, api) }
             }
             is ChatEvent.ConfirmationRequired -> _uiState.update {
                 it.copy(
@@ -649,9 +897,57 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                     ),
                 )
             }
-            is ChatEvent.Done -> Unit
+            is ChatEvent.Done -> actualizarRespuesta(idRespuesta) { mensaje ->
+                mensaje.copy(
+                    trabajo = mensaje.trabajo?.let { trabajo ->
+                        if (trabajo.missionId == null) trabajo.copy(activo = false) else trabajo
+                    },
+                )
+            }
             is ChatEvent.ErrorEvent -> throw IllegalStateException(evento.message)
             is ChatEvent.Unknown -> Unit
+        }
+    }
+
+    private fun iniciarSeguimientosPersistidos(api: EdecanApi) {
+        _uiState.value.mensajes.forEach { mensaje ->
+            mensaje.trabajo?.missionId?.let { iniciarSeguimientoMision(it, mensaje.id, api) }
+        }
+    }
+
+    private fun iniciarSeguimientoMision(missionId: String, mensajeId: String, api: EdecanApi) {
+        if (seguimientoMisiones[missionId]?.isActive == true) return
+        seguimientoMisiones[missionId] = viewModelScope.launch {
+            var fallosConsecutivos = 0
+            try {
+                while (currentCoroutineContext().isActive) {
+                    try {
+                        val detail = api.getMission(missionId)
+                        fallosConsecutivos = 0
+                        actualizarRespuesta(mensajeId) { mensaje ->
+                            mensaje.copy(trabajo = mensaje.trabajo.actualizarMision(detail))
+                        }
+                        if (detail.mission.status !in setOf("planning", "running")) break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        fallosConsecutivos += 1
+                        if (fallosConsecutivos >= 3) {
+                            actualizarRespuesta(mensajeId) { mensaje ->
+                                mensaje.copy(
+                                    trabajo = (mensaje.trabajo ?: TrabajoUi()).copy(
+                                        missionError = "No pude actualizar el progreso. Sigue disponible en Actividad.",
+                                    ),
+                                )
+                            }
+                            break
+                        }
+                    }
+                    delay(3_000)
+                }
+            } finally {
+                seguimientoMisiones.remove(missionId)
+            }
         }
     }
 
@@ -672,11 +968,13 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         savedStateHandle[DRAFT_KEY] = ""
         tareasSubida.values.forEach(Job::cancel)
         tareasSubida.clear()
+        seguimientoMisiones.values.forEach(Job::cancel)
+        seguimientoMisiones.clear()
         archivosAdjuntos.values.forEach(ArchivoSubidaLocal::eliminar)
         archivosAdjuntos.clear()
         clavesIdempotencia.limpiar()
+        textosPrivadosPorMensaje.clear()
         cargaVersion += 1
         _uiState.value = ChatUiState()
-        super.onCleared()
     }
 }

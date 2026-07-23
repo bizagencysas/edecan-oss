@@ -3,8 +3,9 @@ import test from "node:test";
 
 import { isPublicAuthRoute } from "./src/lib/auth-route-policy.ts";
 
-test("solo register/login/refresh/logout omiten el Bearer", () => {
+test("solo las entradas de sesión omiten el Bearer", () => {
   for (const path of [
+    "/v1/auth/local",
     "/v1/auth/register",
     "/v1/auth/login",
     "/v1/auth/refresh",

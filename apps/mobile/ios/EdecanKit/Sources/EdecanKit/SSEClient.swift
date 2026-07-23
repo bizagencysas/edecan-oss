@@ -64,6 +64,7 @@ public struct SSEClient: Sendable {
                     var nombreEvento: String?
                     var lineasDeDatos: [String] = []
                     let decoder = JSONDecoder()
+                    var terminal = SSETerminalState()
 
                     func despacharBloque() throws {
                         guard !lineasDeDatos.isEmpty else { return }
@@ -71,16 +72,24 @@ public struct SSEClient: Sendable {
                         lineasDeDatos.removeAll()
                         let evento = nombreEvento
                         nombreEvento = nil
-                        guard let jsonData = payload.data(using: .utf8) else { return }
-                        do {
-                            let chatEvent = try decoder.decode(ChatEvent.self, from: jsonData)
-                            continuation.yield(chatEvent)
-                        } catch {
-                            throw SSEError.eventoInvalido(detalle: "evento '\(evento ?? "?")': \(error.localizedDescription)")
-                        }
+                        let decodificado = try Self.decodificarEvento(
+                            nombre: evento,
+                            payload: payload,
+                            decoder: decoder
+                        )
+                        guard terminal.aceptar(decodificado) else { return }
+                        continuation.yield(decodificado)
                     }
 
-                    for try await linea in bytes.lines {
+                    for try await lineaCruda in bytes.lines {
+                        if terminal.finalizado { break }
+                        // Algunos proxies/clientes conservan el CR de una
+                        // respuesta con separadores CRLF. Para SSE, una línea
+                        // que contiene solo ese CR sigue siendo el separador
+                        // vacío entre eventos.
+                        let linea = lineaCruda.last == "\r"
+                            ? String(lineaCruda.dropLast())
+                            : lineaCruda
                         if linea.isEmpty {
                             try despacharBloque()
                             continue
@@ -95,6 +104,12 @@ public struct SSEClient: Sendable {
                         if valor.hasPrefix(" ") { valor.removeFirst() }
                         switch campo {
                         case "event":
+                            // Defensa ante un relay que pierda la línea vacía:
+                            // un nuevo campo `event:` cierra inequívocamente el
+                            // bloque de datos anterior.
+                            if !lineasDeDatos.isEmpty {
+                                try despacharBloque()
+                            }
                             nombreEvento = valor
                         case "data":
                             lineasDeDatos.append(valor)
@@ -105,6 +120,7 @@ public struct SSEClient: Sendable {
                     // Por si el servidor cierra el stream sin una última línea
                     // en blanco tras el bloque final.
                     try despacharBloque()
+                    try terminal.validarCierre()
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: Self.normalizar(error))
@@ -119,5 +135,64 @@ public struct SSEClient: Sendable {
             return error
         }
         return SSEError.conexion(detalle: error.localizedDescription)
+    }
+
+    /// Decodifica el payload de un bloque ya enmarcado. `message.done` es un
+    /// marcador terminal: su `usage` es telemetría opcional y nunca debe
+    /// convertir una respuesta ya recibida y persistida en un fallo visible.
+    /// Algunos proveedores/relays usan `[DONE]` o un cuerpo vacío para ese
+    /// marcador; ambos se aceptan de forma compatible.
+    static func decodificarEvento(
+        nombre: String?,
+        payload: String,
+        decoder: JSONDecoder = JSONDecoder()
+    ) throws -> ChatEvent {
+        let nombreNormalizado = nombre?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if payload.trimmingCharacters(in: .whitespacesAndNewlines) == "[DONE]" {
+            return .done(usage: nil)
+        }
+        guard let jsonData = payload.data(using: .utf8) else {
+            if nombreNormalizado == "message.done" { return .done(usage: nil) }
+            throw SSEError.eventoInvalido(
+                detalle: "evento '\(nombreNormalizado ?? "?")': texto no válido"
+            )
+        }
+        do {
+            return try decoder.decode(ChatEvent.self, from: jsonData)
+        } catch {
+            if nombreNormalizado == "message.done" {
+                return .done(usage: nil)
+            }
+            throw SSEError.eventoInvalido(
+                detalle: "evento '\(nombreNormalizado ?? "?")': \(error.localizedDescription)"
+            )
+        }
+    }
+}
+
+/// Acepta exactamente un cierre terminal por turno. Además de ignorar
+/// eventos que un relay defectuoso mande después de `message.done` o
+/// `agent.error`, permite distinguir un EOF limpio de una respuesta truncada:
+/// cerrar el socket no equivale a haber terminado el trabajo.
+struct SSETerminalState {
+    private(set) var finalizado = false
+
+    mutating func aceptar(_ evento: ChatEvent) -> Bool {
+        guard !finalizado else { return false }
+        switch evento {
+        case .done, .error:
+            finalizado = true
+        default:
+            break
+        }
+        return true
+    }
+
+    func validarCierre() throws {
+        guard finalizado else {
+            throw SSEClient.SSEError.conexion(
+                detalle: "la respuesta terminó sin confirmación final"
+            )
+        }
     }
 }

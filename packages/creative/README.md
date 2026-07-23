@@ -34,7 +34,7 @@ usuario — solo generan un archivo y lo guardan como privado del tenant (prefij
     Pillow — sin descargar ninguna fuente.
   - `OpenAICompatImagesProvider` (`IMAGES_PROVIDER=openai_compat`): `POST
     {IMAGES_BASE_URL}/images/generations` con `Bearer IMAGES_API_KEY`, cuerpo
-    `{model: IMAGES_MODEL, prompt, size, response_format: "b64_json"}`; decodifica el
+    `{model: IMAGES_MODEL, prompt, size}`; decodifica el
     `b64_json` de la respuesta.
   - `get_image_provider(settings)` resuelve el proveedor activo leyendo `settings` de
     forma defensiva (`getattr(settings, "CAMPO", default)`) — nunca revienta si falta un

@@ -207,27 +207,49 @@ def parse_source(source: str) -> tuple[str, str, str | None]:
 
 
 def _candidatos(owner: str, repo: str, subpath: str | None) -> list[str]:
-    prefijo = f"{subpath}/" if subpath else ""
-    return [
-        f"{_RAW_BASE}/{owner}/{repo}/HEAD/{prefijo}SKILL.md",
-        f"{_RAW_BASE}/{owner}/{repo}/HEAD/skills/{repo}/SKILL.md",
-        f"{_RAW_BASE}/{owner}/{repo}/HEAD/skill/SKILL.md",
-    ]
+    rutas: list[str] = []
+
+    def agregar(ruta: str) -> None:
+        ruta = ruta.strip("/")
+        if ruta and ruta not in rutas:
+            rutas.append(ruta)
+
+    if subpath:
+        # El `id` de skills.sh suele ser owner/repo/<skill-id>, mientras el
+        # repositorio guarda la skill en skills/<skill-id>/SKILL.md. Otros
+        # índices ya entregan un subpath completo. Se soportan ambos sin
+        # adivinar hosts ni hacer peticiones fuera de GitHub raw.
+        agregar(f"{subpath}/SKILL.md")
+        agregar(f"skills/{subpath}/SKILL.md")
+        agregar(f".claude/skills/{subpath}/SKILL.md")
+        agregar(f".agents/skills/{subpath}/SKILL.md")
+        # OpenAI publica las skills indexadas bajo skills/.curated y
+        # skills/.system; el índice expone solo el slug humano.
+        agregar(f"skills/.curated/{subpath}/SKILL.md")
+        agregar(f"skills/.system/{subpath}/SKILL.md")
+    else:
+        agregar("SKILL.md")
+
+    agregar(f"skills/{repo}/SKILL.md")
+    agregar("skill/SKILL.md")
+    return [f"{_RAW_BASE}/{owner}/{repo}/HEAD/{ruta}" for ruta in rutas]
 
 
 async def fetch_skill(
     owner: str, repo: str, subpath: str | None, http: httpx.AsyncClient
 ) -> SkillFile:
     """Descarga el `SKILL.md` de `owner/repo` (y opcionalmente `subpath`), probando en
-    orden 3 rutas candidatas contra `raw.githubusercontent.com` — siempre en la rama
+    rutas candidatas seguras contra `raw.githubusercontent.com` — siempre en la rama
     `HEAD` (la rama por defecto del repo, cualquiera sea su nombre real, sin tener que
     resolverlo aparte): primero `{subpath}/SKILL.md` (o `SKILL.md` en la raíz si no hay
-    `subpath`), luego `skills/{repo}/SKILL.md`, luego `skill/SKILL.md`. La primera que
+    `subpath`), las estructuras habituales de monorepos (`skills/`, `.claude/skills/`,
+    `.agents/skills/` y las colecciones curadas de OpenAI), y los fallbacks históricos.
+    La primera que
     responda 200 gana — las demás ni se intentan.
 
     La descarga es en streaming y se corta apenas se superan `_MAX_BYTES` (200_000, sin
     esperar a bajar el archivo completo — importante ante un `SKILL.md` enorme o
-    malicioso), lanzando `SkillDemasiadoGrandeError`. Si las 3 rutas responden 404 (o
+    malicioso), lanzando `SkillDemasiadoGrandeError`. Si todas responden 404 (o
     fallan de red), lanza `SkillNoEncontradaError`.
     """
     fuente = f"{owner}/{repo}" + (f"/{subpath}" if subpath else "")
@@ -316,9 +338,9 @@ def parse_skill_md(texto: str) -> tuple[str, str, str | None, str]:
 
     if frontmatter is not None:
         nombre = str(frontmatter.get("name") or "").strip()
-        descripcion = str(
-            frontmatter.get("description") or ""
-        ).strip() or _primera_linea_no_vacia(cuerpo)
+        descripcion = str(frontmatter.get("description") or "").strip() or _primera_linea_no_vacia(
+            cuerpo
+        )
         version_raw = frontmatter.get("version")
         version = str(version_raw).strip() if version_raw not in (None, "") else None
         return nombre, descripcion, version, cuerpo

@@ -2,7 +2,6 @@ package cc.edecan.app.vm
 
 import android.app.Application
 import android.os.Build
-import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cc.edecan.shared.ApiException
@@ -332,6 +331,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             val deviceId = tokenStore.getDeviceId()
+            if (deviceId != null) runCatching { apiActual.deletePushToken(deviceId) }
             tokenStore.clearDevicePairing()
             apiActual.cerrarSesion(deviceId)
         }
@@ -339,7 +339,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** `POST /v1/devices` (contrato de WP-V4-01, en paralelo — ver
      * `EdecanApi.emparejarDispositivo`, que nunca lanza) con el nombre del
-     * equipo y el `ANDROID_ID` como huella — se llama después de un login o
+     * equipo y un id aleatorio app-scoped como huella — se llama después de un login o
      * registro exitosos, antes de marcar `isPaired = true`. Guarda el `id`
      * devuelto para poder revocarlo en [cerrarSesion]; si el servidor
      * todavía no expone el endpoint, sencillamente no guarda nada. */
@@ -348,14 +348,9 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         apiActual.emparejarDispositivo(nombre, huella)?.let { tokenStore.saveDeviceId(it) }
     }
 
-    private fun identidadDispositivo(): Pair<String, String?> {
-        val contexto = getApplication<Application>()
+    private suspend fun identidadDispositivo(): Pair<String, String?> {
         val nombre = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android" }
-        val huella = try {
-            Settings.Secure.getString(contexto.contentResolver, Settings.Secure.ANDROID_ID)
-        } catch (_: Exception) {
-            null
-        }
+        val huella = tokenStore.getInstallationId()
         return nombre to huella
     }
 }

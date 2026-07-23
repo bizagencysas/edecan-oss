@@ -27,9 +27,9 @@ la vez, cada uno identificado por su `nombre` (`external_account_id` — el
 
 ## Dónde vive la config (§15.g, PINNED — no reabrir)
 
-TODO (`nombre`, `transporte`, `url`, `comando` Y `headers`) viaja JUNTO en un
+TODO (`nombre`, `transporte`, `url`, `comando`, `headers` y `env`) viaja JUNTO en un
 único blob cifrado: `TokenBundle.access_token` (`token_type="config"`) guarda
-el JSON `{nombre, transporte, url?, comando?, headers?}`
+el JSON `{nombre, transporte, url?, comando?, headers?, env?}`
 (`edecan_mcp.provider_config.serializar_config_mcp`/`deserializar_config_mcp`)
 — mismo criterio que `LLMProviderConfig`/`"ads"`/`"vehicles"` (§12.c/§13.d).
 `connector_accounts` en sí NO lleva ninguna columna de config (ni siquiera la
@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import uuid
 from typing import Any
@@ -114,6 +115,11 @@ MCP_CONNECTOR_KEY = "mcp"
 _DISPLAY_NAME_PREFIX = "MCP: "
 _TRANSPORTES_VALIDOS = frozenset({"http", "stdio"})
 _VALIDATE_TIMEOUT_SECONDS = 15.0
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_RESERVED_ENV_NAMES = frozenset({"PATH", "HOME"})
+_MAX_ENV_ENTRIES = 32
+_MAX_ENV_VALUE_LENGTH = 16_384
+_SENSITIVE_ARGUMENT_PARTS = ("token", "secret", "password", "passwd", "api_key", "apikey")
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,7 @@ class MCPServerIn(BaseModel):
     url: str | None = None
     comando: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
     validate_: bool = Field(default=True, alias="validate")
 
 
@@ -155,6 +162,7 @@ class MCPServerOut(BaseModel):
     url: str | None = None
     comando: str | None = None
     estado: str
+    autenticacion_configurada: bool = False
 
 
 class MCPToolOut(BaseModel):
@@ -172,9 +180,7 @@ class MCPToolsOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _find_mcp_account(
-    repo: Repo, tenant_id: uuid.UUID, nombre: str
-) -> dict[str, Any] | None:
+async def _find_mcp_account(repo: Repo, tenant_id: uuid.UUID, nombre: str) -> dict[str, Any] | None:
     cuentas = await repo.list_connector_accounts(tenant_id=tenant_id)
     for cuenta in cuentas:
         if cuenta["connector_key"] == MCP_CONNECTOR_KEY and cuenta["external_account_id"] == nombre:
@@ -199,7 +205,49 @@ async def _cargar_config(
     return deserializar_config_mcp(raw, nombre_fallback=cuenta["external_account_id"])
 
 
-def _servidor_out(cuenta: dict[str, Any], config: MCPServerConfig) -> MCPServerOut:
+def _comando_seguro_para_respuesta(comando: str | None) -> str | None:
+    """Conserva un comando útil para diagnóstico sin repetir secretos de
+    configuraciones antiguas que usaban `env TOKEN=...` o `--token ...`.
+
+    Las configuraciones nuevas deben usar `MCPServerIn.env`, que nunca sale
+    por API. Este redactor mantiene compatibilidad de lectura con filas
+    anteriores y cierra la fuga sin borrar ni mutar su config cifrada.
+    """
+    if not comando:
+        return comando
+    try:
+        argumentos = shlex.split(comando)
+    except ValueError:
+        return "[comando local configurado]"
+
+    seguros: list[str] = []
+    ocultar_siguiente = False
+    for argumento in argumentos:
+        if ocultar_siguiente:
+            seguros.append("••••")
+            ocultar_siguiente = False
+            continue
+        if "=" in argumento:
+            clave, _valor = argumento.split("=", 1)
+            if _ENV_NAME_RE.fullmatch(clave):
+                seguros.append(f"{clave}=••••")
+                continue
+            flag = clave.lstrip("-").lower().replace("-", "_")
+            if any(parte in flag for parte in _SENSITIVE_ARGUMENT_PARTS):
+                seguros.append(f"{clave}=••••")
+                continue
+        flag = argumento.lstrip("-").lower().replace("-", "_")
+        if argumento.startswith("-") and any(parte in flag for parte in _SENSITIVE_ARGUMENT_PARTS):
+            seguros.append(argumento)
+            ocultar_siguiente = True
+            continue
+        seguros.append(argumento)
+    return shlex.join(seguros)
+
+
+def _servidor_out(
+    cuenta: dict[str, Any], config: MCPServerConfig, headers: dict[str, str]
+) -> MCPServerOut:
     """`MCPServerOut` — NUNCA incluye `headers` aunque `_cargar_config` los
     haya descifrado para otro propósito (p. ej. `get_server_tools`, que sí
     los necesita para conectar pero tampoco los devuelve en su respuesta)."""
@@ -207,8 +255,9 @@ def _servidor_out(cuenta: dict[str, Any], config: MCPServerConfig) -> MCPServerO
         nombre=config.nombre,
         transporte=config.transporte,
         url=config.url,
-        comando=config.comando,
+        comando=_comando_seguro_para_respuesta(config.comando),
         estado=cuenta.get("status", "active"),
+        autenticacion_configurada=bool(headers or config.env),
     )
 
 
@@ -223,7 +272,7 @@ def _servidor_out(cuenta: dict[str, Any], config: MCPServerConfig) -> MCPServerO
 
 def _build_transport(config: MCPServerConfig, headers: dict[str, str]) -> Any:
     if config.transporte == "stdio":
-        return StdioTransport(shlex.split(config.comando or ""))
+        return StdioTransport(shlex.split(config.comando or ""), env=config.env)
     return HTTPTransport(config.url or "", headers=headers)
 
 
@@ -297,8 +346,8 @@ async def list_servers(
     cuentas = await _list_mcp_accounts(repo, current_user.tenant_id)
     salida: list[MCPServerOut] = []
     for cuenta in cuentas:
-        config, _headers = await _cargar_config(vault, current_user.tenant_id, cuenta)
-        salida.append(_servidor_out(cuenta, config))
+        config, headers = await _cargar_config(vault, current_user.tenant_id, cuenta)
+        salida.append(_servidor_out(cuenta, config, headers))
     return salida
 
 
@@ -334,10 +383,30 @@ async def put_server(
         try:
             validar_comando_mcp(shlex.split(comando_str), local_mode=local_mode)
         except MCPSeguridadError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         url = None
+        env = dict(payload.env or {})
+        if len(env) > _MAX_ENV_ENTRIES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Un servidor MCP admite como máximo {_MAX_ENV_ENTRIES} variables secretas.",
+            )
+        for clave, valor in env.items():
+            if clave in _RESERVED_ENV_NAMES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{clave} está reservada por Edecan y no se puede reemplazar.",
+                )
+            if not _ENV_NAME_RE.fullmatch(clave):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"«{clave}» no es un nombre válido de variable de entorno.",
+                )
+            if "\x00" in valor or len(valor) > _MAX_ENV_VALUE_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"El valor de «{clave}» no tiene un formato o tamaño permitido.",
+                )
     else:
         url = (payload.url or "").strip()
         if not url:
@@ -348,13 +417,21 @@ async def put_server(
         try:
             await validar_url_mcp(url, local_mode=local_mode)
         except MCPSeguridadError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         comando_str = None
+        if payload.env:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Las variables secretas solo aplican a servidores MCP locales por stdio.",
+            )
+        env = {}
 
     config = MCPServerConfig(
-        nombre=nombre, transporte=transporte, url=url or None, comando=comando_str or None
+        nombre=nombre,
+        transporte=transporte,
+        url=url or None,
+        comando=comando_str or None,
+        env=env or None,
     )
     headers = dict(payload.headers or {})
 

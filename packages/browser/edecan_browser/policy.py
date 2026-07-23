@@ -4,9 +4,8 @@ Esto implementa, en código, el guardrail «investigar sí, comprar jamás»
 (`ROADMAP_V2.md` §6 categoría 6, §8 guardrails 1 y 4): `edecan_browser` SOLO
 hace lecturas (`GET`) de páginas públicas para investigar/comparar precios —
 jamás inicia un flujo de compra, pago o autenticación, jamás llega a una URL
-de red privada o de metadata de nube (SSRF), y jamás navega ni extrae
-contenido de LinkedIn (exclusión permanente de cumplimiento, `ARCHITECTURE.md`
-§0.2 — ver punto 2 más abajo).
+de red privada o de metadata de nube (SSRF), y no usa su extractor HTTP sobre
+plataformas que exigen una vía oficial o una sesión local autorizada.
 
 `check_navigation(url, settings)` es el portero: `edecan_browser.tools` lo
 llama antes de cualquier fetch real sobre la URL pedida por el usuario/LLM, y
@@ -18,14 +17,11 @@ en orden barato→caro (para no gastar una llamada de red en una URL que de
 todos modos se iba a rechazar):
 
 1. Esquema permitido (`http`/`https` solamente).
-2. Exclusión de cumplimiento por dominio: LinkedIn (`linkedin.com` y
-   cualquier subdominio) está excluido permanentemente de Edecán
-   (`ARCHITECTURE.md` §0.2, `docs/cumplimiento/tos-redes.md` sección
-   "LinkedIn — excluido permanentemente") — a diferencia del resto de esta
-   lista, esto no es un guardrail de seguridad general sino una decisión de
-   producto/ToS, y por eso se evalúa por nombre de host exacto (nunca por
-   substring sobre la URL completa, para no bloquear de más una URL ajena
-   que solo mencione "linkedin" en el path/query).
+2. Vía autorizada por dominio: LinkedIn (`linkedin.com` y subdominios) no se
+   entrega al extractor HTTP genérico. Crear contenido sí está soportado; leer
+   o publicar requiere una integración oficial autorizada o una sesión local
+   ya abierta mediante `usar_computadora`, con confirmación. La coincidencia
+   se hace por host exacto, nunca por substring de una URL ajena.
 3. Blocklist de rutas transaccionales (regex sobre la URL completa).
 4. SSRF: IP literal o resolución DNS del host contra rangos privados,
    loopback, link-local, reservados o de metadata de nube.
@@ -70,29 +66,20 @@ _HOSTS_BLOQUEADOS_POR_NOMBRE = frozenset(
     {"localhost", "localhost.", "metadata.google.internal", "metadata.goog"}
 )
 
-# Dominios excluidos PERMANENTEMENTE por cumplimiento (no por SSRF/red): hoy
-# solo LinkedIn. El *User Agreement* de LinkedIn prohíbe explícitamente bots o
-# métodos automatizados para acceder al servicio o extraer ("scrape") perfiles
-# e información (`docs/cumplimiento/tos-redes.md`), y la promesa del producto
-# ("no puedes... leer nada ahí", `persona.py`) es absoluta — no solo para
-# `packages/connectors/`. `edecan_browser` es un navegador de propósito
-# general cuyas 3 tools reciben la URL como argumento en tiempo de ejecución
-# (`edecan_browser.tools`), así que ni el guardrail estático de
-# `ToolRegistry.register()` (que solo mira `tool.name`/`tool.description`) ni
-# `test_no_linkedin` (que solo escanea `packages/connectors/`) cubren este
-# camino — este es el único punto de enforcement en código para él.
-_HOSTS_EXCLUIDOS_CUMPLIMIENTO = frozenset({"linkedin.com"})
+# Dominios que el extractor HTTP genérico no debe scrapear. Esto no impide
+# crear contenido para la plataforma ni operar una sesión local con aprobación.
+_HOSTS_SIN_EXTRACCION_AUTOMATIZADA = frozenset({"linkedin.com"})
 
 
-def _host_excluido_por_cumplimiento(hostname: str) -> bool:
+def _host_requiere_via_autorizada(hostname: str) -> bool:
     """`True` si `hostname` es (o es subdominio de) un dominio de
-    `_HOSTS_EXCLUIDOS_CUMPLIMIENTO` — mismo criterio de coincidencia
+    `_HOSTS_SIN_EXTRACCION_AUTOMATIZADA` — mismo criterio de coincidencia
     (dominio exacto o `.dominio` al final) que `_dominio_permitido` en
     `edecan_connectors/social/tests/test_allowed_domains.py`.
     """
     return any(
         hostname == dominio or hostname.endswith(f".{dominio}")
-        for dominio in _HOSTS_EXCLUIDOS_CUMPLIMIENTO
+        for dominio in _HOSTS_SIN_EXTRACCION_AUTOMATIZADA
     )
 
 
@@ -251,12 +238,12 @@ async def check_navigation(
         )
 
     hostname = partes.hostname.lower()
-    if _host_excluido_por_cumplimiento(hostname):
+    if _host_requiere_via_autorizada(hostname):
         return PolicyResult(
             False,
-            "LinkedIn está excluido permanentemente de Edecán: no navego, extraigo datos ni "
-            "comparo precios en linkedin.com bajo ninguna forma (ver "
-            "docs/cumplimiento/tos-redes.md).",
+            "El extractor web genérico no hace scraping de LinkedIn. Edecán sí puede crear "
+            "posts e imágenes; para leer o publicar usa una integración oficial autorizada "
+            "o una sesión local ya abierta con confirmación.",
         )
 
     if _RUTA_TRANSACCIONAL_RE.search(url):

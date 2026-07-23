@@ -3,7 +3,7 @@
 
 Payload: `{"user_id": "<uuid>"}`. Requiere `env.tenant_id`.
 
-**Fase 1 — extracción** (`_extraer_memorias_nuevas`): lee los últimos
+**Fase 1 — extracción y reemplazo** (`_extraer_memorias_nuevas`): lee los últimos
 `_LIMITE_MENSAJES_RECIENTES` mensajes del usuario (de cualquiera de sus
 conversaciones — el payload no trae `conversation_id`, y ARCHITECTURE.md
 §10.11 no pinnea más claves; como este job se encola justo después de cerrar
@@ -17,7 +17,11 @@ depender de leer un archivo del repo en tiempo de ejecución, que puede no
 estar presente en la imagen del worker). Respeta `personas.memoria_activada`
 (default `True`, igual que `PersonaConfig`, ver `edecan_api.routers.persona
 .persona_from_row`): si el usuario desactivó la memoria, no se extrae nada
-nuevo. Los ítems nuevos de un mismo lote (mismo fragmento de conversación) se
+nuevo. Si el usuario corrige explícitamente un recuerdo existente, el LLM
+devuelve su id en `replaces`: la versión anterior se marca con
+`superseded_at`/`superseded_by`, deja de entrar en búsquedas y perfiles, pero
+se conserva para auditoría y recuperación. Los ítems nuevos de un mismo lote
+(mismo fragmento de conversación) se
 enlazan entre sí en el grafo de memoria (`memory_edges`, `add_edge` de
 `edecan_core.memory.graph`, ARCHITECTURE.md §10.3/§10.7) con
 `relation="extraido_junto_con"`, en ambos sentidos -`neighbors()` solo resuelve
@@ -86,7 +90,7 @@ from typing import Any
 
 from edecan_core.memory import build_profile
 from edecan_llm.base import ChatMessage, CompletionRequest
-from edecan_schemas import PLANES, JobEnvelope
+from edecan_schemas import PLANES, JobEnvelope, ProfileIdentity
 from sqlalchemy import text
 
 from edecan_worker.deps import Deps
@@ -100,6 +104,7 @@ _ALIAS_LLM_EXTRACCION = "rapido"
 _MAX_TOKENS_EXTRACCION = 1024
 _LIMITE_MENSAJES_RECIENTES = 20
 _LIMITE_MEMORIAS_EXISTENTES = 50
+_MAX_REEMPLAZOS_POR_ITEM = 5
 _KINDS_VALIDOS = frozenset({"fact", "preference", "event", "entity"})
 _ROLES_TEXTO = frozenset({"user", "assistant"})
 
@@ -130,6 +135,16 @@ Extrae SOLO información:
 importantes, decisiones que tomó, restricciones que puso ("nunca me llames después de las 9pm").
 - Explícita o razonablemente inferible del texto — no inventes datos que no están ahí.
 
+Correcciones y reemplazos:
+- La sección "Memorias existentes" incluye un `id` para cada recuerdo reemplazable.
+- Si el usuario dice que un dato cambió, que era incorrecto, que ya no aplica, o pide corregirlo, \
+crea la versión vigente y agrega `"replaces": ["id-anterior"]`.
+- Usa exclusivamente ids que aparezcan en "Memorias existentes". Nunca inventes ids.
+- No marques `replaces` por una simple repetición o ampliación compatible.
+- Si el recuerdo anterior contiene varias ideas y solo una quedó obsoleta, el `content` nuevo debe \
+conservar las ideas todavía válidas y cambiar únicamente la parte corregida.
+- Una instrucción estable de estilo también puede reemplazar una preferencia anterior incompatible.
+
 Clasifica cada elemento con uno de estos `kind`:
 - fact: un hecho objetivo ("trabaja en una agencia de diseño").
 - preference: una preferencia o gusto ("prefiere que le hable de tú").
@@ -148,7 +163,7 @@ Responde EXCLUSIVAMENTE con un array JSON (puede estar vacío: []), sin texto an
 con esta forma exacta por elemento:
 
 [{"kind": "preference", "content": "Prefiere que le hablen de tú, en tono cercano.", \
-"importance": 0.6, "source": "conversación 2026-07-07"}]
+"importance": 0.6, "source": "conversación 2026-07-07", "replaces": []}]
 
 - `importance`: número entre 0.0 y 1.0 (qué tan útil es recordar esto en turnos futuros).
 - `source`: una referencia breve de dónde salió (p. ej. "conversación {fecha}")."""
@@ -229,7 +244,13 @@ def _formatear_mensajes_recientes(mensajes: list[dict[str, Any]]) -> str:
 def _formatear_memorias_existentes(memorias: list[dict[str, Any]]) -> str:
     if not memorias:
         return "(el usuario todavía no tiene memorias guardadas)"
-    return "\n".join(f"- [{memoria['kind']}] {memoria['content']}" for memoria in memorias)
+    lineas: list[str] = []
+    for memoria in memorias:
+        if memoria.get("source") == _SOURCE_ESPEJO_PERFIL:
+            lineas.append(f"- [perfil consolidado, no reemplazable] {memoria['content']}")
+            continue
+        lineas.append(f"- id={memoria['id']} [{memoria['kind']}] {memoria['content']}")
+    return "\n".join(lineas)
 
 
 def _parsear_items_extraidos(texto_respuesta: str) -> list[dict[str, Any]]:
@@ -271,7 +292,26 @@ def _validar_item_extraido(item: dict[str, Any], *, fuente_default: str) -> dict
     if not isinstance(source, str) or not source.strip():
         source = fuente_default
 
-    return {"kind": kind, "content": content.strip(), "importance": importance, "source": source}
+    validado: dict[str, Any] = {
+        "kind": kind,
+        "content": content.strip(),
+        "importance": importance,
+        "source": source,
+    }
+    replaces = item.get("replaces")
+    if isinstance(replaces, list):
+        ids_unicos: list[str] = []
+        for candidate in replaces:
+            if not isinstance(candidate, str):
+                continue
+            candidate = candidate.strip()
+            if candidate and candidate not in ids_unicos:
+                ids_unicos.append(candidate)
+            if len(ids_unicos) >= _MAX_REEMPLAZOS_POR_ITEM:
+                break
+        if ids_unicos:
+            validado["replaces"] = ids_unicos
+    return validado
 
 
 async def _extraer_memorias_nuevas(
@@ -315,6 +355,11 @@ async def _extraer_memorias_nuevas(
         memorias_existentes = await repo.list_memory_contents(
             tenant_id=tenant_id, user_id=user_id, limit=_LIMITE_MEMORIAS_EXISTENTES
         )
+        reemplazables = {
+            str(memoria["id"]): memoria
+            for memoria in memorias_existentes
+            if memoria.get("id") is not None and memoria.get("source") != _SOURCE_ESPEJO_PERFIL
+        }
         tenant = await repo.get_tenant(tenant_id=tenant_id)
         plan_key = tenant["plan_key"] if tenant else "free_selfhost"
         plan = PLANES.get(plan_key, PLANES["free_selfhost"])
@@ -356,6 +401,8 @@ async def _extraer_memorias_nuevas(
 
         embeddings = await deps.embedder.embed([item["content"] for item in items_validos])
         nuevos_ids: list[uuid.UUID] = []
+        reemplazos: list[tuple[uuid.UUID, uuid.UUID]] = []
+        ids_reclamados: set[str] = set()
         for item, embedding in zip(items_validos, embeddings, strict=True):
             row = await repo.add_memory_item(
                 tenant_id=tenant_id,
@@ -367,6 +414,25 @@ async def _extraer_memorias_nuevas(
                 embedding=embedding,
             )
             nuevos_ids.append(row["id"])
+            for old_id in item.get("replaces", []):
+                if old_id not in reemplazables or old_id in ids_reclamados:
+                    continue
+                ids_reclamados.add(old_id)
+                reemplazos.append((uuid.UUID(old_id), row["id"]))
+
+        if reemplazos:
+            reemplazados = await repo.supersede_memory_items(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                replacements=reemplazos,
+            )
+            logger.info(
+                "memory_consolidate: memorias obsoletas archivadas tenant_id=%s "
+                "user_id=%s reemplazadas=%d",
+                tenant_id,
+                user_id,
+                reemplazados,
+            )
 
         # Grafo de memoria (ver docstring del módulo): los ítems de este mismo
         # lote salieron del mismo fragmento de conversación, así que quedan
@@ -444,7 +510,7 @@ async def _upsert_perfil_vivo(
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,
     resumen: str,
-    datos: dict[str, list[str]],
+    datos: dict[str, Any],
     version: int,
 ) -> None:
     """`INSERT ... ON CONFLICT (tenant_id, user_id) DO UPDATE` — la fila es
@@ -568,6 +634,17 @@ async def _actualizar_perfil_vivo(
             return response.text
 
         nuevo_perfil = await build_profile(memorias_texto, perfil_previo, _llm_complete)
+        # La identidad es declarativa: una reconstrucción con IA puede
+        # enriquecer gustos/proyectos/metas, pero jamás cambiar el nombre o
+        # la forma de trato elegida por la propia persona.
+        identidad_previa = _from_jsonb(fila_previa.get("datos") if fila_previa else None).get(
+            "identidad"
+        )
+        try:
+            identidad = ProfileIdentity.model_validate(identidad_previa or {}).model_dump()
+        except Exception:  # datos históricos inesperados: se normalizan a vacío
+            identidad = ProfileIdentity().model_dump()
+        nuevo_perfil["datos"] = {"identidad": identidad, **nuevo_perfil["datos"]}
 
         nueva_version = (fila_previa["version"] + 1) if fila_previa is not None else 1
         await _upsert_perfil_vivo(

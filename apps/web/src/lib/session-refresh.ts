@@ -1,7 +1,9 @@
 import { createSingleFlight } from "./single-flight";
 import {
   clearTokensIfSessionCurrent,
+  getDesktopCapability,
   getSessionSnapshot,
+  isDesktopApp,
   isSessionSnapshotCurrent,
   setTokensIfSessionCurrent,
   type SessionSnapshot,
@@ -22,6 +24,48 @@ export type RefreshResult =
 
 const runRefresh = createSingleFlight<RefreshResult>();
 const runTotpPrompt = createSingleFlight<RefreshResult>();
+const runLocalDesktopSession = createSingleFlight<RefreshResult>();
+
+async function reopenLocalDesktopSession(apiBaseUrl: string): Promise<RefreshResult> {
+  return runLocalDesktopSession(async () => {
+    if (!isDesktopApp()) return { ok: false, reason: "invalid" };
+    const capability = getDesktopCapability();
+    if (!capability) return { ok: false, reason: "transient" };
+
+    const snapshot = getSessionSnapshot();
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/auth/local`, {
+        method: "POST",
+        headers: { "X-Edecan-Desktop-Capability": capability },
+      });
+      if (!isSessionSnapshotCurrent(snapshot)) {
+        return { ok: false, reason: "superseded" };
+      }
+      if (!response.ok) return { ok: false, reason: "transient" };
+
+      const pair = (await response.json()) as {
+        access_token?: unknown;
+        refresh_token?: unknown;
+      };
+      if (
+        typeof pair.access_token !== "string" ||
+        typeof pair.refresh_token !== "string" ||
+        !pair.access_token ||
+        !pair.refresh_token
+      ) {
+        return { ok: false, reason: "transient" };
+      }
+      if (!setTokensIfSessionCurrent(snapshot, pair.access_token, pair.refresh_token)) {
+        return { ok: false, reason: "superseded" };
+      }
+      return { ok: true, session: getSessionSnapshot() };
+    } catch {
+      return isSessionSnapshotCurrent(snapshot)
+        ? { ok: false, reason: "transient" }
+        : { ok: false, reason: "superseded" };
+    }
+  });
+}
 
 async function refreshRequest(
   apiBaseUrl: string,
@@ -117,7 +161,7 @@ export function refreshSessionWithTotpPrompt(
       return { ok: false, reason: "cancelled" };
     }
     const code = window.prompt(
-      "Tu sesión expiró. Ingresá tu código de verificación en dos pasos (2FA) para continuar:",
+      "Tu sesión expiró. Ingresa tu código de verificación en dos pasos (2FA) para continuar:",
     );
     if (!code?.trim()) {
       return { ok: false, reason: "cancelled" };
@@ -136,11 +180,21 @@ export async function recoverSessionAfterUnauthorized(apiBaseUrl: string): Promi
   // Success advances the generation by committing the rotated pair. Invalid
   // advances it by clearing exactly the old session. Both are terminal and
   // must retain their classification.
-  if (result.ok || result.reason === "invalid") return result;
+  if (result.ok) return result;
+  // El refresh de fakeredis puede desaparecer si el backend local se
+  // reinicia con la WebView todavía abierta. La identidad no se perdió: está
+  // en Postgres. Reabre la sesión loopback y deja que el cliente repita la
+  // petición original con el nuevo access token.
+  if (result.reason === "invalid") {
+    return isDesktopApp() ? reopenLocalDesktopSession(apiBaseUrl) : result;
+  }
+  if (result.reason === "totp_required" && isDesktopApp()) {
+    return reopenLocalDesktopSession(apiBaseUrl);
+  }
   if (!isSessionSnapshotCurrent(snapshot)) {
     return { ok: false, reason: "superseded" };
   }
-  if (!result.ok && result.reason === "totp_required") {
+  if (result.reason === "totp_required") {
     return refreshSessionWithTotpPrompt(apiBaseUrl, snapshot);
   }
   return result;
@@ -154,9 +208,8 @@ export function isRefreshResultCurrent(
 }
 
 /**
- * Refresh tokens deliberately remain in per-tab `sessionStorage`. Sharing a
- * rotated refresh credential over BroadcastChannel would widen its exposure
- * to every same-origin browsing context, so cross-tab token transfer is not
- * attempted here. Concurrent requests inside a tab are coordinated safely;
- * a duplicated tab may need to authenticate again after either copy rotates.
+ * Access y refresh permanecen en `sessionStorage`. La app Tauri no usa un JWT
+ * como identidad durable: reabre la sesión de su dueño local cuando arranca o
+ * cuando fakeredis se reinicia. Cada rotación mantiene las defensas contra
+ * respuestas tardías.
  */

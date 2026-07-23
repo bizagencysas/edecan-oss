@@ -141,7 +141,7 @@ Verificación programática (no solo lectura manual) en `apps/api/tests/test_v6_
 
 ### Superficies de encolado por `JOB_TYPE`
 
-Para cada uno de los 12 `JOB_TYPE` (`edecan_schemas.queue.JOB_TYPES`), quién puede encolarlo y qué gate tiene ese camino — pinnado en `test_job_types_documentados_coinciden_con_edecan_schemas_queue` (si se agrega/quita un tipo, el test avisa para que se actualice esta tabla):
+Para cada uno de los 15 `JOB_TYPE` (`edecan_schemas.queue.JOB_TYPES`), quién puede encolarlo y qué gate tiene ese camino — pinnado en `test_job_types_documentados_coinciden_con_edecan_schemas_queue` (si se agrega/quita un tipo, el test avisa para que se actualice esta tabla):
 
 | `JOB_TYPE` | Quién lo encola | Gate |
 |---|---|---|
@@ -157,6 +157,9 @@ Para cada uno de los 12 `JOB_TYPE` (`edecan_schemas.queue.JOB_TYPES`), quién pu
 | `automation_scan` | Solo el scheduler interno del worker/`apps/local` | No es un camino tenant-iniciado. |
 | `generate_podcast` | `CrearPodcastTool` (`edecan_creative/tools.py`) **y** `POST /v1/voz/podcasts` (`voz_avanzada.py`, fase v6) | Ambos exigen `tools.podcast` — ver fila `podcast:*` de la tabla de arriba. |
 | `process_meeting` | `ResumirReunionTool` (`edecan_meetings/tools.py`) **y** `POST /v1/reuniones` (`reuniones.py`, fase v6) | Ambos exigen `tools.meetings` — `ResumirReunionTool.requires_flags = frozenset({"tools.meetings"})` y `reuniones.py::_require_tools_meetings`, mismo patrón y mismo string literal que la fila `generate_podcast` de arriba. |
+| `notify_phone_call_summary` | Solo el cierre interno de una llamada ya persistida (`phone.py`), después de verificar la firma Twilio o de registrar un fallo del dispatcher saliente. | No acepta datos del tenant ni ejecuta una llamada. El worker exige `tenant_id` + `call_id`, reclama atómicamente un resumen existente y envía un push genérico sin datos de la llamada. |
+| `notify_incoming_phone_call` | Solo el webhook entrante firmado de Twilio, después de confirmar la llamada y su evento `incoming`. | Payload limitado a `call_id`; el worker relee tenant/usuario/dirección y exige el evento durable. La entrega universal deduplica, respeta la preferencia `work` y genera un deeplink opaco a Actividad. |
+| `notify_important_event` | Solo productores internos de herramientas sincrónicas. | Payload restringido a vocabulario controlado e identificadores UUID; actividad durable antes del push y deduplicación por ocurrencia. |
 
 ### ¿Puede el contenido de una skill de terceros escalar privilegios?
 

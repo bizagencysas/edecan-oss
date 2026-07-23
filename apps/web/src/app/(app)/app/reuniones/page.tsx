@@ -129,7 +129,7 @@ export default function ReunionesPage() {
             ) : reuniones.length === 0 ? (
               <EmptyState
                 title="Sin reuniones todavía"
-                description="Elegí un audio o video arriba para transcribirlo y generar minutas."
+                description="Elige un audio o video arriba para transcribirlo y generar minutas."
               />
             ) : (
               <ListaReuniones

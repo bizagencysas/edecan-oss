@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import stat
 import sys
@@ -51,6 +52,8 @@ def test_parse_args_defaults() -> None:
     assert args.data_dir == rt.DEFAULT_DATA_DIR
     assert args.no_web is False
     assert args.mobile_access is False
+    assert args.macos_permission_status is False
+    assert args.macos_capture_check is False
 
 
 def test_parse_args_overrides() -> None:
@@ -59,6 +62,52 @@ def test_parse_args_overrides() -> None:
     assert args.data_dir == "/tmp/x"
     assert args.no_web is True
     assert args.mobile_access is True
+
+
+def test_macos_permission_status_is_ready_outside_macos(monkeypatch) -> None:
+    monkeypatch.setattr(rt.sys, "platform", "linux")
+
+    assert rt._macos_permission_status() == {
+        "screen_recording": True,
+        "accessibility": True,
+    }
+
+
+def test_main_permission_probe_does_not_start_backend(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        rt,
+        "_macos_permission_status",
+        lambda: {"screen_recording": False, "accessibility": True},
+    )
+
+    rt.main(["--macos-permission-status"])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "screen_recording": False,
+        "accessibility": True,
+    }
+
+
+def test_main_capture_probe_returns_only_metadata(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        rt,
+        "_macos_capture_check",
+        lambda output_path=None: {
+            "ok": True,
+            "width": 640,
+            "height": 414,
+            "mime": "image/jpeg",
+        },
+    )
+
+    rt.main(["--macos-capture-check"])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "width": 640,
+        "height": 414,
+        "mime": "image/jpeg",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +240,44 @@ def test_mobile_public_url_prefiere_override_explicito(
     monkeypatch.setattr(rt.socket, "gethostname", lambda: "ignorado")
 
     assert rt._mobile_public_url(8765) == "https://mi-edecan.example"
+
+
+def test_mobile_public_url_lee_url_https_persistida_para_el_relay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    (tmp_path / "remote-access.json").write_text(
+        json.dumps({"public_url": "https://equipo-opaco.edecan.example/"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.1.25")
+
+    assert rt._mobile_public_url(8765, tmp_path) == "https://equipo-opaco.edecan.example"
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    (
+        "http://edecan.example",
+        "https://usuario:clave@edecan.example",
+        "https://edecan.example?token=no-va-en-url",
+        "https://edecan.example/ruta",
+        "https://[",
+        "javascript:alert(1)",
+    ),
+)
+def test_mobile_public_url_ignora_configuracion_persistida_insegura(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    public_url: str,
+) -> None:
+    monkeypatch.delenv("EDECAN_MOBILE_PUBLIC_URL", raising=False)
+    (tmp_path / "remote-access.json").write_text(
+        json.dumps({"public_url": public_url}), encoding="utf-8"
+    )
+    monkeypatch.setattr(rt, "_primary_lan_ipv4", lambda: "192.168.1.25")
+
+    assert rt._mobile_public_url(8765, tmp_path) == "http://192.168.1.25:8765"
 
 
 def test_mobile_public_url_prefiere_ip_privada_que_resuelve_android(

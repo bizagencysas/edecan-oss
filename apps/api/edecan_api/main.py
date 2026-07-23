@@ -95,11 +95,12 @@ from pathlib import Path
 import redis.asyncio as redis_asyncio
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import Scope
+from starlette.types import ASGIApp, Scope
 
 from edecan_api import __version__
 from edecan_api.companion_manager import ConnectionManager
@@ -113,6 +114,7 @@ from edecan_api.routers import (
     connectors,
     consents,
     contacts,
+    content_studio,
     conversations,
     files,
     finance,
@@ -196,7 +198,10 @@ DESKTOP_WEB_SECURITY_HEADERS: dict[str, str] = {
             "default-src 'self'",
             "base-uri 'self'",
             "object-src 'none'",
-            "frame-src 'none'",
+            # Studio y los previews de archivos usan exclusivamente Blob URLs
+            # creadas tras una descarga autenticada. Cada iframe se monta sin
+            # permisos y recibe además una CSP interna sin scripts ni red.
+            "frame-src blob:",
             "frame-ancestors 'none'",
             "form-action 'self'",
             "script-src 'self' 'unsafe-inline'",
@@ -218,6 +223,76 @@ DESKTOP_WEB_SECURITY_HEADERS: dict[str, str] = {
 }
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+# El desktop local puede publicarse detrás de Cloudflare Tunnel. Un header
+# Authorization cualquiera no debe convertir `/register` o `/login` en rutas
+# públicas: esos endpoints ignoran el bearer porque reciben credenciales en el
+# body. Se bloquean antes de aplicar la regla general de sesión autenticada.
+_TUNNEL_LOCAL_ONLY_PATHS = frozenset(
+    {
+        "/v1/auth/local",
+        "/v1/auth/login",
+        "/v1/auth/register",
+    }
+)
+_TUNNEL_UNAUTHENTICATED_PATHS = frozenset(
+    {
+        "/healthz",
+        "/readyz",
+        "/v1/auth/logout",
+        "/v1/auth/refresh",
+        "/v1/devices/pairing/claim",
+        "/v1/devices/pairing/refresh",
+    }
+)
+
+
+class LocalTunnelGuardMiddleware(BaseHTTPMiddleware):
+    """Frontera del backend personal cuando entra desde Cloudflare.
+
+    En LAN conserva la experiencia completa. Desde Internet permite el canje
+    de un QR aleatorio, la renovación mediante secretos durables y las rutas
+    `/v1/*` que ya llevan Bearer. La UI, registro, login y setup manual nunca
+    se publican. Solo se activa en `EDECAN_LOCAL_MODE`; una instalación hosted
+    multiusuario detrás de Cloudflare mantiene su política normal.
+    """
+
+    def __init__(self, app: ASGIApp, *, enabled: bool) -> None:
+        super().__init__(app)
+        self.enabled = enabled
+
+    @staticmethod
+    def _comes_from_cloudflare(request: Request) -> bool:
+        return bool(request.headers.get("CF-Ray") or request.headers.get("CF-Connecting-IP"))
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not self.enabled or not self._comes_from_cloudflare(request):
+            return await call_next(request)
+
+        path = request.url.path.rstrip("/") or "/"
+        if request.method == "OPTIONS" or path in _TUNNEL_UNAUTHENTICATED_PATHS:
+            return await call_next(request)
+
+        if (
+            path in _TUNNEL_LOCAL_ONLY_PATHS
+            or path.startswith("/v1/setup")
+            or not path.startswith("/v1/")
+        ):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "Esta función solo está disponible desde tu computador."},
+            )
+
+        authorization = request.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer ") or not authorization[7:].strip():
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Este dispositivo no está conectado con Edecán."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
 
 
 class SecureStaticFiles(StaticFiles):
@@ -308,6 +383,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(LocalTunnelGuardMiddleware, enabled=settings.EDECAN_LOCAL_MODE)
     app.add_middleware(RequestContextMiddleware)
 
     app.state.companion_manager = ConnectionManager()
@@ -356,6 +432,7 @@ def create_app() -> FastAPI:
     app.include_router(finance.router)
     app.include_router(voice.router)
     app.include_router(consents.router)
+    app.include_router(content_studio.router)
     app.include_router(phone.router)
     app.include_router(companion.router)
     app.include_router(usage.router)

@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Solo los permisos que la app realmente usa (ROADMAP_V2.md §6.1):
-    `INTERNET` para hablar con `/v1/*`, `RECORD_AUDIO` para el push-to-talk
+    `INTERNET` para hablar con `/v1/*`, `CAMERA` únicamente para el escáner
+    QR iniciado por la persona y `RECORD_AUDIO` para el push-to-talk
     del botón de micrófono dentro de Chat (`POST /v1/voice/transcribe`) — pedido en
     tiempo de ejecución desde `VozScreen`, este `<uses-permission>` solo lo
-    declara. Nada de contactos/ubicación/cámara/notificaciones todavía.
+    declara. Nada de contactos/ubicación/notificaciones todavía.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- El QR también puede ingresarse como deep link/manual; no se excluyen
+         tablets, Chromebooks ni equipos sin cámara de Google Play. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Visibilidad de paquetes exigida desde Android 11 para descubrir los
          servicios locales que dan voz sin claves de terceros. -->
@@ -24,6 +30,8 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
@@ -55,6 +63,18 @@
                 <data android:scheme="edecan" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".notifications.EdecanFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".notifications.LocalNotificationReceiver"
+            android:exported="false" />
 
         <!-- Solo comparte archivos que la propia app acaba de descargar en
              cacheDir/shared_artifacts; nunca expone almacenamiento general. -->

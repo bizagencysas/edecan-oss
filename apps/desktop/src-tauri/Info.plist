@@ -26,5 +26,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Edecán necesita acceso al micrófono para escuchar tu palabra clave y tus comandos de voz en segundo plano, incluso con la ventana cerrada o minimizada.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Edecán usa el reconocimiento de voz para detectar la frase que elijas y convertir tus comandos hablados en acciones.</string>
 </dict>
 </plist>

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
+import secrets
 import time
 import uuid
 
@@ -30,6 +32,9 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DUMMY_PASSWORD_HASH = hash_password("dummy-password-used-only-to-equalize-login-timing")
+_LOCAL_TENANT_NAME = "Mi Edecán"
+_LOCAL_DESKTOP_HEADER = "X-Edecan-Desktop-Capability"
+_LOCAL_OWNER_LOCK = asyncio.Lock()
 
 
 def _validar_email(value: str) -> str:
@@ -154,6 +159,113 @@ async def _issue_token_pair(
     ttl_seconds = max(1, decoded.exp - int(time.time()))
     await redis_client.set(_refresh_token_key(refresh), str(decoded.sid), ex=ttl_seconds)
     return TokenPairOut(access_token=access, refresh_token=refresh)
+
+
+def _is_loopback(request: Request) -> bool:
+    host = request.client.host if request.client is not None else ""
+    return host in {"127.0.0.1", "::1"}
+
+
+async def _get_or_create_local_owner(repo: Repo) -> dict:
+    # El runner local mantiene un solo proceso de API por data_dir. El lock
+    # convierte el primer arranque en una operación idempotente incluso si la
+    # WebView y "Abrir en el navegador" llegan al mismo tiempo.
+    async with _LOCAL_OWNER_LOCK:
+        selected_owner = await repo.get_local_owner()
+        if selected_owner is not None:
+            return selected_owner
+
+        owner = await repo.get_first_active_owner()
+        if owner is not None:
+            if owner.get("owner_count") != 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Esta instalación contiene más de un dueño activo. "
+                        "No se abrió ninguna sesión por seguridad."
+                    ),
+                )
+            return await repo.set_local_owner(
+                user_id=owner["user_id"],
+                tenant_id=owner["tenant_id"],
+            )
+
+        # Correo y contraseña son valores internos, únicos y nunca mostrados.
+        # Existen solo para mantener el schema compatible con hosted; la app
+        # local entra por capacidad de proceso, no por credenciales humanas.
+        local_id = uuid.uuid4().hex
+        user = await repo.create_user(
+            email=f"owner-{local_id}@edecan.local",
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+        )
+        tenant = await repo.create_tenant(
+            name=_LOCAL_TENANT_NAME,
+            slug=_slugify(f"mi-edecan-{local_id}"),
+            plan_key="free_selfhost",
+        )
+        await repo.create_membership(user_id=user["id"], tenant_id=tenant["id"], role="owner")
+        await repo.create_persona_default(tenant_id=tenant["id"], user_id=user["id"])
+        selected_owner = await repo.set_local_owner(
+            user_id=user["id"],
+            tenant_id=tenant["id"],
+        )
+        await repo.add_audit_log(
+            tenant_id=tenant["id"],
+            actor_user_id=user["id"],
+            action="auth.local_owner_created",
+            target=str(user["id"]),
+        )
+        return selected_owner
+
+
+@router.post("/local", response_model=TokenPairOut)
+async def local_desktop_session(
+    request: Request,
+    repo: Repo = Depends(get_platform_repo),
+    settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
+) -> TokenPairOut:
+    """Abre la instalación single-owner sin correo ni contraseña.
+
+    Solo existe operativamente en ``EDECAN_LOCAL_MODE`` y solo responde al
+    loopback con una capacidad aleatoria por proceso. El middleware del túnel
+    la bloquea además antes de llegar a este router.
+    """
+    if not settings.EDECAN_LOCAL_MODE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ruta no disponible.")
+    provided_capability = request.headers.get(_LOCAL_DESKTOP_HEADER, "")
+    expected_capability = settings.LOCAL_DESKTOP_CAPABILITY or ""
+    if (
+        not _is_loopback(request)
+        or not provided_capability
+        or not expected_capability
+        or not secrets.compare_digest(provided_capability, expected_capability)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta sesión solo puede abrirse desde la app instalada en este computador.",
+        )
+
+    await _enforce_auth_rate_limit(
+        request,
+        redis_client,
+        settings,
+        identity="local-desktop",
+    )
+    owner = await _get_or_create_local_owner(repo)
+    ensure_local_companion = getattr(request.app.state, "ensure_local_companion", None)
+    if ensure_local_companion is not None:
+        # La app instalada contiene el controlador de ESTA computadora. Al
+        # vincular el dueño local queda disponible para el teléfono que ya
+        # se autenticó con el QR, sin un segundo emparejamiento.
+        await ensure_local_companion(owner["tenant_id"])
+    return await _issue_token_pair(
+        user_id=owner["user_id"],
+        tenant_id=owner["tenant_id"],
+        plan_key=owner["plan_key"],
+        settings=settings,
+        redis_client=redis_client,
+    )
 
 
 @router.post("/register", response_model=TokenPairOut, status_code=status.HTTP_201_CREATED)

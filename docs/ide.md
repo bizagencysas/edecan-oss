@@ -1,28 +1,32 @@
 # IDE embebido
 
-El IDE embebido deja explorar, editar y correr comandos en una carpeta de **tu propia computadora** desde el panel web de Edecán, apoyándose por completo en el companion de escritorio que ya existe (`apps/companion/`, ver también [`api.md`](./api.md) sección "Companion de escritorio"). No hay nada de esto en la nube: cada acción viaja `web → API → WebSocket del companion → tu máquina`, y tu máquina decide si la ejecuta.
+El IDE embebido deja explorar, editar y correr comandos en una carpeta de **tu propia computadora** desde el panel web de Edecán, apoyándose por completo en las acciones del companion (`apps/companion/`, ver también [`api.md`](./api.md) sección "Companion de escritorio"). La API nunca toca directamente ese filesystem: cada acción viaja `web → API → companion → tu máquina`. En la app instalada el companion es un bridge in-process; en modo hospedado viaja por WebSocket al proceso emparejado.
 
 Es **P0: real y funcional hoy**, no un diseño. Sus acciones (`list_tree`, `search_files`, `apply_edit`, `trash_path`, `screenshot`) pasan por el mismo pipeline de sandbox + aprobación humana + auditoría que ya usaban `read_dir`/`read_file`/`write_file`/`run_command` desde v1 — nada de esto es una vía nueva ni más permisiva.
 
 ## Requisitos
 
-1. El companion instalado y corriendo en tu equipo (`cd apps/companion && python -m edecan_companion --server ... --code ...`; ver `apps/companion/README.md` para el emparejamiento completo).
+1. La app de escritorio instalada, que ya contiene el bridge local; o, en modo hospedado, el companion separado corriendo y emparejado (`cd apps/companion && python -m edecan_companion --server ... --code ...`).
 2. Tu plan con el flag `companion.ide` (✔ en los 4 planes de `edecan_schemas.plans.PLANES` hoy — `free_selfhost`, `hosted_basic`, `hosted_pro`, `hosted_business`).
-3. Los comandos que quieras poder correr desde la terminal del IDE, agregados a `allowed_commands` en `~/.edecan/companion.yaml` (ver más abajo) — vacío por defecto, como todo lo demás del companion.
+3. Los comandos que quieras poder correr desde la terminal del IDE, agregados a `allowed_commands` en el `companion.yaml` que corresponda (ver más abajo) — vacío por defecto.
 
-Sin el companion conectado, la página `/app/ide` muestra un banner con instrucciones y un enlace a **Ajustes** para generar un código de emparejamiento; cualquier acción que intentes mientras tanto responde `503`.
+La app instalada se registra como conectada automáticamente. En modo hospedado, sin companion conectado, la página `/app/ide` muestra un banner con instrucciones y cualquier acción responde `503`.
 
 ## Emparejamiento
 
 Igual que el resto del companion (no hay un pairing "especial" para el IDE):
 
+En la app instalada no hay pairing adicional: la sesión local autenticada ya
+resuelve al único dueño y registra el bridge al arrancar. Los pasos siguientes
+aplican solo al modo hospedado o a un equipo adicional:
+
 1. En **Ajustes → Companion de escritorio** (panel web), genera un código de un solo uso (`POST /v1/companion/pair-code`, válido 10 minutos).
 2. Corre `python -m edecan_companion --server <URL de tu API> --code <CÓDIGO>`.
 3. La terminal del companion queda esperando comandos — cada acción que el IDE le pida se te pregunta ahí (`¿Permitir «list_tree» con {...}? [y/N]`) salvo que la hayas puesto en `auto_approve`, o que ya la hayas aprobado hace poco con `remember_approvals_minutes` activo (ver abajo).
 
-## Configuración — `~/.edecan/companion.yaml`
+## Configuración del companion
 
-El IDE embebido no tiene un archivo de configuración propio: usa las mismas claves que el resto del companion (`apps/companion/edecan_companion/config.py`).
+El IDE embebido no tiene un archivo de configuración propio: usa las mismas claves que el resto del companion (`apps/companion/edecan_companion/config.py`). El proceso separado usa `~/.edecan/companion.yaml`; la app macOS empaquetada usa `~/Library/Application Support/cc.edecan.desktop/data/companion.yaml`. En ambos casos hay que reiniciar el proceso después de editarlo.
 
 ```yaml
 sandbox_dir: "~/EdecanSandbox"    # única carpeta que el IDE puede ver/editar/correr comandos dentro de ella
@@ -47,6 +51,11 @@ Es la carpeta raíz que ves en el árbol de archivos del IDE, en la que puedes a
 
 Por defecto (`0`) cada acción del IDE pide aprobación en la terminal del companion **siempre**, sin excepción — abrir 10 archivos seguidos son 10 preguntas de `read_file`. Si lo subes a un número > 0, la primera vez que apruebas una acción (por nombre — p. ej. `apply_edit`, no por archivo/parámetros) esa acción queda recordada en memoria (nunca en disco) durante esos minutos: mientras dure, se auto-aprueba sin volver a preguntar. Un **no** nunca se recuerda — decir que no siempre vuelve a preguntar la próxima vez. Reiniciar el companion olvida todo lo recordado.
 
+Esto aplica al companion separado por WebSocket. En la app instalada, la
+propia acción autenticada en la pantalla IDE es la aprobación: no existe otra
+terminal oculta donde contestar. El bridge mantiene una allowlist cerrada de
+acciones IDE y deja que `edecan_companion.actions` aplique los controles reales.
+
 ### `ide_enabled`
 
 A diferencia de las demás listas (que empiezan vacías/apagadas), `ide_enabled` empieza en `true`: las acciones del IDE se comportan como cualquier otra acción del companion desde el primer momento (piden aprobación cada vez, salvo `auto_approve`/`remember_approvals_minutes`) — no hace falta que las prendas a mano. Ponlo en `false` si quieres bloquear las 4 acciones del IDE por completo en esta máquina, sin tocar `allowed_apps`/`allowed_commands` una por una. Con `ide_enabled: false`, el companion rechaza `list_tree`/`search_files`/`apply_edit`/`screenshot` **antes** de preguntar nada en la terminal.
@@ -59,7 +68,7 @@ A diferencia de las demás listas (que empiezan vacías/apagadas), `ide_enabled`
 | `search_files` | Busca texto línea por línea: `{query, path?}` → `{query, matches: [{path, line, texto}], truncated}` | substring sin distinguir mayúsculas; hasta 2000 archivos considerados, 200 coincidencias devueltas, líneas cortadas a 200 caracteres; solo archivos de texto UTF-8 < 256 KB |
 | `apply_edit` | Reemplaza `old_string` por `new_string`: `{path, old_string, new_string, replace_all?}` → `{path, replacements, bytes_written}` | sin `replace_all`, `old_string` debe ser único en el archivo (si no, error con el conteo); escritura atómica (archivo temporal + `rename`); mismo tope de 256 KB que `read_file` |
 | `trash_path` | Envía un archivo o carpeta del sandbox a la papelera recuperable | Siempre exige aprobación local; nunca acepta la raíz del sandbox |
-| `screenshot` | Captura y optimiza la pantalla: `{display?, format?, quality?, max_width?}` → `{image_b64, width, height, mime, origin_x, origin_y}` | macOS nativo; Windows/Linux con el extra `remote-control`; respeta los permisos de captura del sistema |
+| `screenshot` | Captura y optimiza la pantalla: `{display?, format?, quality?, max_width?, include_cursor?}` → `{image_b64, width, height, mime, origin_x, origin_y}` | macOS nativo con ventanas, Dock, barra y cursor; Windows/Linux con el extra `remote-control`; respeta los permisos de captura del sistema |
 
 Las tres primeras son nuevas de este WP; la terminal del IDE (`POST /v1/ide/run`) y abrir/guardar archivo (`GET`/`PUT /v1/ide/file`) reutilizan `run_command`/`read_file`/`write_file`, que ya existían desde v1.
 
@@ -103,7 +112,7 @@ Todo en español, cero dependencias npm nuevas, y `lib/api.ts` compartido no se 
 ## Seguridad
 
 - **Sandbox de archivos.** Las cuatro acciones nuevas respetan el mismo `sandbox_dir` de siempre. `list_tree`/`search_files` además rechazan **recorrer o leer** (aunque sí pueden llegar a *listar el nombre* de, igual que ya hacía `read_dir`) un enlace simbólico que resuelva fuera del sandbox — no solo cuando la ruta pedida explícitamente escapa, sino también cuando el escape aparece a mitad de un recorrido recursivo.
-- **Aprobación humana explícita**, siempre, para cada acción — el IDE no introduce ningún camino nuevo que la salte. `remember_approvals_minutes` reduce cuántas veces preguntas, nunca si pregunta la primera vez.
+- **Aprobación y procedencia.** El companion WebSocket conserva la aprobación interactiva por acción. La app instalada no abre una segunda terminal escondida: el bridge aprueba solo las seis acciones que exponen las rutas IDE autenticadas (`list_tree`, `search_files`, `apply_edit`, `read_file`, `write_file`, `run_command`). Sandbox, `ide_enabled`, allowlist de comandos y auditoría siguen aplicando; abrir apps, portapapeles y futuras acciones no se habilitan por accidente.
 - **`run_command` (la terminal del IDE) nunca usa shell.** Nada de `;`, `&&`, tuberías o expansión de variables — el usuario decide exactamente qué ejecutables permite en `allowed_commands`, sin excepciones de fábrica.
 - **Escritura atómica en `apply_edit`.** Se escribe a un archivo temporal en la misma carpeta y se hace `rename` — nunca queda un archivo a medio escribir si algo falla a mitad de camino (disco lleno, permisos, el proceso se interrumpe).
 - **`screenshot` se apoya en el permiso nativo, nunca lo evade.** En macOS usa Grabación de Pantalla; Windows/Linux usan el backend `mss` y la sesión gráfica disponible.

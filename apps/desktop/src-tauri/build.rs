@@ -82,6 +82,10 @@ fn main() {
             "always_listen_train",
             "always_listen_set_enabled",
             "always_listen_reset_training",
+            "desktop_permissions_get_state",
+            "desktop_permission_request",
+            "startup_get_state",
+            "startup_set_enabled",
         ]),
     ))
     .expect("error corriendo tauri-build");

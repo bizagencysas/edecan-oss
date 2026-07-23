@@ -3,12 +3,18 @@
 package cc.edecan.app.ui
 
 import android.graphics.BitmapFactory
+import android.app.Activity
 import android.util.Base64
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,8 +25,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -45,9 +55,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +69,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.contentDescription
@@ -65,7 +78,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import cc.edecan.app.ui.components.formatearFechaHora
 import cc.edecan.app.ui.theme.EdecanColors
 import cc.edecan.app.vm.RemotoUiState
 import cc.edecan.app.vm.RemotoViewModel
@@ -75,10 +87,7 @@ import cc.edecan.shared.FLAG_COMPANION_REMOTE_INPUT
 import cc.edecan.shared.FLAG_COMPANION_REMOTE_VIEW
 import cc.edecan.shared.REMOTE_KIND_CONTROL
 import cc.edecan.shared.REMOTE_KIND_VIEW
-import cc.edecan.shared.REMOTE_STATUS_ACTIVE
 import cc.edecan.shared.REMOTE_STATUS_DENIED
-import cc.edecan.shared.REMOTE_STATUS_ENDED
-import cc.edecan.shared.REMOTE_STATUS_PENDING
 import cc.edecan.shared.RemoteFrame
 import cc.edecan.shared.RemoteSession
 import cc.edecan.shared.boolFlag
@@ -87,6 +96,7 @@ import cc.edecan.shared.isControl
 import cc.edecan.shared.mapPointToRemoteCoords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 /**
  * Pestaña "Remoto" (`/v1/remote`, `ARCHITECTURE.md` §13.c/§14,
@@ -118,6 +128,9 @@ fun RemotoScreen(
 
     val tieneFlagVista = sessionState.me?.flags?.boolFlag(FLAG_COMPANION_REMOTE_VIEW) ?: false
     val tieneFlagControl = sessionState.me?.flags?.boolFlag(FLAG_COMPANION_REMOTE_INPUT) ?: false
+    val sesionInmersiva = uiState.sesionActual?.let { !it.haTerminado } == true
+
+    BarrasSistemaInmersivas(activas = sesionInmersiva)
 
     LaunchedEffect(api) { api?.let { remotoViewModel.cargar(it) } }
 
@@ -131,12 +144,14 @@ fun RemotoScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Remoto") },
-                navigationIcon = {
-                    if (mostrarVolver) IconButton(onClick = onVolver) { Text("←") }
-                },
-            )
+            if (!sesionInmersiva) {
+                TopAppBar(
+                    title = { Text("Remoto") },
+                    navigationIcon = {
+                        if (mostrarVolver) IconButton(onClick = onVolver) { Text("←") }
+                    },
+                )
+            }
         },
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -161,7 +176,7 @@ fun RemotoScreen(
                 sesionActual.haTerminado -> Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                     SesionTerminadaCard(sesion = sesionActual, onVolver = remotoViewModel::descartarSesionTerminada)
                 }
-                else -> SesionActivaColumn(
+                else -> SesionActivaInmersiva(
                     uiState = uiState,
                     onActualizar = { api?.let { remotoViewModel.actualizarFrame(it) } },
                     onTerminar = { api?.let { remotoViewModel.terminar(it) } },
@@ -183,8 +198,27 @@ fun RemotoScreen(
     }
 }
 
+@Composable
+private fun BarrasSistemaInmersivas(activas: Boolean) {
+    val activity = LocalContext.current as? Activity
+    DisposableEffect(activity, activas) {
+        val window = activity?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        if (activas) {
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            if (activas) controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Sin sesión: "Nueva sesión" (consentimiento) + historial.
+// Sin sesión: consentimiento e inicio.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -200,32 +234,6 @@ private fun ListaYNuevaSesion(
             error = uiState.errorIniciar,
             onIniciar = onIniciar,
         )
-
-        Text(
-            "Sesiones anteriores",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
-        )
-        when {
-            uiState.cargandoSesiones && uiState.sesiones.isEmpty() ->
-                CircularProgressIndicator(modifier = Modifier.padding(vertical = 12.dp))
-            uiState.sesiones.isEmpty() -> Text(
-                "Todavía no iniciaste ninguna sesión remota.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                uiState.sesiones.forEach { sesion -> FilaHistorialSesion(sesion) }
-            }
-        }
-        uiState.errorLista?.let { error ->
-            Text(
-                error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
     }
 }
 
@@ -249,21 +257,17 @@ private fun NuevaSesionCard(
             )
             Text(
                 if (esControl) {
-                    "Vas a ver la pantalla de tu Mac Y permitir que se mueva el mouse y se escriba en ella desde aquí."
+                    "Vas a ver y manejar tu computadora desde este teléfono."
                 } else {
-                    "Solo lectura: vas a ver la pantalla de tu Mac desde aquí — nadie puede mover tu mouse ni tu teclado."
+                    "Vas a ver la pantalla de tu computadora sin mover el mouse ni escribir."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
             Text(
-                "Esto pide DOS aprobaciones distintas: la que das aquí abajo, y una segunda, LOCAL, que " +
-                    "tu companion (la app de escritorio de Edecán) te va a mostrar en tu propia Mac antes " +
-                    "de mandar la primera imagen" +
-                    (if (esControl) " (y de nuevo, por cada comando de teclado/mouse)" else "") +
-                    ". Sin esa segunda aprobación no sale ni un solo frame" +
-                    (if (esControl) " ni se mueve un solo píxel" else "") + ".",
+                "Este teléfono ya está vinculado porque escaneaste el QR de la computadora. " +
+                    "Confirma esta sesión una vez y podrás terminarla cuando quieras.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
                     .padding(top = 12.dp)
@@ -284,8 +288,7 @@ private fun NuevaSesionCard(
                     // widget Y una doble locución de lector de pantalla).
                     Checkbox(checked = quiereControl, onCheckedChange = null)
                     Text(
-                        "Además, habilitar control remoto de teclado y mouse (requiere que tu companion " +
-                            "tenga remote_input_enabled activado).",
+                        "También quiero usar el mouse y el teclado",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -303,11 +306,9 @@ private fun NuevaSesionCard(
                 Checkbox(checked = entendido, onCheckedChange = null)
                 Text(
                     if (esControl) {
-                        "Entiendo que voy a ver Y controlar la pantalla de mi Mac, y que el companion me va " +
-                            "a pedir una aprobación local antes de cada acción."
+                        "Confirmo que quiero ver y controlar mi computadora desde este teléfono."
                     } else {
-                        "Entiendo que voy a ver la pantalla de mi Mac y que el companion me va a pedir una " +
-                            "aprobación local antes de empezar."
+                        "Confirmo que quiero ver la pantalla de mi computadora desde este teléfono."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -337,35 +338,6 @@ private fun NuevaSesionCard(
                 }
                 Text(if (esControl) "Iniciar sesión de control remoto" else "Iniciar sesión de vista remota")
             }
-        }
-    }
-}
-
-private val ETIQUETAS_ESTADO_REMOTO = mapOf(
-    REMOTE_STATUS_PENDING to "Pendiente",
-    REMOTE_STATUS_ACTIVE to "Activa",
-    REMOTE_STATUS_ENDED to "Terminada",
-    REMOTE_STATUS_DENIED to "Denegada",
-)
-
-@Composable
-private fun FilaHistorialSesion(sesion: RemoteSession) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (sesion.isControl) "🖱️" else "👁️", modifier = Modifier.padding(end = 10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(if (sesion.isControl) "Control remoto" else "Solo vista", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "${formatearFechaHora(sesion.createdAt)} · ${sesion.framesCount} frames",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                ETIQUETAS_ESTADO_REMOTO[sesion.status] ?: sesion.status,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -406,7 +378,7 @@ private fun SesionTerminadaCard(sesion: RemoteSession, onVolver: () -> Unit) {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun SesionActivaColumn(
+private fun SesionActivaInmersiva(
     uiState: RemotoUiState,
     onActualizar: () -> Unit,
     onTerminar: () -> Unit,
@@ -415,28 +387,180 @@ private fun SesionActivaColumn(
     onTecla: (String, List<String>) -> Unit,
 ) {
     val sesion = uiState.sesionActual ?: return
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        // Guardrail no negociable: SIEMPRE visible mientras haya sesión, sin
-        // importar el sub-estado (esperando aprobación o ya activa) — ver el
-        // docstring de `RemotoScreen`.
-        BannerSesionActiva(sesion = sesion, terminando = uiState.terminando, onTerminar = onTerminar)
+    val frame = uiState.frame
+    var mostrarTeclado by remember(sesion.id) { mutableStateOf(false) }
+    var ultimoPuntoX by remember(sesion.id) { mutableStateOf<Int?>(null) }
+    var ultimoPuntoY by remember(sesion.id) { mutableStateOf<Int?>(null) }
 
-        val frame = uiState.frame
+    fun enviarDesdeUltimoPunto(accion: String, deltaY: Int = 0) {
+        val actual = frame ?: return
+        onPointer(
+            RemotePointerCommand(
+                x = ultimoPuntoX ?: actual.width / 2,
+                y = ultimoPuntoY ?: actual.height / 2,
+                accion = accion,
+                deltaY = deltaY,
+            )
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (frame == null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            EsperandoAprobacionCard(cargando = uiState.cargandoFrame, error = uiState.errorFrame, onReintentar = onActualizar)
+            Box(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 72.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                EsperandoAprobacionCard(
+                    cargando = uiState.cargandoFrame,
+                    error = uiState.errorFrame,
+                    onReintentar = onActualizar,
+                )
+            }
         } else {
-            VisorRemoto(
+            VisorRemotoInmersivo(
                 sesion = sesion,
                 frame = frame,
-                cargandoFrame = uiState.cargandoFrame,
-                enviandoInput = uiState.enviandoInput,
-                errorMensaje = uiState.errorFrame,
-                onActualizar = onActualizar,
-                onPointer = onPointer,
-                onTexto = onTexto,
-                onTecla = onTecla,
+                onPointer = { comando ->
+                    ultimoPuntoX = comando.x
+                    ultimoPuntoY = comando.y
+                    onPointer(comando)
+                },
             )
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .safeDrawingPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.Black.copy(alpha = 0.68f))
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(if (sesion.status == "active") Color(0xFF22C55E) else Color(0xFFF59E0B))
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (sesion.status == "active") "En vivo" else "Conectando",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                if (uiState.enviandoInput) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = onTerminar,
+                enabled = !uiState.terminando,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
+            ) {
+                Text("Terminar")
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            uiState.errorFrame?.let {
+                Text(
+                    it,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 3,
+                    modifier = Modifier
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFFDC2626).copy(alpha = 0.9f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+
+            if (sesion.isControl && mostrarTeclado) {
+                BarraTeclado(
+                    enviando = uiState.enviandoInput,
+                    compacta = true,
+                    onTexto = onTexto,
+                    onTecla = onTecla,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            if (sesion.isControl) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ControlDockButton("⌨", "Teclado", true) { mostrarTeclado = !mostrarTeclado }
+                    ControlDockButton("◉", "Derecho", !uiState.enviandoInput) {
+                        enviarDesdeUltimoPunto("right_click")
+                    }
+                    ControlDockButton("↑", "Subir", !uiState.enviandoInput) {
+                        enviarDesdeUltimoPunto("scroll", 520)
+                    }
+                    ControlDockButton("↓", "Bajar", !uiState.enviandoInput) {
+                        enviarDesdeUltimoPunto("scroll", -520)
+                    }
+                    ControlDockButton("↻", "Actualizar", !uiState.cargandoFrame) { onActualizar() }
+                }
+            } else {
+                Text(
+                    "Solo vista",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color.Black.copy(alpha = 0.7f))
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlDockButton(etiqueta: String, titulo: String, habilitado: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        enabled = habilitado,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            disabledContainerColor = Color.Transparent,
+            contentColor = Color.White,
+            disabledContentColor = Color.White.copy(alpha = 0.45f),
+        ),
+        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 5.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(etiqueta, style = MaterialTheme.typography.titleMedium)
+            Text(titulo, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -534,16 +658,10 @@ private fun rememberFrameBitmap(imageB64: String?): ImageBitmap? {
 }
 
 @Composable
-private fun VisorRemoto(
+private fun VisorRemotoInmersivo(
     sesion: RemoteSession,
     frame: RemoteFrame,
-    cargandoFrame: Boolean,
-    enviandoInput: Boolean,
-    errorMensaje: String?,
-    onActualizar: () -> Unit,
     onPointer: (RemotePointerCommand) -> Unit,
-    onTexto: (String) -> Unit,
-    onTecla: (String, List<String>) -> Unit,
 ) {
     val esControl = sesion.isControl
     val bitmap = rememberFrameBitmap(frame.imageB64)
@@ -555,7 +673,7 @@ private fun VisorRemoto(
     // cualquier `graphicsLayer` ancestro), así que [tamanoElemento] (tamaño
     // de LAYOUT, que `graphicsLayer` no altera) + ese offset alcanzan sin
     // ningún ajuste manual por el zoom actual.
-    var zoom by remember(sesion.id) { mutableStateOf(1f) }
+    var zoom by remember(sesion.id) { mutableFloatStateOf(1f) }
     var pan by remember(sesion.id) { mutableStateOf(Offset.Zero) }
     // La sobrecarga moderna incluye el centroide como primer argumento. Este
     // visor mantiene su comportamiento previo (zoom centrado por graphicsLayer),
@@ -600,143 +718,87 @@ private fun VisorRemoto(
         )
     }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
-        Card {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    if (esControl) {
-                        "Toca para hacer clic, doble toque para doble clic, mantén presionado para clic derecho. " +
-                            "Pellizca para acercar/alejar la vista."
-                    } else {
-                        "Se actualiza pidiéndole un frame nuevo al companion — no es video en vivo."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp)
-                        .height(340.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap,
-                            contentDescription = "Última captura de la pantalla remota",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .onSizeChanged { tamanoElemento = it }
-                                .graphicsLayer(scaleX = zoom, scaleY = zoom, translationX = pan.x, translationY = pan.y)
-                                .transformable(transformState)
-                                .then(
-                                    if (esControl) {
-                                        Modifier.pointerInput(frame.width, frame.height) {
-                                            detectTapGestures(
-                                                onTap = { offset -> manejarToque(offset, "click") },
-                                                onDoubleTap = { offset -> manejarToque(offset, "double_click") },
-                                                onLongPress = { offset -> manejarToque(offset, "right_click") },
-                                            )
-                                        }
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                                .then(
-                                    if (esControl) {
-                                        Modifier.pointerInput(frame.seq, "drag") {
-                                            var inicio = Offset.Zero
-                                            var ultimo = Offset.Zero
-                                            detectDragGestures(
-                                                onDragStart = { inicio = it; ultimo = it },
-                                                onDrag = { change, _ -> ultimo = change.position; change.consume() },
-                                                onDragEnd = { manejarArrastre(inicio, ultimo) },
-                                            )
-                                        }
-                                    } else Modifier
-                                ),
-                        )
-                    } else {
-                        CircularProgressIndicator(color = Color.White)
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Frames recibidos: ${sesion.framesCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "Pantalla remota interactiva",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { tamanoElemento = it }
+                    .graphicsLayer(
+                        scaleX = zoom,
+                        scaleY = zoom,
+                        translationX = pan.x,
+                        translationY = pan.y,
                     )
-                    OutlinedButton(onClick = onActualizar, enabled = !cargandoFrame) {
-                        if (cargandoFrame) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("Actualizar")
-                        }
-                    }
-                }
-
-                errorMensaje?.let {
-                    Text(
-                        it,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 6.dp),
+                    .transformable(transformState)
+                    .then(
+                        if (esControl) {
+                            Modifier.pointerInput(frame.width, frame.height) {
+                                detectTapGestures(
+                                    onTap = { offset -> manejarToque(offset, "click") },
+                                    onDoubleTap = { offset -> manejarToque(offset, "double_click") },
+                                    onLongPress = { offset -> manejarToque(offset, "right_click") },
+                                )
+                            }
+                        } else Modifier
                     )
-                }
-            }
-        }
-
-        if (esControl) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Mouse y scroll", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            enabled = !enviandoInput,
-                            onClick = {
-                                onPointer(
-                                    RemotePointerCommand(
-                                        x = frame.width / 2, y = frame.height / 2, accion = "right_click",
-                                    )
+                    .then(
+                        if (esControl) {
+                            Modifier.pointerInput(frame.seq, "drag") {
+                                var inicio = Offset.Zero
+                                var ultimo = Offset.Zero
+                                detectDragGestures(
+                                    onDragStart = { inicio = it; ultimo = it },
+                                    onDrag = { change, _ -> ultimo = change.position; change.consume() },
+                                    onDragEnd = { manejarArrastre(inicio, ultimo) },
                                 )
-                            },
-                        ) { Text("Clic derecho") }
-                        OutlinedButton(
-                            enabled = !enviandoInput,
-                            onClick = {
-                                onPointer(
-                                    RemotePointerCommand(
-                                        x = frame.width / 2, y = frame.height / 2,
-                                        accion = "scroll", deltaY = 420,
-                                    )
-                                )
-                            },
-                        ) { Text("Scroll ↑") }
-                        OutlinedButton(
-                            enabled = !enviandoInput,
-                            onClick = {
-                                onPointer(
-                                    RemotePointerCommand(
-                                        x = frame.width / 2, y = frame.height / 2,
-                                        accion = "scroll", deltaY = -420,
-                                    )
-                                )
-                            },
-                        ) { Text("Scroll ↓") }
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            BarraTeclado(enviando = enviandoInput, onTexto = onTexto, onTecla = onTecla)
+                            }
+                        } else Modifier
+                    )
+                    .then(
+                        if (esControl) {
+                            Modifier.pointerInput(frame.seq, "two-finger-scroll") {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    var desplazamiento = 0f
+                                    var detectoDosDedos = false
+                                    while (true) {
+                                        val evento = awaitPointerEvent()
+                                        val activos = evento.changes.filter { it.pressed }
+                                        if (activos.size >= 2) {
+                                            detectoDosDedos = true
+                                            desplazamiento += activos
+                                                .take(2)
+                                                .map { it.positionChange().y }
+                                                .average()
+                                                .toFloat()
+                                            activos.forEach { it.consume() }
+                                        }
+                                        if (evento.changes.none { it.pressed }) break
+                                    }
+                                    if (detectoDosDedos && abs(desplazamiento) > 18f) {
+                                        onPointer(
+                                            RemotePointerCommand(
+                                                x = frame.width / 2,
+                                                y = frame.height / 2,
+                                                accion = "scroll",
+                                                deltaY = if (desplazamiento < 0) 520 else -520,
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        } else Modifier
+                    ),
+            )
+        } else {
+            CircularProgressIndicator(color = Color.White)
         }
     }
 }
@@ -744,6 +806,7 @@ private fun VisorRemoto(
 @Composable
 private fun BarraTeclado(
     enviando: Boolean,
+    compacta: Boolean = false,
     onTexto: (String) -> Unit,
     onTecla: (String, List<String>) -> Unit,
 ) {
@@ -752,12 +815,14 @@ private fun BarraTeclado(
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text("Escribir en el equipo remoto", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Se envía carácter por carácter al companion, como si lo tipearas ahí.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
+            if (!compacta) {
+                Text(
+                    "Se envía carácter por carácter al companion, como si lo tipearas ahí.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = texto,
@@ -773,36 +838,35 @@ private fun BarraTeclado(
                 ) { Text("Enviar") }
             }
 
-            Text(
-                "Teclas especiales",
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(top = 14.dp, bottom = 6.dp),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TECLAS_ESPECIALES.chunked(4).forEach { fila ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        fila.forEach { tecla ->
-                            OutlinedButton(
-                            onClick = { onTecla(tecla.valor, emptyList()) },
-                                enabled = !enviando,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                modifier = Modifier.semantics { contentDescription = tecla.titulo },
-                            ) {
-                                Text(tecla.etiqueta)
-                            }
-                        }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .horizontalScroll(rememberScrollState()),
+            ) {
+                TECLAS_ESPECIALES.take(if (compacta) 8 else TECLAS_ESPECIALES.size).forEach { tecla ->
+                    OutlinedButton(
+                        onClick = { onTecla(tecla.valor, emptyList()) },
+                        enabled = !enviando,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                        modifier = Modifier.semantics { contentDescription = tecla.titulo },
+                    ) {
+                        Text(tecla.etiqueta)
                     }
                 }
             }
 
-            Text("Atajos", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("a" to "⌘A", "c" to "⌘C", "v" to "⌘V", "x" to "⌘X", "z" to "⌘Z", "s" to "⌘S")
-                    .forEach { (key, label) ->
-                        OutlinedButton(onClick = { onTecla(key, listOf("command")) }, enabled = !enviando) {
-                            Text(label)
+            if (!compacta) {
+                Text("Atajos", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("a" to "⌘A", "c" to "⌘C", "v" to "⌘V", "x" to "⌘X", "z" to "⌘Z", "s" to "⌘S")
+                        .forEach { (key, label) ->
+                            OutlinedButton(onClick = { onTecla(key, listOf("command")) }, enabled = !enviando) {
+                                Text(label)
+                            }
                         }
-                    }
+                }
             }
         }
     }

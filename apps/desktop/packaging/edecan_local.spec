@@ -45,7 +45,7 @@ from __future__ import annotations
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules, get_package_paths
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata, get_package_paths
 
 # ---------------------------------------------------------------------------
 # Rutas. PyInstaller inyecta `SPECPATH` en el namespace de este archivo ANTES
@@ -113,6 +113,7 @@ EDECAN_CORE_PACKAGES = [
     "edecan_core",
     "edecan_api",
     "edecan_worker",
+    "edecan_companion",
     # Paquetes intermedios de los que dependen edecan_api/edecan_worker
     # (ARCHITECTURE.md §10.1) — import estático, PyInstaller los seguiría
     # solo, pero se recolectan igual por si alguno hace despacho dinámico
@@ -163,6 +164,7 @@ EDECAN_TOOL_PACKAGES = [
     "edecan_docanalysis",
     "edecan_browser",
     "edecan_creative",
+    "edecan_design_studio",
     "edecan_messaging",
     "edecan_agents",
     "edecan_automations",
@@ -195,6 +197,24 @@ def _collect(pkg: str) -> None:
     datas.extend(pkg_datas)
     binaries.extend(pkg_binaries)
     hiddenimports.extend(pkg_hidden)
+
+    # Los paquetes del workspace se instalan de forma editable con uv. En
+    # ese modo ``packages_distributions()`` no siempre relaciona el módulo
+    # ``edecan_docanalysis`` con la distribución ``edecan-docanalysis`` y
+    # ``collect_all(pkg)`` puede omitir silenciosamente su ``.dist-info``.
+    # Sin ``entry_points.txt`` el ejecutable empaquetado arranca, pero el
+    # ToolRegistry queda vacío y el modelo ve solo las herramientas extra del
+    # turno. Copiar la distribución por su nombre explícito garantiza que
+    # TODOS los entry points ``edecan.tools`` sobrevivan al onefile.
+    if pkg.startswith("edecan_"):
+        distribution_name = pkg.replace("_", "-")
+        try:
+            datas.extend(copy_metadata(distribution_name))
+        except Exception as exc:  # noqa: BLE001 — mismo build defensivo de arriba
+            print(
+                f"[edecan_local.spec] aviso: no se pudo copiar metadata de "
+                f"'{distribution_name}' ({exc}); se omite."
+            )
 
 
 for _pkg in EDECAN_CORE_PACKAGES + EDECAN_TOOL_PACKAGES:

@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.27",
     "sqlalchemy[asyncio]>=2.0.30",
     "edecan-core",
+    "edecan-mcp",
 ]
 
 # Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
@@ -24,6 +25,7 @@ dev = [
 
 [tool.uv.sources]
 edecan-core = { workspace = true }
+edecan-mcp = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

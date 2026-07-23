@@ -12,6 +12,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import java.io.IOException
 import java.security.KeyStore
 import java.util.Base64
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.AEADBadTagException
 import javax.crypto.KeyGenerator
@@ -29,6 +30,7 @@ private const val KEY_REFRESH_TOKEN = "refresh_token"
 private const val KEY_SERVER_URL = "server_url"
 private const val KEY_DEVICE_ID = "device_id"
 private const val KEY_DEVICE_TOKEN = "device_token"
+private const val KEY_INSTALLATION_ID = "installation_id"
 
 /**
  * Implementación Android de [TokenStore] (ver su docstring en `commonMain`
@@ -68,6 +70,7 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
         AndroidKeystoreTokenVault(context.applicationContext)
     }
     private val plaintextMigrationMutex = Mutex()
+    private val installationIdMutex = Mutex()
 
     override suspend fun getServerUrl(): String? = encryptedOrMigrate(KEY_SERVER_URL, Keys.serverUrl)
 
@@ -85,6 +88,15 @@ class DataStoreTokenStore(private val context: Context) : TokenStore {
             tokenVault.update(mapOf(KEY_DEVICE_ID to deviceId), setOf(KEY_DEVICE_TOKEN))
         }
         context.pairingDataStore.edit { it.remove(Keys.deviceId) }
+    }
+
+    override suspend fun getInstallationId(): String = installationIdMutex.withLock {
+        withContext(Dispatchers.IO) {
+            tokenVault.get(KEY_INSTALLATION_ID)?.let { return@withContext it }
+            UUID.randomUUID().toString().also { generated ->
+                tokenVault.putAll(mapOf(KEY_INSTALLATION_ID to generated))
+            }
+        }
     }
 
     override suspend fun clearDeviceId() {

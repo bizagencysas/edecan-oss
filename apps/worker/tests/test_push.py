@@ -238,6 +238,29 @@ async def test_enviar_apns_request_correcta_topic_push_type_y_body() -> None:
 
 
 @respx.mock
+async def test_enviar_apns_incluye_deeplink_opaco_fuera_de_aps() -> None:
+    _, p8_pem = _par_ec_p8()
+    cred = _cred_apns(p8_pem)
+    respx.post(f"https://{push._APNS_HOST_PRODUCTION}/3/device/tok-data").mock(
+        return_value=httpx.Response(200)
+    )
+
+    await push.enviar_apns(
+        cred,
+        "tok-data",
+        "Trabajo terminado",
+        "Abre Edecán.",
+        data={"route": "activity", "kind": "mission", "resource_id": "abc-123"},
+    )
+
+    payload = json.loads(respx.calls.last.request.content)
+    assert payload["aps"]["alert"]["title"] == "Trabajo terminado"
+    assert payload["route"] == "activity"
+    assert payload["kind"] == "mission"
+    assert payload["resource_id"] == "abc-123"
+
+
+@respx.mock
 async def test_enviar_apns_sandbox_usa_host_sandbox() -> None:
     _, p8_pem = _par_ec_p8()
     cred = _cred_apns(p8_pem, environment="sandbox")
@@ -294,6 +317,37 @@ async def test_enviar_fcm_canjea_token_y_postea_al_project_id_correcto() -> None
             "notification": {"title": "Título", "body": "Cuerpo"},
         }
     }
+
+
+@respx.mock
+async def test_enviar_fcm_incluye_data_de_navegacion_como_strings() -> None:
+    cred = _cred_fcm(project_id="proyecto-data")
+    _mock_fcm_token_exchange()
+    route = respx.post(f"{push._FCM_SEND_BASE_URL}/proyecto-data/messages:send").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await push.enviar_fcm(
+        cred,
+        "tok",
+        "Archivo listo",
+        "Abre Edecán.",
+        data={"route": "assistant", "kind": "files", "resource_id": "file-1"},
+    )
+
+    message = json.loads(route.calls.last.request.content)["message"]
+    assert message["data"] == {
+        "route": "assistant",
+        "kind": "files",
+        "resource_id": "file-1",
+    }
+
+
+def test_data_push_rechaza_claves_arbitrarias_y_valores_no_textuales() -> None:
+    with pytest.raises(ValueError):
+        push._normalizar_data_push({"document_text": "secreto"})
+    with pytest.raises(ValueError):
+        push._normalizar_data_push({"artifact_id": 123})  # type: ignore[dict-item]
 
 
 @respx.mock

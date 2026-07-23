@@ -118,8 +118,8 @@ function TravelMeta({ block }: { block: FlightCardBlock | HotelCardBlock }) {
 function FlightCard({ block, onPrefillMessage }: { block: FlightCardBlock; onPrefillMessage?: (message: string) => void }) {
   return (
     <article className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/40">
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="font-semibold text-slate-900 dark:text-white">{block.airline}</p>
           <p className="mt-1 text-lg font-semibold tracking-wide">
             {block.origin} <span className="text-slate-400">→</span> {block.destination}
@@ -145,8 +145,8 @@ function FlightCard({ block, onPrefillMessage }: { block: FlightCardBlock; onPre
 function HotelCard({ block, onPrefillMessage }: { block: HotelCardBlock; onPrefillMessage?: (message: string) => void }) {
   return (
     <article className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/40">
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="font-semibold text-slate-900 dark:text-white">{block.name}</p>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             {block.city}{block.rating ? ` · ${block.rating}★` : ""}

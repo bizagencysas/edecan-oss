@@ -16,6 +16,8 @@ ALL_SPECS = [
     _spec("buscar_correo", "Busca correos en Gmail u Outlook."),
     _spec("enviar_correo", "Envía un correo real."),
     _spec("consultar_documentos", "Revisa documentos ya subidos."),
+    _spec("leer_archivo", "Abre y lee cualquier archivo adjunto."),
+    _spec("editar_pdf", "Edita un PDF sin destruir el original."),
     _spec("crear_documento", "Crea un documento nuevo."),
     _spec("analizar_imagen", "Revisa una imagen ya subida."),
     _spec("crear_recordatorio", "Crea un recordatorio."),
@@ -36,10 +38,25 @@ ALL_SPECS = [
     _spec("registrar_salud"),
     _spec("preparar_pago", "Prepara un borrador de pago."),
     _spec("crear_artefactos", "Crea archivos y proyectos reales con manifest."),
+    _spec("crear_coleccion_visual", "Crea carruseles, campañas y presentaciones visuales."),
+    _spec("crear_diseno_visual", "Crea un diseño visual HTML con vista previa segura."),
+    _spec("obtener_diseno_visual", "Recupera el HTML actual de un diseño visual."),
+    _spec("refinar_diseno_visual", "Refina un diseño visual como versión nueva."),
+    _spec("historial_diseno_visual", "Lista versiones de un diseño visual."),
+    _spec("exportar_diseno_visual", "Exporta un diseño como HTML, PNG o PDF."),
     _spec("crear_pdf", "Crea un PDF."),
     _spec("crear_presentacion", "Crea PowerPoint."),
     _spec("generar_contenido", "Redacta texto."),
     _spec("publicar_social", "Publica contenido en una red conectada."),
+    _spec("crear_contenido_social", "Crea posts e imágenes para redes."),
+    _spec("generar_imagen", "Genera una imagen original."),
+    _spec("usar_estudio_creativo", "Usa Studio para trabajos creativos locales."),
+    _spec("usar_estudio_creativo_premium", "Usa Studio para imagen, video y producto."),
+    _spec("ver_estudio_creativo", "Muestra las capacidades de Studio."),
+    _spec("ver_proyectos_creativos", "Abre proyectos creativos editables."),
+    _spec("crear_editar_proyecto_creativo", "Crea o edita un proyecto creativo."),
+    _spec("administrar_proyecto_creativo", "Organiza un proyecto creativo."),
+    _spec("usar_computadora", "Opera mouse y teclado con confirmación."),
 ]
 
 
@@ -55,6 +72,7 @@ def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_
         "buscar_correo",
         "enviar_correo",
         "consultar_documentos",
+        "leer_archivo",
         "crear_recordatorio",
         "configurar_credencial",
     } <= names
@@ -64,6 +82,15 @@ def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_
     assert "acceder_codigo_local" not in names
     assert "preparar_pago" not in names
     assert len(names) < len(ALL_SPECS)
+
+
+def test_pdf_adjunto_ofrece_lectura_y_edicion_reversible():
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Lee este PDF adjunto, corrige el texto y entrégame la versión editada.",
+    )
+    names = {spec.name for spec in selected}
+    assert {"leer_archivo", "editar_pdf"} <= names
 
 
 def test_autorreparacion_explicita_habilita_codigo_local_y_escalera_de_skills():
@@ -124,7 +151,7 @@ def test_tool_mcp_futura_es_alcanzable_por_nombre_sin_tabla_central():
     assert "notion_buscar_paginas" in {spec.name for spec in selected}
 
 
-def test_guidance_no_promete_cualquier_cosa_y_distingue_catalogo_de_tools_operativas():
+def test_guidance_maximiza_capacidades_y_distingue_catalogo_de_tools_operativas():
     guidance = build_capability_guidance(
         selected_specs=[_spec("crear_recordatorio")],
         all_specs=[_spec("crear_recordatorio"), _spec("crear_factura")],
@@ -134,7 +161,7 @@ def test_guidance_no_promete_cualquier_cosa_y_distingue_catalogo_de_tools_operat
     assert "nunca le pidas escoger un módulo" in guidance
     assert guidance.index("primero diagnostica") < guidance.index("herramientas existentes")
     assert 'No respondas "no puedo"' in guidance
-    assert 'Tampoco prometas que puedes hacer "cualquier cosa"' in guidance
+    assert "camino de habilitación concreto" in guidance
     assert "Herramientas operativas seleccionadas para este turno: crear_recordatorio" in guidance
     assert "crear_factura" in guidance
     assert "Solo puedes ejecutar" in guidance
@@ -147,7 +174,7 @@ def test_guidance_english_preserva_los_mismos_limites():
         language="en",
     )
     assert "never ask them to choose a module" in guidance
-    assert 'Do not promise "anything"' in guidance
+    assert "concrete enablement path" in guidance
     assert "official gate be the only confirmation" in guidance
 
 
@@ -167,7 +194,91 @@ def test_creacion_compuesta_usa_un_solo_creator_con_manifest() -> None:
     assert "publicar_social" not in names
 
 
+def test_landing_visual_usa_design_studio_versionado_en_vez_del_creator_generico() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea una landing visual para mi taller y muéstrame una vista previa.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "crear_coleccion_visual",
+        "crear_diseno_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+        "historial_diseno_visual",
+        "exportar_diseno_visual",
+    } <= names
+    assert "crear_artefactos" not in names
+
+
+def test_carrusel_visual_expone_coleccion_y_edicion_versionada() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea un carrusel visual de 5 lienzos y luego deja que pueda pedir cambios.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "crear_coleccion_visual",
+        "obtener_diseno_visual",
+        "refinar_diseno_visual",
+        "historial_diseno_visual",
+    } <= names
+
+
+def test_refinamiento_corto_hereda_la_intencion_de_design_studio() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Haz el título más grande.",
+        recent_user_texts=["Crea una landing visual para mi taller."],
+    )
+    names = {spec.name for spec in selected}
+    assert {"obtener_diseno_visual", "refinar_diseno_visual"} <= names
+
+
+def test_video_publicitario_es_alcanzable_desde_lenguaje_normal() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Créame un video publicitario para este producto y dame dos versiones.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "usar_estudio_creativo_premium",
+        "ver_estudio_creativo",
+    } <= names
+
+
+def test_imagen_y_edicion_de_foto_exponen_studio_sin_ocultar_vision() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Edita esta foto, mejora el producto y genera otra imagen para el post.",
+    )
+    names = {spec.name for spec in selected}
+    assert {
+        "usar_estudio_creativo_premium",
+        "analizar_imagen",
+        "generar_imagen",
+    } <= names
+
+
 def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
     selected = select_tool_specs(ALL_SPECS, "Crea un post y publícalo en X.")
     names = {spec.name for spec in selected}
     assert {"crear_artefactos", "publicar_social", "configurar_credencial"} <= names
+
+
+def test_linkedin_crea_paquete_multimedia_y_publica_por_sesion_local_aprobada() -> None:
+    selected = select_tool_specs(
+        ALL_SPECS,
+        "Crea un post de LinkedIn con su propia imagen y publícalo.",
+    )
+    names = {spec.name for spec in selected}
+
+    assert {
+        "crear_contenido_social",
+        "generar_imagen",
+        "usar_estudio_creativo_premium",
+    } <= names
+    assert "crear_artefactos" not in names
+    assert "usar_computadora" in names
+    assert "publicar_social" not in names
+    assert "configurar_credencial" not in names

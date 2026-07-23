@@ -215,6 +215,13 @@ async def test_push_status_requires_authentication(client) -> None:
     assert response.status_code == 401
 
 
+async def test_push_preferences_requires_authentication(client) -> None:
+    assert (await client.get("/v1/devices/push/preferences")).status_code == 401
+    assert (
+        await client.put("/v1/devices/push/preferences", json={"content": False})
+    ).status_code == 401
+
+
 _DEVICE_ID_CUALQUIERA = uuid.uuid4()
 _PUSH_TOKEN_BODY_CUALQUIERA = {"push_token": "t", "push_platform": "apns"}
 
@@ -227,6 +234,8 @@ _PUSH_TOKEN_BODY_CUALQUIERA = {"push_token": "t", "push_platform": "apns"}
         ("PUT", "/v1/devices/push/credentials", {"apns": _apns_body()}),
         ("DELETE", "/v1/devices/push/credentials", None),
         ("GET", "/v1/devices/push/status", None),
+        ("GET", "/v1/devices/push/preferences", None),
+        ("PUT", "/v1/devices/push/preferences", {"content": False}),
     ],
 )
 async def test_rechaza_plan_sin_flag_notifications_push(
@@ -235,6 +244,64 @@ async def test_rechaza_plan_sin_flag_notifications_push(
     headers = _headers(plan_key=PLAN_SIN_PUSH)
     response = await client.request(method, path, json=body, headers=headers)
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET/PUT /push/preferences
+# ---------------------------------------------------------------------------
+
+
+async def test_push_preferences_defaults_are_human_friendly(
+    client, fake_session: FakeSession
+) -> None:
+    fake_session.respuestas = [[]]
+
+    response = await client.get("/v1/devices/push/preferences", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "work": True,
+        "content": True,
+        "design": True,
+        "files": True,
+        "self_repair": True,
+    }
+
+
+async def test_put_push_preferences_writes_only_safe_category_state(
+    client, fake_session: FakeSession
+) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    fake_session.respuestas = [[], []]
+
+    response = await client.put(
+        "/v1/devices/push/preferences",
+        json={"content": False, "files": False},
+        headers=_headers(tenant_id=tenant_id, user_id=user_id),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] is False
+    assert response.json()["files"] is False
+    assert response.json()["work"] is True
+    insert_sql, params = fake_session.llamadas[1]
+    assert "INSERT INTO audit_log" in insert_sql
+    assert params["tenant_id"] == tenant_id
+    assert params["user_id"] == user_id
+    assert params["action"] == "notifications.preferences.updated"
+    serialized = params["meta"]
+    assert "content" in serialized and "files" in serialized
+    assert "prompt" not in serialized and "filename" not in serialized
+
+
+async def test_put_push_preferences_rejects_unknown_category(client) -> None:
+    response = await client.put(
+        "/v1/devices/push/preferences",
+        json={"marketing_secrets": True},
+        headers=_headers(),
+    )
+    assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------

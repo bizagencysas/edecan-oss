@@ -4,6 +4,51 @@ import Testing
 
 @Suite(.serialized)
 struct APISessionRaceTests {
+    @Test func registraYRevocaTokenAPNsConBearer() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-push", refresh: "refresh-push")
+        let calls = LockedCounter()
+        let session = stubSession { request in
+            #expect(request.url?.path == "/v1/devices/device-123/push-token")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-push")
+            if request.httpMethod == "POST" {
+                let json = try #require(JSONSerialization.jsonObject(with: requestBody(request)) as? [String: String])
+                #expect(json["push_platform"] == "apns")
+                #expect(json["push_token"] == "token-opaco")
+            }
+            calls.increment()
+            return (204, Data())
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        try await api.registrarPushToken(deviceId: "device-123", token: "token-opaco")
+        try await api.revocarPushToken(deviceId: "device-123")
+
+        #expect(calls.value == 2)
+    }
+
+    @Test func cancelacionDeSwiftUINoSeDisfrazaComoFallaDeServidor() async throws {
+        let tokens = LockedAuthTokenStore(access: "access", refresh: "refresh")
+        let session = stubSession { _ in throw URLError(.cancelled) }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        do {
+            _ = try await api.me()
+            Issue.record("La petición cancelada debía conservar CancellationError")
+        } catch is CancellationError {
+            // Resultado esperado: la capa de interfaz puede ignorarlo.
+        } catch {
+            Issue.record("La cancelación no debe convertirse en \(error.localizedDescription)")
+        }
+    }
+
     @Test func claimQRSinAuthGuardaJWTYCredencialDurable() async throws {
         let tokens = LockedAuthTokenStore(access: nil, refresh: nil)
         let durable = LockedDevicePairingStore()
@@ -362,6 +407,13 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         work?.cancel()
         work = nil
     }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
 }
 
 private final class LockedAuthTokenStore: AuthTokenStoring, @unchecked Sendable {

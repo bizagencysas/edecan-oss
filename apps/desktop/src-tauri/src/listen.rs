@@ -200,13 +200,12 @@ fn save_persisted(app: &AppHandle, state: &PersistedState) -> Result<(), String>
     std::fs::write(&path, bytes).map_err(|err| err.to_string())
 }
 
-// --- Getter sincrónico usado por lib.rs en el hot path de cierre de ventana
+// --- Getter sincrónico del estado efectivo de escucha --------------------
 
 /// Lee el flag en memoria (NO el archivo de disco a propósito — ver
-/// docstring de `AlwaysListenRuntime::enabled_flag`). Se llama desde el
-/// handler de `CloseRequested` en lib.rs para decidir si cerrar la ventana
-/// oculta la app (escucha activa) o la cierra del todo (comportamiento de
-/// siempre).
+/// docstring de `AlwaysListenRuntime::enabled_flag`). Lo usan el menú de
+/// bandeja y sus indicadores para reflejar el loop que realmente está vivo,
+/// no solo la preferencia persistida.
 pub fn is_enabled(app: &AppHandle) -> bool {
     *app.state::<AlwaysListenRuntime>()
         .enabled_flag
@@ -256,6 +255,16 @@ pub async fn record_sample(app: AppHandle, index: u8) -> Result<(), String> {
     let runtime = app.state::<AlwaysListenRuntime>();
     runtime.samples.lock().unwrap()[index as usize] = Some(wav_bytes);
     Ok(())
+}
+
+/// Dispara la solicitud nativa de micrófono y verifica el resultado con una
+/// captura mínima que se descarta. La usa el Centro de permisos: no guarda
+/// audio, no entrena la palabra clave y no altera el estado de escucha.
+pub async fn request_microphone_access() -> Result<(), String> {
+    let capture = tauri::async_runtime::spawn_blocking(|| capture_wav_sample(0.12))
+        .await
+        .map_err(|err| format!("Fallo interno comprobando el micrófono: {err}"))?;
+    capture.map(|_| ())
 }
 
 /// Entrena el modelo de wake word a partir de las 3 muestras grabadas y lo
@@ -330,8 +339,7 @@ fn validate_wake_label(value: String) -> Result<String, String> {
 
 /// Activa o desactiva "escuchar siempre". Activar sin haber entrenado antes
 /// es un error explícito; desactivar siempre es válido (incluso si ya
-/// estaba desactivado — es idempotente a propósito, así el ítem fijo del
-/// menú de bandeja puede llamarlo sin chequear el estado primero).
+/// estaba desactivado — es idempotente a propósito).
 pub fn set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     let persisted = load_persisted(&app);
     if enabled && !persisted.trained {
@@ -356,8 +364,8 @@ pub fn set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     if let Err(error) = save_persisted(&app, &next) {
         // La escucha nunca debe quedar activa si no pudimos persistir el
         // consentimiento del usuario. También reflejamos el estado real en
-        // memoria para que cerrar la ventana no la oculte como si siguiera
-        // escuchando.
+        // memoria para que la UI y la bandeja no reporten una escucha que
+        // en realidad ya no está corriendo.
         if enabled {
             stop_listen_loop(&app);
         }
@@ -413,8 +421,7 @@ pub fn maybe_autostart(app: &AppHandle) -> Result<(), String> {
     // Arranca el loop PRIMERO y solo marca `enabled_flag` en memoria si
     // arrancó sin error — mismo orden que `set_enabled`, para que
     // `is_enabled()` nunca reporte `true` con ningún loop realmente
-    // corriendo detrás (ver getter sincrónico usado por el hot path de
-    // cierre de ventana en lib.rs).
+    // corriendo detrás.
     start_listen_loop(app)?;
     *app.state::<AlwaysListenRuntime>()
         .enabled_flag
@@ -746,7 +753,7 @@ fn clear_loop_handle(app: &AppHandle) {
     *runtime.loop_handle.lock().unwrap() = None;
 }
 
-fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, String> {
+fn wake_detector_config(sample_rate: u32) -> RustpotterConfig {
     let mut config = RustpotterConfig::default();
     // Solo `sample_rate`/`channels` importan para el camino
     // `process_samples::<i16>` (`AudioEncoder::rencode_and_resample`, ver
@@ -755,7 +762,22 @@ fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, S
     // este módulo no usa), así que se dejan en su default.
     config.fmt.sample_rate = sample_rate as usize;
     config.fmt.channels = 1;
+    // Las referencias personales se entrenan con pocas muestras y el nivel
+    // del micrófono cambia entre una MacBook, un headset y un micrófono USB.
+    // La configuración por defecto del crate prioriza evitar falsos positivos
+    // sobre reconocer voces reales. Estos valores siguen siendo conservadores,
+    // pero evitan que el producto parezca sordo con una referencia válida.
+    config.detector.threshold = 0.42;
+    config.detector.avg_threshold = 0.15;
+    config.detector.min_scores = 3;
+    config.detector.eager = true;
+    config.filters.gain_normalizer.enabled = true;
+    config.filters.gain_normalizer.max_gain = 2.5;
+    config
+}
 
+fn build_rustpotter(model_path: &Path, sample_rate: u32) -> Result<Rustpotter, String> {
+    let config = wake_detector_config(sample_rate);
     let mut rustpotter = Rustpotter::new(&config)?;
     let model_path_str = model_path
         .to_str()
@@ -880,6 +902,19 @@ mod tests {
         assert!(validate_wake_label("   ".to_string()).is_err());
         assert!(validate_wake_label("hola\nEdecán".to_string()).is_err());
         assert!(validate_wake_label("x".repeat(MAX_WAKE_LABEL_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn personal_wake_detector_is_voice_friendly_without_being_unbounded() {
+        let config = wake_detector_config(48_000);
+        assert_eq!(config.fmt.sample_rate, 48_000);
+        assert_eq!(config.fmt.channels, 1);
+        assert_eq!(config.detector.threshold, 0.42);
+        assert_eq!(config.detector.avg_threshold, 0.15);
+        assert_eq!(config.detector.min_scores, 3);
+        assert!(config.detector.eager);
+        assert!(config.filters.gain_normalizer.enabled);
+        assert_eq!(config.filters.gain_normalizer.max_gain, 2.5);
     }
 
     #[test]

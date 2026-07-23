@@ -65,6 +65,24 @@ struct ModelsTests {
         #expect(me.nombrePila == "sinarroba")
     }
 
+    @Test func perfilPersonalDecodificaIdentidadCompartida() throws {
+        let json = """
+        {
+          "resumen":"Construye productos con IA.",
+          "datos":{
+            "identidad":{"nombre_preferido":"Alex","nombre_completo":"Alex Rivera","pronombres":"elle","fecha_nacimiento":"15 de marzo de 1990","pais":"Costa Rica","ciudad":"San José","zona_horaria":"America/Costa_Rica","ocupacion":"Fundador","idioma_preferido":"Español","forma_de_trato":"Cercano y directo","biografia":"Construye productos."},
+            "gustos":[],"proyectos":["Edecán"],"metas":[],"relaciones":[],"empresas":[],"habitos":[]
+          },
+          "version":4,"updated_at":"2026-07-21T18:00:00Z"
+        }
+        """
+        let perfil = try APIClient.crearDecoder().decode(LiveProfile.self, from: Data(json.utf8))
+        #expect(perfil.datos.identidad.nombrePreferido == "Alex")
+        #expect(perfil.datos.identidad.formaDeTrato == "Cercano y directo")
+        #expect(perfil.datos.proyectos == ["Edecán"])
+        #expect(perfil.version == 4)
+    }
+
     // MARK: - Conversation
 
     @Test func decodificaListaDeConversaciones() throws {
@@ -113,7 +131,7 @@ struct ModelsTests {
         #expect(detail.messages.count == 2)
         #expect(detail.messages[0].text == "Revísalo")
         #expect(detail.messages[0].attachments == [ChatAttachment(fileId: "f1", filename: "brief.pdf", mime: "application/pdf")])
-        guard case .toolEnd(let callId, _, _, _, let version, let blocks) = detail.messages[1].toolCalls.first else {
+        guard case .toolEnd(let callId, _, _, _, let version, let blocks, _) = detail.messages[1].toolCalls.first else {
             Issue.record("El historial debía conservar tool_end")
             return
         }
@@ -139,6 +157,63 @@ struct ModelsTests {
         #expect(call.toE164 == "+573001112233")
         #expect(call.status == "in_progress")
         #expect(call.startedAt != nil)
+        #expect(call.agent == nil)
+        #expect(call.summary == nil)
+    }
+
+    @Test func decodificaAgenteYResumenHumanoDeLlamada() throws {
+        let json = """
+        {
+          "id":"call-2","conversation_id":"phone-thread","direction":"outgoing",
+          "from_e164":"+12025550100","to_e164":"+573001112233",
+          "goal":"Confirmar la cita","status":"completed",
+          "agent":{"template_id":"sales","template_name":"Seguimiento comercial","name":"Sofía"},
+          "duration_seconds":73,"error":null,
+          "summary":{
+            "version":1,"status":"completed","direction":"outgoing",
+            "participants":[
+              {"role":"assistant","name":"Sofía","phone_e164":"+12025550100"},
+              {"role":"contact","name":"Ana","phone_e164":"+573001112233"}
+            ],
+            "duration_seconds":73,
+            "key_points":["La cita sigue en pie"],
+            "commitments":["Ana enviará la dirección"],
+            "next_steps":["Revisar el mensaje antes de las 5"],
+            "transcript":{"available":true,"turn_count":6}
+          },
+          "summary_generated_at":"2026-07-01T10:02:00Z",
+          "created_at":"2026-07-01T09:59:00Z","updated_at":"2026-07-01T10:02:00Z"
+        }
+        """
+
+        let call = try APIClient.crearDecoder().decode(PhoneCallOut.self, from: Data(json.utf8))
+
+        #expect(call.agent?.name == "Sofía")
+        #expect(call.agent?.templateName == "Seguimiento comercial")
+        #expect(call.summary?.participants.last?.name == "Ana")
+        #expect(call.summary?.keyPoints == ["La cita sigue en pie"])
+        #expect(call.summary?.commitments == ["Ana enviará la dirección"])
+        #expect(call.summary?.nextSteps == ["Revisar el mensaje antes de las 5"])
+        #expect(call.summary?.transcript == PhoneCallTranscriptOut(available: true, turnCount: 6))
+        #expect(call.summaryGeneratedAt != nil)
+    }
+
+    @Test func resumenParcialMantieneDefaultsCompatibles() throws {
+        let json = """
+        {
+          "id":"call-3","conversation_id":"phone-thread","direction":"incoming",
+          "from_e164":"+573001112233","to_e164":"+12025550100",
+          "goal":"Atender consulta","status":"failed",
+          "summary":{"status":"failed"}
+        }
+        """
+
+        let call = try APIClient.crearDecoder().decode(PhoneCallOut.self, from: Data(json.utf8))
+
+        #expect(call.summary?.keyPoints.isEmpty == true)
+        #expect(call.summary?.commitments.isEmpty == true)
+        #expect(call.summary?.nextSteps.isEmpty == true)
+        #expect(call.summary?.transcript == PhoneCallTranscriptOut())
     }
 
     // MARK: - Fechas ISO 8601

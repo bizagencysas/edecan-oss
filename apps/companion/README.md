@@ -72,7 +72,7 @@ Todas las listas empiezan vacías a propósito. Edítalas a mano, con cuidado, s
 | `list_tree` | Árbol recursivo de una carpeta (`{path?, max_depth≤5, max_entries≤500}`) | dentro de `sandbox_dir`; ignora `.git`/`node_modules`/`__pycache__`/`.venv`; `ide_enabled` |
 | `search_files` | Busca texto línea por línea (`{query, path?}`), máx. 2000 archivos / 200 coincidencias | dentro de `sandbox_dir`, solo archivos de texto < 256 KB; `ide_enabled` |
 | `apply_edit` | Reemplaza `old_string` por `new_string` en un archivo (`{path, old_string, new_string, replace_all?}`), escritura atómica | dentro de `sandbox_dir`; `old_string` único salvo `replace_all`; `ide_enabled` |
-| `screenshot` | Captura y comprime la pantalla (`{display?, format?, quality?, max_width?}`) | macOS vía `screencapture`; Windows/Linux con el extra `remote-control`; `ide_enabled` |
+| `screenshot` | Captura y comprime la pantalla (`{display?, format?, quality?, max_width?, include_cursor?}`) | macOS vía `screencapture`, con ventanas, Dock, barra y cursor; Windows/Linux con el extra `remote-control`; `ide_enabled` |
 | `input_pointer` | Mueve, hace clic/doble clic/clic derecho, arrastra y desplaza | extra `remote-control`; `remote_input_enabled`; aprobación por sesión |
 | `input_key` | Escribe Unicode, teclas especiales y atajos con modificadores | extra `remote-control`; `remote_input_enabled`; aprobación por sesión |
 

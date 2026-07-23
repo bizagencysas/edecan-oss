@@ -52,6 +52,30 @@ async def test_search_happy_path_forma_envuelta(http):
 
 
 @respx.mock
+async def test_search_prefiere_id_instalable_de_monorepo(http):
+    respx.get("https://skills.sh/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "skills": [
+                    {
+                        "id": "anthropics/skills/pdf",
+                        "skillId": "pdf",
+                        "name": "pdf",
+                        "source": "anthropics/skills",
+                    }
+                ]
+            },
+        )
+    )
+    cliente = SkillsIndexClient("https://skills.sh", http)
+
+    resultados = await cliente.search("pdf")
+
+    assert resultados[0].source == "anthropics/skills/pdf"
+
+
+@respx.mock
 async def test_search_happy_path_lista_directa(http):
     respx.get("https://skills.sh/api/search").mock(
         return_value=httpx.Response(
@@ -107,9 +131,7 @@ async def test_search_404_en_ambos_devuelve_vacio(http):
 
 @respx.mock
 async def test_search_error_500_no_reintenta_el_segundo_endpoint(http):
-    ruta_search = respx.get("https://skills.sh/api/search").mock(
-        return_value=httpx.Response(500)
-    )
+    ruta_search = respx.get("https://skills.sh/api/search").mock(return_value=httpx.Response(500))
     ruta_skills = respx.get("https://skills.sh/api/skills").mock(
         return_value=httpx.Response(200, json={"skills": []})
     )
@@ -171,6 +193,21 @@ async def test_search_descarta_items_no_dict_y_sin_nombre_util(http):
 
     assert len(resultados) == 1
     assert resultados[0].nombre == "buena"
+
+
+@respx.mock
+async def test_search_descarta_nombre_sin_ubicacion_instalable(http):
+    respx.get("https://skills.sh/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"skills": [{"name": "sin-fuente"}, {"name": "bien", "source": "a/b"}]},
+        )
+    )
+    cliente = SkillsIndexClient("https://skills.sh", http)
+
+    resultados = await cliente.search("x")
+
+    assert [hit.nombre for hit in resultados] == ["bien"]
 
 
 @respx.mock

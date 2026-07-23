@@ -10,21 +10,9 @@ bloques de contenido de Anthropic"):
         {"type": "text", "text": pregunta},
     ]
 
-**Por qué esto exige el proveedor Anthropic**: `edecan_llm.anthropic._to_anthropic_messages`
-reenvía `message.content` tal cual al body de `/v1/messages` cuando el rol no
-es `system`/`tool` (`messages.append({"role": ..., "content": message.content})`,
-ver `packages/llm/edecan_llm/anthropic.py`) — así que un bloque `{"type":
-"image", ...}` llega intacto a la API de Anthropic, que sí lo entiende. En
-cambio `edecan_llm.openai_compat._to_openai_messages` NO tiene traducción de
-imágenes: para un mensaje `role="user"` con `content` en forma de lista cae a
-`_text_of(...)`, que solo concatena los bloques `type="text"` e ignora
-silenciosamente cualquier otro bloque (`packages/llm/edecan_llm/openai_compat.py`)
-— es decir, con ese proveedor la imagen desaparecería sin aviso y el modelo
-respondería solo a la pregunta de texto, a ciegas. Para no fallar en
-silencio, esta tool resuelve el proveedor ANTES de llamar (`ctx.llm.resolve(...)`,
-`edecan_llm.router.LLMRouter.resolve`) y si `provider.name != "anthropic"`
-devuelve un `ToolResult` con un mensaje de error explícito en vez de mandar
-la imagen a un proveedor que la va a descartar.
+Los adaptadores de `edecan_llm` traducen este bloque común al formato nativo
+de Anthropic, OpenAI-compatible, Gemini, Ollama, Codex CLI y Claude CLI. La
+capacidad visual depende del modelo concreto, no del nombre del proveedor.
 """
 
 from __future__ import annotations
@@ -63,8 +51,7 @@ class AnalizarImagenTool(Tool):
     description = (
         "Analiza una imagen ya subida (PNG/JPEG/WEBP/GIF, máx. 5 MB): la describe y "
         "transcribe cualquier texto visible (OCR), o responde una pregunta puntual "
-        "sobre ella. Requiere un proveedor LLM con visión configurado (Anthropic) — "
-        "con otro proveedor devuelve un error claro en vez de fallar a ciegas."
+        "sobre ella. Funciona con cualquier proveedor cuyo modelo elegido tenga visión."
     )
     input_schema = {
         "type": "object",
@@ -108,38 +95,34 @@ class AnalizarImagenTool(Tool):
             )
 
         flags = tenant_flags(ctx)
-        proveedor, _modelo = ctx.llm.resolve("principal", flags)
-        nombre_proveedor = getattr(proveedor, "name", "")
-        if nombre_proveedor != "anthropic":
+        pregunta = str(args.get("pregunta") or "").strip() or _PREGUNTA_DEFECTO
+        try:
+            respuesta = await ctx.llm.complete(
+                "principal",
+                flags,
+                CompletionRequest(
+                    model="principal",
+                    system=_SYSTEM_PROMPT,
+                    messages=[
+                        ChatMessage(
+                            role="user",
+                            content=[
+                                _bloque_imagen(mime, archivo.contenido),
+                                {"type": "text", "text": pregunta},
+                            ],
+                        )
+                    ],
+                    max_tokens=1536,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - proveedores/modelos heterogéneos
             return ToolResult(
                 content=(
-                    "analizar_imagen necesita un proveedor LLM con soporte de visión "
-                    "(Anthropic, vía ANTHROPIC_API_KEY) — el proveedor configurado "
-                    f"ahora mismo ('{nombre_proveedor or 'desconocido'}') no procesa "
-                    "imágenes, así que no puedo analizar esta imagen."
+                    "El archivo sí se subió, pero el modelo elegido no pudo procesar "
+                    "esta imagen. Elige un modelo con visión o intenta de nuevo. "
+                    f"Detalle: {type(exc).__name__}."
                 )
             )
-
-        pregunta = str(args.get("pregunta") or "").strip() or _PREGUNTA_DEFECTO
-
-        respuesta = await ctx.llm.complete(
-            "principal",
-            flags,
-            CompletionRequest(
-                model="principal",
-                system=_SYSTEM_PROMPT,
-                messages=[
-                    ChatMessage(
-                        role="user",
-                        content=[
-                            _bloque_imagen(mime, archivo.contenido),
-                            {"type": "text", "text": pregunta},
-                        ],
-                    )
-                ],
-                max_tokens=1536,
-            ),
-        )
 
         texto = respuesta.text.strip()
         if not texto:

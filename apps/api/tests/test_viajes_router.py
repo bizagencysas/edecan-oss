@@ -472,12 +472,37 @@ async def test_status_travel_y_tracking_configurados(
 
 # ---------------------------------------------------------------------------
 # GET /v1/viajes/buscar/vuelos, /buscar/hoteles, /rastreo/{numero} — proveedor del
-# tenant, con fallback a stub cuando no hay credencial (integración de punta a punta,
-# sin monkeypatch de proveedor).
+# tenant. El proveedor nativo se prueba contra fakes en `packages/travel/tests`;
+# aquí se inyecta para que la suite HTTP siga siendo offline y determinista.
 # ---------------------------------------------------------------------------
 
 
-async def test_buscar_vuelos_sin_credenciales_usa_stub(client, _con_flag_travel) -> None:
+async def test_buscar_vuelos_sin_credenciales_usa_proveedor_nativo(
+    client, monkeypatch: pytest.MonkeyPatch, _con_flag_travel
+) -> None:
+    from edecan_travel.amadeus import VueloOferta
+
+    class _Nativo:
+        async def buscar_vuelos(self, *args: Any, **kwargs: Any) -> list[VueloOferta]:
+            return [
+                VueloOferta(
+                    id="native-flight",
+                    aerolinea="CM",
+                    salida="2026-08-01T08:00:00",
+                    llegada="2026-08-01T12:00:00",
+                    origen="BOG",
+                    destino="MIA",
+                    escalas=1,
+                    precio_total="250",
+                    moneda="USD",
+                    booking_url="https://kiwi.com/u/test",
+                )
+            ]
+
+    async def _resolver(ctx: Any) -> _Nativo:
+        return _Nativo()
+
+    monkeypatch.setattr(viajes, "get_tenant_travel_provider", _resolver)
     response = await client.get(
         "/v1/viajes/buscar/vuelos?origen=BOG&destino=MIA&fecha=2026-08-01",
         headers=_headers_con_acceso(),
@@ -485,10 +510,33 @@ async def test_buscar_vuelos_sin_credenciales_usa_stub(client, _con_flag_travel)
     assert response.status_code == 200
     body = response.json()
     assert len(body["ofertas"]) >= 1
-    assert "ejemplo" in body["ofertas"][0]["aerolinea"].lower()
+    assert body["ofertas"][0]["booking_url"].startswith("https://kiwi.com/")
 
 
-async def test_buscar_hoteles_sin_credenciales_usa_stub(client, _con_flag_travel) -> None:
+async def test_buscar_hoteles_sin_credenciales_usa_proveedor_nativo(
+    client, monkeypatch: pytest.MonkeyPatch, _con_flag_travel
+) -> None:
+    from edecan_travel.amadeus import HotelOferta
+
+    class _Nativo:
+        async def buscar_hoteles(self, *args: Any, **kwargs: Any) -> list[HotelOferta]:
+            return [
+                HotelOferta(
+                    id="native-hotel",
+                    nombre="Hotel Real",
+                    rating="4",
+                    precio_total="300",
+                    moneda="USD",
+                    checkin="2026-09-01",
+                    checkout="2026-09-05",
+                    booking_url="https://www.trivago.com/hotel/test",
+                )
+            ]
+
+    async def _resolver(ctx: Any) -> _Nativo:
+        return _Nativo()
+
+    monkeypatch.setattr(viajes, "get_tenant_travel_provider", _resolver)
     response = await client.get(
         "/v1/viajes/buscar/hoteles?ciudad=PAR&checkin=2026-09-01&checkout=2026-09-05",
         headers=_headers_con_acceso(),
@@ -496,7 +544,7 @@ async def test_buscar_hoteles_sin_credenciales_usa_stub(client, _con_flag_travel
     assert response.status_code == 200
     body = response.json()
     assert len(body["ofertas"]) >= 1
-    assert "ejemplo" in body["ofertas"][0]["nombre"].lower()
+    assert body["ofertas"][0]["nombre"] == "Hotel Real"
 
 
 async def test_rastreo_sin_credenciales_usa_stub(client, _con_flag_travel) -> None:
@@ -594,9 +642,36 @@ async def test_rastreo_error_del_proveedor_devuelve_502(
 async def test_buscar_vuelos_nunca_usa_centinela_de_plataforma_del_entorno(
     client, monkeypatch: pytest.MonkeyPatch, _con_flag_travel
 ) -> None:
+    from edecan_travel.native import EdecanTravelProvider
+
     centinela = "CENTINELA-DE-PLATAFORMA-NUNCA-DEBERIA-APARECER"
     monkeypatch.setenv("AMADEUS_API_KEY", centinela)
     monkeypatch.setenv("AMADEUS_API_SECRET", centinela)
+
+    async def _caller(url: str, tool: str, args: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "currency": "USD",
+                "itineraries": [
+                    {
+                        "id": "native",
+                        "price": 200,
+                        "bookingUrl": "https://kiwi.com/u/test",
+                        "outbound": {
+                            "from": "BOG",
+                            "to": "MIA",
+                            "stops": 0,
+                            "segments": [{"carrier": "AV"}],
+                        },
+                    }
+                ],
+            }
+        )
+
+    async def _resolver(ctx: Any) -> EdecanTravelProvider:
+        return EdecanTravelProvider(mcp_caller=_caller)
+
+    monkeypatch.setattr(viajes, "get_tenant_travel_provider", _resolver)
 
     response = await client.get(
         "/v1/viajes/buscar/vuelos?origen=BOG&destino=MIA&fecha=2026-08-01",
@@ -605,9 +680,7 @@ async def test_buscar_vuelos_nunca_usa_centinela_de_plataforma_del_entorno(
 
     assert response.status_code == 200
     assert centinela not in response.text
-    # Confirma además que de verdad cayó al stub (nunca a un AmadeusClient construido
-    # con alguna credencial fantasma leída del entorno).
-    assert "ejemplo" in response.text.lower()
+    assert response.json()["ofertas"][0]["aerolinea"] == "AV"
 
 
 async def test_rastreo_nunca_usa_centinela_de_plataforma_del_entorno(

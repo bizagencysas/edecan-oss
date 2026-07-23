@@ -51,6 +51,7 @@ fun InicioScreen(
     onAbrirMisiones: () -> Unit = {},
     onAbrirAutomatizaciones: () -> Unit = {},
     onAbrirRecordatorios: () -> Unit = {},
+    onAbrirLlamadas: () -> Unit = {},
     onAbrirRemoto: () -> Unit = {},
 ) {
     val uiState by sessionViewModel.uiState.collectAsState()
@@ -61,6 +62,7 @@ fun InicioScreen(
         AccesoDirecto("🧭", "Trabajo delegado", "Objetivos y aprobaciones", onAbrirMisiones),
         AccesoDirecto("⚡", "Rutinas", "Acciones programadas", onAbrirAutomatizaciones),
         AccesoDirecto("🔔", "Recordatorios", "Pendientes y completados", onAbrirRecordatorios),
+        AccesoDirecto("📞", "Llamadas", "Historial, acuerdos y próximos pasos", onAbrirLlamadas),
         AccesoDirecto("🖥️", "Remoto", "Ver y controlar tu Mac, con tu aprobación", onAbrirRemoto),
     )
 

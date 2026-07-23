@@ -9,7 +9,6 @@ import {
   CodeIcon,
   CreditCardIcon,
   FileIcon,
-  GridIcon,
   IdCardIcon,
   InboxIcon,
   KeyIcon,
@@ -28,11 +27,14 @@ import {
   WalletIcon,
   ZapIcon,
 } from "@/components/icons";
+import { assistantIntentHref, type AssistantIntentKey } from "@/lib/assistant-intents";
 
 export interface NavItem {
   href: string;
   label: string;
   icon: (props: { className?: string }) => React.ReactElement;
+  requiredFlag?: string;
+  assistantIntent?: AssistantIntentKey;
 }
 
 export interface NavGroup {
@@ -69,11 +71,21 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
   {
     label: "Trabajo",
     items: [
-      { href: "/app/misiones", label: "Misiones", icon: RocketIcon },
-      { href: "/app/automatizaciones", label: "Automatizaciones", icon: ZapIcon },
+      { href: "/app/misiones", label: "Misiones", icon: RocketIcon, requiredFlag: "agents.missions" },
+      {
+        href: "/app/automatizaciones",
+        label: "Automatizaciones",
+        icon: ZapIcon,
+        requiredFlag: "automations.rules",
+      },
       { href: "/app/recordatorios", label: "Recordatorios", icon: BellIcon },
-      { href: "/app/mensajes", label: "Mensajes", icon: InboxIcon },
-      { href: "/app/reuniones", label: "Reuniones", icon: VideoIcon },
+      {
+        href: "/app/mensajes",
+        label: "Mensajes",
+        icon: InboxIcon,
+        requiredFlag: "connectors.messaging",
+      },
+      { href: "/app/reuniones", label: "Reuniones", icon: VideoIcon, requiredFlag: "tools.meetings" },
       { href: "/app/archivos", label: "Archivos", icon: FileIcon },
       { href: "/app/contactos", label: "Contactos", icon: UsersIcon },
     ],
@@ -81,16 +93,28 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
   {
     label: "Capacidades",
     items: [
+      { href: "/app/studio", label: "Studio visual", icon: SparklesIcon },
       { href: "/app/conectores", label: "Conectores", icon: PlugIcon },
       { href: "/app/finanzas", label: "Finanzas", icon: WalletIcon },
-      { href: "/app/panel", label: "Panel", icon: GridIcon },
       { href: "/app/analista", label: "Analista", icon: ChartBarIcon },
-      { href: "/app/ordenes", label: "Órdenes", icon: CartIcon },
-      { href: "/app/ads", label: "Ads", icon: SendIcon },
-      { href: "/app/viajes", label: "Viajes", icon: PlaneIcon },
+      {
+        href: assistantIntentHref("prepare_order"),
+        label: "Preparar una orden",
+        icon: CartIcon,
+        requiredFlag: "commerce.orders",
+        assistantIntent: "prepare_order",
+      },
+      {
+        href: assistantIntentHref("improve_campaigns"),
+        label: "Mejorar campañas",
+        icon: SendIcon,
+        requiredFlag: "tools.ads",
+        assistantIntent: "improve_campaigns",
+      },
+      { href: "/app/viajes", label: "Viajes", icon: PlaneIcon, requiredFlag: "tools.travel" },
       { href: "/app/negocios", label: "Negocios", icon: BriefcaseIcon },
-      { href: "/app/inventario", label: "Inventario", icon: BoxIcon },
-      { href: "/app/rrhh", label: "RRHH", icon: TeamIcon },
+      { href: "/app/inventario", label: "Inventario", icon: BoxIcon, requiredFlag: "erp.inventory" },
+      { href: "/app/rrhh", label: "RRHH", icon: TeamIcon, requiredFlag: "erp.hr" },
     ],
   },
   {
@@ -111,6 +135,7 @@ export const NAV_ITEMS = PRIMARY_NAV_ITEMS;
 export const ADVANCED_NAV_ITEMS = ADVANCED_NAV_GROUPS.flatMap((group) => group.items);
 
 export function isNavItemActive(pathname: string | null, href: string): boolean {
-  if (href === "/app") return pathname === "/app";
-  return pathname === href || Boolean(pathname?.startsWith(`${href}/`));
+  const route = href.split(/[?#]/, 1)[0];
+  if (route === "/app") return pathname === "/app" && href === "/app";
+  return pathname === route || Boolean(pathname?.startsWith(`${route}/`));
 }

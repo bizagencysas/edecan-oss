@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = JWT_SECRET_PLACEHOLDER
     AUTH_RATE_LIMIT_REQUESTS: int = 10
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    # Capacidad aleatoria por proceso que Tauri entrega al sidecar y a su
+    # WebView. Nunca se persiste ni se publica en el QR/túnel.
+    LOCAL_DESKTOP_CAPABILITY: str | None = None
     # QR móvil de un solo uso. La sesión durable posterior vive en `devices`
     # y se puede revocar; este TTL solo limita la ventana del QR visible.
     MOBILE_PAIRING_TTL_SECONDS: int = 10 * 60
@@ -135,8 +138,8 @@ class Settings(BaseSettings):
 
     QUOTES_PROVIDER: str = "stub"
 
-    # Único valor operativo hoy (ROADMAP_V2.md §8.1: dinero real nunca se
-    # mueve solo) — un modo "live" queda fuera de este pinning a propósito.
+    # "paper" usa el simulador local. "alpaca_paper" usa la cuenta simulada
+    # propia del usuario. No existe un modo live en Edecán.
     COMMERCE_MODE: str = "paper"
 
     MISSIONS_MAX_STEPS: int = 8
@@ -162,6 +165,12 @@ class Settings(BaseSettings):
     # deriva a `$DATA_DIR/creator`; una ruta explícita sirve para inspeccionar
     # los proyectos directamente en instalaciones locales.
     CREATOR_WORKSPACE_DIR: str | None = None
+    # Studio creativo completo. En fuente se autodetecta el paquete hermano;
+    # el instalador nativo fija ambas rutas a sus recursos empaquetados.
+    EDECAN_STUDIO_ENGINE_DIR: str | None = None
+    EDECAN_STUDIO_NODE_BINARY: str | None = None
+    EDECAN_STUDIO_TIMEOUT_SECONDS: int = 1_200
+    EDECAN_STUDIO_MAX_OUTPUT_BYTES: int = 16 * 1024 * 1024
     SERVE_WEB_DIR: str | None = None
     LOCAL_API_PORT: int = 8765
 
@@ -183,6 +192,13 @@ class Settings(BaseSettings):
     EDECAN_SELF_REPAIR_TEST_COMMANDS_JSON: str = "[]"
     EDECAN_SELF_REPAIR_INSTALL_COMMANDS_JSON: str = "[]"
     EDECAN_SELF_REPAIR_COMMAND_TIMEOUT_SECONDS: int = 300
+
+    # Auditoría de seguridad local. PentestGPT es una dependencia opcional
+    # instalada y fijada por el dueño; Edecán nunca descarga ejecutables por
+    # su cuenta. Vacío = autodetectar `pentestgpt` en PATH.
+    PENTESTGPT_BINARY: str | None = None
+    PENTESTGPT_BACKEND: str = "claude"
+    PENTESTGPT_TIMEOUT_SECONDS: int = 3600
 
     # Cola de jobs en modo local: "sqs" (LocalStack/AWS real, igual que hoy) o
     # "db" (tabla `jobs` como cola, sin SQS/LocalStack — pensado para el modo

@@ -4,10 +4,14 @@
 
 html {
   color-scheme: light dark;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
   @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-50;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 ::selection {
@@ -25,6 +29,7 @@ body {
 /* Scrollbars discretos para paneles internos (lista de chat, sidebars). */
 .thin-scrollbar {
   scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225 / 0.8) transparent;
 }
 
 .thin-scrollbar::-webkit-scrollbar {
@@ -34,4 +39,8 @@ body {
 
 .thin-scrollbar::-webkit-scrollbar-thumb {
   @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}
+
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }

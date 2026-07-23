@@ -80,7 +80,12 @@ def normalize_goal(value: Any, *, max_chars: int = 500) -> str:
 
 def normalize_twilio_status(value: Any) -> str:
     status = str(value or "").strip().lower().replace("-", "_")
-    aliases = {"initiated": "queued", "in-progress": "in_progress", "no-answer": "no_answer"}
+    aliases = {
+        "initiated": "queued",
+        "in-progress": "in_progress",
+        "no-answer": "no_answer",
+        "canceled": "cancelled",
+    }
     status = aliases.get(status, status)
     return status if status in CALL_STATUSES else "failed"
 

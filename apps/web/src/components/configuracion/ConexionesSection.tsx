@@ -22,6 +22,7 @@ import { SelectorBusqueda } from "@/components/configuracion/SelectorBusqueda";
 import { SelectorCasaInteligente } from "@/components/configuracion/SelectorCasaInteligente";
 import { SelectorImagenes } from "@/components/configuracion/SelectorImagenes";
 import { SelectorLLM } from "@/components/configuracion/SelectorLLM";
+import { SelectorModeloLLM } from "@/components/configuracion/SelectorModeloLLM";
 import { SelectorVoz } from "@/components/configuracion/SelectorVoz";
 import { BrainIcon, MicIcon, PlugIcon, SearchIcon, SparklesIcon } from "@/components/icons";
 import { Alert, Spinner } from "@/components/ui";
@@ -202,17 +203,16 @@ export function ConexionesSection({
             estado={llmEstado}
             resumen={
               credentials?.llm
-                ? [
-                    LLM_KIND_LABELS[credentials.llm.kind],
-                    credentials.llm.model_principal,
-                    credentials.llm.masked,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")
+                ? <>
+                    <FilaCredencialConectada onQuitar={handleQuitarLlm} quitando={quitando === "llm"}>
+                      {[LLM_KIND_LABELS[credentials.llm.kind], credentials.llm.model_principal, credentials.llm.masked]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </FilaCredencialConectada>
+                    <SelectorModeloLLM onUpdated={load} />
+                  </>
                 : undefined
             }
-            onQuitar={credentials?.llm ? handleQuitarLlm : undefined}
-            quitando={quitando === "llm"}
             defaultExpanded={!credentials?.llm}
             destacado
           >
@@ -274,7 +274,7 @@ export function ConexionesSection({
           <CardCredencial
             icon={<SearchIcon className="h-4 w-4 text-brand-600" />}
             titulo="Búsqueda web"
-            descripcion="Para buscar en la web y comparar información actual con Brave Search o Tavily. Es completamente opcional."
+            descripcion="Ya funciona sin configuración. Puedes conectar Brave Search o Tavily como proveedor opcional."
             estado={busquedaEstado}
             resumen={
               credentials?.search
@@ -313,7 +313,7 @@ export function ConexionesSection({
             <div className="mt-4"><ICloudConnectionCard /></div>
           </ConnectionCategory>
 
-          <ConnectionCategory title="Viajes y entregas" description="Amadeus para vuelos y hoteles; AfterShip para paquetes.">
+          <ConnectionCategory title="Viajes y entregas" description="Vuelos y hoteles funcionan sin configurar una API. AfterShip es opcional para rastrear paquetes.">
             <TravelConnectionsPanel />
           </ConnectionCategory>
 

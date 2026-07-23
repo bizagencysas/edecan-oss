@@ -106,13 +106,22 @@ class SseClient(private val json: Json = edecanJson) {
      * (`shared/src/commonTest`) sin abrir ningún canal/conexión real. */
     private suspend fun leerBloques(canal: ByteReadChannel, despachar: suspend (ChatEvent) -> Unit) {
         val parser = SseFrameParser(json)
+        val terminal = SseTerminalState()
         while (true) {
             val linea = canal.readLine() ?: break // cierre normal de conexión.
-            parser.procesarLinea(linea)?.let { despachar(it) }
+            parser.procesarLinea(linea)?.let { evento ->
+                if (terminal.aceptar(evento)) despachar(evento)
+            }
+            if (terminal.finalizado) break
         }
         // Por si el servidor cierra el stream sin una última línea en
         // blanco tras el bloque final.
-        parser.finalizar()?.let { despachar(it) }
+        if (!terminal.finalizado) {
+            parser.finalizar()?.let { evento ->
+                if (terminal.aceptar(evento)) despachar(evento)
+            }
+        }
+        terminal.validarCierre()
     }
 }
 
@@ -138,10 +147,13 @@ internal class SseFrameParser(private val json: Json = edecanJson) {
      * sigue a un bloque `data:` no vacío), o `null` si la línea todavía no
      * cierra ningún bloque. Lanza [SseClient.SseException.EventoInvalido]
      * si el payload acumulado no decodifica como un [ChatEvent] válido. */
-    fun procesarLinea(linea: String): ChatEvent? = when {
+    fun procesarLinea(lineaCruda: String): ChatEvent? {
+        val linea = lineaCruda.removeSuffix("\r")
+        return when {
         linea.isEmpty() -> despacharBloque()
         linea.startsWith(":") -> null // comentario/keep-alive de SSE.
         else -> procesarCampo(linea)
+        }
     }
 
     /** Cierra el bloque acumulado aunque nunca haya llegado una línea en
@@ -154,10 +166,14 @@ internal class SseFrameParser(private val json: Json = edecanJson) {
         val campo = linea.substring(0, indiceDosPuntos)
         var valor = linea.substring(indiceDosPuntos + 1)
         if (valor.startsWith(" ")) valor = valor.substring(1)
-        when (campo) {
-            "event" -> nombreEvento = valor
-            "data" -> lineasDeDatos.add(valor)
+        if (campo == "event") {
+            // Un relay puede perder la línea vacía entre eventos. Un nuevo
+            // `event:` cierra inequívocamente el bloque anterior.
+            val pendiente = despacharBloque()
+            nombreEvento = valor
+            return pendiente
         }
+        if (campo == "data") lineasDeDatos.add(valor)
         return null
     }
 
@@ -165,13 +181,34 @@ internal class SseFrameParser(private val json: Json = edecanJson) {
         if (lineasDeDatos.isEmpty()) return null
         val payload = lineasDeDatos.joinToString("\n")
         lineasDeDatos.clear()
-        val evento = nombreEvento
+        val evento = nombreEvento?.trim()
         nombreEvento = null
-        if (payload == "[DONE]") return null // sentinel estilo OpenAI, ver KDoc de SseClient.
+        if (payload.trim() == "[DONE]") return ChatEvent.Done()
         return try {
             json.decodeFromString(ChatEvent.serializer(), payload)
         } catch (e: Exception) {
+            if (evento == "message.done") return ChatEvent.Done()
             throw SseClient.SseException.EventoInvalido("evento '${evento ?: "?"}': ${e.message}")
+        }
+    }
+}
+
+/** Contrato terminal de un turno SSE: el primer `done`/`error` gana y
+ * cualquier evento posterior se ignora. Un EOF sin marcador terminal es una
+ * respuesta truncada, no un éxito. */
+internal class SseTerminalState {
+    var finalizado: Boolean = false
+        private set
+
+    fun aceptar(evento: ChatEvent): Boolean {
+        if (finalizado) return false
+        if (evento is ChatEvent.Done || evento is ChatEvent.ErrorEvent) finalizado = true
+        return true
+    }
+
+    fun validarCierre() {
+        if (!finalizado) {
+            throw SseClient.SseException.Conexion("la respuesta terminó sin confirmación final")
         }
     }
 }

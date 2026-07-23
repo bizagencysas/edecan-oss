@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class SseClientRequestTest {
     @Test
@@ -31,6 +32,52 @@ class SseClientRequestTest {
             accessToken = "access-chat",
             bodyJson = body,
             idempotencyKey = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+        ).toList()
+
+        assertEquals(listOf(ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun cierreDeConexionSinDoneEsUnaRespuestaTruncada() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                "data: {\"type\":\"text_delta\",\"text\":\"incompleto\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val error = assertFailsWith<SseClient.SseException.Conexion> {
+            SseClient().stream(
+                client = client,
+                url = "https://edecan.test/v1/conversations/c1/messages",
+                accessToken = "access-chat",
+                bodyJson = "{}",
+            ).toList()
+        }
+
+        assertEquals(
+            "Se perdió la conexión con Edecán: la respuesta terminó sin confirmación final",
+            error.message,
+        )
+    }
+
+    @Test
+    fun ignoraCualquierEventoDespuesDelPrimerDone() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                "data: {\"type\":\"done\"}\n\n" +
+                    "data: {\"type\":\"text_delta\",\"text\":\"duplicado\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val events = SseClient().stream(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/messages",
+            accessToken = "access-chat",
+            bodyJson = "{}",
         ).toList()
 
         assertEquals(listOf(ChatEvent.Done()), events)

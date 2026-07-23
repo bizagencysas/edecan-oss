@@ -47,7 +47,10 @@ export function buildContentSecurityPolicy({
     "default-src 'self'",
     "base-uri 'self'",
     "object-src 'none'",
-    "frame-src 'none'",
+    // Los previews HTML privados se convierten a Blob, reciben una CSP propia
+    // sin scripts/red/formularios y se montan en un iframe sandbox sin
+    // permisos. No se permiten frames HTTP(S) ni orígenes externos.
+    "frame-src blob:",
     "frame-ancestors 'none'",
     "form-action 'self'",
     `script-src ${scriptSources.join(" ")}`,

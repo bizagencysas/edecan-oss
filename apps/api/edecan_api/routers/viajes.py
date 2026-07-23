@@ -1,7 +1,13 @@
-"""`/v1/viajes/*` — Viajes: búsqueda real de vuelos/hoteles vía la API oficial **Amadeus
-Self-Service** (bring-your-own credenciales del tenant) + rastreo de paquetes vía
-**AfterShip**, con el guardrail de dinero como centro del diseño (`ARCHITECTURE.md` §14,
-`DIRECCION_ACTUAL.md`, WP-V5-09; ver `docs/viajes.md` para el flujo completo).
+"""`/v1/viajes/*` — vuelos y hoteles reales mediante Edecán Viajes.
+
+Las búsquedas normales no requieren credenciales: el proveedor nativo consulta
+Kiwi, Trivago y Skiplagged a través del cliente MCP de Edecán, independientemente
+del modelo de IA conectado. AfterShip continúa disponible como integración
+bring-your-own para rastreo. Las rutas Amadeus se conservan para instalaciones
+anteriores con acceso Enterprise y tienen fallback automático al proveedor nativo.
+
+El guardrail de dinero sigue siendo el centro del diseño (`ARCHITECTURE.md` §14;
+ver `docs/viajes.md`): ninguna ruta reserva ni paga.
 
 Este router NO se monta a sí mismo: `edecan_api.main` (WP-V5-01) lo monta de forma
 defensiva, igual que el resto de routers v2/v3/v4 (`importlib.import_module` +
@@ -13,19 +19,18 @@ su momento `edecan_ads`/`test_ads_router.py`, hasta que WP-V5-01 la agregue a
 tolera: si `edecan_travel` no está instalada todavía, este router simplemente se omite
 con un `logger.warning`, sin tumbar el resto de la API.
 
-## Qué resuelve
+## Compatibilidad heredada
 
-Cada tenant pega sus propias credenciales de **su propia app** de Amadeus for Developers
-(`api_key`/`api_secret`, self-service, gratis) para buscar vuelos/hoteles reales, y
-opcionalmente su propio `api_key` de **AfterShip** para rastrear paquetes. Mismo patrón
+Una instalación que ya tenga credenciales Amadeus puede conservarlas. Edecán las
+prueba y cifra como antes; si dejan de responder, la búsqueda cae al proveedor nativo
+sin mostrar datos ficticios. AfterShip usa el mismo patrón
 "pegar y validar" que `routers/ads.py`/`routers/smarthome.py`
 (`DIRECCION_ACTUAL.md`, "Principio de UX no negociable"): `PUT /v1/viajes/credentials`
 y `PUT /v1/viajes/rastreo/credentials` aceptan `validate: bool = True` (default) — si es
 `true`, antes de guardar nada se valida de verdad contra la API real (Amadeus: pide un
 token OAuth2; AfterShip: `GET /couriers`, la sonda más barata posible) y devuelven `400`
 con el detalle EXACTO que dio el proveedor si algo falla; nunca se persiste una
-credencial sin probarla. `validate: false` es la escotilla de escape (tests, o el propio
-dueño del proyecto sabiendo que está bien).
+credencial sin probarla. `validate: false` queda como escape para tests y migraciones.
 
 ## GUARDRAIL DE DINERO — innegociable
 

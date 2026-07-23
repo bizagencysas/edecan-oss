@@ -49,7 +49,7 @@ from edecan_schemas.plans import (
     PLANES,
     UNLIMITED,
 )
-from edecan_schemas.profile import LiveProfile, ProfileData
+from edecan_schemas.profile import LiveProfile, ProfileData, ProfileIdentity
 from edecan_schemas.queue import JOB_TYPES
 from pydantic import ValidationError
 
@@ -329,8 +329,9 @@ def test_live_profile_defaults_vacios():
     assert profile.datos == ProfileData()
 
 
-def test_live_profile_datos_tiene_las_6_listas_pinned():
+def test_live_profile_datos_tiene_identidad_y_las_6_listas_pinned():
     datos = ProfileData(
+        identidad=ProfileIdentity(nombre_preferido="Ana"),
         gustos=["café"],
         proyectos=["Edecán v2"],
         metas=["lanzar v2"],
@@ -341,6 +342,7 @@ def test_live_profile_datos_tiene_las_6_listas_pinned():
     profile = LiveProfile(resumen="Ana construye Edecán.", datos=datos, version=2)
     dumped = profile.model_dump()
     assert set(dumped["datos"]) == {
+        "identidad",
         "gustos",
         "proyectos",
         "metas",
@@ -348,3 +350,4 @@ def test_live_profile_datos_tiene_las_6_listas_pinned():
         "empresas",
         "habitos",
     }
+    assert dumped["datos"]["identidad"]["nombre_preferido"] == "Ana"

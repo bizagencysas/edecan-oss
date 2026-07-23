@@ -338,12 +338,14 @@ async def test_conversations_and_messages(db) -> None:
             # `title` es NOT NULL sin default aplicable aquí (columna sí va en
             # el INSERT): un `None` debe sustituirse por "" (ver repo.py).
             assert sin_titulo["title"] == ""
+            assert sin_titulo["title_source"] == "auto_pending"
             assert sin_titulo["channel"] == "web"
 
             con_titulo = await repo.create_conversation(
                 tenant_id=tenant_id, user_id=user_id, title="Plan de viaje", channel="voice"
             )
             assert con_titulo["title"] == "Plan de viaje"
+            assert con_titulo["title_source"] == "manual"
 
             listado = await repo.list_conversations(tenant_id=tenant_id, user_id=user_id)
             assert {c["id"] for c in listado} == {sin_titulo["id"], con_titulo["id"]}
@@ -407,6 +409,105 @@ async def test_conversations_and_messages(db) -> None:
             assert not await repo.delete_conversation(
                 tenant_id=tenant_id, conversation_id=sin_titulo["id"]
             )
+    finally:
+        await _cleanup(tenant_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# agentes y snapshots de llamadas
+# ---------------------------------------------------------------------------
+
+
+async def test_phone_agent_templates_and_call_snapshot(db) -> None:
+    from edecan_db.session import get_session
+
+    sufijo = uuid4().hex[:8]
+    tenant_id, user_id = await _seed_tenant_y_usuario(sufijo)
+    try:
+        async with get_session(tenant_id) as session:
+            repo = SqlRepo(session)
+            conversation = await repo.create_conversation(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Llamada de seguimiento",
+                channel="phone",
+            )
+            template = await repo.create_phone_agent_template(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                name="Seguimiento",
+                agent_name="Sara",
+                persona_prompt="Habla con calma y confirma los datos.",
+                default_goal="Confirmar la cita.",
+                opening_message="Te llamo para confirmar tu próxima cita.",
+                is_default=True,
+            )
+
+            assert (
+                await repo.get_default_phone_agent_template(
+                    tenant_id=tenant_id, user_id=user_id
+                )
+            )["id"] == template["id"]
+            call = await repo.create_phone_call(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=conversation["id"],
+                direction="outgoing",
+                from_e164="+573001111111",
+                to_e164="+573002222222",
+                goal=template["default_goal"],
+                agent_template_id=template["id"],
+                agent_template_name=template["name"],
+                agent_name=template["agent_name"],
+                agent_prompt=template["persona_prompt"],
+                opening_message=template["opening_message"],
+            )
+
+            await repo.update_phone_agent_template(
+                tenant_id=tenant_id,
+                template_id=template["id"],
+                fields={"agent_name": "Nombre nuevo", "persona_prompt": "Prompt nuevo"},
+            )
+            persisted = await repo.get_phone_call(tenant_id=tenant_id, call_id=call["id"])
+            assert persisted is not None
+            assert persisted["agent_name"] == "Sara"
+            assert persisted["agent_prompt"] == "Habla con calma y confirma los datos."
+
+            structured_summary = {
+                "status": "completed",
+                "participants": [],
+                "duration_seconds": 12,
+                "key_points": ["Cita confirmada"],
+                "commitments": [],
+                "next_steps": ["Asistir a la cita"],
+                "transcript": {"available": True, "turn_count": 2},
+            }
+            summarized = await repo.set_phone_call_summary_if_absent(
+                tenant_id=tenant_id,
+                call_id=call["id"],
+                summary=structured_summary,
+            )
+            assert summarized is not None
+            assert summarized["summary"] == structured_summary
+            assert (
+                await repo.set_phone_call_summary_if_absent(
+                    tenant_id=tenant_id,
+                    call_id=call["id"],
+                    summary={"status": "failed"},
+                )
+                is None
+            )
+
+            assert await repo.delete_phone_agent_template(
+                tenant_id=tenant_id, template_id=template["id"]
+            )
+            after_delete = await repo.get_phone_call(
+                tenant_id=tenant_id, call_id=call["id"]
+            )
+            assert after_delete is not None
+            assert after_delete["agent_template_id"] is None
+            assert after_delete["agent_template_name"] == "Seguimiento"
+            assert after_delete["opening_message"] == template["opening_message"]
     finally:
         await _cleanup(tenant_id, user_id)
 

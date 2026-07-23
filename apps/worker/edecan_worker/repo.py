@@ -202,6 +202,17 @@ class Repo(Protocol):
         tokens_out: int = 0,
     ) -> Row: ...
 
+    # -- push de resumen de llamada (`notify_phone_call_summary`) -------------
+    async def get_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> Row | None: ...
+    async def claim_phone_call_summary_push(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> bool: ...
+    async def has_phone_call_event(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str
+    ) -> bool: ...
+
     # -- conectores / oauth (`sync_connector`) ---------------------------------------
     async def list_expiring_oauth_tokens(
         self, *, tenant_id: uuid.UUID | None, before: datetime
@@ -222,6 +233,13 @@ class Repo(Protocol):
     ) -> None: ...
     async def delete_memory_items(
         self, *, tenant_id: uuid.UUID, memory_ids: list[uuid.UUID]
+    ) -> int: ...
+    async def supersede_memory_items(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        replacements: list[tuple[uuid.UUID, uuid.UUID]],
     ) -> int: ...
 
     # -- memoria: extracción por LLM (`memory_consolidate`, fase 1) -------------------
@@ -475,6 +493,51 @@ class SqlRepo:
         )
         return row
 
+    # -- push de resumen de llamada -------------------------------------------
+
+    async def get_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            "SELECT * FROM phone_calls WHERE tenant_id = :tenant_id AND id = :id",
+            {"tenant_id": tenant_id, "id": call_id},
+        )
+
+    async def claim_phone_call_summary_push(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> bool:
+        """Claim atómico previo al efecto externo; una redelivery no duplica push."""
+        row = await self._first(
+            """
+            UPDATE phone_calls
+            SET summary_push_attempted_at = :now, updated_at = :now
+            WHERE tenant_id = :tenant_id AND id = :id
+              AND summary IS NOT NULL AND summary_push_attempted_at IS NULL
+            RETURNING id
+            """,
+            {"tenant_id": tenant_id, "id": call_id, "now": utcnow()},
+        )
+        return row is not None
+
+    async def has_phone_call_event(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str
+    ) -> bool:
+        row = await self._first(
+            """
+            SELECT id
+            FROM phone_call_events
+            WHERE tenant_id = :tenant_id AND call_id = :call_id
+              AND event_type = :event_type
+            LIMIT 1
+            """,
+            {
+                "tenant_id": tenant_id,
+                "call_id": call_id,
+                "event_type": event_type,
+            },
+        )
+        return row is not None
+
     # -- conectores / oauth -----------------------------------------------------------------
 
     async def list_expiring_oauth_tokens(
@@ -521,7 +584,8 @@ class SqlRepo:
         rows = await self._all(
             """
             SELECT id, importance, created_at, embedding FROM memory_items
-            WHERE tenant_id = :tenant_id AND user_id = :user_id AND embedding IS NOT NULL
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND embedding IS NOT NULL AND superseded_at IS NULL
             ORDER BY created_at ASC
             """,
             {"tenant_id": tenant_id, "user_id": user_id},
@@ -552,6 +616,51 @@ class SqlRepo:
             f"DELETE FROM memory_items WHERE tenant_id = :tenant_id AND id IN ({placeholders})",
             params,
         )
+
+    async def supersede_memory_items(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        replacements: list[tuple[uuid.UUID, uuid.UUID]],
+    ) -> int:
+        """Archiva versiones obsoletas sin destruir el historial.
+
+        Cada par es ``(old_id, new_id)``. El ``EXISTS`` tenant/user-scoped
+        impide que una salida alucinada del LLM apunte a una memoria ajena y
+        el espejo de ``perfil_vivo`` solo se administra desde la fase 3.
+        """
+        superseded = 0
+        now = utcnow()
+        for old_id, new_id in replacements:
+            if old_id == new_id:
+                continue
+            superseded += await self._exec(
+                """
+                UPDATE memory_items AS old
+                SET superseded_at = :now, superseded_by = :new_id, updated_at = :now
+                WHERE old.tenant_id = :tenant_id
+                  AND old.user_id = :user_id
+                  AND old.id = :old_id
+                  AND old.superseded_at IS NULL
+                  AND old.source <> 'perfil_vivo'
+                  AND EXISTS (
+                    SELECT 1 FROM memory_items AS replacement
+                    WHERE replacement.id = :new_id
+                      AND replacement.tenant_id = :tenant_id
+                      AND replacement.user_id = :user_id
+                      AND replacement.superseded_at IS NULL
+                  )
+                """,
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "old_id": old_id,
+                    "new_id": new_id,
+                    "now": now,
+                },
+            )
+        return superseded
 
     # -- memoria: extracción por LLM ---------------------------------------------------
 
@@ -598,12 +707,12 @@ class SqlRepo:
     async def list_memory_contents(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int
     ) -> list[Row]:
-        """`kind`+`content` de las memorias existentes del usuario, para dárselas
-        de contexto al LLM extractor y que no duplique lo que ya sabe."""
+        """Memorias vigentes del usuario para deduplicar y detectar correcciones."""
         return await self._all(
             """
-            SELECT kind, content FROM memory_items
+            SELECT id, kind, content, importance, source FROM memory_items
             WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND superseded_at IS NULL
             ORDER BY importance DESC, created_at DESC
             LIMIT :limit
             """,

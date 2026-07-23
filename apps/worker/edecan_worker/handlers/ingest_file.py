@@ -5,26 +5,24 @@ guarda `file_chunks` (ARCHITECTURE.md §10.3, §10.7, §10.11).
 Payload: `{"file_id": "<uuid>"}`. Requiere `env.tenant_id`.
 
 Extracción de texto según `mime`/extensión: `pdf` (`pypdf`), `docx`
-(`python-docx`), `txt`/`md` (decodificado directo). Cualquier otro tipo NO
-soportado marca `files.status = "error"` y termina el job SIN lanzar
-excepción (es un resultado de negocio válido, no un fallo transitorio que
-deba reintentarse) — salvo el caso especial de imágenes, ver abajo.
+(`python-docx`), `txt`/`md` (decodificado directo). Un formato sin lector o
+sin texto extraíble queda `ready` con un índice descriptivo neutro: almacenar
+un archivo válido y poder descargarlo no depende de que el indexador entienda
+su contenido.
 
-**Imágenes** (`png`/`jpeg`/`webp`/`gif`, ver `_resolver_mime_imagen`): si hay
-un proveedor LLM con soporte de visión configurado (Anthropic — mismo
-criterio de detección que `edecan_docanalysis.vision.AnalizarImagenTool`,
-`provider.name == "anthropic"`, no se reimplementa aquí importando ese
-paquete hermano a propósito, ARCHITECTURE.md §10.1), se le pide una
+**Imágenes** (`png`/`jpeg`/`webp`/`gif`, ver `_resolver_mime_imagen`): al
+proveedor configurado se le pide una
 descripción breve (alias `"rapido"`: es un job automático que corre en CADA
 imagen subida, así que se prioriza costo/latencia sobre la profundidad que sí
 tiene la tool interactiva `analizar_imagen`) y se persiste como un único
 `file_chunk` `seq=0` — así `consultar_documentos`
 (`edecan_toolkit.documentos`) la encuentra por texto/similitud, y la imagen
-queda con `status='ready'`. Si NO hay proveedor de visión configurado (o la
-imagen supera `_MAX_IMAGEN_BYTES`), el comportamiento es IDÉNTICO al de
-cualquier mime no soportado: `status='error'`, sin chunks — exactamente lo
-que ya pasaba con imágenes ANTES de esta extensión, porque `_extract_text`
-tampoco las reconocía.
+queda con `status='ready'`. Los adaptadores LLM traducen el mismo bloque a
+Anthropic, OpenAI-compatible, Gemini, Ollama, Codex CLI o Claude CLI. Si el
+modelo elegido no tiene visión, la ingesta conserva el archivo como `ready`
+con un índice neutro: subir un archivo nunca debe fallar solo porque el modelo
+rápido no pueda describirlo; la tool interactiva puede reintentarlo después
+con el modelo principal.
 """
 
 from __future__ import annotations
@@ -35,11 +33,13 @@ import logging
 import uuid
 from typing import Any
 
+from edecan_core.notifications import ImportantNotificationEvent
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_schemas import JobEnvelope
 
 from edecan_worker.deps import Deps
 from edecan_worker.repo import Repo, SqlRepo
+from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 
@@ -177,32 +177,20 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 llm_router,
                 tenant_id=env.tenant_id,
                 file_id=file_id,
+                filename=file_row["filename"],
                 mime=mime_imagen,
                 raw_bytes=raw_bytes,
             )
-            return
-
-        extracted = _extract_text(raw_bytes, mime=file_row["mime"], filename=file_row["filename"])
-
-        if extracted is None:
-            logger.warning(
-                "ingest_file: mime no soportado %r para file_id=%s, se marca status=error",
-                file_row["mime"],
-                file_id,
+            chunks_count = 1
+        else:
+            chunks_count = await _ingest_text_file(
+                deps,
+                repo,
+                tenant_id=env.tenant_id,
+                file_id=file_id,
+                file_row=file_row,
+                raw_bytes=raw_bytes,
             )
-            await repo.update_file_status(tenant_id=env.tenant_id, file_id=file_id, status="error")
-            return
-
-        pieces = chunk_text(extracted)
-        seq = 0
-        for batch_start in range(0, len(pieces), EMBEDDING_BATCH_SIZE):
-            batch = pieces[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
-            embeddings = await deps.embedder.embed(batch)
-            chunk_rows = [(seq + i, batch[i], embeddings[i]) for i in range(len(batch))]
-            await repo.add_file_chunks(tenant_id=env.tenant_id, file_id=file_id, chunks=chunk_rows)
-            seq += len(batch)
-
-        await repo.update_file_status(tenant_id=env.tenant_id, file_id=file_id, status="ready")
         # NO registrar aquí un usage_event `storage_bytes`: la API ya lo
         # contabiliza una única vez en `upload_file` (edecan_api/routers/files.py),
         # justo después del `s3.put_object` — que es el momento real en que el
@@ -211,13 +199,79 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         # /v1/usage` y haría que las cuotas de `limits.storage_mb` se agotaran
         # a la mitad de la capacidad real del tenant.
 
+    event_kind = (
+        "pdf_ready"
+        if (file_row["mime"] or "").split(";", 1)[0].lower() == "application/pdf"
+        or str(file_row["filename"]).lower().endswith(".pdf")
+        else "file_ready"
+    )
+    if file_row.get("user_id") is not None:
+        await notify_important_event(
+            deps,
+            ImportantNotificationEvent(
+                tenant_id=env.tenant_id,
+                user_id=uuid.UUID(str(file_row["user_id"])),
+                kind=event_kind,
+                event_id=file_id,
+                resource_id=file_id,
+            ),
+        )
+
     logger.info(
         "ingest_file completado file_id=%s tenant_id=%s chunks=%d bytes=%d",
         file_id,
         env.tenant_id,
-        len(pieces),
+        chunks_count,
         len(raw_bytes),
     )
+
+
+async def _ingest_text_file(
+    deps: Deps,
+    repo: Repo,
+    *,
+    tenant_id: uuid.UUID,
+    file_id: uuid.UUID,
+    file_row: dict[str, Any],
+    raw_bytes: bytes,
+) -> int:
+    """Indexa archivos no visuales y devuelve la cantidad de chunks."""
+    try:
+        extracted = _extract_text(raw_bytes, mime=file_row["mime"], filename=file_row["filename"])
+    except Exception:  # noqa: BLE001 - parsers de terceros exponen errores distintos
+        logger.warning(
+            "ingest_file: no se pudo extraer texto de file_id=%s; se conserva ready",
+            file_id,
+            exc_info=True,
+        )
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
+            "El contenido no se pudo extraer automáticamente; el archivo original "
+            "sigue disponible."
+        )
+
+    if extracted is None:
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) guardado. "
+            "Este formato no tiene extracción de texto automática; usa una herramienta "
+            "compatible o descarga el original."
+        )
+    if not extracted.strip():
+        extracted = (
+            f"Archivo adjunto '{file_row['filename']}' ({file_row['mime']}) sin texto "
+            "extraíble. El original está disponible para análisis visual o descarga."
+        )
+
+    pieces = chunk_text(extracted)
+    seq = 0
+    for batch_start in range(0, len(pieces), EMBEDDING_BATCH_SIZE):
+        batch = pieces[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
+        embeddings = await deps.embedder.embed(batch)
+        chunk_rows = [(seq + i, batch[i], embeddings[i]) for i in range(len(batch))]
+        await repo.add_file_chunks(tenant_id=tenant_id, file_id=file_id, chunks=chunk_rows)
+        seq += len(batch)
+    await repo.update_file_status(tenant_id=tenant_id, file_id=file_id, status="ready")
+    return len(pieces)
 
 
 async def _ingest_image(
@@ -227,6 +281,7 @@ async def _ingest_image(
     *,
     tenant_id: uuid.UUID,
     file_id: uuid.UUID,
+    filename: str,
     mime: str,
     raw_bytes: bytes,
 ) -> None:
@@ -238,13 +293,22 @@ async def _ingest_image(
     """
     if len(raw_bytes) > _MAX_IMAGEN_BYTES:
         logger.warning(
-            "ingest_file: imagen file_id=%s pesa %d bytes (> %d), se marca "
-            "status=error sin describir",
+            "ingest_file: imagen file_id=%s pesa %d bytes (> %d); se conserva "
+            "ready sin descripción automática",
             file_id,
             len(raw_bytes),
             _MAX_IMAGEN_BYTES,
         )
-        await repo.update_file_status(tenant_id=tenant_id, file_id=file_id, status="error")
+        description = (
+            f"Imagen adjunta '{filename}' demasiado grande para el análisis automático. "
+            "El archivo original está disponible para descargar o comprimir."
+        )
+        embeddings = await deps.embedder.embed([description])
+        vector = embeddings[0] if embeddings else []
+        await repo.add_file_chunks(
+            tenant_id=tenant_id, file_id=file_id, chunks=[(0, description, vector)]
+        )
+        await repo.update_file_status(tenant_id=tenant_id, file_id=file_id, status="ready")
         return
 
     # Alias "rapido" a propósito (no "principal"): este job corre automático
@@ -254,15 +318,6 @@ async def _ingest_image(
     # así que pasar `{}` es seguro y evita una consulta extra a `tenants`
     # solo para leer el plan.
     provider, model = llm_router.resolve("rapido", {})
-    if getattr(provider, "name", "") != "anthropic":
-        logger.warning(
-            "ingest_file: imagen file_id=%s sin proveedor de visión (Anthropic) "
-            "configurado, se marca status=error — mismo resultado que antes de "
-            "esta extensión (la imagen tampoco la reconocía _extract_text)",
-            file_id,
-        )
-        await repo.update_file_status(tenant_id=tenant_id, file_id=file_id, status="error")
-        return
 
     b64 = base64.b64encode(raw_bytes).decode("ascii")
     request = CompletionRequest(
@@ -282,8 +337,20 @@ async def _ingest_image(
         ],
         max_tokens=_VISION_MAX_TOKENS,
     )
-    response = await provider.complete(request)
-    description = response.text.strip() or "Imagen sin descripción disponible."
+    try:
+        response = await provider.complete(request)
+        description = response.text.strip() or "Imagen sin descripción disponible."
+    except Exception:  # noqa: BLE001 - cada proveedor expone errores distintos
+        logger.warning(
+            "ingest_file: el modelo rápido no pudo indexar visualmente file_id=%s; "
+            "se conserva ready para análisis interactivo",
+            file_id,
+            exc_info=True,
+        )
+        description = (
+            f"Imagen adjunta '{filename}'. Su contenido visual todavía no fue descrito; "
+            "usa analizar_imagen para verla y responder sobre ella."
+        )
 
     embeddings = await deps.embedder.embed([description])
     vector = embeddings[0] if embeddings else []

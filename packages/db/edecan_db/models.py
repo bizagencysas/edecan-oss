@@ -365,12 +365,18 @@ class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`conversations(tenant_id, user_id, title, channel: web|voice|phone|api)`."""
 
     __tablename__ = "conversations"
-    __table_args__ = (_enum_check("channel", ("web", "voice", "phone", "api")),)
+    __table_args__ = (
+        _enum_check("channel", ("web", "voice", "phone", "api")),
+        _enum_check("title_source", ("auto_pending", "auto", "manual", "legacy")),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    title_source: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="legacy"
+    )
     channel: Mapped[str] = mapped_column(String, nullable=False, server_default="web")
 
 
@@ -394,7 +400,9 @@ class Message(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 
 class MemoryItem(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`memory_items(tenant_id, user_id, kind: fact|preference|event|entity, content text,
-    embedding vector(1536) nullable, importance float, source text)`."""
+    embedding vector(1536) nullable, importance float, source text, superseded_at,
+    superseded_by)`. Las filas reemplazadas se conservan como historial, pero no
+    participan en el contexto activo del asistente."""
 
     __tablename__ = "memory_items"
     __table_args__ = (_enum_check("kind", ("fact", "preference", "event", "entity")),)
@@ -410,6 +418,12 @@ class MemoryItem(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     embedding: Mapped[Any | None] = mapped_column(Vector(1536), nullable=True)
     importance: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"))
     source: Mapped[str] = mapped_column(String, nullable=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("memory_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class MemoryEdge(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -673,8 +687,9 @@ class Job(IDMixin, TimestampMixin, Base):
         # `0007_v5_expansion`, que actualiza el CHECK real en Postgres con el
         # MISMO patrón drop+create que usó `0005` (Postgres no soporta
         # modificar la expresión de un CHECK existente in place). El 12º
-        # (`process_meeting`, al final) es de v6 — `ARCHITECTURE.md` §15,
-        # migración `0008_v6_expansion`, mismo patrón otra vez.
+        # (`process_meeting`) es de v6 — `ARCHITECTURE.md` §15, migración
+        # `0008_v6_expansion`. `notify_phone_call_summary` se agrega en
+        # `0017_phone_call_summaries` para desacoplar el push del webhook.
         _enum_check(
             "type",
             (
@@ -690,6 +705,9 @@ class Job(IDMixin, TimestampMixin, Base):
                 "automation_scan",
                 "generate_podcast",
                 "process_meeting",
+                "notify_phone_call_summary",
+                "notify_incoming_phone_call",
+                "notify_important_event",
             ),
         ),
     )
@@ -1478,6 +1496,43 @@ class Podcast(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 # ---------------------------------------------------------------------------
 
 
+class PhoneAgentTemplate(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Persona y objetivo reutilizables para una llamada saliente.
+
+    Las llamadas copian estos campos al prepararse. La FK queda solo como
+    procedencia: borrar o editar la plantilla nunca reescribe el historial.
+    """
+
+    __tablename__ = "phone_agent_templates"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "name",
+            name="uq_phone_agent_templates_tenant_user_name",
+        ),
+        Index(
+            "uq_phone_agent_templates_default",
+            "tenant_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String, nullable=False)
+    persona_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    default_goal: Mapped[str] = mapped_column(Text, nullable=False)
+    opening_message: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+
 class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """Una llamada entrante/saliente ligada a `Conversation(channel='phone')`."""
 
@@ -1516,6 +1571,16 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     from_e164: Mapped[str] = mapped_column(Text, nullable=False)
     to_e164: Mapped[str] = mapped_column(Text, nullable=False)
     goal: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("phone_agent_templates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    agent_template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opening_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="twilio")
     provider_call_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1524,6 +1589,13 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    summary_generated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    summary_push_attempted_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
 
 class PhoneCallEvent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -1614,20 +1686,23 @@ ALL_MODELS: tuple[type[Base], ...] = (
     Meeting,
     Podcast,
     # --- v0.4 (telefonía conversacional OSS) ----------------------------------
+    PhoneAgentTemplate,
     PhoneCall,
     PhoneCallEvent,
 )
 """Las 23 tablas de v1 (`ARCHITECTURE.md` §10.3) + las 14 de v2
 (`ROADMAP_V2.md` §7.4) + la 1 de v3 (`ARCHITECTURE.md` §12e) + las 3 de v4
 (`ARCHITECTURE.md` §13) + las 5 de v5 (`ARCHITECTURE.md` §14) + las 2 de v6
-(`ARCHITECTURE.md` §15) + 2 de telefonía v0.4 = 50 tablas. Las globales sin RLS (`Tenant`, `User`,
+(`ARCHITECTURE.md` §15) + 3 de telefonía v0.4 = 51 tablas. Las globales sin RLS (`Tenant`, `User`,
 `TenantKey`) van agrupadas primero, como en la sección "Globales (sin RLS)"
 de arriba; el resto respeta el mismo orden relativo en que aparecen en
 §10.3, las 14 de v2 van a continuación en el mismo orden en que aparecen en
 §7.4, `Skill` (única tabla v3) sigue, `Product`/`StockMove`/`AdDraft` (v4,
 mismo orden que §13) continúan, `Employee`/`TimeOff`/`PayrollRun`/
 `PayrollItem`/`VoiceConsent` (v5, mismo orden que §14) siguen, y
-`Meeting`/`Podcast` (v6, mismo orden que §15) cierran la tupla."""
+`Meeting`/`Podcast` (v6, mismo orden que §15) siguen, y las 3 tablas de
+telefonía OSS (`PhoneAgentTemplate`, `PhoneCall`, `PhoneCallEvent`) cierran
+la tupla."""
 
 # Tablas SIN Row-Level Security (globales) — usado por la migración y por
 # `test_rls.py` para saber qué tablas NO debe verificar aislamiento.

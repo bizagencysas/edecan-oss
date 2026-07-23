@@ -5,6 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { speakText, transcribeAudio } from "@/lib/api";
 import { splitIntoSentences } from "@/lib/speech";
 import type { MessageOut } from "@/lib/types";
+import {
+  SPEECH_RECOGNITION_LOCALE,
+  transcriptContainsWakePhrase,
+  transcriptRequestsSleep,
+} from "@/lib/wake-word-detection";
 import { WAKE_WORD_PRESETS } from "@/lib/wakeWords";
 
 import { ConfirmationCard } from "./ConfirmationCard";
@@ -43,15 +48,6 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
     webkitSpeechRecognition?: SpeechRecognitionCtor;
   };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
-
-function normalizar(texto: string): string {
-  return texto
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim();
 }
 
 const STORAGE_KEY = "edecan.always_listen.wake_word";
@@ -198,6 +194,10 @@ export function AlwaysListenMode({
     () => !WAKE_WORD_PRESETS.includes(cargarWakeWordGuardada() as (typeof WAKE_WORD_PRESETS)[number]),
   );
   const [mostrarAjustes, setMostrarAjustes] = useState(false);
+  const [sesionActiva, setSesionActiva] = useState(Boolean(pendingNativeAudio));
+  const sesionActivaRef = useRef(Boolean(pendingNativeAudio));
+  const wakeWordRef = useRef(wakeWord);
+  wakeWordRef.current = wakeWord;
 
   const faseRef = useRef<Fase>(fase);
   faseRef.current = fase;
@@ -229,6 +229,31 @@ export function AlwaysListenMode({
     pararMedidorNivel();
   }
 
+  function activarSesionContinua() {
+    sesionActivaRef.current = true;
+    setSesionActiva(true);
+  }
+
+  function dormirSesion() {
+    sesionActivaRef.current = false;
+    setSesionActiva(false);
+    iniciarEsperaDePalabraClave();
+  }
+
+  /**
+   * Después de la primera activación, cada respuesta abre automáticamente el
+   * micrófono para el siguiente turno. La palabra clave vuelve a ser necesaria
+   * únicamente si la persona dice una orden de descanso o cierra el modo.
+   */
+  function continuarConversacion() {
+    if (cerradoRef.current) return;
+    if (sesionActivaRef.current) {
+      void iniciarCapturaDeComando();
+    } else {
+      iniciarEsperaDePalabraClave();
+    }
+  }
+
   // --- Fase 1: esperar la palabra clave (SpeechRecognition continuo) -------
 
   function iniciarEsperaDePalabraClave() {
@@ -241,14 +266,14 @@ export function AlwaysListenMode({
     const reconocedor = new SpeechRecognitionCtor();
     reconocedor.continuous = true;
     reconocedor.interimResults = true;
-    reconocedor.lang = "es-ES";
-    const objetivo = normalizar(wakeWord);
+    reconocedor.lang = SPEECH_RECOGNITION_LOCALE;
 
     reconocedor.onresult = (evento) => {
       for (let i = evento.resultIndex; i < evento.results.length; i++) {
-        const transcripcion = normalizar(evento.results[i][0]?.transcript ?? "");
-        if (objetivo && transcripcion.includes(objetivo)) {
+        const transcripcion = evento.results[i][0]?.transcript ?? "";
+        if (transcriptContainsWakePhrase(transcripcion, wakeWordRef.current)) {
           reconocedor.abort();
+          activarSesionContinua();
           void iniciarCapturaDeComando();
           return;
         }
@@ -326,24 +351,28 @@ export function AlwaysListenMode({
       };
       recorder.start();
     } catch {
-      // Sin permiso de micrófono, o algún otro fallo -- vuelve a esperar la
-      // palabra clave en vez de quedar trabado.
+      // Sin permiso de micrófono, o algún otro fallo transitorio, conserva la
+      // sesión activa y reintenta sin exigir otra vez la palabra clave.
       setFase("error");
-      setTimeout(() => iniciarEsperaDePalabraClave(), 1000);
+      setTimeout(() => continuarConversacion(), 1000);
     }
   }
 
   async function procesarComando(blob: Blob) {
     if (cerradoRef.current) return;
     if (blob.size === 0) {
-      iniciarEsperaDePalabraClave();
+      continuarConversacion();
       return;
     }
     setFase("procesando");
     try {
       const { text } = await transcribeAudio(blob);
       if (!text.trim()) {
-        iniciarEsperaDePalabraClave();
+        continuarConversacion();
+        return;
+      }
+      if (transcriptRequestsSleep(text)) {
+        dormirSesion();
         return;
       }
       esperandoRespuestaRef.current = true;
@@ -351,7 +380,7 @@ export function AlwaysListenMode({
       onSendText(text);
     } catch {
       setFase("error");
-      setTimeout(() => iniciarEsperaDePalabraClave(), 1000);
+      setTimeout(() => continuarConversacion(), 1000);
     }
   }
 
@@ -361,7 +390,7 @@ export function AlwaysListenMode({
     if (cerradoRef.current) return;
     const oraciones = splitIntoSentences(texto);
     if (oraciones.length === 0) {
-      iniciarEsperaDePalabraClave();
+      continuarConversacion();
       return;
     }
     setFase("hablando");
@@ -400,7 +429,7 @@ export function AlwaysListenMode({
       // Un fallo de síntesis a mitad de la respuesta no debe trabar el
       // modo -- se sigue igual al siguiente ciclo de escucha.
     }
-    if (!cerradoRef.current) iniciarEsperaDePalabraClave();
+    if (!cerradoRef.current) continuarConversacion();
   }
 
   // --- Efectos: arranque/cierre, reacción a la respuesta del turno, pausa --
@@ -427,6 +456,7 @@ export function AlwaysListenMode({
   useEffect(() => {
     if (!pendingNativeAudio || cerradoRef.current) return;
     const audio = pendingNativeAudio;
+    activarSesionContinua();
     onNativeAudioConsumed?.();
     reconocedorRef.current?.abort();
     reconocedorRef.current = null;
@@ -447,7 +477,7 @@ export function AlwaysListenMode({
     if (ultimo?.role === "assistant") {
       void hablarRespuesta(messageText(ultimo.content));
     } else {
-      iniciarEsperaDePalabraClave();
+      continuarConversacion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, sending, pendingConfirmation]);
@@ -475,11 +505,8 @@ export function AlwaysListenMode({
 
   function handleCambiarWakeWord(valor: string) {
     setWakeWord(valor);
-    guardarWakeWord(valor);
-    if (faseRef.current === "esperando_palabra_clave") {
-      reconocedorRef.current?.abort();
-      setTimeout(() => iniciarEsperaDePalabraClave(), 50);
-    }
+    wakeWordRef.current = valor;
+    if (valor.trim()) guardarWakeWord(valor.trim());
   }
 
   return (
@@ -528,11 +555,11 @@ export function AlwaysListenMode({
             <input
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm"
               placeholder="Escribe tu frase de activación"
-              defaultValue={
-                WAKE_WORD_PRESETS.includes(wakeWord as (typeof WAKE_WORD_PRESETS)[number]) ? "" : wakeWord
-              }
+              value={WAKE_WORD_PRESETS.includes(wakeWord as (typeof WAKE_WORD_PRESETS)[number]) ? "" : wakeWord}
+              onChange={(e) => handleCambiarWakeWord(e.target.value)}
               onBlur={(e) => {
-                if (e.target.value.trim()) handleCambiarWakeWord(e.target.value.trim());
+                const value = e.target.value.trim();
+                if (value) handleCambiarWakeWord(value);
               }}
             />
           )}
@@ -544,11 +571,18 @@ export function AlwaysListenMode({
       <div>
         <p className="text-lg font-medium text-white">{ETIQUETA_POR_FASE[fase]}</p>
         {fase === "esperando_palabra_clave" && (
-          <p className="mt-1 text-sm text-slate-400">Decí «{wakeWord}» para hablarme.</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Di «{wakeWord}» una sola vez para iniciar la conversación.
+          </p>
+        )}
+        {fase === "escuchando" && sesionActiva && (
+          <p className="mt-1 text-sm text-slate-400">
+            Conversación activa. Habla con normalidad; di «descansa» cuando quieras terminar.
+          </p>
         )}
         {fase === "sin_soporte" && (
           <p className="mt-1 max-w-sm text-sm text-slate-400">
-            Probá desde Chrome o Edge -- este navegador no expone reconocimiento de voz continuo.
+            Intenta desde Chrome o Edge; este navegador no ofrece reconocimiento de voz continuo.
           </p>
         )}
       </div>

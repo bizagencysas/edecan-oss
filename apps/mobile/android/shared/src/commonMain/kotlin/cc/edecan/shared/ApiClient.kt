@@ -75,6 +75,9 @@ private data class LogoutBody(@SerialName("refresh_token") val refreshToken: Str
 private data class CrearConversacionBody(val title: String? = null)
 
 @Serializable
+private data class RenombrarConversacionBody(val title: String)
+
+@Serializable
 private data class ErrorBody(val detail: String? = null)
 
 @Serializable
@@ -100,6 +103,19 @@ private data class DeviceRegisterBody(
 
 @Serializable
 private data class DeviceOut(val id: String = "")
+
+@Serializable
+private data class PushTokenBody(
+    @SerialName("push_token") val pushToken: String,
+    @SerialName("push_platform") val pushPlatform: String,
+)
+
+@Serializable
+data class PushStatus(
+    val apns: Boolean = false,
+    val fcm: Boolean = false,
+    @SerialName("devices_con_token") val devicesWithToken: Int = 0,
+)
 
 @Serializable
 private data class PairingClaimBody(
@@ -510,6 +526,18 @@ class EdecanApi private constructor(
     /** `GET /v1/me`. */
     suspend fun me(): Me = conAutoRefresh { obtener("/v1/me") }
 
+    /** Perfil personal compartido por computador, iOS, Android y el agente. */
+    suspend fun liveProfile(): LiveProfile = conAutoRefresh { obtener("/v1/perfil") }
+
+    /** Guarda la identidad declarada sin tocar las categorías aprendidas. */
+    suspend fun updateLiveProfile(identity: ProfileIdentity, summary: String): LiveProfile =
+        conAutoRefresh {
+            actualizar(
+                "/v1/perfil",
+                LiveProfilePatch(summary, ProfileDataPatch(identity)),
+            )
+        }
+
     /** `GET /v1/conversations` — más recientes primero (orden que ya
      * aplica el backend). */
     suspend fun conversations(): List<Conversation> = conAutoRefresh { obtener("/v1/conversations") }
@@ -517,6 +545,12 @@ class EdecanApi private constructor(
     /** `POST /v1/conversations`. `titulo` es opcional, igual que en la API. */
     suspend fun createConversation(titulo: String? = null): Conversation =
         conAutoRefresh { enviar("/v1/conversations", CrearConversacionBody(titulo)) }
+
+    /** Cambia el título visible del chat en todos los dispositivos. */
+    suspend fun renameConversation(id: String, titulo: String): Conversation =
+        conAutoRefresh {
+            actualizar("/v1/conversations/$id", RenombrarConversacionBody(titulo))
+        }
 
     /** `GET /v1/conversations/{id}` con mensajes persistidos. */
     suspend fun conversation(id: String): Conversation =
@@ -568,6 +602,29 @@ class EdecanApi private constructor(
         val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/download") }
         return DownloadedArtifact(artifact, bytes)
     }
+
+    /** Registra o reemplaza el token FCM actual de este dispositivo. El
+     * token es opaco: nunca se registra en logs ni se guarda en shared. */
+    suspend fun registerPushToken(deviceId: String, token: String) {
+        conAutoRefresh {
+            enviarSinRespuesta(
+                "/v1/devices/$deviceId/push-token",
+                PushTokenBody(pushToken = token, pushPlatform = "fcm"),
+            )
+        }
+    }
+
+    /** Quita el destino push antes de revocar el dispositivo. */
+    suspend fun deletePushToken(deviceId: String) {
+        conAutoRefresh { eliminarSinCuerpo("/v1/devices/$deviceId/push-token") }
+    }
+
+    suspend fun pushStatus(): PushStatus = conAutoRefresh { obtener("/v1/devices/push/status") }
+
+    /** Historial tenant-scoped de llamadas, incluido el resumen humano que
+     * el servidor agrega al terminar. La creación sigue naciendo del chat y
+     * conserva su confirmación explícita; esta ruta es solo lectura. */
+    suspend fun phoneCalls(): List<PhoneCall> = conAutoRefresh { obtener("/v1/phone/calls") }
 
     /** Imagen privada para preview inline. Usa el endpoint MIME-allowlisted
      * `/content`; audio/video no pasan por aquí porque Android los transmite
@@ -651,6 +708,13 @@ class EdecanApi private constructor(
      * detalle EXACTO del proveedor si la rechazó (`400`). */
     suspend fun conectarLlm(payload: LlmCredentialsIn) {
         conAutoRefresh { actualizarSinCuerpo("/v1/credentials/llm", payload) }
+    }
+
+    suspend fun modelosLlm(): LlmModelsOut =
+        conAutoRefresh { obtener("/v1/credentials/llm/models") }
+
+    suspend fun actualizarModelosLlm(payload: LlmModelsIn) {
+        conAutoRefresh { parchearSinCuerpo("/v1/credentials/llm/models", payload) }
     }
 
     // -------------------------------------------------------------------
@@ -847,15 +911,9 @@ class EdecanApi private constructor(
      * `ARCHITECTURE.md` §10.13). */
     suspend fun listReminders(): List<Reminder> = conAutoRefresh { obtener("/v1/reminders") }
 
-    /** `POST /v1/reminders {due_at, message, channel}`. `canal` SIEMPRE
-     * `"web"` desde este cliente a propósito, NUNCA `"mobile"`: `reminders.py`
-     * acepta cualquier string en `channel`, pero todavía no hay una ruta de
-     * entrega push nativa (llega en otra ola con FCM — ver
-     * `docs/movil-android.md` "Roadmap") y `send_reminder.py` hoy solo sabe
-     * entregar `web`/`api` como mensaje de chat (`voice`/`phone` degradan
-     * con una advertencia); mandar `"mobile"` no cambiaría nada del lado del
-     * servidor todavía y sí confundiría a un futuro lector de `reminders`. */
-    suspend fun createReminder(texto: String, fecha: String, canal: String = "web"): Reminder =
+    /** `POST /v1/reminders {due_at, message, channel}`. `mobile` permite FCM
+     * y la app agenda además una notificación local como respaldo OSS. */
+    suspend fun createReminder(texto: String, fecha: String, canal: String = "mobile"): Reminder =
         conAutoRefresh {
             enviar("/v1/reminders", RecordatorioCrearBody(dueAt = fecha, message = texto, channel = canal))
         }
@@ -1098,6 +1156,20 @@ class EdecanApi private constructor(
         return manejarRespuestaAutenticada(response)
     }
 
+    /** `POST` con JSON cuya respuesta correcta es `204 No Content`. */
+    private suspend inline fun <reified B> enviarSinRespuesta(path: String, body: B) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.post(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+    }
+
     /** `POST` sin cuerpo que SÍ decodifica una respuesta (`POST
      * /v1/remote/sessions/{id}/end`, [endRemoteSession]) — a diferencia de
      * [enviar], no manda `Content-Type` ni cuerpo alguno. */
@@ -1153,6 +1225,20 @@ class EdecanApi private constructor(
             }
         }
         return manejarRespuestaAutenticada(response)
+    }
+
+    /** `PATCH` cuya respuesta exitosa es `204 No Content`. */
+    private suspend inline fun <reified B> parchearSinCuerpo(path: String, body: B) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.patch(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
     }
 
     /** `DELETE` "mejor esfuerzo" (`revocarDispositivo`): un `404` se trata

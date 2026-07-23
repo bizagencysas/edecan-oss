@@ -12,6 +12,7 @@ from edecan_schemas.chat import (
     ErrorEvent,
     TextDeltaEvent,
     ToolEndEvent,
+    ToolProgressEvent,
     ToolStartEvent,
 )
 from pydantic import ValidationError
@@ -39,6 +40,16 @@ def test_chat_message_rechaza_vacio_total():
     [
         ({"type": "text_delta", "text": "hola"}, TextDeltaEvent),
         ({"type": "tool_start", "name": "hora_actual", "args": {}}, ToolStartEvent),
+        (
+            {
+                "type": "tool_progress",
+                "tool_call_id": "call-1",
+                "name": "crear_app",
+                "elapsed_seconds": 12,
+                "message": "Edecán sigue trabajando",
+            },
+            ToolProgressEvent,
+        ),
         (
             {"type": "tool_end", "name": "hora_actual", "result_preview": "14:32"},
             ToolEndEvent,
@@ -74,6 +85,7 @@ def test_agent_event_serializa_de_vuelta_a_dict_con_type():
 
 
 def test_tool_end_acepta_bloques_versionados_y_correlacionados():
+    mission_id = uuid4()
     event = AgentEventAdapter.validate_python(
         {
             "type": "tool_end",
@@ -81,6 +93,7 @@ def test_tool_end_acepta_bloques_versionados_y_correlacionados():
             "name": "navegar_web",
             "result_preview": "Sitio abierto",
             "blocks_version": 1,
+            "mission_id": str(mission_id),
             "blocks": [
                 {
                     "type": "link_preview",
@@ -103,6 +116,7 @@ def test_tool_end_acepta_bloques_versionados_y_correlacionados():
 
     assert isinstance(event, ToolEndEvent)
     assert event.tool_call_id == "call_web_1"
+    assert event.mission_id == mission_id
     assert event.blocks[0].fallback_text == "Fuente"
 
 

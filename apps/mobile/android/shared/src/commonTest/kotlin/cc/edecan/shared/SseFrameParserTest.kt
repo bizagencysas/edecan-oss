@@ -74,9 +74,30 @@ class SseFrameParserTest {
     }
 
     @Test
-    fun ignora_el_sentinel_DONE_estilo_openai_sin_emitir_nada() {
+    fun sentinel_DONE_estilo_openai_cierra_el_turno() {
         val eventos = eventosDe(listOf("data: [DONE]", ""))
-        assertTrue(eventos.isEmpty())
+        assertEquals(listOf(ChatEvent.Done()), eventos)
+    }
+
+    @Test
+    fun un_nuevo_event_cierra_el_bloque_anterior_si_el_relay_perdio_la_linea_vacia() {
+        val eventos = eventosDe(
+            listOf(
+                "event: message.delta",
+                """data: {"type":"text_delta","text":"hola"}""",
+                "event: message.done",
+                """data: {"type":"done"}""",
+                "",
+            ),
+        )
+
+        assertEquals(listOf(ChatEvent.TextDelta("hola"), ChatEvent.Done()), eventos)
+    }
+
+    @Test
+    fun message_done_malformado_no_invalida_una_respuesta_ya_recibida() {
+        val eventos = eventosDe(listOf("event: message.done\r", "data: cuerpo-legacy", "\r"))
+        assertEquals(listOf(ChatEvent.Done()), eventos)
     }
 
     @Test
@@ -138,5 +159,25 @@ class SseFrameParserTest {
         val evento = parser.finalizar()
 
         assertEquals(ChatEvent.TextDelta("sin cierre"), evento)
+    }
+
+    @Test
+    fun estado_terminal_acepta_un_solo_done_y_rechaza_eventos_posteriores() {
+        val terminal = SseTerminalState()
+
+        assertTrue(terminal.aceptar(ChatEvent.TextDelta("hola")))
+        assertTrue(terminal.aceptar(ChatEvent.Done()))
+        assertTrue(terminal.finalizado)
+        assertTrue(!terminal.aceptar(ChatEvent.TextDelta("duplicado")))
+        terminal.validarCierre()
+    }
+
+    @Test
+    fun error_del_agente_tambien_es_un_cierre_terminal_valido() {
+        val terminal = SseTerminalState()
+
+        assertTrue(terminal.aceptar(ChatEvent.ErrorEvent("Proveedor no disponible")))
+        assertTrue(terminal.finalizado)
+        terminal.validarCierre()
     }
 }

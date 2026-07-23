@@ -62,6 +62,29 @@ struct CredentialsModelsTests {
         #expect(LLMProviderKind.allCases.count == 6)
     }
 
+    @Test func decodificaCatalogoYCodificaSeleccionManualDeModelos() throws {
+        let json = """
+        {
+          "kind": "openai_compat",
+          "model_principal": "qwen3:32b",
+          "model_rapido": "qwen3:8b",
+          "models": ["qwen3:32b", "qwen3:8b"],
+          "manual_allowed": true,
+          "capabilities_managed_by_edecan": true,
+          "discovery_error": null
+        }
+        """
+        let catalogo = try JSONDecoder().decode(LLMModelsOut.self, from: Data(json.utf8))
+        #expect(catalogo.models == ["qwen3:32b", "qwen3:8b"])
+        #expect(catalogo.capabilitiesManagedByEdecan)
+
+        let payload = LLMModelsIn(modelPrincipal: "modelo-futuro", modelRapido: "modelo-rápido")
+        let data = try JSONEncoder().encode(payload)
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(obj["model_principal"] as? String == "modelo-futuro")
+        #expect(obj["model_rapido"] as? String == "modelo-rápido")
+    }
+
     // MARK: - GET /v1/setup/status (shape real de setup.py, no el de docs/api.md)
 
     @Test func decodificaSetupStatus() throws {

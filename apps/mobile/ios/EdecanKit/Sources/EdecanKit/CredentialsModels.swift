@@ -112,6 +112,41 @@ public struct LLMCredentialsIn: Encodable, Sendable, Equatable {
     }
 }
 
+/// `GET /v1/credentials/llm/models`: catálogo detectado más selección actual.
+public struct LLMModelsOut: Codable, Sendable, Equatable {
+    public let kind: String
+    public let modelPrincipal: String?
+    public let modelRapido: String?
+    public let models: [String]
+    public let manualAllowed: Bool
+    public let capabilitiesManagedByEdecan: Bool
+    public let discoveryError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, models
+        case modelPrincipal = "model_principal"
+        case modelRapido = "model_rapido"
+        case manualAllowed = "manual_allowed"
+        case capabilitiesManagedByEdecan = "capabilities_managed_by_edecan"
+        case discoveryError = "discovery_error"
+    }
+}
+
+public struct LLMModelsIn: Encodable, Sendable, Equatable {
+    public let modelPrincipal: String
+    public let modelRapido: String?
+
+    public init(modelPrincipal: String, modelRapido: String? = nil) {
+        self.modelPrincipal = modelPrincipal
+        self.modelRapido = modelRapido
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelPrincipal = "model_principal"
+        case modelRapido = "model_rapido"
+    }
+}
+
 /// Los `kind` de LLM que reconoce el backend (`ARCHITECTURE.md` §12.c) — un
 /// solo lugar para el Picker de "Conectar LLM" en Perfil y para saber cuáles
 /// necesitan `EDECAN_LOCAL_MODE` (``requiereModoLocal``).

@@ -27,6 +27,7 @@ creative = "edecan_creative:get_all_tools"
 
 [dependency-groups]
 dev = [
+    "pypdf>=5",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "respx>=0.21",

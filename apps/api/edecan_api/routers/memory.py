@@ -34,6 +34,7 @@ quedarse (uno o varios `POST /v1/memory` internamente, mismo `MemoryIn`).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Literal
 
@@ -48,8 +49,26 @@ from edecan_api.repo import Repo
 router = APIRouter(prefix="/v1/memory", tags=["memory"], dependencies=[Depends(rate_limit)])
 
 _ALIAS_LLM_IMPORTAR = "rapido"
-_MAX_TOKENS_IMPORTAR = 1024
+_MAX_TOKENS_IMPORTAR = 4096
+_MAX_CHARS_FRAGMENTO = 5500
+_MAX_ITEMS_IMPORTADOS = 80
 _KINDS_VALIDOS = frozenset({"fact", "preference", "event", "entity"})
+_KIND_ALIASES = {
+    "hecho": "fact",
+    "preferencia": "preference",
+    "evento": "event",
+    "entidad": "entity",
+}
+_SECRET_PATTERN = re.compile(
+    r"(?:api[_ -]?key|contrase(?:ña|na)|password|secret|token|credencial|bearer|sk-[a-z0-9])",
+    re.IGNORECASE,
+)
+_DURABLE_PATTERN = re.compile(
+    r"\b(?:eres|es|soy|naciste|nací|vives|vive|trabajas|trabaja|prefieres|prefiere|"
+    r"te gusta|le gusta|no soportas|no soporta|quieres|quiere|has vivido|ha vivido|"
+    r"decidiste|decidió|tu nombre|su nombre|tu empresa|su empresa|tu objetivo|su objetivo)\b",
+    re.IGNORECASE,
+)
 
 # Copia adaptada de `apps/worker/edecan_worker/handlers/memory_consolidate.py
 # ::_PROMPT_EXTRACCION` (ver docstring del módulo, "Importar memoria desde
@@ -90,43 +109,162 @@ con esta forma exacta por elemento:
 
 
 def _parsear_items_extraidos(texto_respuesta: str) -> list[dict[str, Any]]:
-    """Copia de `memory_consolidate._parsear_items_extraidos` — ver docstring
-    del módulo. Tolerante: cualquier salida que no sea un array JSON válido
-    se trata como "nada que extraer", nunca lanza."""
+    """Acepta JSON limpio, fences, objetos contenedores y arrays truncados.
+
+    Los distintos motores no obedecen el formato con la misma precisión. La
+    importación no debe perder recuerdos útiles solo porque un proveedor puso
+    una explicación antes del JSON o agotó sus tokens después de varios ítems.
+    """
     limpio = texto_respuesta.strip()
-    if limpio.startswith("```"):
-        limpio = limpio.strip("`")
-        if limpio.startswith("json"):
-            limpio = limpio[4:]
-        limpio = limpio.strip()
-    try:
-        data = json.loads(limpio)
-    except (json.JSONDecodeError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    candidates = [limpio]
+    inicio = limpio.find("[")
+    fin = limpio.rfind("]")
+    if inicio >= 0 and fin > inicio:
+        candidates.append(limpio[inicio : fin + 1])
+
+    for candidate in candidates:
+        candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE)
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            data = data.get("items") or data.get("memories") or data.get("recuerdos")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+
+    # Recupera los objetos completos de un array cortado al alcanzar el límite
+    # de salida. ``raw_decode`` respeta strings escapados y llaves internas.
+    if inicio >= 0:
+        decoder = json.JSONDecoder()
+        cursor = inicio + 1
+        recovered: list[dict[str, Any]] = []
+        while cursor < len(limpio):
+            while cursor < len(limpio) and limpio[cursor] in " \r\n\t,":
+                cursor += 1
+            if cursor >= len(limpio) or limpio[cursor] != "{":
+                break
+            try:
+                value, cursor = decoder.raw_decode(limpio, cursor)
+            except json.JSONDecodeError:
+                break
+            if isinstance(value, dict):
+                recovered.append(value)
+        return recovered
+    return []
 
 
 def _validar_item_extraido(item: dict[str, Any], *, fuente_default: str) -> dict[str, Any] | None:
     """Copia de `memory_consolidate._validar_item_extraido` — ver docstring
     del módulo."""
-    kind = item.get("kind")
-    content = item.get("content")
+    kind = item.get("kind", item.get("tipo"))
+    if isinstance(kind, str):
+        kind = _KIND_ALIASES.get(kind.strip().lower(), kind.strip().lower())
+    content = item.get("content", item.get("contenido", item.get("memory")))
     if kind not in _KINDS_VALIDOS or not isinstance(content, str) or not content.strip():
+        return None
+    if _SECRET_PATTERN.search(content):
         return None
 
     try:
-        importance = float(item.get("importance", 0.5))
+        importance = float(item.get("importance", item.get("importancia", 0.5)))
     except (TypeError, ValueError):
         importance = 0.5
     importance = max(0.0, min(1.0, importance))
 
-    source = item.get("source")
+    source = item.get("source", item.get("fuente"))
     if not isinstance(source, str) or not source.strip():
         source = fuente_default
 
     return {"kind": kind, "content": content.strip(), "importance": importance, "source": source}
+
+
+def _dividir_texto_importar(texto: str) -> list[str]:
+    """Divide textos largos por párrafos sin cortar una sección a la mitad."""
+
+    bloques = [bloque.strip() for bloque in re.split(r"\n\s*\n", texto) if bloque.strip()]
+    fragmentos: list[str] = []
+    actual = ""
+    for bloque in bloques:
+        if len(bloque) > _MAX_CHARS_FRAGMENTO:
+            if actual:
+                fragmentos.append(actual)
+                actual = ""
+            fragmentos.extend(
+                bloque[i : i + _MAX_CHARS_FRAGMENTO]
+                for i in range(0, len(bloque), _MAX_CHARS_FRAGMENTO)
+            )
+            continue
+        candidato = f"{actual}\n\n{bloque}" if actual else bloque
+        if len(candidato) > _MAX_CHARS_FRAGMENTO:
+            fragmentos.append(actual)
+            actual = bloque
+        else:
+            actual = candidato
+    if actual:
+        fragmentos.append(actual)
+    return fragmentos or [texto]
+
+
+def _fallback_items_desde_texto(texto: str) -> list[dict[str, Any]]:
+    """Rescate determinista y conservador si un motor responde ``[]``.
+
+    Solo toma declaraciones personales durables y pares ``clave: valor``. No
+    intenta comprender el texto completo ni reemplaza al modelo; evita que una
+    respuesta débil convierta un perfil claramente útil en un falso vacío.
+    """
+
+    items: list[dict[str, Any]] = []
+    for raw_line in texto.splitlines():
+        line = raw_line.strip().lstrip("-•* ").strip()
+        if not 8 <= len(line) <= 280 or _SECRET_PATTERN.search(line):
+            continue
+        labelled = ":" in line and len(line.split(":", 1)[0]) <= 60
+        if not labelled and not _DURABLE_PATTERN.search(line):
+            continue
+        if line.endswith(":"):
+            continue
+        lowered = line.lower()
+        kind = (
+            "preference"
+            if any(
+                marker in lowered
+                for marker in ("prefier", "te gusta", "le gusta", "no soport", "quieres que")
+            )
+            else "entity"
+            if labelled
+            and any(
+                marker in lowered for marker in ("empresa", "nombre", "socia", "socio", "proyecto")
+            )
+            else "event"
+            if any(marker in lowered for marker in ("naciste", "nací", "cumpleaños", "aniversario"))
+            else "fact"
+        )
+        items.append(
+            {
+                "kind": kind,
+                "content": line.rstrip("."),
+                "importance": 0.65 if labelled else 0.55,
+                "source": "importado (rescate local)",
+            }
+        )
+        if len(items) >= 30:
+            break
+    return items
+
+
+def _deduplicar_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    resultado: list[dict[str, Any]] = []
+    vistos: set[str] = set()
+    for item in items:
+        clave = re.sub(r"\W+", " ", item["content"].lower()).strip()
+        if not clave or clave in vistos:
+            continue
+        vistos.add(clave)
+        resultado.append(item)
+        if len(resultado) >= _MAX_ITEMS_IMPORTADOS:
+            break
+    return resultado
 
 
 class MemoryIn(BaseModel):
@@ -196,29 +334,48 @@ async def preview_import_memoria(
     SIN guardar nada — ver docstring del módulo, "Importar memoria desde
     otra IA". El usuario revisa/edita en la UI y recién confirma con
     `POST /import/confirm`."""
-    request = CompletionRequest(
-        model="",  # `llm_router.complete` lo reemplaza por el modelo resuelto del alias.
-        system=_PROMPT_IMPORTAR,
-        messages=[ChatMessage(role="user", content=body.texto)],
-        max_tokens=_MAX_TOKENS_IMPORTAR,
-        temperature=0.0,
-    )
-    response = await llm_router.complete(
-        _ALIAS_LLM_IMPORTAR, current_user.tenant.flags, request
-    )
+    fragmentos = _dividir_texto_importar(body.texto)
+    responses = []
+    for indice, fragmento in enumerate(fragmentos, start=1):
+        contexto_fragmento = (
+            f"Fragmento {indice} de {len(fragmentos)}:\n\n{fragmento}"
+            if len(fragmentos) > 1
+            else fragmento
+        )
+        request = CompletionRequest(
+            model="",  # `llm_router.complete` lo reemplaza por el modelo resuelto del alias.
+            system=_PROMPT_IMPORTAR,
+            messages=[ChatMessage(role="user", content=contexto_fragmento)],
+            max_tokens=_MAX_TOKENS_IMPORTAR,
+            temperature=0.0,
+        )
+        responses.append(
+            await llm_router.complete(_ALIAS_LLM_IMPORTAR, current_user.tenant.flags, request)
+        )
     await repo.add_usage_event(
         tenant_id=current_user.tenant_id,
         kind="llm_tokens",
-        quantity=float(response.usage.input_tokens + response.usage.output_tokens),
-        meta={"alias": _ALIAS_LLM_IMPORTAR, "job": "memory_import_preview"},
+        quantity=float(
+            sum(
+                response.usage.input_tokens + response.usage.output_tokens for response in responses
+            )
+        ),
+        meta={
+            "alias": _ALIAS_LLM_IMPORTAR,
+            "job": "memory_import_preview",
+            "fragments": len(fragmentos),
+        },
     )
 
     items = [
         validado
+        for response in responses
         for crudo in _parsear_items_extraidos(response.text)
         if (validado := _validar_item_extraido(crudo, fuente_default="importado")) is not None
     ]
-    return items
+    if not items:
+        items = _fallback_items_desde_texto(body.texto)
+    return _deduplicar_items(items)
 
 
 @router.post("/import/confirm", status_code=status.HTTP_201_CREATED)

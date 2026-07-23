@@ -13,6 +13,7 @@ from edecan_toolkit.research import (
     SEARCH_CONNECTOR_KEY,
     BraveSearch,
     BuscarWebTool,
+    DuckDuckGoSearch,
     SearchHit,
     StubSearch,
     TavilySearch,
@@ -47,7 +48,43 @@ def test_get_search_provider_resuelve_segun_settings(fake_settings):
     assert isinstance(tavily, TavilySearch)
 
     assert isinstance(get_search_provider(fake_settings(SEARCH_PROVIDER="stub")), StubSearch)
+    assert isinstance(
+        get_search_provider(fake_settings(SEARCH_PROVIDER="duckduckgo")), DuckDuckGoSearch
+    )
     assert isinstance(get_search_provider(fake_settings(SEARCH_PROVIDER="algo-raro")), StubSearch)
+
+
+@respx.mock
+async def test_duckduckgo_search_parsea_resultados_y_redirects():
+    respx.get("https://html.duckduckgo.com/html/").mock(
+        return_value=httpx.Response(
+            200,
+            text="""
+            <a class="result__a"
+               href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fejemplo.com%2Funo">
+              Resultado uno
+            </a>
+            <div class="result__snippet">Resumen <b>real</b> del resultado.</div>
+            <a class="result__a" href="https://otro.example/dos">Resultado dos</a>
+            <a class="result__snippet">Segundo resumen.</a>
+            """,
+        )
+    )
+
+    hits = await DuckDuckGoSearch().search("consulta", k=2)
+
+    assert hits == [
+        SearchHit(
+            title="Resultado uno",
+            url="https://ejemplo.com/uno",
+            snippet="Resumen real del resultado.",
+        ),
+        SearchHit(
+            title="Resultado dos",
+            url="https://otro.example/dos",
+            snippet="Segundo resumen.",
+        ),
+    ]
 
 
 @respx.mock
@@ -103,17 +140,101 @@ async def test_buscar_web_tool_sin_consulta(make_ctx):
     assert "busque" in resultado.content.lower()
 
 
+async def test_buscar_web_no_agrega_cards_a_un_pedido_de_enlace_directo(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "duckduckgo"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit(
+                    title="Google Maps",
+                    url="https://maps.google.com/?q=Medellin",
+                    snippet="Abre Medellín en Google Maps.",
+                ),
+                SearchHit(
+                    title="Medellín en Internet",
+                    url="https://example.com/medellin",
+                    snippet="Una fuente secundaria que no se pidió.",
+                ),
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(
+        make_ctx(), {"consulta": "Dame el link de Google Maps de Medellín"}
+    )
+
+    assert len(resultado.data["resultados"]) == 2
+    assert "https://maps.google.com" in resultado.content
+    assert resultado.presentation == []
+
+
+async def test_buscar_web_solo_presenta_fuentes_utiles_y_no_duplicadas(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "brave"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit("Google Maps", "https://maps.google.com/place", ""),
+                SearchHit("Fuente uno", "https://uno.example/guia", "Una guía detallada."),
+                SearchHit("Fuente uno repetida", "https://uno.example/guia?utm=2", "Duplicada."),
+                SearchHit("Fuente dos", "https://dos.example/analisis", "Un análisis útil."),
+                SearchHit("Fuente tres", "https://tres.example/reporte", "Un reporte útil."),
+                SearchHit("Fuente cuatro", "https://cuatro.example/datos", "Datos adicionales."),
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(make_ctx(), {"consulta": "mercado turístico Medellín"})
+
+    assert [card["title"] for card in resultado.presentation] == [
+        "Fuente uno",
+        "Fuente dos",
+        "Fuente tres",
+    ]
+    assert all(card["description"] for card in resultado.presentation)
+
+
+async def test_buscar_web_no_confunde_linkedin_con_un_pedido_de_link(make_ctx, monkeypatch):
+    class _Proveedor:
+        name = "duckduckgo"
+
+        async def search(self, query: str, k: int = 5) -> list[SearchHit]:
+            return [
+                SearchHit(
+                    "Guía de LinkedIn",
+                    "https://ejemplo.com/linkedin",
+                    "Estrategias recientes para LinkedIn.",
+                )
+            ]
+
+    async def _provider(_ctx):
+        return _Proveedor()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", _provider)
+
+    resultado = await BuscarWebTool().run(make_ctx(), {"consulta": "tendencias de LinkedIn"})
+
+    assert len(resultado.presentation) == 1
+
+
 # --- get_tenant_search_provider (bring-your-own, auditoría "riesgo-legal-tos") ------
 #
 # Desde la corrección de diseño de `DIRECCION_ACTUAL.md` ("nunca una llave
 # compartida de plataforma"), TODAS las ramas de fallback de
-# `get_tenant_search_provider` caen DIRECTO a `StubSearch` — nunca a
+# `get_tenant_search_provider` caen DIRECTO a `DuckDuckGoSearch` — nunca a
 # `get_search_provider(ctx.settings)` — mismo criterio "tenant → stub" que ya
 # sigue `apps/api/edecan_api/routers/voice.py::_stt_para_tenant`. Por eso cada
 # `fake_settings(...)` de esta sección deja `SEARCH_PROVIDER="brave"` COMPLETO
 # y válido a propósito: si alguna rama volviera a consultarlo (regresión al
 # comportamiento viejo), el test fallaría al ver un `BraveSearch` de
-# PLATAFORMA en vez de un `StubSearch`.
+# PLATAFORMA en vez del proveedor sin clave.
 
 
 def _fake_settings_plataforma_completa(fake_settings):
@@ -122,7 +243,7 @@ def _fake_settings_plataforma_completa(fake_settings):
     return fake_settings(SEARCH_PROVIDER="brave", BRAVE_API_KEY="clave-de-plataforma")
 
 
-async def test_get_tenant_search_provider_sin_cuenta_conectada_cae_a_stub(
+async def test_get_tenant_search_provider_sin_cuenta_conectada_usa_internet_sin_clave(
     make_ctx, make_session, make_vault, fake_settings, caplog
 ):
     """El tenant nunca hizo `PUT /v1/credentials/search`: la consulta a
@@ -138,11 +259,10 @@ async def test_get_tenant_search_provider_sin_cuenta_conectada_cae_a_stub(
     )
     with caplog.at_level("WARNING"):
         proveedor = await get_tenant_search_provider(ctx)
-    assert isinstance(proveedor, StubSearch)
-    assert "PUT /v1/credentials/search" in caplog.text
+    assert isinstance(proveedor, DuckDuckGoSearch)
 
 
-async def test_get_tenant_search_provider_vault_revienta_cae_a_stub_nunca_plataforma(
+async def test_get_tenant_search_provider_vault_revienta_usa_internet_sin_clave(
     make_ctx, make_session, fake_settings, caplog
 ):
     """El tenant SÍ tiene una cuenta conectada, pero leer el vault revienta
@@ -160,8 +280,7 @@ async def test_get_tenant_search_provider_vault_revienta_cae_a_stub_nunca_plataf
     )
     with caplog.at_level("WARNING"):
         proveedor = await get_tenant_search_provider(ctx)
-    assert isinstance(proveedor, StubSearch)
-    assert "PUT /v1/credentials/search" in caplog.text
+    assert isinstance(proveedor, DuckDuckGoSearch)
 
 
 async def test_get_tenant_search_provider_usa_la_credencial_del_tenant(
@@ -199,7 +318,7 @@ async def test_get_tenant_search_provider_tavily_del_tenant(make_ctx, make_sessi
     assert isinstance(proveedor, TavilySearch)
 
 
-async def test_get_tenant_search_provider_json_corrupto_cae_a_stub(
+async def test_get_tenant_search_provider_json_corrupto_usa_internet_sin_clave(
     make_ctx, make_session, make_vault, fake_settings
 ):
     """Config ilegible en el vault: se trata igual que "el tenant no conectó
@@ -211,10 +330,10 @@ async def test_get_tenant_search_provider_json_corrupto_cae_a_stub(
         vault=make_vault(bundle=SimpleNamespace(access_token="esto no es JSON")),
     )
     proveedor = await get_tenant_search_provider(ctx)
-    assert isinstance(proveedor, StubSearch)
+    assert isinstance(proveedor, DuckDuckGoSearch)
 
 
-async def test_get_tenant_search_provider_provider_desconocido_cae_a_stub(
+async def test_get_tenant_search_provider_provider_desconocido_usa_internet_sin_clave(
     make_ctx, make_session, make_vault, fake_settings
 ):
     bundle = SimpleNamespace(access_token=json.dumps({"provider": "google", "api_key": "x"}))
@@ -224,4 +343,4 @@ async def test_get_tenant_search_provider_provider_desconocido_cae_a_stub(
         vault=make_vault(bundle=bundle),
     )
     proveedor = await get_tenant_search_provider(ctx)
-    assert isinstance(proveedor, StubSearch)
+    assert isinstance(proveedor, DuckDuckGoSearch)

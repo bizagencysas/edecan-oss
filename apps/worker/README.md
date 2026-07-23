@@ -15,6 +15,9 @@ Se conecta a Postgres como **owner** de las tablas (`edecan_db.session.get_sessi
 | `run_campaign_step` | definido por `edecan_premium` | Si `edecan_premium` está instalado, delega en `edecan_premium.campaigns.handle(env, deps)`; si no, loggea "premium no instalado" y termina sin error (core self-host no trae campañas). |
 | `generate_content` | `{"conversation_id": "<uuid>", "brief": "<texto>"}` | Llama al router LLM (alias `"principal"`, degradado a `"rapido"` si el plan no tiene `models.premium`) y guarda el resultado como mensaje `assistant`; registra `usage_events` `kind=llm_tokens`. |
 | `memory_consolidate` | `{"user_id": "<uuid>"}` | Agrupa `memory_items` del usuario con similitud coseno > 0.92 (producto punto puro-Python sobre embeddings normalizados, sin `numpy`) y funde cada grupo: conserva el ítem más antiguo, actualiza su `importance` al máximo del grupo y borra los demás. |
+| `notify_phone_call_summary` | `{"call_id": "<uuid>"}` | Reclama una sola vez el push de un resumen de llamada ya persistido y envía un aviso genérico a los dispositivos del usuario. Nunca incluye teléfono, objetivo, transcripción ni contenido del resumen en el push. |
+| `notify_incoming_phone_call` | `{"call_id": "<uuid>"}` | Relee una llamada entrante y su evento durable, registra una actividad idempotente y respeta la preferencia `work` antes de enviar un push genérico con deeplink opaco a Actividad. |
+| `notify_important_event` | Solo enums e identificadores UUID | Entrega eventos importantes de herramientas sincrónicas mediante actividad durable, preferencias e intento push best-effort. |
 
 ## Reintentos y DLQ (ARCHITECTURE.md §10.11)
 

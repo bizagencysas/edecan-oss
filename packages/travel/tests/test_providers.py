@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from edecan_travel.amadeus import AmadeusClient
+from edecan_travel.native import EdecanTravelProvider
 from edecan_travel.providers import (
     TRACKING_CONNECTOR_KEY,
     TRAVEL_CONNECTOR_KEY,
+    ResilientTravelProvider,
     StubTrackingProvider,
     StubTravelProvider,
     get_tenant_tracking_provider,
@@ -62,20 +64,20 @@ async def test_stub_tracking_respeta_courier_slug_recibido():
 # ---------------------------------------------------------------------------
 
 
-async def test_get_tenant_travel_provider_sin_vault_cae_a_stub(make_ctx):
+async def test_get_tenant_travel_provider_sin_vault_usa_capacidad_nativa(make_ctx):
     ctx = make_ctx()  # vault=None por defecto
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
-async def test_get_tenant_travel_provider_sin_cuenta_conectada_cae_a_stub(
+async def test_get_tenant_travel_provider_sin_cuenta_conectada_usa_capacidad_nativa(
     make_ctx, make_session, make_vault, caplog
 ):
     ctx = make_ctx(session=make_session([[]]), vault=make_vault())
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
-    assert "PUT /v1/viajes/credentials" in caplog.text
+    assert isinstance(provider, EdecanTravelProvider)
+    assert "Edecán Viajes" in caplog.text
 
 
 async def test_get_tenant_travel_provider_filtra_por_connector_key_travel(
@@ -89,7 +91,9 @@ async def test_get_tenant_travel_provider_filtra_por_connector_key_travel(
     assert session.llamadas[0][1]["connector_key"] == TRAVEL_CONNECTOR_KEY == "travel"
 
 
-async def test_get_tenant_travel_provider_vault_revienta_cae_a_stub(make_ctx, make_session, caplog):
+async def test_get_tenant_travel_provider_vault_revienta_cae_a_nativo(
+    make_ctx, make_session, caplog
+):
     class _VaultQueRevienta:
         async def get(self, tenant_id: Any, connector_account_id: Any) -> Any:
             raise RuntimeError("vault caído")
@@ -100,10 +104,10 @@ async def test_get_tenant_travel_provider_vault_revienta_cae_a_stub(make_ctx, ma
     )
     with caplog.at_level("WARNING"):
         provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
-async def test_get_tenant_travel_provider_bundle_vacio_cae_a_stub(
+async def test_get_tenant_travel_provider_bundle_vacio_cae_a_nativo(
     make_ctx, make_session, make_vault
 ):
     ctx = make_ctx(
@@ -111,10 +115,10 @@ async def test_get_tenant_travel_provider_bundle_vacio_cae_a_stub(
         vault=make_vault(bundle=None),
     )
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
-async def test_get_tenant_travel_provider_json_corrupto_cae_a_stub(
+async def test_get_tenant_travel_provider_json_corrupto_cae_a_nativo(
     make_ctx, make_session, make_vault
 ):
     ctx = make_ctx(
@@ -122,10 +126,10 @@ async def test_get_tenant_travel_provider_json_corrupto_cae_a_stub(
         vault=make_vault(bundle=SimpleNamespace(access_token="esto no es JSON")),
     )
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
-async def test_get_tenant_travel_provider_falta_api_secret_cae_a_stub(
+async def test_get_tenant_travel_provider_falta_api_secret_cae_a_nativo(
     make_ctx, make_session, make_vault
 ):
     bundle = SimpleNamespace(access_token=json.dumps({"api_key": "solo-key-sin-secret"}))
@@ -134,7 +138,7 @@ async def test_get_tenant_travel_provider_falta_api_secret_cae_a_stub(
         vault=make_vault(bundle=bundle),
     )
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
 async def test_get_tenant_travel_provider_usa_la_credencial_del_tenant(
@@ -150,8 +154,9 @@ async def test_get_tenant_travel_provider_usa_la_credencial_del_tenant(
 
     provider = await get_tenant_travel_provider(ctx)
 
-    assert isinstance(provider, AmadeusClient)
-    assert provider.environment == "test"  # default cuando el tenant no fijó 'environment'
+    assert isinstance(provider, ResilientTravelProvider)
+    assert isinstance(provider._primary, AmadeusClient)  # noqa: SLF001
+    assert provider._primary.environment == "test"  # noqa: SLF001
     assert vault.llamadas == [(ctx.tenant_id, cuenta_id)]
 
 
@@ -159,9 +164,7 @@ async def test_get_tenant_travel_provider_respeta_environment_production_del_ten
     make_ctx, make_session, make_vault
 ):
     bundle = SimpleNamespace(
-        access_token=json.dumps(
-            {"api_key": "k", "api_secret": "s", "environment": "production"}
-        )
+        access_token=json.dumps({"api_key": "k", "api_secret": "s", "environment": "production"})
     )
     ctx = make_ctx(
         session=make_session([[{"id": "11111111-1111-1111-1111-111111111111"}]]),
@@ -170,8 +173,8 @@ async def test_get_tenant_travel_provider_respeta_environment_production_del_ten
 
     provider = await get_tenant_travel_provider(ctx)
 
-    assert isinstance(provider, AmadeusClient)
-    assert provider.environment == "production"
+    assert isinstance(provider, ResilientTravelProvider)
+    assert provider._primary.environment == "production"  # noqa: SLF001
 
 
 async def test_get_tenant_travel_provider_environment_invalido_cae_a_test(
@@ -187,8 +190,8 @@ async def test_get_tenant_travel_provider_environment_invalido_cae_a_test(
 
     provider = await get_tenant_travel_provider(ctx)
 
-    assert isinstance(provider, AmadeusClient)
-    assert provider.environment == "test"
+    assert isinstance(provider, ResilientTravelProvider)
+    assert provider._primary.environment == "test"  # noqa: SLF001
 
 
 async def test_get_tenant_travel_provider_nunca_cae_a_una_credencial_de_plataforma(
@@ -198,7 +201,7 @@ async def test_get_tenant_travel_provider_nunca_cae_a_una_credencial_de_platafor
     `settings` con cualquier contenido nunca afecta el resultado sin vault."""
     ctx = make_ctx(settings=fake_settings(AMADEUS_API_KEY="no-deberia-usarse-nunca"))
     provider = await get_tenant_travel_provider(ctx)
-    assert isinstance(provider, StubTravelProvider)
+    assert isinstance(provider, EdecanTravelProvider)
 
 
 # ---------------------------------------------------------------------------

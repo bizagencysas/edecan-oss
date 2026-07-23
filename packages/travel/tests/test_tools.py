@@ -88,6 +88,7 @@ _OFERTA_VUELO = VueloOferta(
     escalas=0,
     precio_total="199.00",
     moneda="USD",
+    booking_url="https://kiwi.com/u/prueba",
 )
 
 _OFERTA_HOTEL = HotelOferta(
@@ -98,6 +99,7 @@ _OFERTA_HOTEL = HotelOferta(
     moneda="EUR",
     checkin="2026-09-01",
     checkout="2026-09-05",
+    booking_url="https://www.trivago.com/hotel/prueba",
 )
 
 _ESTADO = EstadoVuelo(
@@ -160,7 +162,8 @@ async def test_buscar_vuelos_ok_lista_la_oferta_y_normaliza_codigos(make_ctx):
     assert resultado.data["ofertas"][0]["id"] == "off-1"
     assert resultado.presentation[0]["type"] == "flight"
     assert resultado.presentation[0]["source_mode"] == "unknown"
-    assert resultado.presentation[0]["actions"][0]["action"] == "prefill_message"
+    assert resultado.presentation[0]["actions"][0]["action"] == "open_url"
+    assert resultado.presentation[0]["actions"][1]["action"] == "prefill_message"
     assert provider.llamadas_vuelos == [("BOG", "MIA", "2026-08-01", 1, 10)]
 
 
@@ -242,6 +245,7 @@ async def test_buscar_hoteles_ok(make_ctx):
 
     assert "Hotel Centro" in resultado.content
     assert resultado.data["ofertas"][0]["nombre"] == "Hotel Centro"
+    assert resultado.presentation[0]["actions"][0]["action"] == "open_url"
     assert provider.llamadas_hoteles == [("PAR", "2026-09-01", "2026-09-05", 1)]
 
 

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ConectarAfterShip } from "@/components/viajes/ConectarAfterShip";
-import { ConectarAmadeus } from "@/components/viajes/ConectarAmadeus";
 import { Alert, Badge, Card, CardBody, CardHeader, Spinner } from "@/components/ui";
 import {
   ApiError,
@@ -99,19 +98,29 @@ export function TravelConnectionsPanel() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader
-            title="Amadeus (vuelos y hoteles)"
-            actions={loading ? <Spinner className="h-4 w-4 text-slate-400" /> : <EstadoBadge configurado={status?.travel.configured ?? false} />}
+            title="Vuelos y hoteles"
+            actions={loading ? <Spinner className="h-4 w-4 text-slate-400" /> : <Badge variant="success">Listo</Badge>}
           />
           <CardBody className="space-y-3">
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Edecán busca ofertas reales con su capa de viajes. No necesitas crear una cuenta ni
+              pegar API keys, y funciona igual con Claude, Codex, Ollama o cualquier otro modelo.
+            </p>
+            <p className="text-xs text-slate-400">
+              Fuentes actuales: Kiwi, Trivago y Skiplagged. Las ofertas incluyen enlaces para
+              verificarlas y continuar directamente con el proveedor.
+            </p>
             {status?.travel.configured && (
-              <FilaConectada
-                onQuitar={() => void desconectarAmadeus()}
-                removing={removing === "amadeus"}
-              >
-                Entorno: {status.travel.environment === "production" ? "Production" : "Test"}
-              </FilaConectada>
+              <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                <p className="text-xs text-slate-400">Conexión anterior conservada por compatibilidad:</p>
+                <FilaConectada
+                  onQuitar={() => void desconectarAmadeus()}
+                  removing={removing === "amadeus"}
+                >
+                  Amadeus · {status.travel.environment === "production" ? "Production" : "Test"}
+                </FilaConectada>
+              </div>
             )}
-            <ConectarAmadeus onConnected={cargarStatus} />
           </CardBody>
         </Card>
 

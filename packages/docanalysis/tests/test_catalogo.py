@@ -10,6 +10,8 @@ from __future__ import annotations
 from edecan_docanalysis import get_all_tools
 
 NOMBRES_PINNED = [
+    "leer_archivo",
+    "editar_pdf",
     "analizar_tabla",
     "extraer_tablas_pdf",
     "analizar_imagen",
@@ -21,11 +23,11 @@ NOMBRES_PINNED = [
 ]
 
 
-def test_get_all_tools_devuelve_las_8_herramientas_con_los_nombres_pinned():
+def test_get_all_tools_devuelve_las_10_herramientas_con_los_nombres_pinned():
     nombres = [tool.name for tool in get_all_tools()]
     assert nombres == NOMBRES_PINNED
-    assert len(nombres) == 8
-    assert len(set(nombres)) == 8  # sin duplicados
+    assert len(nombres) == 10
+    assert len(set(nombres)) == 10  # sin duplicados
 
 
 def test_cada_tool_tiene_name_description_e_input_schema_validos():
@@ -61,7 +63,13 @@ def test_todas_requieren_file_id_salvo_analizar_video_generar_grafico_y_exportar
     # S3 que las demás, nombre de propiedad distinto — ver docstring de
     # `edecan_docanalysis.video`).
     por_nombre = {tool.name: tool for tool in get_all_tools()}
-    con_file_id = {"analizar_tabla", "extraer_tablas_pdf", "analizar_imagen"}
+    con_file_id = {
+        "analizar_tabla",
+        "editar_pdf",
+        "extraer_tablas_pdf",
+        "leer_archivo",
+        "analizar_imagen",
+    }
     for nombre in con_file_id:
         assert "file_id" in por_nombre[nombre].input_schema["required"]
         assert "archivo" not in por_nombre[nombre].input_schema["properties"]

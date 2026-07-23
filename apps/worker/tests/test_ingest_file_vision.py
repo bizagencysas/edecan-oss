@@ -144,7 +144,7 @@ async def test_imagen_con_proveedor_vision_genera_chunk_seq0_y_status_ready(monk
     assert deps.llm_router.resolved == [("rapido", {})]
 
 
-async def test_imagen_sin_proveedor_vision_marca_status_error_igual_que_antes(monkeypatch) -> None:
+async def test_imagen_con_proveedor_no_anthropic_tambien_se_indexa(monkeypatch) -> None:
     fake_repo = FakeRepo()
     monkeypatch.setattr(ingest_file_module, "SqlRepo", lambda session: fake_repo)
 
@@ -157,21 +157,18 @@ async def test_imagen_sin_proveedor_vision_marca_status_error_igual_que_antes(mo
     file_row["id"] = file_id
     fake_repo.files[file_id] = file_row
 
-    # `make_deps()` sin overrides usa `FakeLLMRouter`/`FakeProvider` de
-    # `fakes.py`, que no tienen `.name` — mismo comportamiento que "proveedor
-    # sin soporte de visión" (`getattr(provider, "name", "") != "anthropic"`).
     deps = make_deps()
     await _use_platform_router_as_tenant_router(deps, monkeypatch)
     deps.s3.put(deps.settings.S3_BUCKET, s3_key, b"\xff\xd8\xff\xe0falso-jpeg")
 
     await ingest_file_module.handle(_env_para(file_id, tenant_id), deps)
 
-    assert fake_repo.files[file_id]["status"] == "error"
-    assert fake_repo.file_chunks == []
+    assert fake_repo.files[file_id]["status"] == "ready"
+    assert len(fake_repo.file_chunks) == 1
     assert fake_repo.usage_events == []
 
 
-async def test_imagen_demasiado_grande_marca_error_sin_llamar_al_llm(monkeypatch) -> None:
+async def test_imagen_demasiado_grande_se_conserva_ready_sin_llamar_al_llm(monkeypatch) -> None:
     fake_repo = FakeRepo()
     monkeypatch.setattr(ingest_file_module, "SqlRepo", lambda session: fake_repo)
     monkeypatch.setattr(ingest_file_module, "_MAX_IMAGEN_BYTES", 10)  # límite bajo para el test
@@ -190,8 +187,9 @@ async def test_imagen_demasiado_grande_marca_error_sin_llamar_al_llm(monkeypatch
 
     await ingest_file_module.handle(_env_para(file_id, tenant_id), deps)
 
-    assert fake_repo.files[file_id]["status"] == "error"
-    assert fake_repo.file_chunks == []
+    assert fake_repo.files[file_id]["status"] == "ready"
+    assert len(fake_repo.file_chunks) == 1
+    assert "demasiado grande" in fake_repo.file_chunks[0]["text"]
     assert proveedor.requests == []  # nunca se llegó a llamar al LLM
 
 

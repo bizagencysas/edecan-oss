@@ -1,8 +1,10 @@
 # packages/travel — `edecan_travel`
 
-Viajes: búsqueda real de vuelos/hoteles vía **Amadeus Self-Service** (bring-your-own
-credenciales del tenant) + rastreo de paquetes vía **AfterShip**, con guardrail de dinero
-— igual que `packages/ads` (`ARCHITECTURE.md` §13/§14, fase v5). Ver
+Viajes: búsqueda real de vuelos y hoteles mediante la capa nativa de Edecán,
+con Kiwi, Trivago y Skiplagged, más rastreo de paquetes vía **AfterShip**.
+Amadeus se mantiene solo como compatibilidad heredada para instalaciones Enterprise
+que aún tengan acceso. Conserva el mismo guardrail de dinero que `packages/ads`
+(`ARCHITECTURE.md` §13/§14, fase v5). Ver
 [`docs/viajes.md`](../../docs/viajes.md) para el flujo completo y el modelo bring-your-own.
 
 ## Guardrail de dinero (lo más importante del paquete)
@@ -20,8 +22,8 @@ esa compra.
 
 | Tool | Flag | `dangerous` | Qué hace |
 |---|---|---|---|
-| `buscar_vuelos` | `tools.travel` | No | Ofertas de vuelo (Amadeus real, o ejemplo offline si no hay cuenta conectada). |
-| `buscar_hoteles` | `tools.travel` | No | Ofertas de hotel por ciudad. |
+| `buscar_vuelos` | `tools.travel` | No | Ofertas reales mediante la capa nativa; una conexión Amadeus heredada tiene fallback automático. |
+| `buscar_hoteles` | `tools.travel` | No | Ofertas reales por ciudad mediante Trivago y Skiplagged. |
 | `estado_vuelo` | `tools.travel` | No | Horarios programados de un vuelo (`carrier` + `numero` + `fecha`). |
 | `rastrear_paquete` | `tools.travel` | No | Estado + checkpoints de un envío (AfterShip). |
 | `preparar_reserva` | `tools.travel` | **Sí** | `INSERT orders(kind='purchase', status='draft')` — nunca llama a Amadeus. |

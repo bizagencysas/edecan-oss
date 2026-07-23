@@ -29,18 +29,22 @@ from .recordatorios import CrearRecordatorioTool, ListarRecordatoriosTool
 from .research import (
     SEARCH_CONNECTOR_KEY,
     BuscarWebTool,
+    DuckDuckGoSearch,
     SearchHit,
     SearchProvider,
     get_search_provider,
     get_tenant_search_provider,
 )
+from .seguridad import AuditarSeguridadProyectoTool, EjecutarPentestGPTAutorizadoTool
 from .utilidades import CalculadoraTool, HoraActualTool
 
 __all__ = [
     "SEARCH_CONNECTOR_KEY",
     "AccederCodigoLocalTool",
     "AgendaEventosTool",
+    "AuditarSeguridadProyectoTool",
     "DiagnosticarAutorreparacionLocalTool",
+    "DuckDuckGoSearch",
     "BuscarContactosTool",
     "BuscarCorreoTool",
     "BuscarWebTool",
@@ -51,6 +55,7 @@ __all__ = [
     "CrearArtefactosTool",
     "CrearRecordatorioTool",
     "EnviarCorreoTool",
+    "EjecutarPentestGPTAutorizadoTool",
     "GenerarContenidoTool",
     "GestionarContactoTool",
     "GestionarAutorreparacionLocalTool",
@@ -92,5 +97,7 @@ def get_all_tools() -> list[Tool]:
         AccederCodigoLocalTool(),
         DiagnosticarAutorreparacionLocalTool(),
         GestionarAutorreparacionLocalTool(),
+        AuditarSeguridadProyectoTool(),
+        EjecutarPentestGPTAutorizadoTool(),
         CrearArtefactosTool(),
     ]

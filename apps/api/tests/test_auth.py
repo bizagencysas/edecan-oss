@@ -3,14 +3,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
 import jwt
 import pyotp
 from conftest import TEST_JWT_SECRET
+from httpx import ASGITransport, AsyncClient
 
 from edecan_api.security import decode_token
+
+LOCAL_DESKTOP_HEADERS = {
+    "X-Edecan-Desktop-Capability": "test-desktop-capability",
+}
 
 
 async def test_register_creates_tenant_and_returns_token_pair(client) -> None:
@@ -85,6 +91,181 @@ async def test_login_rejects_unknown_email(client) -> None:
         "/v1/auth/login", json={"email": "no-existe@example.com", "password": "lo-que-sea-123"}
     )
     assert response.status_code == 401
+
+
+async def test_local_desktop_opens_the_existing_owner_without_credentials(
+    client, fake_repo, test_settings
+) -> None:
+    registered = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "owner@example.com",
+            "password": "clave-local-segura",
+            "tenant_name": "Mi negocio",
+        },
+    )
+    original = decode_token(
+        registered.json()["access_token"],
+        secret=TEST_JWT_SECRET,
+        expected_typ="access",
+    )
+    test_settings.EDECAN_LOCAL_MODE = True
+
+    response = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+
+    assert response.status_code == 200
+    session = decode_token(
+        response.json()["access_token"],
+        secret=TEST_JWT_SECRET,
+        expected_typ="access",
+    )
+    assert session.sub == original.sub
+    assert session.ten == original.ten
+    assert len(fake_repo.users) == 1
+    assert len(fake_repo.tenants) == 1
+
+
+async def test_local_desktop_provisions_one_private_owner_on_a_fresh_install(
+    client, fake_repo, test_settings
+) -> None:
+    test_settings.EDECAN_LOCAL_MODE = True
+
+    first = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+    second = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_session = decode_token(
+        first.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    second_session = decode_token(
+        second.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    assert first_session.sub == second_session.sub
+    assert first_session.ten == second_session.ten
+    assert len(fake_repo.users) == 1
+    assert len(fake_repo.tenants) == 1
+    assert fake_repo.local_owner == (first_session.sub, first_session.ten)
+    assert next(iter(fake_repo.users.values()))["email"].endswith("@edecan.local")
+    assert fake_repo.audit_log[-1]["action"] == "auth.local_owner_created"
+
+
+async def test_local_desktop_is_unavailable_in_hosted_or_without_desktop_header(
+    client, test_settings
+) -> None:
+    hosted = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+    assert hosted.status_code == 404
+
+    test_settings.EDECAN_LOCAL_MODE = True
+    missing_header = await client.post("/v1/auth/local")
+    assert missing_header.status_code == 403
+
+    forged_header = await client.post(
+        "/v1/auth/local",
+        headers={"X-Edecan-Desktop-Capability": "valor-publico-inventado"},
+    )
+    assert forged_header.status_code == 403
+
+
+async def test_local_desktop_rejects_lan_even_with_forged_header(app, test_settings) -> None:
+    test_settings.EDECAN_LOCAL_MODE = True
+    transport = ASGITransport(app=app, client=("192.168.1.50", 4321))
+    async with AsyncClient(transport=transport, base_url="http://edecan-lan") as lan_client:
+        response = await lan_client.post(
+            "/v1/auth/local",
+            headers=LOCAL_DESKTOP_HEADERS,
+        )
+
+    assert response.status_code == 403
+
+
+async def test_local_owner_creation_is_idempotent_under_concurrency(
+    client, fake_repo, test_settings, monkeypatch
+) -> None:
+    test_settings.EDECAN_LOCAL_MODE = True
+    original_get = fake_repo.get_first_active_owner
+    calls = 0
+
+    async def delayed_first_read():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await asyncio.sleep(0.02)
+            return None
+        return await original_get()
+
+    monkeypatch.setattr(fake_repo, "get_first_active_owner", delayed_first_read)
+    first, second = await asyncio.gather(
+        client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS),
+        client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_session = decode_token(
+        first.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    second_session = decode_token(
+        second.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    assert (first_session.sub, first_session.ten) == (second_session.sub, second_session.ten)
+    assert len(fake_repo.users) == 1
+    assert len(fake_repo.tenants) == 1
+
+
+async def test_local_desktop_fails_closed_when_database_has_multiple_owners(
+    client, test_settings
+) -> None:
+    for index in range(2):
+        response = await client.post(
+            "/v1/auth/register",
+            json={
+                "email": f"owner-{index}@example.com",
+                "password": "clave-local-segura",
+                "tenant_name": f"Negocio {index}",
+            },
+        )
+        assert response.status_code == 201
+
+    test_settings.EDECAN_LOCAL_MODE = True
+    denied = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+
+    assert denied.status_code == 409
+    assert "más de un dueño" in denied.json()["detail"]
+
+
+async def test_local_desktop_uses_explicit_migrated_owner_with_other_tenants_present(
+    client, fake_repo, test_settings
+) -> None:
+    registered_sessions = []
+    for index in range(2):
+        response = await client.post(
+            "/v1/auth/register",
+            json={
+                "email": f"migrated-{index}@example.com",
+                "password": "clave-local-segura",
+                "tenant_name": f"Instalación {index}",
+            },
+        )
+        assert response.status_code == 201
+        registered_sessions.append(
+            decode_token(
+                response.json()["access_token"],
+                secret=TEST_JWT_SECRET,
+                expected_typ="access",
+            )
+        )
+
+    expected = registered_sessions[0]
+    await fake_repo.set_local_owner(user_id=expected.sub, tenant_id=expected.ten)
+    test_settings.EDECAN_LOCAL_MODE = True
+    opened = await client.post("/v1/auth/local", headers=LOCAL_DESKTOP_HEADERS)
+
+    assert opened.status_code == 200
+    actual = decode_token(
+        opened.json()["access_token"], secret=TEST_JWT_SECRET, expected_typ="access"
+    )
+    assert (actual.sub, actual.ten) == (expected.sub, expected.ten)
 
 
 async def test_refresh_returns_new_token_pair(client) -> None:

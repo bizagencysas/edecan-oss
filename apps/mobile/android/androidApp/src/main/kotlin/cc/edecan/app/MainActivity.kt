@@ -7,6 +7,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import cc.edecan.app.notifications.EXTRA_NOTIFICATION_ROUTE
+import cc.edecan.app.notifications.NotificationRoute
 
 /**
  * Punto de entrada de la app — una sola Activity, sin fragments ni
@@ -15,14 +17,18 @@ import androidx.compose.runtime.setValue
  */
 class MainActivity : ComponentActivity() {
     private var pairingDeepLink by mutableStateOf<String?>(null)
+    private var notificationRoute by mutableStateOf<NotificationRoute?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pairingDeepLink = extraerYSanitizar(intent)
+        notificationRoute = extraerRutaNotificacion(intent)
         setContent {
             App(
                 pairingDeepLink = pairingDeepLink,
                 onPairingDeepLinkConsumed = { pairingDeepLink = null },
+                notificationRoute = notificationRoute,
+                onNotificationRouteConsumed = { notificationRoute = null },
             )
         }
     }
@@ -30,6 +36,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         pairingDeepLink = extraerYSanitizar(intent)
+        notificationRoute = extraerRutaNotificacion(intent)
     }
 
     /** No conserva el token de un solo uso en `Activity.intent` después de
@@ -43,4 +50,10 @@ class MainActivity : ComponentActivity() {
         }
         return raw
     }
+
+    private fun extraerRutaNotificacion(incoming: Intent?): NotificationRoute? =
+        (incoming?.getStringExtra(EXTRA_NOTIFICATION_ROUTE)
+            ?: incoming?.getStringExtra("route")
+            ?: incoming?.getStringExtra("screen"))
+            ?.let(NotificationRoute::parse)
 }

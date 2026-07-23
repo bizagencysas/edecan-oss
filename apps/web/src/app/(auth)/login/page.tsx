@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 import { Alert, Button, Card, CardBody, Field, Input } from "@/components/ui";
@@ -11,7 +10,6 @@ import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
   const { login } = useAuth();
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
@@ -30,7 +28,9 @@ export default function LoginPage() {
       // dispositivo/navegador y nunca llegó al final), lo mandamos ahí en
       // vez de directo al chat.
       const setupStatus = await getSetupStatus();
-      router.replace(setupStatus.onboarding_completed ? "/app" : "/app/bienvenida");
+      window.location.replace(
+        setupStatus.onboarding_completed ? "/app/" : "/app/bienvenida/",
+      );
     } catch (err) {
       if (err instanceof ApiError && /totp/i.test(err.message)) {
         setNeedsTotp(true);

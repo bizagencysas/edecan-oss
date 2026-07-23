@@ -649,6 +649,19 @@ _SUPERFICIES_DE_ENCOLADO: dict[str, str] = {
     "process_meeting": (
         "Ningun productor todavia (v6, WP-V6-05 en paralelo, handler+router aun no aterrizan)."
     ),
+    "notify_phone_call_summary": (
+        "Solo phone.py despues de persistir un cierre terminal firmado o un fallo del "
+        "dispatcher; el worker exige tenant_id+call_id, reclama un resumen existente y "
+        "solo envia un push generico sin datos de la llamada."
+    ),
+    "notify_incoming_phone_call": (
+        "Solo phone.py tras verificar la firma Twilio y persistir la llamada entrante con "
+        "su evento; el worker relee ambos y usa notificaciones universales idempotentes."
+    ),
+    "notify_important_event": (
+        "Solo productores internos de herramientas sincrónicas; el payload se limita a "
+        "enums e identificadores UUID y el worker persiste actividad antes del push."
+    ),
 }
 
 

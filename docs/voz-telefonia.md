@@ -83,6 +83,16 @@ Si el paso 4 del flujo de arriba falla (el tenant no tenía ElevenLabs conectado
 
 ## Telefonía OSS funcional
 
+Las llamadas salientes pueden usar perfiles reutilizables de personalidad,
+objetivo y apertura. Se configuran en Ajustes y quedan copiadas en la llamada
+antes de la confirmación; consulta [`agentes-llamadas.md`](./agentes-llamadas.md)
+para el modelo, API y encadenamiento completo.
+
+Al terminar una llamada entrante o saliente, Edecan conserva un resumen
+estructurado aunque no haya transcripción o proveedor LLM. Los callbacks
+repetidos no duplican el resumen, la actividad ni el push; el detalle de
+privacidad e idempotencia también está en `agentes-llamadas.md`.
+
 La implementación actual usa **la cuenta Twilio del propio tenant**: Account SID, Auth Token y número se guardan cifrados en `TokenVault` bajo el conector `twilio`. No existe una cuenta Twilio compartida de plataforma.
 
 ### Llamada saliente desde una frase

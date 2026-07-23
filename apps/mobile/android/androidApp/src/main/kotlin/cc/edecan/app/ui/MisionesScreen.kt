@@ -54,6 +54,9 @@ import cc.edecan.shared.MissionStep
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import androidx.compose.ui.platform.LocalContext
+import cc.edecan.app.notifications.EdecanNotifications
+import cc.edecan.app.notifications.NotificationRoute
 
 /** Etiquetas en español de `MissionOut.status`/`MissionStepOut.status`
  * (`edecan_schemas.missions.MISSION_STATUSES`/`MISSION_STEP_STATUSES`) —
@@ -99,8 +102,29 @@ fun MisionesScreen(
 ) {
     val uiState by misionesViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
+    val context = LocalContext.current
+    var estadosObservados by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(api) { api?.let { misionesViewModel.cargar(it) } }
+    LaunchedEffect(uiState.misiones.map { it.id to it.status }) {
+        val current = uiState.misiones.associate { it.id to it.status }
+        if (estadosObservados.isNotEmpty()) {
+            uiState.misiones.filter { mission ->
+                estadosObservados[mission.id]?.let { it != mission.status } == true &&
+                    mission.status in setOf("done", "error", "cancelled")
+            }.forEach { mission ->
+                EdecanNotifications.show(
+                    context = context,
+                    title = if (mission.status == "done") "Trabajo terminado" else "El trabajo necesita atención",
+                    body = mission.objetivo,
+                    channel = EdecanNotifications.WORK,
+                    route = NotificationRoute.ACTIVITY,
+                    stableId = mission.id.hashCode(),
+                )
+            }
+        }
+        estadosObservados = current
+    }
 
     if (uiState.seleccionId != null) {
         DetalleMision(

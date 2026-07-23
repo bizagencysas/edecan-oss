@@ -61,12 +61,16 @@ if ($TargetTriple -ne "x86_64-pc-windows-msvc") {
 # (opcional)"). Sin esta variable (el default), este script no cambia en
 # nada respecto de antes.
 if ($env:EDECAN_BUNDLE_OLLAMA -eq "1") {
-    Write-Host "==> [0/4] EDECAN_BUNDLE_OLLAMA=1: descargando Ollama (scripts/download-ollama.ps1)..."
+    Write-Host "==> [0/5] EDECAN_BUNDLE_OLLAMA=1: descargando Ollama (scripts/download-ollama.ps1)..."
     & (Join-Path $ScriptDir "download-ollama.ps1")
     if ($LASTEXITCODE -ne 0) { throw "download-ollama.ps1 fallo (codigo $LASTEXITCODE)." }
 }
 
-Write-Host "==> [1/4] Construyendo la web estatica (apps/web, export estatico)..."
+Write-Host "==> [1/5] Empaquetando FyDesign Studio (Node 22 + Chromium + npm ci)..."
+& (Join-Path $ScriptDir "build-studio-engine.ps1")
+if ($LASTEXITCODE -ne 0) { throw "build-studio-engine.ps1 fallo (codigo $LASTEXITCODE)." }
+
+Write-Host "==> [2/5] Construyendo la web estatica (apps/web, export estatico)..."
 Push-Location $WebDir
 try {
     if (-not (Test-Path (Join-Path $WebDir "node_modules"))) {
@@ -106,12 +110,12 @@ if (-not (Test-Path $WebOutDir)) {
     exit 1
 }
 
-Write-Host "==> [2/4] Copiando apps/web/out/ -> packaging/web/..."
+Write-Host "==> [3/5] Copiando apps/web/out/ -> packaging/web/..."
 if (Test-Path $WebDestDir) { Remove-Item $WebDestDir -Recurse -Force }
 New-Item -ItemType Directory -Path $WebDestDir -Force | Out-Null
 Copy-Item (Join-Path $WebOutDir "*") $WebDestDir -Recurse -Force
 
-Write-Host "==> [3/4] Congelando edecan_local con PyInstaller (uv run, workspace completo)..."
+Write-Host "==> [4/5] Congelando edecan_local con PyInstaller (uv run, workspace completo)..."
 # PyInstaller vive fijado en el grupo `release` de la raiz y en `uv.lock`.
 # `uv run --frozen --group release --all-packages` desde cualquier carpeta
 # del workspace resuelve el entorno COMPARTIDO de todos los
@@ -145,7 +149,7 @@ if (-not (Test-Path $FrozenExe)) {
     exit 1
 }
 
-Write-Host "==> [4/4] Instalando el sidecar en src-tauri/binaries/..."
+Write-Host "==> [5/5] Instalando el sidecar en src-tauri/binaries/..."
 $SidecarName = "edecan-local-$TargetTriple.exe"
 
 if (-not (Test-Path $BinariesDir)) { New-Item -ItemType Directory -Path $BinariesDir -Force | Out-Null }

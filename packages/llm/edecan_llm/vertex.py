@@ -41,6 +41,7 @@ from .base import (
 )
 from .config import LLMProviderConfig
 from .errors import LLMError, ProviderDownError
+from .multimodal import image_source
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,18 @@ def _build_credentials(service_account_json: str | None) -> object:
         raise LLMError(
             "extra.service_account_json de Vertex AI no es JSON válido.", provider="vertex"
         ) from exc
-    return service_account.Credentials.from_service_account_info(info, scopes=_VERTEX_SCOPES)
+    try:
+        return service_account.Credentials.from_service_account_info(info, scopes=_VERTEX_SCOPES)
+    except (TypeError, ValueError) as exc:
+        # `google-auth` usa `MalformedError(ValueError)` cuando el JSON existe
+        # pero no es una credencial de cuenta de servicio completa. Exponer esa
+        # excepción interna rompe el contrato común de proveedores y termina
+        # mostrando un traceback técnico en Ajustes.
+        raise LLMError(
+            "extra.service_account_json de Vertex AI no contiene una credencial "
+            "de cuenta de servicio válida.",
+            provider="vertex",
+        ) from exc
 
 
 class _HttpxAuthRequest:
@@ -284,7 +296,7 @@ def _to_gemini_contents(req: CompletionRequest) -> tuple[dict | None, list[dict]
             if text:
                 system_parts.append(text)
         elif message.role == "user":
-            contents.append({"role": "user", "parts": [{"text": _text_of(message.content)}]})
+            contents.append({"role": "user", "parts": _user_parts(message.content)})
         elif message.role == "assistant":
             contents.append(
                 {"role": "model", "parts": _assistant_parts(message.content, call_names)}
@@ -296,6 +308,21 @@ def _to_gemini_contents(req: CompletionRequest) -> tuple[dict | None, list[dict]
 
     system_instruction = {"parts": [{"text": "\n\n".join(system_parts)}]} if system_parts else None
     return system_instruction, contents
+
+
+def _user_parts(content: str | list[dict]) -> list[dict]:
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts: list[dict] = []
+    for block in content:
+        if block.get("type") == "text" and block.get("text"):
+            parts.append({"text": str(block["text"])})
+            continue
+        source = image_source(block)
+        if source is not None:
+            mime, data = source
+            parts.append({"inlineData": {"mimeType": mime, "data": data}})
+    return parts or [{"text": ""}]
 
 
 def _text_of(content: str | list[dict]) -> str:

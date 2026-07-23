@@ -41,11 +41,27 @@ RPM="$(find_one "$BUNDLE_DIR/rpm" '*.rpm' 'paquete RPM')"
 
 echo "==> Inspeccionando metadatos y sidecars…"
 dpkg-deb --info "$DEB" >/dev/null
-dpkg-deb --contents "$DEB" | grep '/edecan-desktop$' >/dev/null
-dpkg-deb --contents "$DEB" | grep '/edecan-local$' >/dev/null
 rpm -qip "$RPM" >/dev/null
-rpm -qlp "$RPM" | grep '/edecan-desktop$' >/dev/null
-rpm -qlp "$RPM" | grep '/edecan-local$' >/dev/null
+DEB_CONTENTS="$(dpkg-deb --contents "$DEB")"
+RPM_CONTENTS="$(rpm -qlp "$RPM")"
+for required_path in \
+  '/edecan-desktop$' \
+  '/edecan-local$' \
+  '/fydesign-node$' \
+  '/studio-engine/mcp/fydesign-mcp.mjs$' \
+  '/studio-engine/tools/ffmpeg$' \
+  '/studio-engine/tools/ffprobe$' \
+  '/studio-engine/tools/yt-dlp$' \
+  '/studio-engine/playwright-browsers/'; do
+  if ! grep -E -- "$required_path" <<<"$DEB_CONTENTS" >/dev/null; then
+    echo "error: el paquete Debian no contiene $required_path." >&2
+    exit 1
+  fi
+  if ! grep -E -- "$required_path" <<<"$RPM_CONTENTS" >/dev/null; then
+    echo "error: el paquete RPM no contiene $required_path." >&2
+    exit 1
+  fi
+done
 
 SMOKE_DIR="$(mktemp -d)"
 APP_LOG="$SMOKE_DIR/edecan-linux.log"
@@ -117,7 +133,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a dbus-run-session sh -c '
     echo "error: Openbox no quedó listo en la pantalla virtual." >&2
     exit 1
   fi
-  exec "$3"
+  exec "$3" --exit-on-close
 ' _ "$DISPLAY_FILE" "$XAUTHORITY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
 LAUNCHER_PID="$!"
 
@@ -148,7 +164,13 @@ XAUTHORITY="$(tr -d '\r\n' < "$XAUTHORITY_FILE")"
 # arranque, no solo que quedó mostrando "cargando".
 SPLASH_WINDOW_ID=""
 for _attempt in $(seq 1 20); do
-  SPLASH_WINDOW_ID="$(wmctrl -l 2>/dev/null | awk 'tolower($0) ~ /edec/ { print $1; exit }')"
+  # `wmctrl -l` devuelve 1 (no 0) cuando el WM ya está listo pero todavía no
+  # hay ninguna ventana. Eso es un estado esperado durante el primer segundo,
+  # no un error que deba activar `set -e` y volver flakey este bucle.
+  SPLASH_WINDOW_ID="$(
+    { wmctrl -l 2>/dev/null || true; } |
+      awk 'tolower($0) ~ /edec/ { print $1; exit }'
+  )"
   [[ -n "$SPLASH_WINDOW_ID" ]] && break
   sleep 1
 done
@@ -192,7 +214,10 @@ for _attempt in $(seq 1 60); do
       WINDOW_ID="$candidate"
       break
     fi
-  done < <(wmctrl -l 2>/dev/null | awk 'tolower($0) ~ /edec/ { print $1 }')
+  done < <(
+    { wmctrl -l 2>/dev/null || true; } |
+      awk 'tolower($0) ~ /edec/ { print $1 }'
+  )
   [[ -n "$WINDOW_ID" ]] && break
   sleep 1
 done

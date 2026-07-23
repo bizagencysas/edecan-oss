@@ -63,7 +63,7 @@ Todas se leen de forma defensiva (`getattr(settings, "CAMPO", default)`) — el 
 | `BROWSER_MAX_FETCH_BYTES` | `2000000` (≈2 MB) | Tamaño máximo descargado por página antes de cortar. |
 | `BROWSER_TIMEOUT_SECONDS` | `20` | Timeout de red por fetch (y para la descarga de `robots.txt`). |
 
-`comparar_precios` además depende de `SEARCH_PROVIDER` (`stub`\|`brave`\|`tavily`, ver `docs/configuracion.md`) — es el mismo proveedor de búsqueda que usa `buscar_web` (`edecan_toolkit.research`).
+`comparar_precios` usa el mismo proveedor por tenant que `buscar_web`. Sin credencial consulta DuckDuckGo de forma real; Brave y Tavily son opciones bring-your-own.
 
 ## Respeto de `robots.txt` y ToS
 
@@ -82,4 +82,4 @@ Detalle de decisiones de implementación (por qué se agregó `edecan-llm` como 
 
 ## Tests
 
-`packages/browser/tests/` es 100% offline y determinista (`respx` para toda llamada HTTP, `FakeLLM` local para `ctx.llm`, un resolutor DNS falso inyectado para los casos de SSRF por dominio): robots.txt que prohíbe una ruta, SSRF por IP literal y por dominio, blocklist de rutas transaccionales, extracción de un fixture HTML, corte por `BROWSER_MAX_FETCH_BYTES`, y `comparar_precios` de punta a punta con el `StubSearch` real de `edecan_toolkit.research`. Corre con `uv run pytest packages/browser` desde la raíz del repo.
+`packages/browser/tests/` es 100% offline y determinista (`respx` para toda llamada HTTP, `FakeLLM` local para `ctx.llm`, un resolutor DNS falso inyectado para los casos de SSRF por dominio): robots.txt, SSRF, rutas transaccionales, extracción HTML, límite de descarga y `comparar_precios` con una respuesta DuckDuckGo simulada. Corre con `uv run --package edecan-browser pytest packages/browser/tests` desde la raíz.

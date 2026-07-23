@@ -8,10 +8,10 @@ import { Alert, Badge, Button, Card, CardBody, CardHeader, EmptyState, PageHeade
 import { cancelPhoneCall, confirmPhoneCall, listPhoneCalls, listReminders } from "@/lib/api";
 import { FLAG_AUTOMATIONS_RULES, listAutomations, type Automation } from "@/lib/api-automatizaciones";
 import { FLAG_AGENTS_MISSIONS, listMissions, type Mission } from "@/lib/api-misiones";
-import { buildActivityOverview, type ActivityEntry } from "@/lib/activity";
+import { buildActivityOverview, phoneCallSummaryMeta, type ActivityEntry } from "@/lib/activity";
 import { useAuth } from "@/lib/auth-context";
 import { formatDateTime } from "@/lib/format";
-import { FLAG_VOICE_TELEPHONY, type PhoneCall, type Reminder } from "@/lib/types";
+import { FLAG_VOICE_TELEPHONY, type PhoneCall, type PhoneCallSummary, type Reminder } from "@/lib/types";
 
 const TONE_VARIANT = {
   attention: "warning",
@@ -193,11 +193,11 @@ function ActivitySection({
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
             {items.map((item) => (
               <li key={item.id}>
-                <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                <div className="flex min-w-0 items-start gap-3 py-3 first:pt-0 last:pb-0">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                     {item.tone === "complete" ? <CheckIcon className="h-4 w-4" /> : item.kind === "phone" ? <PhoneIcon className="h-4 w-4" /> : item.kind === "reminder" ? <BellIcon className="h-4 w-4" /> : item.kind === "automation" ? <ZapIcon className="h-4 w-4" /> : <RocketIcon className="h-4 w-4" />}
                   </span>
-                  <span className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1">
                     <Link href={item.href} className="block truncate text-sm font-medium text-slate-800 hover:text-brand-700 dark:text-slate-100">{item.title}</Link>
                     <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                       {item.detail}{item.timestamp ? ` · ${formatDateTime(item.timestamp)}` : ""}
@@ -221,8 +221,11 @@ function ActivitySection({
                         </Button>
                       </span>
                     )}
+                    {item.phoneSummary && <PhoneSummaryDetails summary={item.phoneSummary} />}
+                  </div>
+                  <span className="hidden shrink-0 sm:inline-flex">
+                    <Badge variant={TONE_VARIANT[item.tone]}>{item.statusLabel}</Badge>
                   </span>
-                  <Badge variant={TONE_VARIANT[item.tone]}>{item.statusLabel}</Badge>
                 </div>
               </li>
             ))}
@@ -230,6 +233,59 @@ function ActivitySection({
         )}
       </CardBody>
     </Card>
+  );
+}
+
+function PhoneSummaryDetails({ summary }: { summary: PhoneCallSummary }) {
+  return (
+    <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-950/40">
+      <summary className="cursor-pointer select-none text-xs font-medium text-brand-700 hover:text-brand-800 dark:text-brand-300 dark:hover:text-brand-200">
+        Ver resumen completo
+      </summary>
+      <div className="mt-3 space-y-3 border-t border-slate-200 pt-3 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
+        <p>{phoneCallSummaryMeta(summary)}</p>
+        <PhoneSummaryList
+          title="Puntos clave"
+          items={summary.key_points}
+          empty="No se registraron puntos clave."
+        />
+        <PhoneSummaryList
+          title="Compromisos"
+          items={summary.commitments}
+          empty="No se detectaron compromisos."
+        />
+        <PhoneSummaryList
+          title="Próximos pasos"
+          items={summary.next_steps}
+          empty="No hay próximos pasos pendientes."
+        />
+      </div>
+    </details>
+  );
+}
+
+function PhoneSummaryList({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+}) {
+  return (
+    <section>
+      <h3 className="font-semibold text-slate-800 dark:text-slate-100">{title}</h3>
+      {items.length > 0 ? (
+        <ul className="mt-1 space-y-1 pl-4">
+          {items.map((item, index) => (
+            <li key={`${index}:${item}`} className="list-disc break-words">{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1 text-slate-500 dark:text-slate-400">{empty}</p>
+      )}
+    </section>
   );
 }
 

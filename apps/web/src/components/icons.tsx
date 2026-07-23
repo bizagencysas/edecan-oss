@@ -148,6 +148,15 @@ export const XIcon = (p: IconProps) => base(<path d="M18 6 6 18M6 6l12 12" />, p
 
 export const CheckIcon = (p: IconProps) => base(<path d="M20 6 9 17l-5-5" />, p);
 
+export const RetryIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M20 7v5h-5" />
+      <path d="M19 12a7 7 0 1 0-2 5" />
+    </>,
+    p,
+  );
+
 export const PhoneIcon = (p: IconProps) =>
   base(
     <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c1 .3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z" />,
@@ -156,7 +165,29 @@ export const PhoneIcon = (p: IconProps) =>
 
 export const ChevronDownIcon = (p: IconProps) => base(<path d="m6 9 6 6 6-6" />, p);
 
+export const ChevronLeftIcon = (p: IconProps) => base(<path d="m15 18-6-6 6-6" />, p);
+
+export const ChevronRightIcon = (p: IconProps) => base(<path d="m9 18 6-6-6-6" />, p);
+
+export const PanelLeftIcon = (p: IconProps) =>
+  base(
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </>,
+    p,
+  );
+
 export const MenuIcon = (p: IconProps) => base(<path d="M4 6h16M4 12h16M4 18h16" />, p);
+
+export const PencilIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </>,
+    p,
+  );
 
 export const UploadIcon = (p: IconProps) =>
   base(

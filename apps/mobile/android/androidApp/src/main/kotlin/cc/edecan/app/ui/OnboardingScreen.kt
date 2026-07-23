@@ -66,6 +66,23 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
     var tenantName by remember { mutableStateOf("") }
     var errorLocal by remember { mutableStateOf<String?>(null) }
     var mostrarAvanzado by rememberSaveable { mutableStateOf(false) }
+    var mostrarEscaner by rememberSaveable { mutableStateOf(false) }
+    var errorEscaner by remember { mutableStateOf<String?>(null) }
+
+    if (mostrarEscaner) {
+        QRScannerDialog(
+            onDismiss = { mostrarEscaner = false },
+            onQrCode = { rawValue ->
+                mostrarEscaner = false
+                errorEscaner = null
+                sessionViewModel.procesarEnlaceEmparejamiento(rawValue)
+            },
+            onError = { message ->
+                mostrarEscaner = false
+                errorEscaner = message
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -83,8 +100,12 @@ fun OnboardingScreen(sessionViewModel: SessionViewModel = viewModel()) {
             PasoOnboarding.SERVIDOR -> {
                 PasoQr(
                     conectando = uiState.iniciandoSesion,
-                    error = uiState.errorMensaje,
+                    error = errorEscaner ?: uiState.errorMensaje,
                     mostrarAvanzado = mostrarAvanzado,
+                    onEscanear = {
+                        errorEscaner = null
+                        mostrarEscaner = true
+                    },
                     onMostrarAvanzado = { mostrarAvanzado = !mostrarAvanzado },
                 )
                 if (mostrarAvanzado) {
@@ -139,6 +160,7 @@ private fun PasoQr(
     conectando: Boolean,
     error: String?,
     mostrarAvanzado: Boolean,
+    onEscanear: () -> Unit,
     onMostrarAvanzado: () -> Unit,
 ) {
     TarjetaOnboarding {
@@ -147,9 +169,7 @@ private fun PasoQr(
         Text("Escanea el QR de tu Edecán", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "1. En tu computador abre Edecán > Conectar teléfono.\n" +
-                "2. Escanea el código con la cámara de este teléfono.\n" +
-                "3. Toca el enlace: Edecán se conectará automáticamente.",
+            "En tu computador abre Edecán > Conectar teléfono. Luego toca el botón y apunta al código: Edecán quedará conectado automáticamente.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -166,6 +186,13 @@ private fun PasoQr(
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(modifier = Modifier.height(12.dp))
+        Button(
+            onClick = onEscanear,
+            enabled = !conectando,
+            colors = ButtonDefaults.buttonColors(containerColor = EdecanColors.Morado),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Escanear QR") }
+        Spacer(modifier = Modifier.height(6.dp))
         TextButton(onClick = onMostrarAvanzado, enabled = !conectando, modifier = Modifier.fillMaxWidth()) {
             Text(if (mostrarAvanzado) "Ocultar configuración avanzada" else "No puedo usar el QR")
         }

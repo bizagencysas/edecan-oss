@@ -2,7 +2,7 @@
 
 El principio bring-your-own de `ARCHITECTURE.md` §0 es la posición de producto vigente: Edecán nunca opera cuentas de terceros en nombre de un cliente. "Self-host" y "hosted" describen únicamente **quién corre el servidor** — las credenciales de LLM, voz (Deepgram/ElevenLabs/Polly), Twilio y los conectores OAuth las trae **cada tenant**, en ambos modos. Este documento cubre LLM y voz web; para Twilio ve [`voz-telefonia.md`](./voz-telefonia.md) y para los conectores OAuth, [`conectores.md`](./conectores.md).
 
-**Imágenes y búsqueda web** (`"images"`/`"search"`, más abajo) son una corrección posterior, separada de fase v3, en DOS tiempos: una auditoría de riesgo-legal-tos encontró primero que `edecan_creative.providers.get_image_provider`/`edecan_toolkit.research.get_search_provider` —a diferencia de LLM/voz/Twilio/conectores OAuth, arriba— NO tenían ningún camino bring-your-own: siempre usaban `IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de plataforma, sin excepción ni mecanismo para que un tenant trajera la propia (eso trajo `get_tenant_image_provider`/`get_tenant_search_provider` y los endpoints de abajo); un hallazgo posterior de esa misma auditoría encontró que esas dos funciones, aun siendo bring-your-own, TODAVÍA caían a la config de plataforma cuando el tenant no conectaba nada — el mismo hueco de fondo ("nunca una llave compartida de plataforma", `docs/roadmap.md`) que ya se había cerrado para LLM/voz. Son funciones OPCIONALES que arrancan en modo stub/gratuito por defecto (severidad medium, no critical) — por eso, a diferencia del corte duro que aplica LLM (`HTTPException(400)`, ver más abajo), su fallback sin credencial de tenant sigue siendo degradar a un stub offline en vez de cortar la request; pero ese fallback YA NO pasa por un paso intermedio de "plataforma": es el mismo criterio de dos niveles ("tenant → stub") que ya seguía voz desde el principio, ver la sección de abajo.
+**Imágenes y búsqueda web** (`"images"`/`"search"`) admiten proveedores propios por tenant y nunca reutilizan una key de plataforma. Imágenes conservan un generador local de demostración cuando no hay proveedor. Búsqueda web funciona de verdad sin credenciales mediante `DuckDuckGoSearch`; Brave y Tavily son mejoras opcionales para quien quiera traer su propia cuenta. Ninguna de estas capacidades depende del modelo LLM conectado.
 
 Esta es también la pantalla de **"Configuración"** de la app de escritorio: un campo, un botón "Conectar" que valida la credencial al toque contra el proveedor real y muestra ✅ o el error exacto — nunca un `.env` a mano.
 
@@ -37,14 +37,14 @@ Cualquier fallo leyendo/descifrando la config del tenant (vault caído, JSON cor
 
 **Corregido (2026-07-08)**: el worker (`apps/worker/edecan_worker/deps.py::Deps.llm_router_for`) ya tiene el mismo corte que `apps/api` — los jobs asíncronos que llaman al LLM (`generate_content`, `run_automation`, `run_mission`, `memory_consolidate`, `ingest_file`) lanzan `TenantLLMNotConnectedError` (nunca degradan a la config de plataforma) cuando un tenant no conectó nada. Como es un job en cola, no un endpoint HTTP, no hay a quién devolverle un `400`: la excepción se deja propagar hasta el despachador del job (`edecan_worker.main`/`edecan_local.worker_loop`), que la trata como cualquier otro fallo — reintento con backoff, luego DLQ/`status='error'` con el mensaje de la excepción (presentable al tenant) como `last_error`. Los handlers que tienen guardas de "recurso no encontrado"/"desactivado" antes de necesitar el LLM (`ingest_file` para archivos no-imagen, `run_mission`/`run_automation` para misiones/automatizaciones inexistentes o en estado terminal) resuelven el router PEREZOSO, después de esos guardas, para no fallar innecesariamente cuando el LLM ni siquiera hacía falta.
 
-## Orden de resolución (imágenes y búsqueda web): tenant → stub — SIN paso de plataforma
+## Orden de resolución (imágenes y búsqueda web) — SIN paso de plataforma
 
-`edecan_creative.providers.get_tenant_image_provider(ctx)`/`edecan_toolkit.research.get_tenant_search_provider(ctx)` (llamadas desde `GenerarImagenTool`/`BuscarWebTool`/`CompararPreciosTool` en vez de `get_image_provider(ctx.settings)`/`get_search_provider(ctx.settings)` directo) siguen el mismo criterio de dos niveles que voz (§ arriba) — nunca un paso intermedio de "plataforma" que reutilice `IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` entre tenants. Distinto del corte duro que aplica LLM (`HTTPException(400)`): son funciones opcionales, gratis/offline por defecto, así que sin credencial de tenant se DEGRADA a un stub en vez de cortar la request — ver el porqué en la nota de "Imágenes y búsqueda web" al principio de este documento.
+`edecan_creative.providers.get_tenant_image_provider(ctx)` y `edecan_toolkit.research.get_tenant_search_provider(ctx)` resuelven sus proveedores dentro de la propia herramienta. Nunca consultan `IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de plataforma para atender a un tenant.
 
 1. **Tenant** — ¿conectó su propia credencial (`connector_accounts` + `TokenVault` para `"images"`/`"search"`)? Si sí, se usa ESA, siempre.
-2. **Sin credencial propia** — `StubImageProvider`/`StubSearch` (`edecan_creative.providers`/`edecan_toolkit.research`): offline, determinista, gratis — es el default de fábrica de ambas tools. `get_image_provider(ctx.settings)`/`get_search_provider(ctx.settings)` (que sí leen `IMAGES_*`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de `Settings`) deliberadamente NO se llaman desde el resolver bring-your-own — siguen existiendo como utilidad de cada paquete para quien las use fuera del contexto multi-tenant (self-host de un solo tenant que corre sus propios scripts contra su `.env`, tests propios de cada paquete), igual criterio que `edecan_voice.registry.get_stt`/`get_tts` para voz.
+2. **Sin credencial propia** — imágenes usa `StubImageProvider`, claramente marcado como demostración; búsqueda usa `DuckDuckGoSearch`, con resultados reales y sin API key. `get_image_provider(ctx.settings)`/`get_search_provider(ctx.settings)` se conservan para scripts legacy de un solo operador, pero no participan en el flujo multi-tenant.
 
-Cualquier fallo resolviendo la credencial del tenant (vault caído, JSON corrupto, cuenta a medio escribir, `provider`/campos incompletos, o simplemente que el tenant nunca conectó nada) se trata igual: `logger.warning` con el mismo mensaje accionable ("Conecta tu propia credencial en Configuración → `PUT /v1/credentials/images`" / `/search`) y se resuelve con el paso 2 de arriba — nunca revienta `generar_imagen`/`buscar_web`/`comparar_precios` por esto, y nunca con una credencial de plataforma.
+Cualquier fallo resolviendo la credencial se trata con el paso 2: nunca rompe el chat y nunca cae a una credencial compartida.
 
 A diferencia de LLM/voz (resueltos una vez por request en `apps/api/edecan_api/deps.py`/`routers/voice.py`, ver arriba), esta resolución corre POR CADA llamada a la tool, leyendo `ctx.session`/`ctx.vault`/`ctx.tenant_id` directamente — funciona igual en `apps/api` (chat interactivo) y en cualquier otro lugar que arme un `ToolContext` con esos tres campos poblados; en despliegues donde `edecan_creative`/`edecan_toolkit` no están instalados (p. ej. el worker de automatizaciones hoy, que no depende de esos paquetes) las tools `generar_imagen`/`buscar_web`/`comparar_precios` simplemente no están disponibles, así que la pregunta no aplica ahí.
 
@@ -101,7 +101,7 @@ curl -s -X PUT "$API/v1/credentials/voice/tts" \
 ```bash
 curl -s -X PUT "$API/v1/credentials/images" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-1", "validate": true}'
+  -d '{"base_url": "https://api.openai.com/v1", "api_key": "sk-...", "model": "gpt-image-2", "validate": true}'
 
 curl -s -X PUT "$API/v1/credentials/search" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -120,7 +120,7 @@ curl -s -X DELETE "$API/v1/credentials/images" -H "Authorization: Bearer $TOKEN"
 curl -s -X DELETE "$API/v1/credentials/search" -H "Authorization: Bearer $TOKEN"
 ```
 
-`204 No Content`, idempotente (borrar algo que ya no existe no es un error). El tenant vuelve al comportamiento de "sin credencial propia" del orden de resolución de arriba: `HTTPException(400)` para LLM, stub para voz/imágenes/búsqueda — nunca una credencial de plataforma en ningún caso.
+`204 No Content`, idempotente. El tenant vuelve al comportamiento sin credencial propia: error explícito para LLM, stub para voz/imágenes y DuckDuckGo real para búsqueda; nunca una credencial de plataforma.
 
 ## Dónde saca cada cliente su propia credencial
 

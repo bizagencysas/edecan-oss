@@ -28,6 +28,12 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+// El checkout OSS compila sin Firebase. Quien quiera push remoto aporta su
+// propio archivo local; el plugin solo se activa cuando ese archivo existe.
+if (file("google-services.json").isFile) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "cc.edecan.app"
     // 37, no 36: `androidx.core`/`androidx.lifecycle` en las versiones
@@ -89,8 +95,15 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.barcode.scanning)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     // `kotlin("test-junit")` (no `kotlin("test")` a secas): `androidApp` NO
     // aplica el plugin `org.jetbrains.kotlin.android` (a propósito, ver el

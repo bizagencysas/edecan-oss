@@ -6,7 +6,7 @@ Incluye, entre otros:
 
 - `PersonaConfig` — configuración "nivel Dios" del asistente (nombre, idioma, tono, formalidad, instrucciones, rasgos, memoria).
 - `TokenBundle` — credenciales de un conector (access/refresh token, scopes, expiración).
-- `JobEnvelope` y `JOB_TYPES` — los 12 tipos de job que consume `apps/worker`.
+- `JobEnvelope` y `JOB_TYPES` — los 15 tipos de job que consume `apps/worker`.
 - `AgentEvent`, `ToolSpec`, `ToolCallData` — eventos y contratos del loop de tool-use del agente.
 - `edecan_schemas.plans` — `PlanDef` y `PLANES` (flags y límites por plan, ver `ARCHITECTURE.md` §10.13).
 

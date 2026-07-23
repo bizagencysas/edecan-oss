@@ -210,7 +210,7 @@ export default function RemotoPage() {
     <div>
       <PageHeader
         title="Control remoto"
-        description="Vista remota y control de teclado/mouse de tu computadora emparejada."
+        description="Maneja desde tu teléfono la computadora que vinculaste con el QR."
       />
 
       {error && (

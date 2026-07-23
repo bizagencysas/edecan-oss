@@ -9,7 +9,7 @@ Todo corre contra `companion_config` (fixture de `conftest.py`, en
 from __future__ import annotations
 
 import base64
-import subprocess
+import io
 from pathlib import Path
 
 import pytest
@@ -418,75 +418,45 @@ def test_screenshot_rejects_unsupported_platforms(companion_config, monkeypatch)
         actions._screenshot({}, companion_config)
 
 
-def test_screenshot_captures_png_and_reads_dimensions_via_sips(companion_config, monkeypatch):
+def test_screenshot_uses_complete_native_macos_capture(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
     fake_png_bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes"
-
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(fake_png_bytes)
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-        if argv[0] == "/usr/bin/sips":
-            return subprocess.CompletedProcess(
-                argv, 0, stdout="/tmp/x.png\n  pixelWidth: 1512\n  pixelHeight: 982\n", stderr=""
-            )
-        raise AssertionError(f"comando inesperado: {argv}")
-
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        actions,
+        "_screenshot_via_screencapture",
+        lambda params: (fake_png_bytes, 1512, 982, -1512, 0),
+    )
 
     result = actions._screenshot({}, companion_config)
 
     assert base64.b64decode(result["image_b64"]) == fake_png_bytes
     assert result["width"] == 1512
     assert result["height"] == 982
+    assert result["origin_x"] == -1512
 
 
-def test_screenshot_passes_the_display_flag_when_given(companion_config, monkeypatch):
+def test_screenshot_passes_the_display_to_native_macos_capture(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
-    seen_argvs = []
+    seen_params = []
 
-    def fake_run(argv, **kwargs):
-        seen_argvs.append(argv)
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(b"x")
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    def fake_capture(params):
+        seen_params.append(params)
+        return b"x", 100, 100, 0, 0
 
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_screenshot_via_screencapture", fake_capture)
 
     actions._screenshot({"display": 2}, companion_config)
 
-    screencapture_argv = seen_argvs[0]
-    assert "-D" in screencapture_argv
-    assert screencapture_argv[screencapture_argv.index("-D") + 1] == "2"
+    assert seen_params == [{"display": 2}]
 
 
-def test_screenshot_falls_back_to_zero_dimensions_when_sips_fails(companion_config, monkeypatch):
+def test_screenshot_surfaces_native_permission_failure(companion_config, monkeypatch):
     monkeypatch.setattr(actions.sys, "platform", "darwin")
 
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            Path(argv[-1]).write_bytes(b"x")
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-        raise FileNotFoundError("sips no encontrado (simulado)")
+    def denied(params):
+        raise actions.ActionError("Autoriza Grabación de pantalla")
 
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
-
-    result = actions._screenshot({}, companion_config)
-
-    assert result["width"] == 0
-    assert result["height"] == 0
-    assert base64.b64decode(result["image_b64"]) == b"x"
-
-
-def test_screenshot_raises_when_no_image_was_produced(companion_config, monkeypatch):
-    """Simula el caso típico de falta de permiso de Grabación de Pantalla:
-    `screencapture` "sale bien" pero no deja una imagen utilizable."""
-    monkeypatch.setattr(actions.sys, "platform", "darwin")
-
-    def fake_run(argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")  # no escribe el archivo
-
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_screenshot_via_screencapture", denied)
 
     with pytest.raises(actions.ActionError, match="Grabaci"):
         actions._screenshot({}, companion_config)
@@ -496,24 +466,93 @@ def test_screenshot_rejects_invalid_display_param(companion_config, monkeypatch)
     monkeypatch.setattr(actions.sys, "platform", "darwin")
 
     with pytest.raises(actions.ActionError, match="display"):
-        actions._screenshot({"display": "no-es-numero"}, companion_config)
+        actions._screenshot_via_screencapture({"display": "no-es-numero"})
 
 
-def test_screenshot_cleans_up_the_tmp_png_file(companion_config, monkeypatch):
-    monkeypatch.setattr(actions.sys, "platform", "darwin")
-    captured_tmp_path = {}
+def test_native_macos_capture_includes_windows_dock_and_cursor(monkeypatch):
+    from PIL import Image
 
-    def fake_run(argv, **kwargs):
-        if argv[0] == "/usr/sbin/screencapture":
-            captured_tmp_path["path"] = argv[-1]
-            Path(argv[-1]).write_bytes(b"x")
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    seen_command: list[str] = []
 
+    def fake_run(command, **kwargs):
+        seen_command.extend(command)
+        output_path = Path(command[-1])
+        Image.new("RGB", (1200, 800), color=(30, 40, 50)).save(output_path, format="PNG")
+        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (2, 99, -1200, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
     monkeypatch.setattr(actions.subprocess, "run", fake_run)
 
-    actions._screenshot({}, companion_config)
+    image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture(
+        {"display": 2}
+    )
 
-    assert not Path(captured_tmp_path["path"]).exists()
+    assert image_bytes.startswith(b"\x89PNG")
+    assert (width, height, origin_x, origin_y) == (1200, 800, -1200, 0)
+    assert seen_command[:2] == ["/usr/sbin/screencapture", "-x"]
+    assert seen_command[seen_command.index("-D") + 1] == "2"
+    assert "-C" in seen_command
+
+
+def test_native_macos_capture_can_hide_cursor(monkeypatch):
+    from PIL import Image
+
+    seen_command: list[str] = []
+
+    def fake_run(command, **kwargs):
+        seen_command.extend(command)
+        Image.new("RGB", (10, 10)).save(Path(command[-1]), format="PNG")
+        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+
+    actions._screenshot_via_screencapture({"include_cursor": False})
+
+    assert "-C" not in seen_command
+
+
+def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(monkeypatch):
+    called = False
+
+    def unexpected_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("screencapture no debe ejecutarse sin permiso")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: False)
+    monkeypatch.setattr(actions.subprocess, "run", unexpected_run)
+
+    with pytest.raises(actions.ActionError, match="lista superior"):
+        actions._screenshot_via_screencapture({})
+
+    assert called is False
+
+
+def test_native_macos_capture_prefers_authorized_desktop_bridge(monkeypatch):
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (900, 600), color=(1, 2, 3)).save(buffer, format="PNG")
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(
+        actions,
+        "_desktop_bridge_call",
+        lambda action, params: {"image_b64": base64.b64encode(buffer.getvalue()).decode("ascii")},
+    )
+    monkeypatch.setattr(
+        actions,
+        "_macos_screen_capture_allowed",
+        lambda: (_ for _ in ()).throw(AssertionError("no debe consultar TCC en el sidecar")),
+    )
+
+    image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})
+
+    assert image_bytes.startswith(b"\x89PNG")
+    assert (width, height, origin_x, origin_y) == (900, 600, 0, 0)
 
 
 # ---------------------------------------------------------------------------

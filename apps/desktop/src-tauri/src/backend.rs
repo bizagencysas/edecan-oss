@@ -10,14 +10,18 @@
 //! hace un GET a `/healthz` — deliberadamente lee
 //! stdout en vez de sumar un cliente HTTP (`reqwest`) solo para esto.
 
+use std::fmt::Write as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+use crate::remote_bridge;
 
 /// Handle del proceso del sidecar actualmente vivo (si hay uno). Se limpia
 /// SIEMPRE antes de lanzar uno nuevo y al salir de la app — nunca debe
@@ -30,10 +34,19 @@ pub struct BackendState(pub Mutex<Option<CommandChild>>);
 /// que haya elegido un puerto distinto.
 pub struct PortState(pub Mutex<u16>);
 
+/// Capacidad aleatoria del arranque actual. El sidecar la recibe por entorno
+/// y la UI por fragmento URL (que nunca llega a logs/proxies HTTP).
+pub struct DesktopCapabilityState(pub Mutex<Option<String>>);
+
+/// `true` solo durante el arranque automático con `--hidden`. Se consume al
+/// crear `main`; cualquier apertura posterior desde el tray vuelve a mostrarla.
+pub struct StartHiddenState(pub AtomicBool);
+
 const READY_MARKER: &str = "EDECAN_LOCAL_READY";
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LOG_LINES: usize = 50;
 const PREFERRED_PORT: u16 = 8765;
+const DESKTOP_USER_AGENT: &str = "EdecanDesktop/0.7";
 
 /// Elige un puerto libre en 127.0.0.1: primero intenta `preferred`, y si
 /// está ocupado deja que el SO asigne uno libre (bind a puerto 0). En
@@ -67,6 +80,32 @@ pub fn current_port(app: &AppHandle) -> u16 {
     *app.state::<PortState>().0.lock().unwrap()
 }
 
+pub fn current_local_ui_url(app: &AppHandle) -> Option<String> {
+    let port = current_port(app);
+    let capability = app
+        .state::<DesktopCapabilityState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone()?;
+    Some(local_ui_url(port, &capability))
+}
+
+fn generate_desktop_capability() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|err| format!("No se pudo generar la capacidad segura del escritorio: {err}"))?;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("escribir en String no puede fallar");
+    }
+    Ok(encoded)
+}
+
+fn local_ui_url(port: u16, capability: &str) -> String {
+    format!("http://127.0.0.1:{port}/?edecan_desktop=1#edecan_capability={capability}")
+}
+
 /// Punto de entrada único para (re)lanzar el backend local. Lo llama tanto
 /// `setup()` en el arranque como el comando `retry_backend` — mismo camino,
 /// sin duplicar lógica. Nunca hace panic: cualquier fallo termina emitiendo
@@ -78,6 +117,22 @@ pub async fn start_backend(app: AppHandle) {
 
     let port = pick_port(PREFERRED_PORT);
     *app.state::<PortState>().0.lock().unwrap() = port;
+    let capability = match generate_desktop_capability() {
+        Ok(value) => value,
+        Err(message) => {
+            emit_error(&app, message, Vec::new());
+            return;
+        }
+    };
+    *app.state::<DesktopCapabilityState>().0.lock().unwrap() = Some(capability.clone());
+
+    let remote_bridge = match remote_bridge::ensure_started(&app) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[edecan-desktop] no se pudo iniciar el puente remoto nativo: {error}");
+            None
+        }
+    };
 
     let target_data_dir = data_dir(&app);
     if let Err(err) = std::fs::create_dir_all(&target_data_dir) {
@@ -94,7 +149,13 @@ pub async fn start_backend(app: AppHandle) {
 
     let _ = app.emit("edecan://backend-status", "Arrancando tu asistente…");
 
-    let command = match build_command(&app, port, &target_data_dir) {
+    let command = match build_command(
+        &app,
+        port,
+        &target_data_dir,
+        &capability,
+        remote_bridge.as_ref(),
+    ) {
         Ok(cmd) => cmd,
         Err(message) => {
             emit_error(&app, message, Vec::new());
@@ -197,6 +258,8 @@ fn build_command(
     app: &AppHandle,
     port: u16,
     target_data_dir: &Path,
+    desktop_capability: &str,
+    remote_bridge: Option<&remote_bridge::RemoteBridgeCredentials>,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     let port_arg = port.to_string();
     let data_dir_arg = target_data_dir.to_string_lossy().to_string();
@@ -231,7 +294,143 @@ fn build_command(
             .args(backend_args)
     };
 
-    Ok(with_expanded_path(with_ollama_env(cmd)))
+    let cmd = with_studio_env(cmd, app, source_command)?;
+    let cmd = if let Some(bridge) = remote_bridge {
+        cmd.env("EDECAN_DESKTOP_BRIDGE_SOCKET", &bridge.socket_path)
+            .env("EDECAN_DESKTOP_BRIDGE_TOKEN", &bridge.token)
+    } else {
+        cmd
+    };
+    Ok(
+        with_expanded_path(with_ollama_env(cmd))
+            .env("LOCAL_DESKTOP_CAPABILITY", desktop_capability),
+    )
+}
+
+/// Conecta el backend Python con el motor TypeScript sin depender del checkout,
+/// Node ni Chrome del usuario. En desarrollo apunta al paquete del monorepo y
+/// permite overrides explícitos; en release exige el recurso y externalBin que
+/// `build-studio-engine.sh|.ps1` entregan a Tauri.
+fn with_studio_env(
+    cmd: tauri_plugin_shell::process::Command,
+    app: &AppHandle,
+    source_command: bool,
+) -> Result<tauri_plugin_shell::process::Command, String> {
+    let engine_dir = match std::env::var_os("EDECAN_STUDIO_ENGINE_DIR") {
+        Some(value) => PathBuf::from(value),
+        None if source_command => repo_root_dir().join("packages/fydesign-engine"),
+        None => app
+            .path()
+            .resource_dir()
+            .map_err(|err| format!("No se pudo resolver el recurso de Studio: {err}"))?
+            .join("studio-engine"),
+    };
+    if !engine_dir.join("mcp/fydesign-mcp.mjs").is_file() {
+        return Err(format!(
+            "El motor de Studio no está instalado correctamente ({}).",
+            engine_dir.display()
+        ));
+    }
+
+    let node_binary = match std::env::var_os("EDECAN_STUDIO_NODE_BINARY") {
+        Some(value) => PathBuf::from(value),
+        None if source_command => PathBuf::from("node"),
+        None => resolve_bundled_studio_node().ok_or_else(|| {
+            "No se encontró el runtime Node empaquetado de Studio junto a Edecán.".to_string()
+        })?,
+    };
+    if !source_command && !node_binary.is_file() {
+        return Err(format!(
+            "El runtime Node empaquetado de Studio no existe ({}).",
+            node_binary.display()
+        ));
+    }
+    if !source_command {
+        validate_bundled_studio_node(&node_binary)?;
+    }
+
+    let mut cmd = cmd
+        .env(
+            "EDECAN_STUDIO_ENGINE_DIR",
+            engine_dir.to_string_lossy().to_string(),
+        )
+        .env(
+            "EDECAN_STUDIO_NODE_BINARY",
+            node_binary.to_string_lossy().to_string(),
+        );
+    let browsers_dir = engine_dir.join("playwright-browsers");
+    if browsers_dir.is_dir() {
+        cmd = cmd.env(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            browsers_dir.to_string_lossy().to_string(),
+        );
+    } else if !source_command {
+        return Err(format!(
+            "Studio está incompleto: falta el navegador empaquetado en {}.",
+            browsers_dir.display()
+        ));
+    }
+    let tools_dir = engine_dir.join("tools");
+    let executable_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    for (key, name) in [
+        ("FFMPEG_PATH", "ffmpeg"),
+        ("FFPROBE_PATH", "ffprobe"),
+        ("YTDLP_PATH", "yt-dlp"),
+    ] {
+        let binary = tools_dir.join(format!("{name}{executable_suffix}"));
+        if binary.is_file() {
+            cmd = cmd.env(key, binary.to_string_lossy().to_string());
+        } else if !source_command {
+            return Err(format!(
+                "Studio está incompleto: falta la herramienta empaquetada {}.",
+                binary.display()
+            ));
+        }
+    }
+    Ok(cmd)
+}
+
+fn validate_bundled_studio_node(node_binary: &Path) -> Result<(), String> {
+    let output = std::process::Command::new(node_binary)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("No se pudo arrancar el runtime Node de Studio: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "El runtime Node empaquetado de Studio terminó con {}.",
+            output.status
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout);
+    if !studio_node_version_supported(version.trim()) {
+        return Err(format!(
+            "Studio requiere el runtime Node 22 empaquetado; se detectó {}.",
+            version.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn studio_node_version_supported(version: &str) -> bool {
+    version
+        .strip_prefix('v')
+        .and_then(|value| value.split('.').next())
+        == Some("22")
+}
+
+fn resolve_bundled_studio_node() -> Option<PathBuf> {
+    let exe_name = if cfg!(target_os = "windows") {
+        "fydesign-node.exe"
+    } else {
+        "fydesign-node"
+    };
+    let executable = std::env::current_exe().ok()?;
+    let candidate = executable.parent()?.join(exe_name);
+    candidate.is_file().then_some(candidate)
 }
 
 /// Directorios donde suelen vivir CLIs bring-your-own que este backend
@@ -496,24 +695,51 @@ fn diagnostics_enabled() -> bool {
 /// propio backend en `/` (Next.js exportado, ver scripts/build-backend.sh)
 /// — Tauri no empaqueta ni sirve el frontend, solo navega a esa URL.
 fn show_main_window(app: &AppHandle, port: u16) -> Result<(), String> {
-    let url = tauri::Url::parse(&format!("http://127.0.0.1:{port}/")).map_err(|e| e.to_string())?;
+    let start_hidden = app
+        .state::<StartHiddenState>()
+        .0
+        .swap(false, Ordering::SeqCst);
+    let capability = app
+        .state::<DesktopCapabilityState>()
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Falta la capacidad segura del escritorio.".to_string())?;
+    // El query solo identifica el runtime. La capacidad secreta viaja en el
+    // fragmento: el navegador la entrega a JavaScript, pero nunca al servidor
+    // HTTP, sus access logs ni Cloudflare.
+    let url = tauri::Url::parse(&local_ui_url(port, &capability)).map_err(|e| e.to_string())?;
 
     if let Some(existing) = app.get_webview_window("main") {
-        // No debería pasar en el flujo normal (retry_backend solo se llama
-        // antes de que "main" exista), pero por las dudas no se duplica la
-        // ventana — solo se enfoca la que ya está.
-        existing.show().map_err(|e| e.to_string())?;
-        existing.set_focus().map_err(|e| e.to_string())?;
+        // También se usa después de conceder permisos de macOS: el sidecar
+        // anterior debe morir para que el proceso nuevo herede la decisión de
+        // TCC. El reinicio genera otra capacidad efímera (y eventualmente otro
+        // puerto), por lo que no basta con enfocar la ventana existente: hay
+        // que navegarla al origen recién creado.
+        existing.navigate(url).map_err(|e| e.to_string())?;
+        if !start_hidden {
+            existing.show().map_err(|e| e.to_string())?;
+            existing.set_focus().map_err(|e| e.to_string())?;
+        }
     } else {
         let main_window =
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
                 .title("Edecán")
+                // La UI vive en un origen HTTP local. En páginas externas,
+                // `window.__TAURI__` no es una señal fiable aunque la ventana
+                // sí sea nativa. Este marcador permite que el frontend guarde
+                // la capacidad efímera del proceso en sessionStorage.
+                .user_agent(DESKTOP_USER_AGENT)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 600.0)
                 .center()
+                .visible(!start_hidden)
                 .build()
                 .map_err(|e| e.to_string())?;
-        let _ = main_window.set_focus();
+        if !start_hidden {
+            let _ = main_window.set_focus();
+        }
     }
 
     if let Some(splash) = app.get_webview_window("splash") {
@@ -562,20 +788,24 @@ pub fn kill_backend(app: &AppHandle) {
         }
     }
 
-    if let Err(err) = child.kill() {
-        eprintln!("[edecan-desktop] no se pudo matar el backend local (pid {pid}): {err}");
-    }
-
-    // `CommandChild::kill()` termina el proceso del sidecar, pero en
-    // Windows no siempre se lleva con él a los procesos que ESE proceso
-    // haya lanzado (ej. el Postgres embebido de `pgserver`, WP-V3-05).
-    // `taskkill /T` mata el árbol completo por PID como red de seguridad
-    // extra — nunca debe quedar un proceso huérfano tras cerrar la app.
+    // En Windows el árbol debe terminar mientras el PID raíz todavía existe.
+    // Matar primero PyInstaller y ejecutar después `taskkill /T` puede perder
+    // la relación padre-hijo y dejar PostgreSQL huérfano. `status()` también
+    // espera a que taskkill complete antes de que termine el proceso Tauri.
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("taskkill")
+        let tree_killed = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
-            .spawn();
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if tree_killed {
+            return;
+        }
+    }
+
+    if let Err(err) = child.kill() {
+        eprintln!("[edecan-desktop] no se pudo matar el backend local (pid {pid}): {err}");
     }
 }
 
@@ -623,7 +853,15 @@ fn send_sigterm_and_wait_for_exit(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{expanded_path_value, parse_ready_port};
+    use super::{expanded_path_value, parse_ready_port, studio_node_version_supported};
+
+    #[test]
+    fn studio_runtime_accepts_only_the_bundled_node_major() {
+        assert!(studio_node_version_supported("v22.21.0"));
+        assert!(!studio_node_version_supported("v20.19.0"));
+        assert!(!studio_node_version_supported("22.21.0"));
+        assert!(!studio_node_version_supported("not-a-version"));
+    }
 
     #[test]
     fn ready_port_parser_ignores_unrelated_text() {

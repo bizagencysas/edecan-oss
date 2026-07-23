@@ -1,6 +1,7 @@
 import EdecanKit
 import SwiftUI
 import UIKit
+import VisionKit
 
 /// Emparejamiento QR primero. URL/usuario/contraseña se conserva como ruta
 /// avanzada para self-hosts y recuperación manual, sin competir con el flujo
@@ -24,6 +25,7 @@ struct OnboardingView: View {
     @State private var nombreEmpresa = ""
     @State private var cargando = false
     @State private var errorMensaje: String?
+    @State private var mostrandoEscaner = false
     @FocusState private var campoEnfocado: Bool
 
     var body: some View {
@@ -58,6 +60,31 @@ struct OnboardingView: View {
             paso = .qr
             errorMensaje = error
         }
+        .sheet(isPresented: $mostrandoEscaner) {
+            NavigationStack {
+                QRScannerView(
+                    onScan: recibirCodigoEscaneado,
+                    onError: mostrarErrorDelEscaner
+                )
+                .ignoresSafeArea(edges: .bottom)
+                .overlay(alignment: .bottom) {
+                    Text("Apunta al QR que muestra Edecán en tu computador")
+                        .font(.subheadline.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.bottom, 24)
+                }
+                .navigationTitle("Escanear QR")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancelar") { mostrandoEscaner = false }
+                    }
+                }
+            }
+        }
     }
 
     private var encabezado: some View {
@@ -89,7 +116,7 @@ struct OnboardingView: View {
                 .foregroundStyle(EdecanTheme.morado)
             Text("Escanea el QR de tu Edecan")
                 .font(.title3.weight(.bold))
-            Text("En tu computador abre Ajustes → Conectar teléfono y escanea el código con la Cámara del iPhone. Edecan se abrirá y quedará conectado automáticamente.")
+            Text("En tu computador abre Ajustes → Conectar teléfono. Luego toca el botón y apunta al código: Edecán quedará conectado automáticamente.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -106,6 +133,15 @@ struct OnboardingView: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
+            Button(action: abrirEscaner) {
+                Label("Escanear QR", systemImage: "camera.viewfinder")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(EdecanTheme.morado)
+            .controlSize(.large)
+            .disabled(cargando)
             Button("Configurar manualmente") {
                 errorMensaje = nil
                 pairingStore.limpiarErrorDeEnlace()
@@ -116,6 +152,34 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(22)
+    }
+
+    private func abrirEscaner() {
+        errorMensaje = nil
+        pairingStore.limpiarErrorDeEnlace()
+        guard DataScannerViewController.isSupported else {
+            errorMensaje = "Este dispositivo no admite el escáner integrado. Puedes conectarlo con Configurar manualmente."
+            return
+        }
+        guard DataScannerViewController.isAvailable else {
+            errorMensaje = "La cámara no está disponible. Revisa el permiso de Cámara de Edecán en Ajustes e inténtalo otra vez."
+            return
+        }
+        mostrandoEscaner = true
+    }
+
+    private func recibirCodigoEscaneado(_ rawValue: String) {
+        mostrandoEscaner = false
+        guard let url = URL(string: rawValue) else {
+            errorMensaje = "Ese QR no contiene un enlace válido de Edecán. Genera uno nuevo en tu computador."
+            return
+        }
+        pairingStore.recibirEnlace(url)
+    }
+
+    private func mostrarErrorDelEscaner(_ message: String) {
+        mostrandoEscaner = false
+        errorMensaje = message
     }
 
     private var pasoServidor: some View {

@@ -17,9 +17,6 @@ import EdecanKit
 @MainActor
 @Observable
 final class RemotoViewModel {
-    private(set) var historial: [RemoteSession] = []
-    private(set) var cargandoHistorial = false
-
     private(set) var sesion: RemoteSession?
     private(set) var frame: RemoteFrame?
 
@@ -42,21 +39,11 @@ final class RemotoViewModel {
     /// server-side de 0.25s y sin solapar solicitudes.
     private let intervaloPollingFrame: Duration = .milliseconds(350)
     private var tareaPollingFrame: Task<Void, Never>?
-
-    // MARK: - Historial
-
-    /// `GET /v1/remote/sessions` — secundario: si falla no bloquea el flujo
-    /// principal (mismo criterio que `loadHistory` en la página web).
-    func cargarHistorial(client: APIClient?) async {
-        guard let client else { return }
-        cargandoHistorial = true
-        defer { cargandoHistorial = false }
-        do {
-            historial = try await client.listRemoteSessions()
-        } catch {
-            // Silencioso a propósito, ver el docstring de este método.
-        }
-    }
+    /// Cola FIFO de input remoto. Antes, `enviandoInput == true` descartaba
+    /// silenciosamente cualquier toque/tecla que llegara mientras el comando
+    /// anterior seguía en vuelo. En control remoto eso se siente como clics o
+    /// letras perdidas. Cada comando espera al anterior y conserva el orden.
+    private var tareaInputAnterior: Task<Void, Never>?
 
     // MARK: - Iniciar sesión / pedir frame
 
@@ -78,7 +65,6 @@ final class RemotoViewModel {
         } catch {
             errorMensaje = error.localizedDescription
         }
-        Task { await self.cargarHistorial(client: client) }
     }
 
     /// `GET .../frame`. Éxito: guarda el frame y refleja `status="active"` en
@@ -100,6 +86,10 @@ final class RemotoViewModel {
             if sesion?.id == sesionActual.id {
                 sesion = sesionActual.conFrame(nuevoFrame)
             }
+            if !autoActualizar {
+                autoActualizar = true
+                iniciarPollingFrame(client: client)
+            }
         } catch APIClient.APIError.servidor(let status, let mensaje) {
             if status == 429 { return }
             errorMensaje = mensaje
@@ -107,7 +97,6 @@ final class RemotoViewModel {
                 detenerPollingFrame()
                 autoActualizar = false
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
-                Task { await self.cargarHistorial(client: client) }
             }
         } catch {
             errorMensaje = error.localizedDescription
@@ -159,7 +148,6 @@ final class RemotoViewModel {
         }
         sesion = nil
         frame = nil
-        Task { await self.cargarHistorial(client: client) }
     }
 
     // MARK: - Input (solo sesiones kind="control" activas)
@@ -179,7 +167,20 @@ final class RemotoViewModel {
     /// *polling*, mismo criterio que ``pedirFrame(client:)`` (ver `status`
     /// documentado en `APIClient.sendRemoteInput`).
     private func enviarInput(_ input: RemoteInput, client: APIClient?) async {
-        guard let client, let sesionActual = sesion, !enviandoInput else { return }
+        guard let client, let sesionActual = sesion else { return }
+        let anterior = tareaInputAnterior
+        let actual = Task { @MainActor [weak self] in
+            _ = await anterior?.value
+            guard let self, self.sesion?.id == sesionActual.id else { return }
+            await self.ejecutarInput(input, client: client, sesionActual: sesionActual)
+        }
+        tareaInputAnterior = actual
+        await actual.value
+    }
+
+    private func ejecutarInput(
+        _ input: RemoteInput, client: APIClient, sesionActual: RemoteSession
+    ) async {
         enviandoInput = true
         errorMensaje = nil
         defer { enviandoInput = false }
@@ -197,7 +198,6 @@ final class RemotoViewModel {
                 detenerPollingFrame()
                 autoActualizar = false
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
-                Task { await self.cargarHistorial(client: client) }
             }
         } catch {
             errorMensaje = error.localizedDescription
@@ -213,5 +213,7 @@ final class RemotoViewModel {
     /// propósito).
     func limpiar() {
         detenerPollingFrame()
+        tareaInputAnterior?.cancel()
+        tareaInputAnterior = nil
     }
 }

@@ -56,10 +56,9 @@ DEFAULT_STDIO_CLOSE_TIMEOUT_SECONDS = 5.0
 # etc., ver `edecan_api.config.Settings`) que un servidor MCP de terceros
 # JAMÁS debe poder leer con un simple `os.environ`. `PATH`/`HOME` son el
 # mínimo indispensable para que un binario común (`npx`, `python`, `node`,
-# etc.) se resuelva y encuentre su config de usuario — cualquier variable
-# adicional que un servidor MCP concreto necesite es responsabilidad del
-# propio tenant (pasarla codificada en el `comando`, p. ej. `env X=Y npx
-# ...`, no algo que Edecán le regale del ambiente del backend).
+# etc.) se resuelva y encuentre su config de usuario. Las variables
+# adicionales llegan únicamente desde la config cifrada de ESE servidor,
+# nunca heredadas del ambiente del backend ni embebidas en el comando.
 #
 # Nota (WP-V7-05, verificado empíricamente con un subproceso real que
 # reporta su propio `os.environ`, ver `tests/test_transport.py::
@@ -153,12 +152,21 @@ class StdioTransport(MCPTransport):
         self,
         command: list[str],
         *,
+        env: dict[str, str] | None = None,
         timeout_seconds: float = DEFAULT_STDIO_TIMEOUT_SECONDS,
         close_timeout_seconds: float = DEFAULT_STDIO_CLOSE_TIMEOUT_SECONDS,
     ) -> None:
         if not command or not command[0].strip():
             raise ValueError("StdioTransport requiere un comando no vacío.")
         self._command = list(command)
+        # Solo variables proporcionadas expresamente para ESTE servidor. No
+        # hay fallback a os.environ: el allowlist PATH/HOME sigue siendo la
+        # única parte heredada del proceso de Edecan.
+        self._env_extra = {
+            clave: valor
+            for clave, valor in (env or {}).items()
+            if clave not in _STDIO_ENV_ALLOWLIST
+        }
         self._timeout = timeout_seconds
         self._close_timeout = close_timeout_seconds
         self._process: asyncio.subprocess.Process | None = None
@@ -168,6 +176,7 @@ class StdioTransport(MCPTransport):
         if self._process is not None:
             return self._process
         env = {clave: os.environ[clave] for clave in _STDIO_ENV_ALLOWLIST if clave in os.environ}
+        env.update(self._env_extra)
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *self._command,
@@ -196,10 +205,14 @@ class StdioTransport(MCPTransport):
             linea = await process.stderr.readline()
             if not linea:
                 return
+            # El stderr pertenece a un proceso de terceros y puede repetir
+            # accidentalmente una credencial que recibió por `env`. Nunca
+            # copiamos ese contenido a los logs; solo dejamos señal de que
+            # hubo salida para diagnóstico.
             logger.debug(
-                "mcp stdio stderr (%s): %s",
+                "mcp stdio stderr (%s): salida recibida (%d bytes)",
                 self._command[0],
-                linea.decode("utf-8", errors="replace").rstrip(),
+                len(linea),
             )
 
     async def send(self, request: MCPRequest) -> MCPResponse:

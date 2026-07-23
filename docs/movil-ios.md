@@ -235,19 +235,10 @@ pestañas primarias, conectadas de verdad a la API real, no maquetas:
 
 ### Límites conocidos de estas 3 pantallas
 
-- **Sin push todavía, todo por *polling* o carga manual.** Ninguna de las
-  tres recibe notificaciones en tiempo real — Misiones hace *polling* activo
-  mientras algo esté en curso (ver arriba); Automatizaciones/Recordatorios
-  se cargan al entrar a la pantalla y con *pull-to-refresh*, sin *polling*
-  continuo (no hay nada "en curso" que valga la pena repetir automáticamente
-  ahí). Notificaciones push (APNs) siguen pendientes del emparejamiento por
-  dispositivo completo, igual que el resto de la app (ver la tabla de abajo).
-- **`APIClient.createReminder` nunca manda `canal: "mobile"`.** El valor
-  existe como concepto desde v5, pero la entrega push a este teléfono no
-  está conectada (`send_reminder.py` solo sabe entregar por chat hoy) — un
-  recordatorio creado desde la app usa `channel: "web"` por defecto y se
-  entrega exactamente igual que uno creado desde el panel web, hasta que esa
-  ola aterrice.
+- **Push y fallback local.** `APIClient.createReminder` usa `channel: "mobile"`;
+  la app registra/rota el token APNs y lo revoca al desvincular. Cada
+  recordatorio conserva además un aviso local. La configuración exacta y el
+  modo OSS sin credenciales están en [`notificaciones-push.md`](./notificaciones-push.md).
 - **`APIClient.completeReminder` reutiliza el status `"sent"`.** El backend
   no tiene un status "completado" propio (solo `pending|sent|cancelled`,
   `ARCHITECTURE.md` §10.3) — completar a mano desde el *swipe* pone el mismo
@@ -262,6 +253,15 @@ pestañas primarias, conectadas de verdad a la API real, no maquetas:
   pantalla no se entera hasta volver a la lista.
 
 ## Compilar por primera vez (desarrollo, sin firmar)
+
+### Vistas previas dentro de la app
+
+Los artefactos del chat se descargan con Bearer desde `/v1/files/{id}/download`
+y se muestran en un sheet propio: imagen, PDF mediante PDFKit y texto con un
+límite visual de 2 MB. Otros tipos conservan la acción explícita de compartir.
+Los enlaces HTTP(S) públicos se abren en un `WKWebView` efímero, sin JavaScript,
+y cada redirección vuelve a pasar por el bloqueo de hosts locales/privados. No
+se usa Quick Look externo.
 
 Para trabajar en el código o simplemente confirmar que compila en tu
 máquina, sin necesidad todavía de cuenta Developer ni de un iPhone físico:
@@ -306,6 +306,12 @@ firmar**, no antes de compilar para el simulador:
      es la vía recomendada.
   2. O escribiéndolo directamente en `project.yml` y corriendo
      `xcodegen generate` de nuevo.
+
+La configuración `Debug` usa `EdecanApp.local.entitlements`, sin APNs, para
+que también pueda firmarse con un equipo personal gratuito. Esto no elimina
+los avisos locales ni las notificaciones dentro de Edecán. La configuración
+`Release` usa `EdecanApp.entitlements` y conserva Push Notifications para
+quien conecte una cuenta Apple Developer de pago con esa capacidad activa.
 
 ## Compilar e instalar en tu iPhone (build ad-hoc)
 
@@ -424,7 +430,9 @@ Con Xcode 26.6 (SDK iPhoneSimulator 26.5) y Swift 6.3.3 instalados:
   'generic/platform=iOS Simulator' build` → **`BUILD SUCCEEDED`**, cero
   advertencias del compilador Swift (con `SWIFT_STRICT_CONCURRENCY:
   complete`, Swift 6 en modo estricto), incluyendo la compilación y el
-  empaquetado de `EdecanWidgets.appex` dentro de `Edecán.app/PlugIns/`.
+  empaquetado de `EdecanWidgets.appex` dentro de `Edecan.app/PlugIns/`. El
+  nombre técnico del bundle usa ASCII para que la firma sea estable; en el
+  iPhone se muestra como **Edecán** mediante `CFBundleDisplayName`.
 
 ## Verificado en esta iteración (fase v4)
 

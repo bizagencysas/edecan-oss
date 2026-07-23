@@ -11,6 +11,7 @@ dependencies = [
     "edecan-db",
     "edecan-core",
     "edecan-schemas",
+    "edecan-companion[remote-control]",
     "uvicorn>=0.30",
     "fakeredis>=2.23",
     "alembic>=1.13",
@@ -47,6 +48,7 @@ edecan-worker = { workspace = true }
 edecan-db = { workspace = true }
 edecan-core = { workspace = true }
 edecan-schemas = { workspace = true }
+edecan-companion = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -76,9 +76,8 @@ fun IdeScreen(
                 )
                 uiState.conectado == false -> EmptyState(
                     emoji = "💻",
-                    titulo = "Sin companion conectado",
-                    descripcion = "Empareja tu companion de escritorio desde el panel web " +
-                        "(`POST /v1/companion/pair-code`) para poder ver tu proyecto acá.",
+                    titulo = "Computadora no disponible",
+                    descripcion = "Abre Edecán en tu computadora para navegar aquí el proyecto de ese equipo.",
                     etiquetaRoadmap = null,
                 )
                 uiState.archivoRuta != null -> VisorArchivo(

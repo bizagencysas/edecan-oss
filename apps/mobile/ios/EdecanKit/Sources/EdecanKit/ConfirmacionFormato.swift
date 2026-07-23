@@ -20,9 +20,10 @@ public enum ConfirmacionFormato {
     public static let advertenciasPorHerramienta: [String: String] = [
         "usar_computadora":
             "Esto va a mover el mouse, escribir o mirar la pantalla de tu computadora de verdad. " +
-            "Revisa qué hay en pantalla antes de aprobar: Edecán nunca debe navegar, hacer clic, " +
-            "escribir ni leer contenido de LinkedIn, ni completar un pago, cobro o inicio de sesión " +
-            "por ti. Si eso es lo que está a punto de hacer, rechaza.",
+            "Revisa la app, el destino y el contenido exactos antes de aprobar. Puede continuar una " +
+            "tarea en una sesión que ya abriste, incluida una publicación en LinkedIn, pero no debe " +
+            "capturar contraseñas, hacer scraping o contacto masivo, ni completar un pago sin el flujo " +
+            "específico que tú revisaste.",
     ]
 
     /// `nil` si `nombre` no tiene una advertencia específica registrada.

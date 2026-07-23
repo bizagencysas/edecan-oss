@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -85,6 +86,7 @@ import socket
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +146,72 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "La app nativa de Edecán lo activa automáticamente."
         ),
     )
+    parser.add_argument(
+        "--macos-permission-status",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--macos-capture-check",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--macos-capture-output",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
+
+
+def _macos_permission_status() -> dict[str, bool]:
+    """Consulta TCC desde el motor que realmente captura y controla la Mac."""
+
+    if sys.platform != "darwin":
+        return {"screen_recording": True, "accessibility": True}
+
+    import ctypes
+
+    core_graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    core_graphics.CGPreflightScreenCaptureAccess.argtypes = []
+    core_graphics.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+
+    application_services = ctypes.CDLL(
+        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+    )
+    application_services.AXIsProcessTrusted.argtypes = []
+    application_services.AXIsProcessTrusted.restype = ctypes.c_bool
+
+    return {
+        "screen_recording": bool(core_graphics.CGPreflightScreenCaptureAccess()),
+        "accessibility": bool(application_services.AXIsProcessTrusted()),
+    }
+
+
+def _macos_capture_check(output_path: str | None = None) -> dict[str, Any]:
+    """Ejecuta una captura real y opcionalmente guarda evidencia local de QA."""
+
+    from edecan_companion.actions import _screenshot
+    from edecan_companion.config import CompanionConfig
+
+    result = _screenshot(
+        {"format": "jpeg", "quality": 55, "max_width": 640},
+        CompanionConfig(sandbox_dir=Path.home()),
+    )
+    saved_path: str | None = None
+    if output_path:
+        destination = Path(output_path).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(base64.b64decode(str(result["image_b64"])))
+        saved_path = str(destination)
+    return {
+        "ok": True,
+        "width": int(result["width"]),
+        "height": int(result["height"]),
+        "mime": str(result["mime"]),
+        **({"output": saved_path} if saved_path else {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +343,51 @@ def _build_env(
     return env
 
 
-def _mobile_public_url(port: int) -> str:
+_REMOTE_ACCESS_CONFIG_FILE = "remote-access.json"
+_MAX_REMOTE_ACCESS_CONFIG_BYTES = 4_096
+
+
+def _remote_access_url_from_file(data_dir: Path | None) -> str | None:
+    """Lee la URL pública provisionada por desktop/Relay sin leer secretos.
+
+    El token del túnel nunca vive aquí ni entra al QR. El archivo solo contiene
+    la URL HTTPS que los teléfonos deben usar y puede persistir entre reinicios.
+    """
+    if data_dir is None:
+        return None
+    path = data_dir / _REMOTE_ACCESS_CONFIG_FILE
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_REMOTE_ACCESS_CONFIG_BYTES:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        logger.warning("Configuración de acceso remoto inválida en %s; se ignora.", path)
+        return None
+    value = payload.get("public_url") if isinstance(payload, dict) else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError:
+        logger.warning("public_url de acceso remoto no es una URL HTTPS segura; se ignora.")
+        return None
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        logger.warning("public_url de acceso remoto no es una URL HTTPS segura; se ignora.")
+        return None
+    return value
+
+
+def _mobile_public_url(port: int, data_dir: Path | None = None) -> str:
     """Origen que se incrusta en el QR móvil.
 
     Un override explícito cubre dominios/relays propios. En una instalación
@@ -287,6 +398,10 @@ def _mobile_public_url(port: int) -> str:
     configured = os.environ.get("EDECAN_MOBILE_PUBLIC_URL", "").strip().rstrip("/")
     if configured:
         return configured
+
+    persisted = _remote_access_url_from_file(data_dir)
+    if persisted:
+        return persisted
 
     address = _primary_lan_ipv4()
     if address:
@@ -548,7 +663,9 @@ async def run(
                 database_url=database_url,
                 serve_web_dir=serve_web_dir,
                 local_secrets=local_secrets,
-                public_base_url=_mobile_public_url(port) if mobile_access else None,
+                public_base_url=(
+                    _mobile_public_url(port, resolved_data_dir) if mobile_access else None
+                ),
             )
         )
         logger.info(
@@ -570,6 +687,16 @@ async def run(
 
         api_app = _import_api_app()
         api_settings = _import_api_settings()
+
+        # La propia app instalada es el destino de control remoto. Se
+        # registra cuando `/v1/auth/local` resuelve el tenant single-owner;
+        # así el QR del teléfono basta y no existe un segundo emparejamiento
+        # técnico que la persona deba entender.
+        from edecan_local.companion_bridge import LocalCompanionBridge
+
+        if hasattr(api_app.state, "companion_manager"):
+            local_companion = LocalCompanionBridge(app=api_app, data_dir=resolved_data_dir)
+            api_app.state.ensure_local_companion = local_companion.ensure_registered
 
         # Ollama embebido OPCIONAL (WP-V4-09, DIRECCION_ACTUAL.md "Confirmado:
         # agregar Ollama"): arranca DESPUÉS del Postgres embebido y de tener
@@ -656,6 +783,17 @@ async def run(
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.macos_permission_status:
+        print(json.dumps(_macos_permission_status(), separators=(",", ":")))
+        return
+    if args.macos_capture_check:
+        print(
+            json.dumps(
+                _macos_capture_check(args.macos_capture_output),
+                separators=(",", ":"),
+            )
+        )
+        return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     asyncio.run(
         run(

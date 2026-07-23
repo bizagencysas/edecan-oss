@@ -67,3 +67,22 @@ async def test_elevenlabs_raises_on_http_error():
     tts = ElevenLabsTTS(api_key="fake-elevenlabs-key")
     with pytest.raises(httpx.HTTPStatusError):
         await tts.synthesize("hola", voice_id="voice-123")
+
+
+@respx.mock
+async def test_eleven_v3_adds_expression_only_to_audio_payload():
+    url = ELEVENLABS_TTS_URL_TEMPLATE.format(voice_id="voice-123")
+    route = respx.post(url).mock(return_value=httpx.Response(200, content=FAKE_MP3_BYTES))
+    tts = ElevenLabsTTS(
+        api_key="fake-elevenlabs-key",
+        default_voice_id="voice-123",
+        model_id="eleven_v3",
+        expressive=True,
+    )
+
+    await tts.synthesize("**Listo**, quedó configurado.")
+
+    assert json.loads(route.calls.last.request.content) == {
+        "text": "[warmly] Listo, quedó configurado.",
+        "model_id": "eleven_v3",
+    }

@@ -2,6 +2,14 @@
 
 La aplicación local de Edecán es instalable en macOS, Windows y Linux x64: se descarga, se instala, se abre, se conecta con tus propias credenciales en Configuración y queda funcionando — sin servidor propio, sin Docker y sin editar archivos a mano. Este documento cubre instalación, requisitos y build por plataforma, ubicación de datos, desinstalación y troubleshooting. Para el wizard de bienvenida y la pantalla de Configuración, ver [`primeros-pasos.md`](./primeros-pasos.md). Para el backend empaquetado (Postgres embebido, migraciones y colas), ver [`desktop-local.md`](./desktop-local.md).
 
+> **Importante sobre validación:** los tres son targets soportados, pero la
+> evidencia es nativa por plataforma. Construir o abrir `Edecán.app` en macOS
+> no valida NSIS/MSI de Windows ni AppImage/deb/rpm de Linux. Windows requiere
+> su build y `verify-windows-bundles.ps1` en Windows x64; Linux requiere su
+> build y `verify-linux-bundles.sh` en Linux x64. Los dos gates están definidos
+> en GitHub Actions. Este documento no presenta una revisión estática hecha en
+> Mac como si hubiese ejecutado los otros sistemas.
+
 Código fuente de este paquete: [`apps/desktop`](../apps/desktop) (referencia técnica rápida en su propio `README.md`).
 
 ## 1. Arquitectura en 60 segundos
@@ -14,7 +22,8 @@ apps/desktop (Tauri, Rust) — el shell nativo:
        edecan-local --port <P> --data-dir <carpeta de datos de la app>
   4. espera la línea "EDECAN_LOCAL_READY port=<P>" en su stdout (máx. 60s)
   5. abre la ventana principal → http://127.0.0.1:<P>/  y cierra el splash
-  6. al salir (ventana, bandeja o botón "Salir"): mata el sidecar SIEMPRE
+  6. macOS: cerrar `main` la oculta y deja backend/túnel vivos en la barra
+  7. al elegir "Salir completamente" (o Cmd+Q): mata el sidecar SIEMPRE
 
         │
         ▼ el sidecar sirve, en el mismo origen (http://127.0.0.1:<P>/):
@@ -30,7 +39,8 @@ Ni la interfaz ni el backend se reescriben para la versión de escritorio: `apps
 
 En macOS, si recibiste el repositorio en vez del DMG, haz doble clic en
 **`Abrir Edecán.command`** en la raíz. La primera vez prepara e instala
-`~/Applications/Edecán.app`; después solo abre la app. El proceso que macOS
+`/Applications/Edecán.app` cuando esa carpeta es escribible, o
+`~/Applications/Edecán.app` como fallback; después solo abre la app. El proceso que macOS
 ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 `python3.x`, evitando que sus permisos se mezclen con Jarvis u otro proyecto.
 
@@ -44,6 +54,53 @@ ve y autoriza es `Edecán`/`edecan-local`, no el intérprete compartido
 3. La app abre directo en el wizard de bienvenida (2–3 pasos: conectar un proveedor de LLM y listo) — recorrido completo en [`primeros-pasos.md`](./primeros-pasos.md).
 
 Nada de esto pide un `.env`, una terminal ni una base de datos propia — ver §9.
+
+### Edecán residente en macOS
+
+Cerrar la ventana roja no apaga al asistente: oculta la ventana principal y
+mantiene vivos el backend local, el acceso móvil/túnel y la escucha que la
+persona haya habilitado. Un clic izquierdo en el icono de Edecán en la barra
+de menú vuelve a mostrar y enfocar la ventana. El clic secundario abre un menú
+corto con el estado **Edecán activo**, **Abrir Edecán**, **Abrir en el
+navegador**, **Ver carpeta de datos**, **Escucha siempre** y **Salir
+completamente**. Solo esta última acción (o Cmd+Q) termina el proceso y ejecuta
+el apagado grácil del sidecar.
+
+Windows y Linux usan el mismo contrato residente: cerrar oculta la ventana en
+la bandeja, pero conserva el backend, el relay y la conexión del teléfono.
+**Salir completamente** en la bandeja sí termina la app y el sidecar. Los
+smokes nativos pasan `--exit-on-close` únicamente para ejercer ese apagado
+total sin automatizar clics sobre la bandeja del runner.
+
+### Centro de permisos
+
+En la aplicación instalada, abre **Ajustes → Permisos de esta computadora**.
+La pantalla consulta estados nativos y ofrece una acción por capacidad:
+
+- En macOS comprueba Accesibilidad y Grabación de pantalla; puede disparar
+  el consentimiento nativo de pantalla y micrófono, y abre directamente las
+  secciones de Accesibilidad, Notificaciones, Automatización o Acceso total
+  al disco cuando Apple exige que la persona active el interruptor.
+- Muestra la ruta exacta de la aplicación y ofrece **Mostrar Edecán en Finder**.
+- Activa una sola vez **Edecán residente**: en los siguientes inicios de sesión
+  arranca oculto en la barra de menú, mantiene disponible el backend para el
+  teléfono y respeta si la persona lo desactiva después desde Ajustes.
+- Mantiene una sola instancia: volver a abrir Edecán recupera la ventana
+  residente en vez de crear otro backend, puerto o túnel.
+  Si macOS presenta un botón `+`, la persona selecciona `Edecán.app`; nunca
+  necesita adivinar entre Python, Terminal, Jarvis u otro ejecutable.
+- En Windows abre las páginas exactas de Micrófono y Notificaciones. Mouse,
+  teclado, captura y archivos normales no tienen un permiso global; Windows
+  conserva UAC para cualquier acción administrativa puntual.
+- En Linux explica los límites reales de PipeWire/PulseAudio/ALSA, X11,
+  Wayland, Flatpak y Snap. Captura/control se comprueban al utilizarlos porque
+  algunos compositores Wayland no exponen una ruta compatible. No se finge que
+  existe un botón universal para todas las distribuciones.
+
+La pantalla nunca simula que concedió un permiso. El sistema operativo toma
+la decisión final y Edecán actualiza el estado al recuperar el foco o pulsar
+**Actualizar estados**. Acceso total al disco aparece como opcional porque no
+es necesario para el chat ni debe pedirse por defecto.
 
 ## 3. Requisitos para compilar
 
@@ -104,6 +161,19 @@ Salida en `src-tauri\target\release\bundle\`:
 - `nsis\Edecán_<version>_<arch>-setup.exe` — instalador NSIS (el recomendado; instala por-usuario, sin pedir admin — `tauri.conf.json` → `bundle.windows.nsis.installMode: "currentUser"`).
 - `msi\Edecán_<version>_<arch>.msi` — alternativa MSI, útil si tu organización despliega por GPO/Intune.
 
+Después del build, ejecuta:
+
+```powershell
+.\scripts\verify-windows-bundles.ps1
+```
+
+El gate extrae administrativamente el MSI, instala NSIS en un perfil efímero,
+comprueba `edecan-local`, FyDesign, Node 22, Chromium y las herramientas
+multimedia, arranca la aplicación instalada, espera `/healthz`, cierra la
+ventana por el protocolo normal de Windows y exige cero procesos huérfanos.
+Ese flujo corre en un runner Windows x64 de GitHub Actions; una ejecución en
+macOS no lo sustituye.
+
 ### 4.3 Linux
 
 En una máquina Linux x64 con los requisitos de §3:
@@ -125,7 +195,9 @@ tres formatos en `src-tauri/target/release/bundle/`:
 Después del build, `./scripts/verify-linux-bundles.sh` inspecciona los paquetes,
 arranca el AppImage en Xvfb, espera el `/healthz` del backend empaquetado, exige
 una ventana visible y confirma que el cierre no deja `edecan-local` huérfano.
-Ese mismo smoke test corre en GitHub Actions sobre Ubuntu 22.04 en cada cambio.
+También exige que `.deb` y `.rpm` contengan el runtime completo de FyDesign:
+Node 22, MCP, Chromium, ffmpeg, ffprobe y yt-dlp. Ese mismo smoke test corre en
+GitHub Actions sobre Ubuntu 22.04 en cada cambio.
 
 La app local-first empaquetada requiere Linux x64 porque `pgserver` publica el
 Postgres embebido para esa arquitectura. Linux ARM64 sigue soportado mediante
@@ -250,7 +322,7 @@ incluye Ollama.
 
 **Cómo lo activa el usuario final:** hoy, fijando `EDECAN_OLLAMA_AUTOSTART=true` en el entorno antes de abrir la app (uso avanzado/dev). La pieza de "un solo clic" ya existe del lado de detección: `GET /v1/setup/detect` (`apps/api/edecan_api/routers/setup.py`, fase v3/`edecan_llm.detect.detect_local_providers`) ya reporta si Ollama está corriendo en `OLLAMA_BASE_URL`, y la pantalla de Configuración ya ofrece "usar Ollama" con un clic apenas lo detecta corriendo — no importa si ese Ollama lo arrancó el usuario a mano, ya estaba corriendo de antes, o lo arrancó `edecan_local.ollama_supervisor` (ver abajo) por él: para la pantalla de Configuración es indistinguible, simplemente "ya está corriendo, un clic y listo".
 
-**Qué pasa por dentro:** cuando `EDECAN_OLLAMA_AUTOSTART` está activada, `edecan_local.ollama_supervisor.maybe_start_ollama` (dentro del backend local, `edecan_local.runtime.run()`) resuelve el binario (`EDECAN_OLLAMA_BIN`, la ruta al sidecar que el paso de arriba empaquetó — la fija automáticamente `apps/desktop/src-tauri/src/backend.rs` al lanzar el sidecar si lo encuentra — o si no, `ollama` en el `PATH`), evita lanzar un segundo proceso si ya hay uno corriendo, y lo apaga limpio al cerrar la app (mismo criterio de apagado prolijo que el resto del backend local — ver [`desktop-local.md`](./desktop-local.md) §8). Es de "mejor esfuerzo" en todo momento: cualquier problema (binario roto, puerto ocupado, nunca responde) se resuelve en silencio con un log claro, nunca bloquea el arranque del resto del asistente. Detalle técnico completo en [`desktop-local.md`](./desktop-local.md).
+**Qué pasa por dentro:** cuando `EDECAN_OLLAMA_AUTOSTART` está activada, `edecan_local.ollama_supervisor.maybe_start_ollama` (dentro del backend local, `edecan_local.runtime.run()`) resuelve el binario (`EDECAN_OLLAMA_BIN`, la ruta al sidecar que el paso de arriba empaquetó — la fija automáticamente `apps/desktop/src-tauri/src/backend.rs` al lanzar el sidecar si lo encuentra — o si no, `ollama` en el `PATH`), evita lanzar un segundo proceso si ya hay uno corriendo, y lo apaga limpio al elegir **Salir completamente** o Cmd+Q (mismo criterio de apagado prolijo que el resto del backend local — ver [`desktop-local.md`](./desktop-local.md) §8). Es de "mejor esfuerzo" en todo momento: cualquier problema (binario roto, puerto ocupado, nunca responde) se resuelve en silencio con un log claro, nunca bloquea el arranque del resto del asistente. Detalle técnico completo en [`desktop-local.md`](./desktop-local.md).
 
 ## Ver también
 

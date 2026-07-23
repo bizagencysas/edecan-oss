@@ -26,15 +26,22 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 import redis.asyncio as redis_asyncio
-from edecan_core.agent import Agent, artifact_refs_from_tool_data, rich_blocks_from_tool_data
+from edecan_core.agent import (
+    Agent,
+    artifact_refs_from_tool_data,
+    mission_ref_from_tool_data,
+    rich_blocks_from_tool_data,
+)
 from edecan_core.memory import HashEmbedder, OpenAICompatEmbedder, PgMemoryStore
 from edecan_core.queue import enqueue
+from edecan_core.safety import redact
 from edecan_core.tools import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage
 from edecan_llm.router import LLMRouter
@@ -48,7 +55,7 @@ from edecan_schemas import (
 from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import (
@@ -67,8 +74,14 @@ from edecan_api.deps import (
 )
 from edecan_api.persona_tools import conversation_persona_tools
 from edecan_api.repo import Repo
+from edecan_api.routers.perfil import profile_context_for
 from edecan_api.routers.persona import persona_from_row
 from edecan_api.routers.phone import phone_tool_dispatcher_for
+from edecan_api.secret_intents import (
+    InlineCredentialIntent,
+    detect_inline_credential_intent,
+    redact_values,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +93,7 @@ router = APIRouter(
 EVENT_NAME_MAP: dict[str, str] = {
     "text_delta": "message.delta",
     "tool_start": "tool.start",
+    "tool_progress": "tool.progress",
     "tool_end": "tool.end",
     "confirmation_required": "confirmation.required",
     "done": "message.done",
@@ -96,10 +110,41 @@ PENDING_CONFIRMATION_TTL_SECONDS = 900
 §10.12): ventana para que el usuario apruebe/rechace antes de que expire la
 acción que el modelo propuso."""
 
+_IMPORTANT_TOOL_NOTIFICATIONS: dict[str, str] = {
+    "crear_contenido_social": "content_created",
+    "generar_contenido": "content_created",
+    "publicar_social": "content_published",
+    "crear_diseno_visual": "design_ready",
+    "refinar_diseno_visual": "design_ready",
+    "exportar_diseno_visual": "design_export_ready",
+    "gestionar_autorreparacion_local": "self_repair_completed",
+}
+
+
+def _notification_kind_for_tool(name: str) -> str | None:
+    """Clasifica herramientas terminadas sin mantener 36 entradas duplicadas.
+
+    El motor completo de Studio conserva el prefijo ``fydesign_`` como
+    contrato estable. Cualquier capacidad que produzca o transforme un
+    entregable visual debe avisar al teléfono igual que el editor nativo.
+    ``fydesign_health`` es diagnóstico y no representa trabajo terminado.
+    """
+
+    explicit = _IMPORTANT_TOOL_NOTIFICATIONS.get(name)
+    if explicit is not None:
+        return explicit
+    if name.startswith("fydesign_") and name != "fydesign_health":
+        return "design_ready"
+    return None
+
 
 class ConversationIn(BaseModel):
     title: str | None = None
     channel: Literal["web", "voice", "phone", "api"] = "web"
+
+
+class ConversationTitleIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
 
 
 class ConfirmIn(BaseModel):
@@ -110,19 +155,31 @@ class ConfirmIn(BaseModel):
 def _conversation_out(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
-        "title": row.get("title"),
+        "title": redact(str(row.get("title") or "")),
         "channel": row.get("channel", "web"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
 
 
+def _redact_payload(value: Any) -> Any:
+    """Redacta strings anidados al leer filas creadas por versiones viejas."""
+
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_payload(item) for key, item in value.items()}
+    return value
+
+
 def _message_out(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "role": row["role"],
-        "content": row.get("content"),
-        "tool_calls": row.get("tool_calls"),
+        "content": _redact_payload(row.get("content")),
+        "tool_calls": _redact_payload(row.get("tool_calls")),
         "tokens_in": row.get("tokens_in", 0),
         "tokens_out": row.get("tokens_out", 0),
         "created_at": row.get("created_at"),
@@ -133,6 +190,7 @@ def _message_out(row: dict[str, Any]) -> dict[str, Any]:
 async def list_conversations(
     current_user: CurrentUser = Depends(get_current_user), repo: Repo = Depends(get_repo)
 ) -> list[dict[str, Any]]:
+    await _refresh_conversation_titles(current_user=current_user, repo=repo)
     rows = await repo.list_conversations(
         tenant_id=current_user.tenant_id, user_id=current_user.user_id
     )
@@ -148,7 +206,7 @@ async def create_conversation(
     row = await repo.create_conversation(
         tenant_id=current_user.tenant_id,
         user_id=current_user.user_id,
-        title=body.title,
+        title=redact(body.title or ""),
         channel=body.channel,
     )
     return _conversation_out(row)
@@ -178,6 +236,27 @@ async def get_conversation(
     )
     out["pending_confirmation"] = pending.model_dump(mode="json") if pending else None
     return out
+
+
+@router.patch("/{conversation_id}")
+async def rename_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationTitleIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    title = redact(" ".join(body.title.split()))
+    if not title:
+        raise HTTPException(status_code=422, detail="Escribe un nombre para la conversación.")
+    row = await repo.update_conversation_title(
+        tenant_id=current_user.tenant_id,
+        conversation_id=conversation_id,
+        title=title,
+        source="manual",
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+    return _conversation_out(row)
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -216,10 +295,140 @@ def _extract_text(content: Any) -> str:
     return ""
 
 
+_TITLE_LEADING_FILLER_RE = re.compile(
+    r"^(?:(?:hola|buenas(?:\s+(?:tardes|noches|d[ií]as))?)[,.!\s]+)?"
+    r"(?:(?:por\s+favor|necesito\s+que|quiero\s+que|puedes|podr[ií]as)\s+)?",
+    re.IGNORECASE,
+)
+_TITLE_ACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?:configura(?:me)?|configurar)\b", re.IGNORECASE), "Configurar"),
+    (re.compile(r"^(?:planifica(?:me)?|planea(?:me)?|planificar)\b", re.IGNORECASE), "Planificar"),
+    (re.compile(r"^(?:crea(?:me)?|crear|genera(?:me)?|generar)\b", re.IGNORECASE), "Crear"),
+    (
+        re.compile(r"^(?:escribe(?:me)?|redacta(?:me)?|escribir|redactar)\b", re.IGNORECASE),
+        "Escribir",
+    ),
+    (re.compile(r"^(?:busca(?:me)?|encuentra(?:me)?|buscar)\b", re.IGNORECASE), "Buscar"),
+    (
+        re.compile(r"^(?:revisa(?:me)?|analiza(?:me)?|audita(?:me)?|revisar)\b", re.IGNORECASE),
+        "Revisar",
+    ),
+    (re.compile(r"^(?:edita(?:me)?|corrige(?:me)?|editar|corregir)\b", re.IGNORECASE), "Editar"),
+    (re.compile(r"^(?:organiza(?:me)?|ordenar|organizar)\b", re.IGNORECASE), "Organizar"),
+)
+_TITLE_API_PROVIDER_RE = re.compile(
+    r"\b(?:api[\s_-]*key|clave(?:\s+api)?|token|credencial)"
+    r"(?:\s+(?:de|para))?\s+"
+    r"(?P<provider>[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9._-]*"
+    r"(?:\s+[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9._-]*){0,2})"
+    r"(?=\s+(?:es|vale|con)\b|[:=,.!?]|$)",
+    re.IGNORECASE,
+)
+_TITLE_DAILY_EXERCISE_RE = re.compile(
+    r"^(?:qu[eé]\s+pasar[ií]a\s+si\s+)?(?:yo\s+)?"
+    r"(?:empezara?\s+a\s+)?(?:hacer\s+)?"
+    r"(?P<count>\d+)\s+(?P<exercise>flexiones|sentadillas|abdominales)"
+    r"(?:\s+(?P<frequency>diarias?|cada\s+d[ií]a))?\b",
+    re.IGNORECASE,
+)
+_TITLE_MAX_CHARS = 46
+
+
+def _credential_conversation_title(intent: InlineCredentialIntent) -> str:
+    """Nombra el objetivo, nunca la frase que contenía la credencial."""
+
+    return f"Configurar API Key - {intent.display_name}"[:72]
+
+
+def _automatic_conversation_title(text: str, *, fallback: str = "Conversación") -> str:
+    """Resume la primera intención como una tarea breve, sin otra llamada al LLM."""
+
+    clean = redact(" ".join(text.replace("\n", " ").split())).strip(" \t\r\n#*-")
+    if not clean:
+        return fallback
+    provider_match = _TITLE_API_PROVIDER_RE.search(clean)
+    if provider_match:
+        provider = provider_match.group("provider").strip(" ,;:-")
+        return f"Configurar API Key - {provider}"[:72]
+    if re.search(r"\b(?:api[\s_-]*key|clave(?:\s+api)?|credencial)\b", clean, re.IGNORECASE):
+        return "Configurar API Key"
+
+    if re.search(r"\bwho\s+you\s+are\b", clean, re.IGNORECASE):
+        return "Explicar quién es Edecán"
+
+    exercise_match = _TITLE_DAILY_EXERCISE_RE.match(clean)
+    if exercise_match:
+        frequency = exercise_match.group("frequency") or "diarias"
+        if frequency.casefold() == "cada día":
+            frequency = "diarias"
+        return (
+            f"Hacer {exercise_match.group('count')} "
+            f"{exercise_match.group('exercise').lower()} {frequency.lower()}"
+        )
+
+    clean = _TITLE_LEADING_FILLER_RE.sub("", clean).strip()
+    first_sentence = clean
+    for separator in ("?", "!", "."):
+        candidate = first_sentence.split(separator, 1)[0].strip()
+        if candidate:
+            first_sentence = candidate
+    for action_re, infinitive in _TITLE_ACTIONS:
+        match = action_re.match(first_sentence)
+        if match is None:
+            continue
+        subject = first_sentence[match.end() :].strip(" ,;:-")
+        subject = re.sub(r"^(?:me|mi|un|una|el|la)\s+", "", subject, count=1, flags=re.I)
+        first_sentence = f"{infinitive} {subject}".strip()
+        break
+    shortened = first_sentence[:_TITLE_MAX_CHARS]
+    if len(first_sentence) > _TITLE_MAX_CHARS:
+        shortened = shortened.rsplit(" ", 1)[0]
+    return shortened.rstrip(" ,;:") or fallback
+
+
+def _legacy_title_is_a_long_message_copy(title: str, first_user_text: str) -> bool:
+    """Detecta el título histórico defectuoso sin tocar nombres manuales breves."""
+
+    normalized_title = " ".join(title.split()).strip()
+    normalized_message = " ".join(first_user_text.split()).strip()
+    if len(normalized_title) < 48 or not normalized_message:
+        return False
+    return normalized_message.casefold().startswith(normalized_title.casefold())
+
+
+async def _refresh_conversation_titles(*, current_user: CurrentUser, repo: Repo) -> None:
+    """Resume títulos automáticos y clasifica los heredados sin tocar los manuales."""
+
+    candidates = await repo.list_conversation_title_refresh_candidates(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+    )
+    for row in candidates:
+        old_title = str(row.get("title") or "").strip()
+        first_user_text = _extract_text(row.get("first_user_content"))
+        old_source = str(row.get("title_source") or "legacy")
+        if old_source == "auto" or _legacy_title_is_a_long_message_copy(old_title, first_user_text):
+            title = _automatic_conversation_title(first_user_text)
+            source = "auto"
+        else:
+            title = old_title
+            source = "manual"
+        if not title or (title == old_title and source == old_source):
+            continue
+        await repo.update_conversation_title(
+            tenant_id=current_user.tenant_id,
+            conversation_id=row["id"],
+            title=title,
+            source=source,
+        )
+
+
 def _attachment_context_line(item: dict[str, Any]) -> str:
+    file_id = item.get("file_id")
     return (
-        f"- file_id={item.get('file_id')} · {item.get('filename') or 'archivo'}"
+        f"- file_id={file_id} · {item.get('filename') or 'archivo'}"
         f" · {item.get('mime') or 'application/octet-stream'}"
+        f" · usa leer_archivo(file_id={file_id}) para ver su contenido antes de responder"
     )
 
 
@@ -246,7 +455,7 @@ async def _resolve_message_attachments(
 
 def _rows_to_chat_messages(rows: list[dict[str, Any]]) -> list[ChatMessage]:
     return [
-        ChatMessage(role=row["role"], content=_extract_text(row.get("content")))
+        ChatMessage(role=row["role"], content=redact(_extract_text(row.get("content"))))
         for row in rows
         if row.get("role") in ("system", "user", "assistant", "tool")
     ]
@@ -377,6 +586,7 @@ def _build_ctx(
     approved_tool_calls: set[str],
     flags: dict[str, Any],
     phone_call_dispatcher: Any | None = None,
+    profile_context: str = "",
 ) -> ToolContext:
     return ToolContext(
         tenant_id=tenant_id,
@@ -388,6 +598,7 @@ def _build_ctx(
         extras={
             "companion": _companion_caller(request, tenant_id),
             "memory_store": _build_memory_store(session, settings, persona),
+            "profile_context": profile_context,
             "memory_embedder": _build_document_embedder(settings),
             "approved_tool_calls": approved_tool_calls,
             # Callable tenant/user-scoped usado exclusivamente por las tools
@@ -430,9 +641,7 @@ def _pending_confirmation_key(
     return f"pending_confirm:{tenant_id}:{conversation_id}:{tool_call_id}"
 
 
-def _current_pending_confirmation_key(
-    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
-) -> str:
+def _current_pending_confirmation_key(*, tenant_id: uuid.UUID, conversation_id: uuid.UUID) -> str:
     return f"pending_confirm_current:{tenant_id}:{conversation_id}"
 
 
@@ -787,6 +996,69 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     raise TypeError(f"Evento de agente con forma inesperada: {event!r}")
 
 
+def _uuid_from_tool_event(
+    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID, event: dict[str, Any], kind: str
+) -> tuple[uuid.UUID, uuid.UUID | None]:
+    """Devuelve un UUID opaco estable y, si existe, el artefacto navegable.
+
+    Nunca se encola texto libre: un id de proveedor no UUID solo participa en
+    un hash UUIDv5 y no cruza el proceso de API.
+    """
+
+    artifacts = event.get("artifacts")
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            try:
+                artifact_id = uuid.UUID(str(item.get("file_id")))
+            except (TypeError, ValueError):
+                continue
+            return artifact_id, artifact_id
+    opaque_source = ":".join(
+        (
+            str(tenant_id),
+            str(conversation_id),
+            str(event.get("tool_call_id") or "tool"),
+            kind,
+        )
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"edecan:{opaque_source}"), None
+
+
+async def _enqueue_tool_notification(
+    *,
+    settings: Settings,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    event: dict[str, Any],
+) -> None:
+    name = str(event.get("name") or "")
+    kind = _notification_kind_for_tool(name)
+    preview = str(event.get("result_preview") or "").lstrip().lower()
+    if kind is None or preview.startswith(("error:", "falló", "no se pudo")):
+        return
+    event_id, artifact_id = _uuid_from_tool_event(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        event=event,
+        kind=kind,
+    )
+    payload: dict[str, str] = {
+        "user_id": str(user_id),
+        "kind": kind,
+        "event_id": str(event_id),
+    }
+    if artifact_id is not None:
+        payload["artifact_id"] = str(artifact_id)
+    elif kind in {"content_created", "design_ready", "design_export_ready"}:
+        payload["chat_id"] = str(conversation_id)
+    else:
+        payload["resource_id"] = str(event_id)
+    await enqueue(settings, "notify_important_event", payload, tenant_id)
+
+
 async def _stream_agent_events(
     *,
     events: AsyncIterator[Any],
@@ -816,6 +1088,28 @@ async def _stream_agent_events(
                 yield _format_sse(sse_name, public_event)
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
+                if event_type == "tool_end":
+                    try:
+                        await _enqueue_tool_notification(
+                            settings=settings,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            event=event,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "No se pudo encolar la notificación de tool_end "
+                            "(tenant_id=%s conversation_id=%s tool=%s)",
+                            tenant_id,
+                            conversation_id,
+                            event.get("name"),
+                            exc_info=True,
+                        )
+                yield _format_sse(sse_name, public_event)
+            elif event_type == "tool_progress":
+                # Es telemetría efímera para el turno vivo. No se persiste en
+                # cada latido para evitar inflar el historial de conversaciones.
                 yield _format_sse(sse_name, public_event)
             elif event_type == "done":
                 usage = event.get("usage") or {}
@@ -914,6 +1208,99 @@ async def _stream_declined_confirmation(
     yield _format_sse("message.done", {"type": "done", "usage": {}})
 
 
+async def _stream_inline_credential_configuration(
+    *,
+    intent: InlineCredentialIntent,
+    tool: Tool | None,
+    ctx: ToolContext,
+    repo: Repo,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> AsyncIterator[str]:
+    """Configura una key explícita sin entregársela al LLM ni al SSE.
+
+    El usuario ya dio una instrucción inequívoca al pegar su propia clave.
+    Este camino usa la misma tool y el mismo TokenVault que Ajustes, pero los
+    argumentos públicos contienen solo el nombre del proveedor. El texto
+    original ya fue persistido redactado por ``post_message``.
+    """
+
+    call_id = f"credential-{uuid.uuid4()}"
+    public_args = {"provider": intent.provider, "secret": "[credencial protegida]"}
+    yield _format_sse(
+        "tool.start",
+        {
+            "type": "tool_start",
+            "tool_call_id": call_id,
+            "name": "configurar_credencial",
+            "args": public_args,
+        },
+    )
+
+    if tool is None:
+        response_text = (
+            "No pude abrir el almacén seguro de credenciales. No guardé la clave y la "
+            "oculté del historial."
+        )
+        succeeded = False
+    else:
+        try:
+            result = await tool.run(ctx, intent.tool_args)
+            response_text = redact_values(result.content, intent.secret_values)
+            succeeded = not response_text.casefold().startswith(
+                ("error:", "no pude", "no tengo", "falta ")
+            )
+        except Exception:  # noqa: BLE001 - el secreto nunca debe reflejarse al cliente
+            logger.exception(
+                "Falló la configuración segura de una credencial provider=%s",
+                intent.provider,
+            )
+            response_text = (
+                f"No pude configurar {intent.display_name}. No guardé la clave y la oculté "
+                "del historial."
+            )
+            succeeded = False
+
+    await repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content={"text": response_text},
+    )
+    await repo.add_usage_event(
+        tenant_id=tenant_id,
+        kind="messages",
+        quantity=1.0,
+        meta={"conversation_id": str(conversation_id), "mode": "credential_setup"},
+    )
+    try:
+        await repo.add_audit_log(
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            action=("credentials.chat.configured" if succeeded else "credentials.chat.failed"),
+            target=intent.provider,
+        )
+    except Exception:  # pragma: no cover - auditoría best-effort en fakes antiguos
+        logger.warning("No se pudo registrar la auditoría de credencial", exc_info=True)
+
+    yield _format_sse(
+        "tool.end",
+        {
+            "type": "tool_end",
+            "tool_call_id": call_id,
+            "name": "configurar_credencial",
+            "result_preview": response_text[:_RESULT_PREVIEW_LEN],
+            "artifacts": [],
+            "blocks_version": 1,
+            "blocks": [],
+            "mission_id": None,
+        },
+    )
+    yield _format_sse("message.delta", {"type": "text_delta", "text": response_text})
+    yield _format_sse("message.done", {"type": "done", "usage": {}})
+
+
 async def _stream_approved_confirmation(
     *,
     tool_call_id: str,
@@ -923,7 +1310,9 @@ async def _stream_approved_confirmation(
     ctx: ToolContext,
     repo: Repo,
     tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
     conversation_id: uuid.UUID,
+    settings: Settings,
 ) -> AsyncIterator[str]:
     """El usuario aprobó la tool `dangerous` pendiente: se ejecuta DIRECTO con
     la tool/args que el modelo propuso originalmente (recuperados de Redis por
@@ -940,13 +1329,33 @@ async def _stream_approved_confirmation(
                 "args": tool_args,
             },
         )
+        task = asyncio.create_task(tool.run(ctx, tool_args))
+        started_at = asyncio.get_running_loop().time()
         try:
-            result = await tool.run(ctx, tool_args)
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+                    break
+                except TimeoutError:
+                    elapsed = max(0, int(asyncio.get_running_loop().time() - started_at))
+                    yield _format_sse(
+                        "tool.progress",
+                        {
+                            "type": "tool_progress",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "elapsed_seconds": elapsed,
+                            "message": "Edecán sigue trabajando",
+                        },
+                    )
         except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
             logger.warning(
                 "La herramienta aprobada %r lanzó una excepción", tool_name, exc_info=True
             )
             result = ToolResult(content=f"Error: {exc}")
+        finally:
+            if not task.done():
+                task.cancel()
 
         preview = result.content[:_RESULT_PREVIEW_LEN]
         artifacts = artifact_refs_from_tool_data(result.data)
@@ -963,7 +1372,27 @@ async def _stream_approved_confirmation(
             "artifacts": [item.model_dump(mode="json") for item in artifacts],
             "blocks_version": 1,
             "blocks": [item.model_dump(mode="json") for item in blocks],
+            "mission_id": (
+                str(mission_id) if (mission_id := mission_ref_from_tool_data(result.data)) else None
+            ),
         }
+        try:
+            await _enqueue_tool_notification(
+                settings=settings,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event=tool_end,
+            )
+        except Exception:
+            logger.warning(
+                "No se pudo encolar la notificación de la herramienta aprobada "
+                "(tenant_id=%s conversation_id=%s tool=%s)",
+                tenant_id,
+                conversation_id,
+                tool_name,
+                exc_info=True,
+            )
         yield _format_sse("tool.end", tool_end)
 
         text = f"Listo, ejecuté «{tool_name}». {preview}".strip()
@@ -1147,13 +1576,30 @@ async def post_message(
         tenant_id=tenant.tenant_id,
         file_ids=body.attachments,
     )
-    stored_user_content: dict[str, Any] = {"text": body.text}
+    inline_credential = detect_inline_credential_intent(body.text) if not attachments else None
+    # Toda credencial reconocible se redacta ANTES de título, base de datos,
+    # historial LLM y SSE. La detección de intención conserva el valor crudo
+    # solo en memoria para el vault; un segundo mensaje que únicamente discuta
+    # una clave también debe quedar protegido aunque no configure nada.
+    safe_user_text = (
+        inline_credential.redacted_text if inline_credential is not None else redact(body.text)
+    )
+    stored_user_content: dict[str, Any] = {"text": safe_user_text}
     if attachments:
         stored_user_content["attachments"] = attachments
     user_text = _extract_text(stored_user_content)
 
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
+    # El proceso real siempre recibe una AsyncSession tenant-scoped. El
+    # repositorio de pruebas de conversaciones usa históricamente ``None``
+    # porque no toca SQL; conservar ese doble evita acoplar todo el contrato
+    # SSE a una base falsa solo por el perfil opcional.
+    profile_context = (
+        await profile_context_for(session, tenant.tenant_id, current_user.user_id)
+        if session is not None
+        else ""
+    )
 
     registry = get_tool_registry(request)
     agent = Agent(llm_router, registry)
@@ -1176,6 +1622,7 @@ async def post_message(
             repo=repo,
             vault=vault,
         ),
+        profile_context=profile_context,
     )
     # MCP bring-your-own (ARCHITECTURE.md §15): tools de los servidores MCP
     # que el tenant conectó, fusionadas SOLO para este turno — nunca tocan el
@@ -1207,6 +1654,19 @@ async def post_message(
     # La reclamación atómica ocurre inmediatamente antes del primer efecto
     # persistente. Dos requests concurrentes con la misma clave nunca insertan
     # dos mensajes de usuario ni arrancan dos turnos del agente.
+    if not str(conversation.get("title") or "").strip():
+        automatic_title = (
+            _credential_conversation_title(inline_credential)
+            if inline_credential is not None
+            else _automatic_conversation_title(safe_user_text, fallback="Archivo adjunto")
+        )
+        await repo.update_conversation_title(
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            title=automatic_title,
+            only_if_empty=True,
+            source="auto",
+        )
     await repo.add_message(
         tenant_id=tenant.tenant_id,
         conversation_id=conversation_id,
@@ -1214,23 +1674,34 @@ async def post_message(
         content=stored_user_content,
     )
 
-    events = agent.run_turn(
-        ctx=ctx,
-        persona=persona,
-        history=history,
-        user_text=user_text,
-        flags=tenant.flags,
-        extra_tools=extra_tools,
-    )
-    stream = _stream_agent_events(
-        events=events,
-        repo=repo,
-        tenant_id=tenant.tenant_id,
-        conversation_id=conversation_id,
-        user_id=current_user.user_id,
-        settings=settings,
-        redis_client=redis_client,
-    )
+    if inline_credential is not None:
+        stream = _stream_inline_credential_configuration(
+            intent=inline_credential,
+            tool=registry.get("configurar_credencial"),
+            ctx=ctx,
+            repo=repo,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=conversation_id,
+        )
+    else:
+        events = agent.run_turn(
+            ctx=ctx,
+            persona=persona,
+            history=history,
+            user_text=user_text,
+            flags=tenant.flags,
+            extra_tools=extra_tools,
+        )
+        stream = _stream_agent_events(
+            events=events,
+            repo=repo,
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            user_id=current_user.user_id,
+            settings=settings,
+            redis_client=redis_client,
+        )
     if idempotency_key is None:
         # Compatibilidad total: clientes existentes conservan streaming en vivo.
         return StreamingResponse(stream, media_type="text/event-stream")
@@ -1452,7 +1923,9 @@ async def confirm_tool_call(
             ctx=ctx,
             repo=repo,
             tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
             conversation_id=conversation_id,
+            settings=settings,
         ),
         media_type="text/event-stream",
     )

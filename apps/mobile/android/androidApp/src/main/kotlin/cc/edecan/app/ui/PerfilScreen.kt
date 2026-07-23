@@ -1,15 +1,15 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-
 package cc.edecan.app.ui
+
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -18,7 +18,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -34,54 +33,79 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
-import cc.edecan.app.ui.components.EmptyState
-import cc.edecan.app.ui.theme.EdecanColors
-import cc.edecan.app.vm.LlmKind
-import cc.edecan.app.vm.PerfilUiState
 import cc.edecan.app.vm.PerfilViewModel
 import cc.edecan.app.vm.SessionViewModel
+import cc.edecan.shared.LiveProfile
+import cc.edecan.shared.ProfileIdentity
+import cc.edecan.shared.nombrePila
+import cc.edecan.app.notifications.EdecanNotifications
 
 /**
- * Ajustes. El encabezado de cuenta, "Cerrar sesión" y
- * la sección "Conectar LLM" (`GET/PUT /v1/credentials`, `GET
- * /v1/setup/status` — "pegar y validar", `DIRECCION_ACTUAL.md`) son reales;
- * editar persona/tema/notificaciones sigue siendo placeholder. Mismo
- * encabezado que `PerfilView.swift` (iOS); la sección de credenciales es
- * nueva de este work package (WP-V4-04).
+ * Pestaña personal. Igual que iOS, aquí no se administran API keys ni
+ * infraestructura: la persona ve su identidad, su Edecán y accesos útiles.
+ * El editor usa `/v1/perfil`, la misma fuente de verdad del panel de
+ * computador y del system prompt de cada conversación.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PerfilScreen(
     sessionViewModel: SessionViewModel = viewModel(),
     perfilViewModel: PerfilViewModel = viewModel(),
+    onAbrirContenido: () -> Unit = {},
     onAbrirIde: () -> Unit = {},
     onAbrirCapacidades: () -> Unit = {},
     onAbrirNegocios: () -> Unit = {},
 ) {
-    val uiState by sessionViewModel.uiState.collectAsState()
+    val sessionState by sessionViewModel.uiState.collectAsState()
     val perfilState by perfilViewModel.uiState.collectAsState()
-    var mostrarConfirmacionSalir by remember { mutableStateOf(false) }
-    var mostrarAvanzado by remember { mutableStateOf(false) }
+    var editandoPerfil by remember { mutableStateOf(false) }
+    var confirmarSalida by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    var permisoAvisos by remember { mutableStateOf(EdecanNotifications.permissionGranted(context)) }
+    val pedirAvisos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permisoAvisos = granted
+        if (granted) EdecanNotifications.refreshRemoteRegistration(context)
+    }
 
-    LaunchedEffect(sessionViewModel.api) { sessionViewModel.api?.let { perfilViewModel.cargar(it) } }
+    LaunchedEffect(sessionViewModel.api) {
+        sessionViewModel.api?.let { perfilViewModel.cargarPerfil(it) }
+    }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Ajustes") }) }) { padding ->
-        // `verticalScroll` (no `LazyColumn`): esta pantalla no tiene ningún
-        // componente Lazy en su árbol (Card/Column/OutlinedTextField/
-        // FilterChip/EmptyState, todos "normales"), así que scrollear el
-        // Column entero es seguro — evita que el formulario "Conectar LLM"
-        // (varios campos según el `kind`) empuje el botón "Cerrar sesión"
-        // fuera de la pantalla en equipos chicos.
+    if (editandoPerfil) {
+        EditorPerfil(
+            perfil = perfilState.perfilVivo,
+            cargando = perfilState.cargandoPerfil,
+            guardando = perfilState.guardandoPerfil,
+            error = perfilState.errorPerfil,
+            onVolver = { editandoPerfil = false },
+            onGuardar = { identidad, resumen ->
+                sessionViewModel.api?.let { api ->
+                    perfilViewModel.guardarPerfil(api, identidad, resumen) {
+                        editandoPerfil = false
+                    }
+                }
+            },
+        )
+        return
+    }
+
+    val identidad = perfilState.perfilVivo?.datos?.identidad
+    val nombre = identidad?.nombrePreferido?.trim().orEmpty().ifBlank {
+        sessionState.me?.nombrePila?.replaceFirstChar { it.uppercase() } ?: "Tu perfil"
+    }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Tú") }) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
                 .padding(16.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
@@ -89,223 +113,210 @@ fun PerfilScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text("👤", style = MaterialTheme.typography.displaySmall)
-                    val me = uiState.me
-                    if (me != null) {
-                        Text(me.user.email, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            me.tenant.name,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else if (uiState.cargandoMe) {
-                        CircularProgressIndicator(modifier = Modifier.padding(8.dp))
+                    Text(nombre.take(1).uppercase(), style = MaterialTheme.typography.displaySmall)
+                    Text(nombre, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    sessionState.me?.let {
+                        Text(it.user.email, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(it.tenant.name, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
 
-            SeccionConectarLlm(
-                perfilState = perfilState,
-                onElegirKind = perfilViewModel::elegirKind,
-                onConectar = { apiKey, baseUrl, modelPrincipal ->
-                    sessionViewModel.api?.let {
-                        perfilViewModel.conectarLlm(it, apiKey, baseUrl, modelPrincipal)
+            Card(
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= 33 && !permisoAvisos) {
+                        pedirAvisos.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        EdecanNotifications.refreshRemoteRegistration(context)
                     }
                 },
-            )
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Avisos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            !permisoAvisos -> "Activa recordatorios, llamadas y trabajos terminados"
+                            EdecanNotifications.remoteConfigured(context) -> "Avisos locales y remotos activados"
+                            else -> "Avisos locales activados · push remoto es opcional en OSS"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                    TextButton(onClick = { mostrarAvanzado = !mostrarAvanzado }) {
-                        Text(if (mostrarAvanzado) "Ocultar modo avanzado" else "Mostrar modo avanzado")
-                    }
-                    if (mostrarAvanzado) {
-                        Text(
-                            "Herramientas especializadas que Edecan puede usar por ti.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Button(onClick = onAbrirIde, modifier = Modifier.weight(1f)) { Text("IDE") }
-                            Button(onClick = onAbrirNegocios, modifier = Modifier.weight(1f)) { Text("Negocios") }
-                        }
-                        Button(
-                            onClick = onAbrirCapacidades,
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        ) { Text("Capacidades") }
+            Card(onClick = { editandoPerfil = true }, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Perfil", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Tu nombre, contexto y cómo quieres que Edecán te hable",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    if (perfilState.cargandoPerfil) {
+                        CircularProgressIndicator(modifier = Modifier.padding(top = 10.dp))
                     }
                 }
             }
 
-            EmptyState(
-                emoji = "⚙️",
-                titulo = "Más ajustes en camino",
-                descripcion = "Editar tu persona (tono, formalidad, instrucciones), tema de la app " +
-                    "y dispositivos emparejados van a vivir aquí — hoy se editan desde el panel web.",
-                modifier = Modifier.fillMaxWidth(),
-                etiquetaRoadmap = null,
-            )
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Edecán · Listo", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Tu asistente personal para pensar, crear, organizar y hacer.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("TU EDECÁN", style = MaterialTheme.typography.labelMedium)
+                    Button(onClick = onAbrirContenido, modifier = Modifier.fillMaxWidth()) {
+                        Text("Crear contenido")
+                    }
+                    Button(onClick = onAbrirCapacidades, modifier = Modifier.fillMaxWidth()) {
+                        Text("Capacidades")
+                    }
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Modo avanzado", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Herramientas especializadas cuando quieras construir o dirigir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = onAbrirIde, modifier = Modifier.weight(1f)) {
+                            Text("Construir")
+                        }
+                        Button(onClick = onAbrirNegocios, modifier = Modifier.weight(1f)) {
+                            Text("Negocios")
+                        }
+                    }
+                }
+            }
 
             Button(
-                onClick = { mostrarConfirmacionSalir = true },
+                onClick = { confirmarSalida = true },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.align(Alignment.CenterHorizontally),
             ) {
-                Text("Cerrar sesión", color = MaterialTheme.colorScheme.onErrorContainer)
+                Text("Desvincular este teléfono", color = MaterialTheme.colorScheme.onErrorContainer)
             }
         }
     }
 
-    if (mostrarConfirmacionSalir) {
+    if (confirmarSalida) {
         AlertDialog(
-            onDismissRequest = { mostrarConfirmacionSalir = false },
-            title = { Text("¿Cerrar sesión en este dispositivo?") },
+            onDismissRequest = { confirmarSalida = false },
+            title = { Text("¿Desvincular este teléfono?") },
+            text = { Text("Para volver a usar Edecán tendrás que escanear el QR de tu computadora.") },
             confirmButton = {
                 TextButton(onClick = {
-                    mostrarConfirmacionSalir = false
+                    confirmarSalida = false
                     sessionViewModel.cerrarSesion()
-                }) { Text("Cerrar sesión") }
+                }) { Text("Desvincular") }
             },
             dismissButton = {
-                TextButton(onClick = { mostrarConfirmacionSalir = false }) { Text("Cancelar") }
+                TextButton(onClick = { confirmarSalida = false }) { Text("Cancelar") }
             },
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SeccionConectarLlm(
-    perfilState: PerfilUiState,
-    onElegirKind: (LlmKind) -> Unit,
-    onConectar: (apiKey: String, baseUrl: String, modelPrincipal: String) -> Unit,
+private fun EditorPerfil(
+    perfil: LiveProfile?,
+    cargando: Boolean,
+    guardando: Boolean,
+    error: String?,
+    onVolver: () -> Unit,
+    onGuardar: (ProfileIdentity, String) -> Unit,
 ) {
-    var apiKey by remember { mutableStateOf("") }
-    var baseUrl by remember { mutableStateOf("") }
-    var modelPrincipal by remember { mutableStateOf("") }
+    var identidad by remember { mutableStateOf(ProfileIdentity()) }
+    var resumen by remember { mutableStateOf("") }
 
-    val kindsDisponibles = LlmKind.entries.filter { !it.soloLocal || perfilState.setupStatus?.localMode == true }
-    val kind = perfilState.kindSeleccionado
+    LaunchedEffect(perfil?.version) {
+        perfil?.let {
+            identidad = it.datos.identidad
+            resumen = it.resumen
+        }
+    }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Conectar LLM", style = MaterialTheme.typography.titleSmall)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Perfil") },
+                navigationIcon = { TextButton(onClick = onVolver) { Text("Volver") } },
+                actions = {
+                    TextButton(
+                        onClick = { onGuardar(identidad, resumen) },
+                        enabled = !cargando && !guardando,
+                    ) { Text(if (guardando) "Guardando…" else "Guardar") }
+                },
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (cargando) CircularProgressIndicator()
+            Text("Cómo identificarte", style = MaterialTheme.typography.titleMedium)
+            Campo("Nombre preferido", identidad.nombrePreferido) { identidad = identidad.copy(nombrePreferido = it) }
+            Campo("Nombre completo", identidad.nombreCompleto) { identidad = identidad.copy(nombreCompleto = it) }
+            Campo("Pronombres", identidad.pronombres) { identidad = identidad.copy(pronombres = it) }
+            Campo("Fecha de nacimiento", identidad.fechaNacimiento) { identidad = identidad.copy(fechaNacimiento = it) }
 
-            perfilState.credenciales?.llm?.let { conectado ->
-                val etiquetaConectada = LlmKind.entries.find { it.valor == conectado.kind }?.etiqueta ?: conectado.kind
-                Text(
-                    "Conectado ahora: $etiquetaConectada" +
-                        (conectado.masked?.let { " ($it)" } ?: "") +
-                        (conectado.modelPrincipal?.let { " · $it" } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
+            Text("Tu contexto", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
+            Campo("País", identidad.pais) { identidad = identidad.copy(pais = it) }
+            Campo("Ciudad", identidad.ciudad) { identidad = identidad.copy(ciudad = it) }
+            Campo("Zona horaria", identidad.zonaHoraria) { identidad = identidad.copy(zonaHoraria = it) }
+            Campo("A qué te dedicas", identidad.ocupacion) { identidad = identidad.copy(ocupacion = it) }
+            Campo("Idioma preferido", identidad.idiomaPreferido) { identidad = identidad.copy(idiomaPreferido = it) }
+            Campo("Cómo quieres que te hable", identidad.formaDeTrato, 3) { identidad = identidad.copy(formaDeTrato = it) }
+            Campo("Sobre ti", identidad.biografia, 5) { identidad = identidad.copy(biografia = it) }
+            Campo("Síntesis de preferencias, proyectos y objetivos", resumen, 4) { resumen = it }
+
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
-
-            FlowRow(
-                modifier = Modifier.padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Button(
+                onClick = { onGuardar(identidad, resumen) },
+                enabled = !cargando && !guardando,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                kindsDisponibles.forEach { candidato ->
-                    FilterChip(
-                        selected = candidato == kind,
-                        onClick = { onElegirKind(candidato) },
-                        label = { Text(candidato.etiqueta) },
-                    )
-                }
-            }
-
-            Column(modifier = Modifier.padding(top = 12.dp)) {
-                if (kind.aceptaApiKey) {
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = { apiKey = it },
-                        label = { Text(if (kind.apiKeyObligatoria) "API key" else "API key (opcional)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                }
-                if (kind.aceptaBaseUrl) {
-                    OutlinedTextField(
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it },
-                        label = {
-                            Text(
-                                if (kind == LlmKind.OLLAMA) "URL base (opcional, http://localhost:11434 por defecto)"
-                                else "URL base",
-                            )
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                }
-                if (kind == LlmKind.OLLAMA) {
-                    OutlinedTextField(
-                        value = modelPrincipal,
-                        onValueChange = { modelPrincipal = it },
-                        label = { Text("Modelo ya descargado (p. ej. llama3.1)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                } else if (kind.aceptaApiKey) {
-                    OutlinedTextField(
-                        value = modelPrincipal,
-                        onValueChange = { modelPrincipal = it },
-                        label = { Text("Modelo (opcional, usa el que recomienda Edecán por defecto)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                }
-                if (kind.soloLocal && kind != LlmKind.OLLAMA) {
-                    Text(
-                        "Edecán va a correr «${if (kind == LlmKind.CLAUDE_CLI) "claude" else "codex"} --version» " +
-                            "en esta máquina para confirmar que está instalado — no hace falta ninguna clave.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                }
-
-                perfilState.errorConexion?.let { error ->
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                }
-                if (perfilState.conectadoOk) {
-                    Text(
-                        "Conectado ✅",
-                        color = VerdeExito,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                }
-
-                Button(
-                    onClick = { onConectar(apiKey, baseUrl, modelPrincipal) },
-                    enabled = !perfilState.conectando &&
-                        (!kind.apiKeyObligatoria || apiKey.isNotBlank()) &&
-                        (kind != LlmKind.OPENAI_COMPAT || baseUrl.isNotBlank()) &&
-                        (kind != LlmKind.OLLAMA || modelPrincipal.isNotBlank()),
-                    colors = ButtonDefaults.buttonColors(containerColor = EdecanColors.Morado),
-                ) {
-                    if (perfilState.conectando) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp).padding(end = 4.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp,
-                        )
-                    }
-                    Text("Conectar")
-                }
+                if (guardando) CircularProgressIndicator() else Text("Guardar mi perfil")
             }
         }
     }
 }
 
-private val VerdeExito = Color(0xFF22C55E)
+@Composable
+private fun Campo(label: String, value: String, minLines: Int = 1, onValueChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        minLines = minLines,
+        maxLines = if (minLines == 1) 1 else minLines + 3,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}

@@ -8,6 +8,7 @@ from edecan_voice.telephony import (
     TwilioVoiceClient,
     conversation_twiml,
     normalize_e164,
+    normalize_twilio_status,
     twilio_signature,
     verify_twilio_signature,
 )
@@ -24,6 +25,10 @@ def _credentials() -> TwilioCredentials:
 def test_e164_rejects_ambiguous_local_number() -> None:
     with pytest.raises(ValueError, match="E.164"):
         normalize_e164("3001234567")
+
+
+def test_twilio_canceled_maps_to_internal_cancelled_status() -> None:
+    assert normalize_twilio_status("canceled") == "cancelled"
 
 
 def test_signature_round_trip_and_tampering() -> None:

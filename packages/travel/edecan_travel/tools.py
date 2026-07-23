@@ -23,6 +23,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlsplit
 
 from edecan_core import Tool, ToolContext, ToolResult
 from sqlalchemy import text
@@ -67,16 +68,40 @@ def _fuente_viaje(provider: Any) -> tuple[str, str | None]:
     """Clasifica datos de proveedor sin presentar sandbox/stub como producción."""
 
     name = str(getattr(provider, "name", "") or "").strip().lower()
+    mode_declarado = str(getattr(provider, "source_mode", "") or "").strip().lower()
+    nombre_declarado = str(getattr(provider, "display_name", "") or "").strip() or None
+    if mode_declarado in {"live", "demo", "unknown"}:
+        return mode_declarado, nombre_declarado or name or None
     if name == "stub":
         return "demo", "Edecan offline"
+    if name == "edecan_travel":
+        return "live", nombre_declarado or "Edecán Viajes"
     if name == "amadeus":
         mode = "live" if getattr(provider, "environment", None) == "production" else "demo"
         return mode, "Amadeus"
     return "unknown", name or None
 
 
-def _acciones_oferta(tipo: str, offer_id: str, indice: int) -> list[dict[str, Any]]:
-    return [
+def _acciones_oferta(
+    tipo: str, offer_id: str, indice: int, booking_url: str | None = None
+) -> list[dict[str, Any]]:
+    acciones: list[dict[str, Any]] = []
+    partes = urlsplit(booking_url or "")
+    if (
+        partes.scheme == "https"
+        and partes.hostname
+        and partes.username is None
+        and partes.password is None
+    ):
+        acciones.append(
+            {
+                "id": f"travel.{tipo}.{indice}.open",
+                "label": "Ver oferta",
+                "action": "open_url",
+                "url": booking_url,
+            }
+        )
+    acciones.append(
         {
             "id": f"travel.{tipo}.{indice}.draft",
             "label": "Preparar borrador",
@@ -86,15 +111,15 @@ def _acciones_oferta(tipo: str, offer_id: str, indice: int) -> list[dict[str, An
                 "No reserves ni pagues nada todavía."
             ),
         }
-    ]
+    )
+    return acciones
 
 
 class BuscarVuelosTool(Tool):
     name = "buscar_vuelos"
     description = (
-        "Busca ofertas de vuelo entre dos aeropuertos (Amadeus). Solo consulta — no "
-        "reserva ni paga nada. Si el tenant no conectó su cuenta de Amadeus (PUT "
-        "/v1/viajes/credentials), muestra ejemplos de demostración en modo offline."
+        "Busca ofertas reales de vuelo entre dos aeropuertos mediante la capa nativa "
+        "de viajes de Edecán. Funciona con cualquier modelo de IA y no reserva ni paga."
     )
     input_schema = {
         "type": "object",
@@ -185,7 +210,7 @@ class BuscarVuelosTool(Tool):
                 "source_mode": source_mode,
                 "provider": provider_name,
                 "observed_at": observed_at,
-                "actions": _acciones_oferta("vuelo", o.id, index),
+                "actions": _acciones_oferta("vuelo", o.id, index, o.booking_url),
             }
             for index, o in enumerate(ofertas[:10])
         ]
@@ -199,9 +224,8 @@ class BuscarVuelosTool(Tool):
 class BuscarHotelesTool(Tool):
     name = "buscar_hoteles"
     description = (
-        "Busca ofertas de hotel en una ciudad para un rango de fechas (Amadeus). Solo "
-        "consulta — no reserva ni paga nada. Si el tenant no conectó su cuenta de "
-        "Amadeus, muestra ejemplos de demostración en modo offline."
+        "Busca ofertas reales de hotel por ciudad y fechas mediante la capa nativa de "
+        "viajes de Edecán. Funciona con cualquier modelo de IA y no reserva ni paga."
     )
     input_schema = {
         "type": "object",
@@ -271,7 +295,7 @@ class BuscarHotelesTool(Tool):
                 "source_mode": source_mode,
                 "provider": provider_name,
                 "observed_at": observed_at,
-                "actions": _acciones_oferta("hotel", o.id, index),
+                "actions": _acciones_oferta("hotel", o.id, index, o.booking_url),
             }
             for index, o in enumerate(ofertas[:10])
         ]
@@ -285,8 +309,8 @@ class BuscarHotelesTool(Tool):
 class EstadoVueloTool(Tool):
     name = "estado_vuelo"
     description = (
-        "Consulta los horarios programados de un vuelo específico (Amadeus): "
-        "aerolínea, número, fecha. Solo información — no modifica ninguna reserva."
+        "Busca dónde verificar el estado de un vuelo específico: aerolínea, número y "
+        "fecha. Solo información; no modifica ninguna reserva."
     )
     input_schema = {
         "type": "object",

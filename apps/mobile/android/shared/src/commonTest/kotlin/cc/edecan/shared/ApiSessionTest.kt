@@ -24,6 +24,28 @@ import kotlin.test.assertTrue
 
 class ApiSessionTest {
     @Test
+    fun registraYRevocaTokenFcmSinExponerloEnLaRuta() = runTest {
+        val store = FakeTokenStore(access = "access-push", refresh = "refresh-push")
+        var call = 0
+        val api = apiConMock(store) { request ->
+            call += 1
+            assertEquals("/v1/devices/device-123/push-token", request.url.encodedPath)
+            assertEquals("Bearer access-push", request.headers[HttpHeaders.Authorization])
+            if (call == 1) {
+                val body = (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()
+                assertTrue("\"push_platform\":\"fcm\"" in body)
+                assertTrue("token-opaco" in body)
+            }
+            respond("", HttpStatusCode.NoContent)
+        }
+
+        api.registerPushToken("device-123", "token-opaco")
+        api.deletePushToken("device-123")
+
+        assertEquals(2, call)
+    }
+
+    @Test
     fun obtieneConversacionCompletaConBearer() = runTest {
         val store = FakeTokenStore(access = "access-chat", refresh = "refresh-chat")
         val api = apiConMock(store) { request ->

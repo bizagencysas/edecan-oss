@@ -2,12 +2,13 @@
 
 import { PlayIcon, SquareIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
-import { messageBlocks } from "@/lib/chat-blocks";
+import { messageBlocks, toolTimelineFromCalls } from "@/lib/chat-blocks";
 import type { MessageOut } from "@/lib/types";
 
 import { ArtifactLinks } from "./ArtifactLinks";
 import { MarkdownText } from "./markdown";
 import { RichMessageBlocks } from "./RichMessageBlocks";
+import { ToolTimeline } from "./ToolTimeline";
 import { messageArtifacts, messageAttachments, messageText } from "./utils";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
@@ -30,6 +31,7 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const text = messageText(message.content);
   const blocks = messageBlocks(message.tool_calls);
+  const toolTimeline = toolTimelineFromCalls(message.tool_calls);
   const mediaFileIds = new Set(
     blocks.flatMap((block) => (block.type === "media" ? [block.artifact.file_id] : [])),
   );
@@ -44,10 +46,11 @@ export function MessageBubble({
     <div className={cx("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cx(
-          "group max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm sm:max-w-[75%]",
+          "group rounded-2xl px-4 py-3 text-[15px] leading-7 shadow-sm",
+          isUser ? "max-w-[min(42rem,88%)]" : "max-w-[min(48rem,94%)]",
           isUser
-            ? "bg-brand-600 text-white"
-            : "border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
+            ? "rounded-br-md bg-gradient-to-br from-brand-600 to-indigo-600 text-white"
+            : "rounded-bl-md border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
         )}
       >
         {(text || (message.role === "assistant" && blocks.length === 0)) && (
@@ -56,6 +59,9 @@ export function MessageBubble({
           </div>
         )}
         {!isUser && <RichMessageBlocks blocks={blocks} onPrefillMessage={onPrefillMessage} />}
+        {!isUser && toolTimeline.length > 0 && (
+          <ToolTimeline events={toolTimeline} showResultPreview={!text} />
+        )}
         <ArtifactLinks artifacts={artifacts} />
         {!isUser && canSpeak && text && (
           <button

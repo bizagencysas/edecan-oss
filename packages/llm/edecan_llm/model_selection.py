@@ -77,6 +77,17 @@ def choose_discovered_models(kind: ProviderKind, payload: Any) -> ModelChoice | 
     return ModelChoice(principal=principal.model_id, rapido=rapido.model_id)
 
 
+def discovered_model_ids(kind: ProviderKind, payload: Any) -> list[str]:
+    """Devuelve los IDs de chat/tool-use anunciados por el proveedor.
+
+    Conserva el orden del catálogo remoto para que los clientes puedan mostrar
+    un selector sin mantener una lista hardcodeada que envejezca. Comparte el
+    mismo filtro seguro que ``choose_discovered_models``.
+    """
+
+    return [model.model_id for model in _parse_models(kind, payload)]
+
+
 def _parse_models(kind: ProviderKind, payload: Any) -> list[_Model]:
     if not isinstance(payload, dict):
         return []
@@ -111,9 +122,7 @@ def _parse_models(kind: ProviderKind, payload: Any) -> list[_Model]:
         except (TypeError, ValueError):
             created = 0
         stable = not any(token in lowered for token in ("preview", "experimental", "exp"))
-        parsed.append(
-            _Model(model_id=model_id, created=created, position=position, stable=stable)
-        )
+        parsed.append(_Model(model_id=model_id, created=created, position=position, stable=stable))
     return parsed
 
 
@@ -182,10 +191,7 @@ def _parameter_billions(model_id: str) -> float:
 def _generic_fast_score(model_id: str) -> tuple[int, float]:
     lowered = model_id.lower()
     explicit = int(
-        any(
-            marker in lowered
-            for marker in ("flash", "instant", "lite", "mini", "small", "turbo")
-        )
+        any(marker in lowered for marker in ("flash", "instant", "lite", "mini", "small", "turbo"))
     )
     parameters = _parameter_billions(lowered)
     if 7 <= parameters <= 14:

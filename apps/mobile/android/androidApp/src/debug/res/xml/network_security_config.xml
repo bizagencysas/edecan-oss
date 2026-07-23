@@ -10,6 +10,8 @@
     prueba contra un self-host propio — nunca instalado por un cliente
     real (ver DIRECCION_ACTUAL.md, "instalación local vía USB").
 -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration" />
 </network-security-config>

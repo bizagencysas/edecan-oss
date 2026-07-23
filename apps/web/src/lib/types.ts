@@ -211,6 +211,13 @@ export type AgentEvent =
       args: Record<string, unknown>;
     }
   | {
+      type: "tool_progress";
+      tool_call_id: string | null;
+      name: string;
+      elapsed_seconds: number;
+      message: string;
+    }
+  | {
       type: "tool_end";
       tool_call_id: string | null;
       name: string;
@@ -218,6 +225,7 @@ export type AgentEvent =
       artifacts: ArtifactRef[];
       blocks_version: 1;
       blocks: ChatBlock[];
+      mission_id: string | null;
     }
   | {
       type: "confirmation_required";
@@ -232,6 +240,7 @@ export type AgentEvent =
 export const SSE_EVENT_NAMES = [
   "message.delta",
   "tool.start",
+  "tool.progress",
   "tool.end",
   "confirmation.required",
   "message.done",
@@ -301,6 +310,43 @@ export type PhoneCallStatus =
   | "no_answer"
   | "cancelled";
 
+export interface PhoneAgentTemplate {
+  id: string;
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PhoneAgentTemplateInput {
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  is_default: boolean;
+}
+
+export interface PhoneCallSummary {
+  version: number;
+  status: PhoneCallStatus;
+  direction: "incoming" | "outgoing";
+  participants: Array<{
+    role: "assistant" | "external";
+    name: string | null;
+    phone_e164: string;
+  }>;
+  duration_seconds: number | null;
+  key_points: string[];
+  commitments: string[];
+  next_steps: string[];
+  transcript: { available: boolean; turn_count: number };
+}
+
 export interface PhoneCall {
   id: string;
   conversation_id: string;
@@ -308,12 +354,19 @@ export interface PhoneCall {
   from_e164: string;
   to_e164: string;
   goal: string;
+  agent: {
+    template_id: string | null;
+    template_name: string | null;
+    name: string | null;
+  } | null;
   status: PhoneCallStatus;
   confirmed_at: string | null;
   started_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
   error: string | null;
+  summary: PhoneCallSummary | null;
+  summary_generated_at: string | null;
   created_at: string;
   updated_at: string;
 }

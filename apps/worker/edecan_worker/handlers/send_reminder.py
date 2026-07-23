@@ -123,6 +123,11 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 user_id=user_id,
                 titulo=TITULO_PUSH,
                 cuerpo=reminder["message"],
+                data={
+                    "route": "activity",
+                    "kind": "reminder",
+                    "resource_id": str(reminder_id),
+                },
             )
             logger.info(
                 "send_reminder: push mobile reminder_id=%s enviados=%d fallidos=%d",

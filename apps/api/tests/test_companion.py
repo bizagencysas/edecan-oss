@@ -184,6 +184,41 @@ async def test_send_command_raises_companion_error_when_tenant_has_no_companion(
         await manager.send_command(uuid.uuid4(), "mover_mouse", {"x": 1, "y": 2})
 
 
+async def test_local_computer_handler_counts_as_connected_and_executes_without_second_pairing() -> (
+    None
+):
+    manager = ConnectionManager()
+    tenant_id = uuid.uuid4()
+    received: list[tuple[str, dict]] = []
+
+    async def handler(action: str, params: dict) -> dict:
+        received.append((action, params))
+        return {"ok": True, "result": {"source": "local"}}
+
+    manager.register_local(tenant_id, handler)
+
+    assert manager.is_connected(tenant_id) is True
+    result = await manager.send_command(tenant_id, "screenshot", {"session_id": "remote-session"})
+    assert result == {"ok": True, "result": {"source": "local"}}
+    assert received == [("screenshot", {"session_id": "remote-session"})]
+
+
+async def test_local_default_handler_is_available_before_desktop_web_auth() -> None:
+    manager = ConnectionManager()
+
+    async def handler(action: str, params: dict) -> dict:
+        return {"ok": True, "result": {"action": action, "params": params}}
+
+    manager.register_local_default(handler)
+    tenant_id = uuid.uuid4()
+
+    assert manager.is_connected(tenant_id)
+    result = await manager.send_command(
+        tenant_id, "screenshot", {"session_id": "session-after-restart"}
+    )
+    assert result["result"]["action"] == "screenshot"
+
+
 async def test_send_command_sends_request_and_resolves_with_the_companion_response() -> None:
     manager = ConnectionManager()
     tenant_id = uuid.uuid4()

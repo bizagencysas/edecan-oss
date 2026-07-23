@@ -1,12 +1,14 @@
-"""Proveedores bring-your-own de `edecan_travel` (`ARCHITECTURE.md` §14, WP-V5-09).
+"""Proveedores de `edecan_travel` (`ARCHITECTURE.md` §14, WP-V5-09).
 
 Calcado línea por línea de `packages/ads/edecan_ads/providers.py::get_tenant_ads_provider`
 (la plantilla exacta que pide el paquete de trabajo): `TravelProvider`/`TrackingProvider`
 son protocolos intercambiables (`Protocol runtime_checkable`, mismo estilo que
-`edecan_ads.providers.AdsProvider`); `StubTravelProvider`/`StubTrackingProvider` son
-deterministas y 100% offline (proveedor por defecto, ningún tenant conectó su cuenta de
-Amadeus/AfterShip todavía); `AmadeusClient`/`AfterShipClient` (`.amadeus`/`.tracking`) son
-los proveedores reales.
+`edecan_ads.providers.AdsProvider`). Para viajes, el default es
+`EdecanTravelProvider`: búsqueda real sin API key mediante la capa MCP propia de
+Edecán, completamente separada del proveedor LLM. `StubTravelProvider` se conserva
+solo para tests/offline explícitos. Una credencial Amadeus existente sigue siendo
+compatible, pero queda envuelta con fallback a la búsqueda nativa porque el portal
+self-service fue retirado. AfterShip mantiene su resolución bring-your-own.
 
 ## Nunca una credencial de plataforma (patrón v4 de `router.py`, ver la nota de seguridad)
 
@@ -14,14 +16,14 @@ los proveedores reales.
 bring-your-own real: si el tenant conectó su cuenta (`PUT /v1/viajes/credentials` /
 `PUT /v1/viajes/rastreo/credentials`, `apps/api/edecan_api/routers/viajes.py`,
 `TokenVault` connector_key `TRAVEL_CONNECTOR_KEY`/`TRACKING_CONNECTOR_KEY`), la usa; si
-no —o si falla cualquier paso de esa resolución— cae al stub correspondiente, nunca
-revienta. Igual que `edecan_ads`, no hay ningún nivel intermedio de "config de
-plataforma": Edecán nunca tiene una cuenta de Amadeus/AfterShip propia que ofrecer como
-segundo nivel — el patrón crítico que `packages/llm/edecan_llm/router.py::
+no —o si falla cualquier paso de esa resolución— viajes cae a la capacidad nativa y
+rastreo al stub correspondiente. No hay ningún nivel intermedio de "config de
+plataforma": Edecán nunca tiene una cuenta de Amadeus/AfterShip propia que ofrecer. El
+patrón crítico que `packages/llm/edecan_llm/router.py::
 _build_provider_from_config` tuvo que corregir en v4 (un campo vacío del tenant NUNCA
 debe caer a `self._settings`/variables de entorno de plataforma) simplemente no puede
 ocurrir aquí: no existe ningún `self._settings` al que este módulo pueda caer, solo el
-tenant o el stub.
+tenant o la capacidad nativa.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from typing import Any, Protocol, runtime_checkable
 from sqlalchemy import text as sql_text
 
 from .amadeus import AmadeusClient, EstadoVuelo, HotelOferta, VueloOferta
+from .native import EdecanTravelProvider
 from .tracking import AfterShipClient, CheckpointRastreo, RastreoPaquete
 
 logger = logging.getLogger(__name__)
@@ -145,6 +148,91 @@ class StubTravelProvider:
         )
 
 
+class ResilientTravelProvider:
+    """Conserva un proveedor conectado y cae al nativo si deja de responder."""
+
+    name = "resilient_travel"
+
+    def __init__(self, primary: TravelProvider, fallback: TravelProvider | None = None) -> None:
+        self._primary = primary
+        self._fallback = fallback or EdecanTravelProvider()
+        self.display_name = "Edecán Viajes"
+        self.source_mode = "unknown"
+
+    async def buscar_vuelos(
+        self,
+        origen: str,
+        destino: str,
+        fecha: str,
+        *,
+        adultos: int = 1,
+        max_resultados: int = 10,
+    ) -> list[VueloOferta]:
+        try:
+            resultado = await self._primary.buscar_vuelos(
+                origen,
+                destino,
+                fecha,
+                adultos=adultos,
+                max_resultados=max_resultados,
+            )
+            self._marcar_primario()
+            return resultado
+        except Exception:
+            logger.info(
+                "El proveedor conectado de vuelos falló; usando Edecán Viajes.",
+                exc_info=True,
+            )
+            resultado = await self._fallback.buscar_vuelos(
+                origen,
+                destino,
+                fecha,
+                adultos=adultos,
+                max_resultados=max_resultados,
+            )
+            self._marcar_fallback()
+            return resultado
+
+    async def buscar_hoteles(
+        self, ciudad: str, checkin: str, checkout: str, *, adultos: int = 1
+    ) -> list[HotelOferta]:
+        try:
+            resultado = await self._primary.buscar_hoteles(
+                ciudad, checkin, checkout, adultos=adultos
+            )
+            self._marcar_primario()
+            return resultado
+        except Exception:
+            logger.info(
+                "El proveedor conectado de hoteles falló; usando Edecán Viajes.",
+                exc_info=True,
+            )
+            resultado = await self._fallback.buscar_hoteles(
+                ciudad, checkin, checkout, adultos=adultos
+            )
+            self._marcar_fallback()
+            return resultado
+
+    async def estado_vuelo(self, carrier: str, numero: str, fecha: str) -> EstadoVuelo:
+        try:
+            resultado = await self._primary.estado_vuelo(carrier, numero, fecha)
+            self._marcar_primario()
+            return resultado
+        except Exception:
+            logger.info("El proveedor conectado de estado de vuelo falló.", exc_info=True)
+            return await self._fallback.estado_vuelo(carrier, numero, fecha)
+
+    def _marcar_primario(self) -> None:
+        self.display_name = "Amadeus"
+        self.source_mode = (
+            "live" if getattr(self._primary, "environment", None) == "production" else "demo"
+        )
+
+    def _marcar_fallback(self) -> None:
+        self.display_name = str(getattr(self._fallback, "display_name", None) or "Edecán Viajes")
+        self.source_mode = "live"
+
+
 class StubTrackingProvider:
     """Proveedor determinista y 100% offline — proveedor por defecto (ningún tenant
     conectó su cuenta de AfterShip todavía)."""
@@ -177,12 +265,14 @@ def _environment_valido(valor: Any) -> str:
 
 
 async def get_tenant_travel_provider(ctx: Any) -> TravelProvider:
-    """`TravelProvider` bring-your-own del tenant, con fallback a `StubTravelProvider`
-    (ver docstring del módulo). Lee `ctx.tenant_id`/`ctx.session`/`ctx.vault` de forma
+    """Proveedor conectado del tenant con fallback a `EdecanTravelProvider`.
+
+    Lee `ctx.tenant_id`/`ctx.session`/`ctx.vault` de forma
     defensiva (`ctx` es `edecan_core.tools.ToolContext` en producción, pero un `Any` a
     propósito): si falta cualquiera de los tres, o el tenant nunca hizo
     `PUT /v1/viajes/credentials`, o CUALQUIER paso falla (vault caído, JSON corrupto,
-    faltan campos), se degrada a `StubTravelProvider` — nunca revienta
+    faltan campos), se degrada a búsqueda nativa real — nunca presenta resultados
+    ficticios ni depende del modelo que esté conectado.
     `buscar_vuelos`/`buscar_hoteles`/`estado_vuelo`/`GET /v1/viajes/*` por esto, solo
     `logger.warning`.
     """
@@ -190,45 +280,50 @@ async def get_tenant_travel_provider(ctx: Any) -> TravelProvider:
     session = getattr(ctx, "session", None)
     vault = getattr(ctx, "vault", None)
     if tenant_id is None or session is None or vault is None:
-        return StubTravelProvider()
+        return EdecanTravelProvider()
 
     try:
         row = (
-            await session.execute(
-                sql_text(
-                    "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
-                    "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"tenant_id": tenant_id, "connector_key": TRAVEL_CONNECTOR_KEY},
+            (
+                await session.execute(
+                    sql_text(
+                        "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
+                        "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"tenant_id": tenant_id, "connector_key": TRAVEL_CONNECTOR_KEY},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is None:
-            logger.warning(
-                "El tenant_id=%s no conectó su cuenta de Amadeus (PUT /v1/viajes/credentials) — "
-                "uso StubTravelProvider.",
+            logger.info(
+                "El tenant_id=%s no conectó un proveedor de viajes; usando Edecán Viajes.",
                 tenant_id,
             )
-            return StubTravelProvider()
+            return EdecanTravelProvider()
 
         bundle = await vault.get(tenant_id=tenant_id, connector_account_id=row["id"])
         if bundle is None or not bundle.access_token:
-            return StubTravelProvider()
+            return EdecanTravelProvider()
 
         data = json.loads(bundle.access_token)
         api_key = data.get("api_key")
         api_secret = data.get("api_secret")
         if not (api_key and api_secret):
-            return StubTravelProvider()
+            return EdecanTravelProvider()
         environment = _environment_valido(data.get("environment"))
-        return AmadeusClient(api_key=api_key, api_secret=api_secret, environment=environment)
+        return ResilientTravelProvider(
+            AmadeusClient(api_key=api_key, api_secret=api_secret, environment=environment)
+        )
     except Exception:
         logger.warning(
             "No se pudo resolver el TravelProvider bring-your-own del tenant_id=%s; "
-            "uso StubTravelProvider.",
+            "usando Edecán Viajes.",
             tenant_id,
             exc_info=True,
         )
-        return StubTravelProvider()
+        return EdecanTravelProvider()
 
 
 async def get_tenant_tracking_provider(ctx: Any) -> TrackingProvider:
@@ -244,14 +339,18 @@ async def get_tenant_tracking_provider(ctx: Any) -> TrackingProvider:
 
     try:
         row = (
-            await session.execute(
-                sql_text(
-                    "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
-                    "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"tenant_id": tenant_id, "connector_key": TRACKING_CONNECTOR_KEY},
+            (
+                await session.execute(
+                    sql_text(
+                        "SELECT id FROM connector_accounts WHERE tenant_id = :tenant_id "
+                        "AND connector_key = :connector_key ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"tenant_id": tenant_id, "connector_key": TRACKING_CONNECTOR_KEY},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is None:
             logger.warning(
                 "El tenant_id=%s no conectó su cuenta de AfterShip (PUT "

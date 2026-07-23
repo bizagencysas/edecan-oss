@@ -1,5 +1,5 @@
 """`edecan_mcp.provider_config` — serialización hacia/desde el `TokenVault`
-(`ARCHITECTURE.md` §15.g: `{nombre, transporte, url?, comando?, headers?}`
+(`ARCHITECTURE.md` §15.g: `{nombre, transporte, url?, comando?, headers?, env?}`
 TODO junto en `TokenBundle.access_token`)."""
 
 from __future__ import annotations
@@ -24,6 +24,21 @@ def test_ida_y_vuelta_stdio_sin_headers() -> None:
 
     raw = serializar_config_mcp(config, {})
     reconstruido, headers = deserializar_config_mcp(raw, nombre_fallback="Local")
+
+    assert reconstruido == config
+    assert headers == {}
+
+
+def test_ida_y_vuelta_stdio_con_env_secreto() -> None:
+    config = MCPServerConfig(
+        nombre="Meta Ads",
+        transporte="stdio",
+        comando="npx -y meta-ads-mcp-server",
+        env={"META_ADS_ACCESS_TOKEN": "token-del-tenant"},
+    )
+
+    raw = serializar_config_mcp(config, {})
+    reconstruido, headers = deserializar_config_mcp(raw, nombre_fallback="Meta Ads")
 
     assert reconstruido == config
     assert headers == {}

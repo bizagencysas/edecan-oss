@@ -37,11 +37,13 @@ from __future__ import annotations
 import logging
 import uuid
 
+from edecan_core.notifications import ImportantNotificationEvent
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_schemas import PLANES, JobEnvelope
 
 from edecan_worker.deps import Deps
 from edecan_worker.repo import SqlRepo
+from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,17 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
             quantity=float(response.usage.input_tokens + response.usage.output_tokens),
             meta={"model": model, "alias": "principal", "conversation_id": str(conversation_id)},
         )
+
+    await notify_important_event(
+        deps,
+        ImportantNotificationEvent(
+            tenant_id=env.tenant_id,
+            user_id=uuid.UUID(str(conversation["user_id"])),
+            kind="content_created",
+            event_id=env.job_id,
+            chat_id=conversation_id,
+        ),
+    )
 
     logger.info(
         "generate_content completado conversation_id=%s tenant_id=%s modelo=%s",

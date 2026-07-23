@@ -65,6 +65,7 @@ _MIGRACIONES_CON_RLS_TABLES: tuple[str, ...] = (
     "0007_v5_expansion",
     "0008_v6_expansion",
     "0011_phone_calls",
+    "0016_phone_agent_templates",
 )
 
 

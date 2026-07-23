@@ -11,7 +11,6 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var tabRouter
-    @Environment(\.openURL) private var openURL
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var mostrandoVoz = false
@@ -21,8 +20,10 @@ struct ChatView: View {
     @State private var tareasSubida: [UUID: Task<Void, Never>] = [:]
     @State private var artefactoDescargandoId: String?
     @State private var archivoCompartible: ArchivoCompartible?
+    @State private var previewTarget: SecurePreviewTarget?
     @State private var conversacionPersistida = ""
     private let estadoLocal = ChatLocalStateStore()
+    private let anclaFinal = "chat-final"
     @FocusState private var campoEnfocado: Bool
 
     var body: some View {
@@ -39,7 +40,7 @@ struct ChatView: View {
                 barraDeEntrada
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
-            .navigationTitle(viewModel.tituloConversacionActual)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $mostrandoVoz) {
                 VozView(chat: viewModel)
@@ -58,6 +59,9 @@ struct ChatView: View {
                     archivoCompartible = nil
                 }
             }
+            .sheet(item: $previewTarget) { target in
+                SecurePreviewSheet(target: target, client: session.client)
+            }
             .fileImporter(
                 isPresented: $mostrandoSelectorArchivos,
                 allowedContentTypes: [.item],
@@ -65,8 +69,14 @@ struct ChatView: View {
                 onCompletion: recibirArchivos
             )
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    cabeceraDeConversacion
+                }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { mostrandoHistorial = true } label: {
+                    Button {
+                        campoEnfocado = false
+                        mostrandoHistorial = true
+                    } label: {
                         Image(systemName: "text.bubble.fill")
                     }
                     .accessibilityLabel("Conversaciones")
@@ -135,36 +145,65 @@ struct ChatView: View {
                             mensaje: mensaje,
                             client: session.client,
                             artefactoDescargandoId: artefactoDescargandoId,
-                            onAbrirArtefacto: descargarYCompartir,
+                            onAbrirArtefacto: { previewTarget = .artifact($0) },
                             onAction: ejecutarAccion,
                             onRetry: reintentarMensaje
                         )
                         .id(mensaje.id)
-                    }
-                    if let herramienta = viewModel.herramientaActiva {
-                        IndicadorHerramienta(nombre: herramienta.nombre)
                     }
                     if let confirmacion = viewModel.confirmacionPendiente {
                         TarjetaConfirmacion(confirmacion: confirmacion, deshabilitada: viewModel.enviando) { aprobado in
                             resolverConfirmacion(aprobado: aprobado)
                         }
                     }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(anclaFinal)
                 }
                 .padding()
             }
-            .onChange(of: viewModel.mensajes.count) { _, _ in
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                campoEnfocado = false
+            }
+            .onChange(of: viewModel.mensajes.last) { _, _ in
                 desplazarAlFinal(proxy)
             }
-            .onChange(of: viewModel.mensajes.last?.texto) { _, _ in
+            .onChange(of: viewModel.confirmacionPendiente?.id) { _, _ in
                 desplazarAlFinal(proxy)
             }
         }
     }
 
+    @ViewBuilder
+    private var cabeceraDeConversacion: some View {
+        if let conversationId = viewModel.conversacionId {
+            Button {
+                UIPasteboard.general.string = conversationId
+            } label: {
+                VStack(spacing: 1) {
+                    Text(viewModel.tituloConversacionActual)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Chat \(conversationId.prefix(8).uppercased())")
+                        .font(.caption2.monospaced().weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(viewModel.tituloConversacionActual), ID de chat \(conversationId)")
+            .accessibilityHint("Toca para copiar el ID completo")
+        } else {
+            Text("Nuevo chat")
+                .font(.headline)
+        }
+    }
+
     private func desplazarAlFinal(_ proxy: ScrollViewProxy) {
-        guard let ultimo = viewModel.mensajes.last else { return }
         withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(ultimo.id, anchor: .bottom)
+            proxy.scrollTo(anclaFinal, anchor: .bottom)
         }
     }
 
@@ -216,6 +255,11 @@ struct ChatView: View {
                 TextField("Escríbele a Edecán…", text: $textoActual, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($campoEnfocado)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        guard botonHabilitado else { return }
+                        enviarMensajeActual()
+                    }
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -265,12 +309,20 @@ struct ChatView: View {
         let texto = textoActual
         let adjuntos = adjuntosListos
         Task {
-            let enviado = await viewModel.enviar(texto: texto, adjuntos: adjuntos, client: client)
-            if enviado {
-                textoActual = ""
-                adjuntosPendientes = []
-                guardarBorrador("", conversationId: viewModel.conversacionId)
-            }
+            _ = await viewModel.enviar(
+                texto: texto,
+                adjuntos: adjuntos,
+                alAceptar: {
+                    // Se limpia al crear la burbuja optimista, no al terminar
+                    // el stream. Un fallo posterior queda en esa burbuja con
+                    // Reintentar y no duplica la orden en el composer.
+                    textoActual = ""
+                    adjuntosPendientes = []
+                    campoEnfocado = false
+                    guardarBorrador("", conversationId: viewModel.conversacionId)
+                },
+                client: client
+            )
         }
     }
 
@@ -299,7 +351,7 @@ struct ChatView: View {
                 viewModel.errorMensaje = "El enlace no es seguro y no se abrio."
                 return
             }
-            openURL(url)
+            previewTarget = .publicURL(url)
         case .openScreen(_, _, let screen):
             switch screen {
             case .assistant:
@@ -538,6 +590,8 @@ private struct AdjuntoPendiente: Identifiable, Equatable {
 
 private struct HistorialChatView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var conversacionARenombrar: Conversation?
+    @State private var tituloEditado = ""
     let viewModel: ChatViewModel
     let client: APIClient?
     let onNueva: () -> Void
@@ -569,6 +623,15 @@ private struct HistorialChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button {
+                                conversacionARenombrar = conversacion
+                                tituloEditado = titulo(conversacion)
+                            } label: {
+                                Label("Renombrar", systemImage: "pencil")
+                            }
+                            .tint(.indigo)
+                        }
                     }
                 }
             }
@@ -588,6 +651,19 @@ private struct HistorialChatView: View {
             .refreshable {
                 guard let client else { return }
                 await viewModel.cargarConversaciones(client: client)
+            }
+            .alert("Renombrar conversación", isPresented: Binding(
+                get: { conversacionARenombrar != nil },
+                set: { if !$0 { conversacionARenombrar = nil } }
+            )) {
+                TextField("Nombre", text: $tituloEditado)
+                Button("Cancelar", role: .cancel) { conversacionARenombrar = nil }
+                Button("Guardar") {
+                    guard let client, let id = conversacionARenombrar?.id else { return }
+                    let titulo = tituloEditado
+                    conversacionARenombrar = nil
+                    Task { await viewModel.renombrarConversacion(id: id, titulo: titulo, client: client) }
+                }
             }
         }
     }

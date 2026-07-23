@@ -210,6 +210,16 @@ def test_release_workflow_builds_all_signed_desktop_channels() -> None:
     assert "[System.IO.File]::ReadAllText" in windows_builder
 
 
+def test_windows_bundle_verifier_identifies_the_app_without_counting_tools() -> None:
+    verifier = (
+        REPO_ROOT / "apps" / "desktop" / "scripts" / "verify-windows-bundles.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '$_.Name -eq "edecan-desktop.exe"' in verifier
+    assert '"Edecán.exe"' not in verifier
+    assert '$_.Name -notin @("edecan-local.exe"' not in verifier
+
+
 def test_macos_installer_keeps_one_stably_signed_canonical_application() -> None:
     installer = (REPO_ROOT / "apps" / "desktop" / "scripts" / "install-macos.sh").read_text(
         encoding="utf-8"

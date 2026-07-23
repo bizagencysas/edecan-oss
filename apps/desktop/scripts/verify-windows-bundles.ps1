@@ -51,12 +51,19 @@ function Assert-InstalledPayload {
         }
     }
     $Backend = @(Get-ChildItem $Root -Recurse -File -Filter "edecan-local.exe" -ErrorAction SilentlyContinue)[0]
+    # El paquete trae varias herramientas ejecutables (Node, ffmpeg, yt-dlp,
+    # Chromium y, opcionalmente, Ollama). Ninguna de ellas es candidata a ser
+    # el shell principal. Identificar la app por su nombre estable evita que
+    # agregar una herramienta legítima vuelva frágil esta verificación.
     $DesktopExe = @(Get-ChildItem $Backend.DirectoryName -File -Filter "*.exe" -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -notin @("edecan-local.exe", "fydesign-node.exe", "ollama.exe") -and
-        $_.Name -notmatch "^uninstall"
+        $_.Name -eq "edecan-desktop.exe"
     })
     if ($DesktopExe.Count -ne 1) {
-        throw "el paquete no contiene un unico ejecutable principal junto al sidecar en $($Backend.DirectoryName)."
+        $FoundExecutables = @(
+            Get-ChildItem $Backend.DirectoryName -File -Filter "*.exe" -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Name }
+        ) -join ", "
+        throw "el paquete no contiene un unico edecan-desktop.exe junto al sidecar en $($Backend.DirectoryName). Ejecutables encontrados: $FoundExecutables"
     }
 
     $NodeRuntime = @(Get-ChildItem $Root -Recurse -File -Filter "fydesign-node.exe" -ErrorAction SilentlyContinue)[0]

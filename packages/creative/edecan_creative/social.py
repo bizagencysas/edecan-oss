@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import textwrap
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 from ._files import Uploader, subir_archivo
 from .providers import ImageProvider, StubImageProvider, get_tenant_image_provider
 from .tools import _cap_str, _slug
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,19 @@ class CrearContenidoSocialTool(Tool):
             },
             "alt_text": {"type": "string", "description": "Descripción accesible de la imagen."},
             "hashtags": {"type": "array", "items": {"type": "string"}, "maxItems": _MAX_HASHTAGS},
+            "fuentes": {
+                "type": "array",
+                "maxItems": 6,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "snippet": {"type": "string"},
+                    },
+                    "required": ["title", "url"],
+                },
+            },
             "con_imagen": {"type": "boolean", "default": True},
         },
         "required": ["plataforma", "tema", "texto"],
@@ -266,6 +282,15 @@ class CrearContenidoSocialTool(Tool):
         headline = _cap_str(args.get("titular_visual"), 180) or topic
         visual_prompt = _cap_str(args.get("visual_prompt"), _MAX_VISUAL_PROMPT_CHARS) or topic
         alt_text = _cap_str(args.get("alt_text"), _MAX_ALT_CHARS)
+        sources = [
+            {
+                "title": _cap_str(item.get("title"), 240),
+                "url": _cap_str(item.get("url"), 2000),
+                "snippet": _cap_str(item.get("snippet"), 600),
+            }
+            for item in (args.get("fuentes") or [])[:6]
+            if isinstance(item, dict) and item.get("title") and item.get("url")
+        ]
         manifest = {
             "schema_version": 1,
             "platform": platform_key,
@@ -281,6 +306,7 @@ class CrearContenidoSocialTool(Tool):
                 "size": spec.image_size,
             },
             "publication": {"status": "draft", "requires_human_confirmation": True},
+            "sources": sources,
         }
         slug = _slug(f"{platform_key}-{topic}")
         markdown_lines = [f"# {topic}", "", f"Plataforma: {spec.label}", "", "## Copy", ""]
@@ -313,6 +339,7 @@ class CrearContenidoSocialTool(Tool):
         )
 
         offline_visual = False
+        visual_warning = ""
         if args.get("con_imagen", True) is not False:
             provider = self._image_provider or await get_tenant_image_provider(ctx)
             offline_visual = isinstance(provider, StubImageProvider)
@@ -325,7 +352,29 @@ class CrearContenidoSocialTool(Tool):
                     "inside the base image. "
                     "The image must communicate the specific idea, not a generic technology mood."
                 )
-                image = await provider.generate(prompt, size=spec.image_size)
+                try:
+                    image = await provider.generate(prompt, size=spec.image_size)
+                except Exception:
+                    # El copy y el manifiesto ya son resultados útiles. Un
+                    # proveedor externo caído, sin cuota o con un tamaño no
+                    # admitido no debe hacer perder el paquete completo.
+                    logger.warning(
+                        "El proveedor de imágenes del tenant falló; usando una tarjeta "
+                        "editorial local (tenant_id=%s platform=%s).",
+                        getattr(ctx, "tenant_id", None),
+                        platform_key,
+                        exc_info=True,
+                    )
+                    image = _offline_social_card(
+                        headline=headline,
+                        platform=spec,
+                        size=spec.image_size,
+                    )
+                    offline_visual = True
+                    visual_warning = (
+                        "El proveedor de imágenes no respondió correctamente. "
+                        "Conservé el post y preparé una tarjeta local para que no pierdas el trabajo."
+                    )
             image_id, image_name = await self._uploader(
                 ctx, data=image, filename=f"{slug}.png", mime="image/png"
             )
@@ -356,6 +405,8 @@ class CrearContenidoSocialTool(Tool):
                 "copy": copy,
                 "parts": parts,
                 "alt_text": alt_text,
+                "visual_warning": visual_warning,
+                "sources": sources,
             },
         )
 

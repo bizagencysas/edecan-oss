@@ -141,6 +141,35 @@ async def test_openai_compat_provider_raises_on_http_error():
 
 
 @respx.mock
+async def test_openai_compat_provider_recovers_from_rejected_social_size():
+    source = Image.new("RGB", (1536, 1024), color=(20, 40, 80))
+    buffer = io.BytesIO()
+    source.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    route = respx.post(_IMAGES_URL).mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={"error": {"message": "Invalid size", "param": "size"}},
+            ),
+            httpx.Response(200, json={"data": [{"b64_json": encoded}]}),
+        ]
+    )
+    provider = OpenAICompatImagesProvider(
+        base_url="https://images.example.com/v1",
+        api_key="fake-key",
+        model="fake-model",
+    )
+
+    result = await provider.generate("escena editorial", size="1200x627")
+
+    assert route.call_count == 2
+    assert json.loads(route.calls[0].request.content)["size"] == "1200x627"
+    assert json.loads(route.calls[1].request.content)["size"] == "1536x1024"
+    assert Image.open(io.BytesIO(result)).size == (1200, 627)
+
+
+@respx.mock
 async def test_openai_compat_provider_never_reflects_a_secret_from_upstream_error():
     respx.post(_IMAGES_URL).mock(
         return_value=httpx.Response(

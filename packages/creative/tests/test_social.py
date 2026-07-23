@@ -20,6 +20,11 @@ class UniqueUploader:
         return file_id, filename
 
 
+class BrokenImageProvider:
+    async def generate(self, prompt: str, size: str = "1024x1024") -> bytes:
+        raise RuntimeError("upstream image provider unavailable")
+
+
 async def test_social_package_creates_mobile_ready_artifacts_offline(make_ctx):
     uploader = UniqueUploader()
     tool = CrearContenidoSocialTool(uploader=uploader)
@@ -65,6 +70,35 @@ async def test_x_long_copy_becomes_numbered_thread(make_ctx):
     assert all(len(part) <= 280 for part in manifest["parts"])
     assert manifest["parts"][0].endswith(f"1/{len(manifest['parts'])}")
     assert len(result.data["artifacts"]) == 2
+
+
+async def test_social_package_preserves_copy_when_image_provider_fails(make_ctx):
+    uploader = UniqueUploader()
+    tool = CrearContenidoSocialTool(
+        uploader=uploader,
+        image_provider=BrokenImageProvider(),
+    )
+
+    result = await tool.run(
+        make_ctx(),
+        {
+            "plataforma": "linkedin",
+            "tema": "Una idea que no debe perderse",
+            "texto": "Este copy sigue siendo útil aunque el proveedor visual falle.",
+            "titular_visual": "El trabajo se conserva",
+        },
+    )
+
+    assert result.data["copy"].startswith("Este copy sigue")
+    assert result.data["offline_visual"] is True
+    assert "Conservé el post" in result.data["visual_warning"]
+    assert [call["mime"] for call in uploader.calls] == [
+        "text/markdown",
+        "application/json",
+        "image/png",
+    ]
+    image = Image.open(io.BytesIO(uploader.calls[2]["data"]))
+    assert image.size == (1200, 627)
 
 
 async def test_non_x_copy_over_limit_is_rejected_without_upload(make_ctx):

@@ -578,6 +578,8 @@ export interface SocialContentResult {
   parts: string[];
   alt_text: string;
   offline_visual: boolean;
+  visual_warning: string;
+  sources: Array<{ title: string; url: string; snippet: string }>;
   artifacts: SocialContentArtifact[];
   requires_human_confirmation: boolean;
 }

@@ -36,30 +36,6 @@ import type { FileOut } from "@/lib/types";
 const PLAN_NAME = "Plan de contenido de LinkedIn";
 const MAX_VISIBLE_DRAFTS = 8;
 
-const EDITORIAL_TERRITORIES = [
-  "decisiones de producto y experiencia de usuario",
-  "inteligencia artificial aplicada con resultados concretos",
-  "construcción de empresas y aprendizaje de fundador",
-  "automatización, operaciones y ahorro de tiempo",
-  "mercados, comportamiento de clientes y oportunidades",
-  "tecnología en Latinoamérica con contexto local",
-  "marca, distribución y crecimiento sostenible",
-  "errores de ejecución y lecciones transferibles",
-  "seguridad, confianza y calidad de producto",
-  "equipos, liderazgo y comunicación",
-  "tendencias recientes verificadas con fuentes actuales",
-  "una idea contraria bien argumentada",
-] as const;
-
-const EDITORIAL_FORMATS = [
-  "explicación práctica",
-  "historia sin atribuir experiencias inventadas a la persona",
-  "comparación con criterios claros",
-  "lista breve de decisiones o aprendizajes",
-  "análisis de una noticia reciente",
-  "pregunta o tesis que invite a una conversación útil",
-] as const;
-
 interface SocialDraftManifest {
   schema_version: number;
   platform: string;
@@ -68,6 +44,7 @@ interface SocialDraftManifest {
   visual?: {
     alt_text?: string;
   };
+  sources?: Array<{ title: string; url: string; snippet?: string }>;
 }
 
 interface RecentDraft {
@@ -85,14 +62,26 @@ function scheduleRule(frequency: 2 | 3): string {
   return `FREQ=DAILY;BYHOUR=${hours};BYMINUTE=${minutes};BYSECOND=0`;
 }
 
-function planInstruction(frequency: 2 | 3, themes: string): string {
-  const focus = themes.trim() || "los proyectos, experiencia y aprendizajes de la persona";
+function planInstruction(
+  frequency: 2 | 3,
+  themes: string,
+  audience: string,
+  brandContext: string,
+  avoidTopics: string,
+): string {
+  const focus = themes.trim() || "derívalo del perfil vivo, los proyectos y la memoria";
+  const targetAudience = audience.trim() || "derívala del perfil vivo sin inventarla";
+  const brand = brandContext.trim() || "usa la identidad personal configurada en Edecán";
+  const excluded = avoidTopics.trim() || "ningún tema adicional indicado";
   return [
     "Prepara un nuevo borrador privado de LinkedIn y una imagen original.",
-    `El foco personal es: ${focus}.`,
-    `Rota entre estos territorios editoriales: ${EDITORIAL_TERRITORIES.join("; ")}.`,
-    `Rota también el formato: ${EDITORIAL_FORMATS.join("; ")}.`,
-    "Elige territorio y formato según la fecha y el horario actual para que las piezas del mismo día sean diferentes.",
+    "Esta estrategia pertenece únicamente al usuario y a la marca de esta instalación. No reutilices un mapa editorial genérico ni el de otra persona.",
+    `Temas o foco declarados por esta persona: ${focus}.`,
+    `Audiencia declarada o inferida de forma conservadora: ${targetAudience}.`,
+    `Marca, negocio o contexto que debe respetarse: ${brand}.`,
+    `Temas que no deben tocarse: ${excluded}.`,
+    "Construye y mantiene un mapa editorial propio a partir del perfil vivo, la memoria autorizada, sus proyectos, su audiencia y estas preferencias.",
+    "Elige en cada ejecución el territorio, ángulo y formato que mejor sirvan a esa estrategia personal y al momento actual.",
     "Consulta memoria, archivos y borradores recientes antes de escribir. No repitas tema, tesis, apertura, estructura ni concepto visual de las ocho piezas anteriores.",
     "Si usas una noticia, cifra, producto, modelo, empresa o dato que pueda haber cambiado, investígalo primero en fuentes actuales y conserva los enlaces para la revisión.",
     "Separa el trabajo: primero investigación y selección de ángulo; después escritura; al final revisión factual, de naturalidad y de repetición.",
@@ -167,6 +156,9 @@ export function SocialContentStudio() {
   const [linkedinConnected, setLinkedinConnected] = useState(false);
   const [frequency, setFrequency] = useState<2 | 3>(2);
   const [themes, setThemes] = useState("");
+  const [audience, setAudience] = useState("");
+  const [brandContext, setBrandContext] = useState("");
+  const [avoidTopics, setAvoidTopics] = useState("");
   const [plan, setPlan] = useState<Automation | null>(null);
   const [savingPlan, setSavingPlan] = useState(false);
   const [automationsAvailable, setAutomationsAvailable] = useState(true);
@@ -251,7 +243,10 @@ export function SocialContentStudio() {
         with_image: withImage,
       });
       setResult(created);
-      setSuccess("Borrador listo. Puedes editarlo antes de copiar, descargar o publicar.");
+      setSuccess(
+        created.visual_warning ||
+          "Borrador listo. Puedes editarlo antes de copiar, descargar o publicar.",
+      );
       await refreshDrafts();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "No pude crear el contenido.");
@@ -313,7 +308,15 @@ export function SocialContentStudio() {
       nombre: PLAN_NAME,
       descripcion: `${frequency} borradores diarios con imagen, listos para revisión.`,
       trigger: { kind: "schedule" as const, rrule: scheduleRule(frequency) },
-      accion: { instruccion: planInstruction(frequency, themes) },
+      accion: {
+        instruccion: planInstruction(
+          frequency,
+          themes,
+          audience,
+          brandContext,
+          avoidTopics,
+        ),
+      },
       enabled: true,
     };
     try {
@@ -367,6 +370,12 @@ export function SocialContentStudio() {
       parts: [draft.manifest.copy],
       alt_text: draft.manifest.visual?.alt_text ?? "",
       offline_visual: false,
+      visual_warning: "",
+      sources: (draft.manifest.sources ?? []).map((source) => ({
+        title: source.title,
+        url: source.url,
+        snippet: source.snippet ?? "",
+      })),
       artifacts,
       requires_human_confirmation: true,
     });
@@ -474,6 +483,26 @@ export function SocialContentStudio() {
                   className="min-h-[14rem]"
                   aria-label="Texto del post"
                 />
+                {result.sources.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                    <p className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Fuentes verificadas
+                    </p>
+                    <div className="space-y-2">
+                      {result.sources.map((source) => (
+                        <a
+                          key={source.url}
+                          href={source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block text-sm text-brand-600 hover:underline dark:text-brand-400"
+                        >
+                          {source.title || source.url}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" variant="secondary" onClick={handleCopy}>
                     <CheckIcon className="h-4 w-4" />
@@ -518,7 +547,7 @@ export function SocialContentStudio() {
         <CardBody className="space-y-4">
           {automationsAvailable ? (
             <>
-              <div className="grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)]">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Borradores por día" htmlFor="linkedin-frequency">
                   <Select
                     id="linkedin-frequency"
@@ -539,6 +568,45 @@ export function SocialContentStudio() {
                     value={themes}
                     onChange={(event) => setThemes(event.target.value)}
                     placeholder="Mis empresas, producto, IA, aprendizajes de fundador, casos reales..."
+                    className="min-h-[5rem]"
+                  />
+                </Field>
+                <Field
+                  label="Audiencia"
+                  htmlFor="linkedin-audience"
+                  hint="A quién quieres ayudar, convencer o atraer."
+                >
+                  <Textarea
+                    id="linkedin-audience"
+                    value={audience}
+                    onChange={(event) => setAudience(event.target.value)}
+                    placeholder="Fundadores de fintech, clientes locales, líderes de producto..."
+                    className="min-h-[5rem]"
+                  />
+                </Field>
+                <Field
+                  label="Marca o negocio"
+                  htmlFor="linkedin-brand-context"
+                  hint="Edecán adapta la voz y el contexto a esta identidad."
+                >
+                  <Textarea
+                    id="linkedin-brand-context"
+                    value={brandContext}
+                    onChange={(event) => setBrandContext(event.target.value)}
+                    placeholder="Marca personal, nombre de empresa, propuesta, país, estilo..."
+                    className="min-h-[5rem]"
+                  />
+                </Field>
+                <Field
+                  label="Temas que debe evitar"
+                  htmlFor="linkedin-avoid-topics"
+                  hint="Opcional. No se comparten con otras personas."
+                >
+                  <Textarea
+                    id="linkedin-avoid-topics"
+                    value={avoidTopics}
+                    onChange={(event) => setAvoidTopics(event.target.value)}
+                    placeholder="Política, información confidencial, clientes sin autorización..."
                     className="min-h-[5rem]"
                   />
                 </Field>

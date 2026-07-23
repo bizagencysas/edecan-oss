@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import aioboto3
@@ -20,6 +22,7 @@ import httpx
 from edecan_connectors.base import ConnectorError
 from edecan_connectors.social.linkedin import create_post as create_linkedin_post
 from edecan_core import ToolContext
+from edecan_core.freshness import assess_freshness, grounding_queries, official_source_domains
 from edecan_core.queue import enqueue
 from edecan_creative.social import CrearContenidoSocialTool
 from edecan_design_studio.studio_tools import (
@@ -30,6 +33,7 @@ from edecan_design_studio.studio_tools import (
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
 from edecan_schemas import FLAG_CONNECTORS_SOCIAL
+from edecan_toolkit.research import get_tenant_search_provider
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +90,12 @@ class SocialContentArtifactOut(BaseModel):
     mime: str | None = None
 
 
+class SocialContentSourceOut(BaseModel):
+    title: str
+    url: str
+    snippet: str = ""
+
+
 class SocialContentOut(BaseModel):
     status: Literal["ready"] = "ready"
     platform: Literal["linkedin", "x"]
@@ -93,6 +103,8 @@ class SocialContentOut(BaseModel):
     parts: list[str]
     alt_text: str = ""
     offline_visual: bool = False
+    visual_warning: str = ""
+    sources: list[SocialContentSourceOut] = Field(default_factory=list)
     artifacts: list[SocialContentArtifactOut]
     requires_human_confirmation: bool = True
 
@@ -342,6 +354,50 @@ def _tool_context(
     )
 
 
+def _official_url(url: str, domains: tuple[str, ...]) -> bool:
+    host = (urlsplit(url).hostname or "").casefold()
+    return bool(host) and any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+async def _research_social_topic(
+    ctx: ToolContext,
+    topic: str,
+) -> list[dict[str, str]]:
+    """Obtiene evidencia primaria para temas que pueden haber cambiado."""
+
+    expected_domains = official_source_domains(topic)
+    if not expected_domains and not assess_freshness(topic).required:
+        return []
+
+    provider = await get_tenant_search_provider(ctx)
+    selected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        for query in grounding_queries(topic, language="es", date_iso=date.today().isoformat()):
+            for hit in await provider.search(query, k=5):
+                if expected_domains and not _official_url(hit.url, expected_domains):
+                    continue
+                if hit.url in seen:
+                    continue
+                seen.add(hit.url)
+                selected.append(
+                    {
+                        "title": " ".join(hit.title.split())[:240],
+                        "url": hit.url,
+                        "snippet": " ".join(hit.snippet.split())[:600],
+                    }
+                )
+                if len(selected) >= 6:
+                    return selected
+    except Exception:
+        logger.warning(
+            "No se pudo investigar el tema social actual (tenant_id=%s).",
+            getattr(ctx, "tenant_id", None),
+            exc_info=True,
+        )
+    return selected
+
+
 @router.post("/social", response_model=SocialContentOut)
 async def create_social_content(
     body: SocialContentCreateIn,
@@ -352,6 +408,27 @@ async def create_social_content(
     vault: Any = Depends(get_vault),
     llm_router: LLMRouter = Depends(get_llm_router),
 ) -> SocialContentOut:
+    tool_context = _tool_context(
+        current_user=current_user,
+        session=session,
+        settings=settings,
+        llm_router=llm_router,
+        vault=vault,
+    )
+    sources = await _research_social_topic(tool_context, body.topic.strip())
+    research_context = (
+        "\nFuentes oficiales actuales para verificar afirmaciones:\n"
+        + "\n".join(
+            f"- {source['title']} | {source['url']} | {source['snippet']}" for source in sources
+        )
+        if sources
+        else (
+            "\nNo se encontraron fuentes oficiales actuales para este tema. "
+            "No presentes como confirmado ningún nombre, versión, fecha o capacidad cambiante."
+            if official_source_domains(body.topic) or assess_freshness(body.topic).required
+            else ""
+        )
+    )
     platform_label = "LinkedIn" if body.platform == "linkedin" else "X"
     request = CompletionRequest(
         model="",
@@ -365,6 +442,7 @@ async def create_social_content(
                     f"Objetivo: {body.objective.strip()}\n"
                     f"Tono: {body.tone.strip()}\n"
                     f"Crear imagen: {'sí' if body.with_image else 'no'}"
+                    f"{research_context}"
                 ),
             )
         ],
@@ -380,21 +458,22 @@ async def create_social_content(
     )
 
     args = _generated_args(response.text, body)
+    args["fuentes"] = sources
     tool = CrearContenidoSocialTool()
     try:
         result = await tool.run(
-            _tool_context(
-                current_user=current_user,
-                session=session,
-                settings=settings,
-                llm_router=llm_router,
-                vault=vault,
-            ),
+            tool_context,
             args,
         )
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception(
+            "Falló la creación del paquete social (tenant_id=%s user_id=%s platform=%s)",
+            current_user.tenant_id,
+            current_user.user_id,
+            body.platform,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="No se pudo terminar el paquete de contenido. Inténtalo de nuevo.",
@@ -441,6 +520,8 @@ async def create_social_content(
         parts=[str(part) for part in parts],
         alt_text=str(data.get("alt_text") or args["alt_text"]),
         offline_visual=bool(data.get("offline_visual", False)),
+        visual_warning=str(data.get("visual_warning") or ""),
+        sources=[SocialContentSourceOut.model_validate(item) for item in sources],
         artifacts=[SocialContentArtifactOut.model_validate(item) for item in artifacts],
     )
 

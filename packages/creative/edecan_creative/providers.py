@@ -170,6 +170,45 @@ def _parse_size(size: str) -> tuple[int, int]:
     return ancho, alto
 
 
+def _provider_fallback_size(size: str) -> str:
+    """Tamaño ampliamente aceptado por APIs OpenAI-compatible.
+
+    El estudio pide medidas finales de red social como ``1200x627``. Algunos
+    proveedores solo aceptan tres tamaños de generación. Se conserva primero
+    la petición original y este valor se usa únicamente si el proveedor
+    rechaza explícitamente el parámetro ``size``.
+    """
+
+    width, height = _parse_size(size)
+    if width > height:
+        return "1536x1024"
+    if height > width:
+        return "1024x1536"
+    return "1024x1024"
+
+
+def _fit_generated_image(data: bytes, *, target_size: str) -> bytes:
+    """Recorta y redimensiona una imagen válida al tamaño final solicitado."""
+
+    width, height = _parse_size(target_size)
+    with Image.open(BytesIO(data)) as source:
+        image = source.convert("RGB")
+        source_ratio = image.width / image.height
+        target_ratio = width / height
+        if source_ratio > target_ratio:
+            crop_width = max(1, round(image.height * target_ratio))
+            left = max(0, (image.width - crop_width) // 2)
+            image = image.crop((left, 0, left + crop_width, image.height))
+        elif source_ratio < target_ratio:
+            crop_height = max(1, round(image.width / target_ratio))
+            top = max(0, (image.height - crop_height) // 2)
+            image = image.crop((0, top, image.width, top + crop_height))
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+
 class StubImageProvider:
     """Genera un PNG determinista sin red ni dependencias externas.
 
@@ -268,8 +307,23 @@ class OpenAICompatImagesProvider:
             "size": size,
         }
         response = await self._client.post("/images/generations", json=body, headers=headers)
+        requested_size = size
         if not 200 <= response.status_code < 300:
-            raise _safe_provider_error(response, model=self._model)
+            error = _safe_provider_error(response, model=self._model)
+            size_rejected = error.status_code == 400 and (
+                (error.param or "").casefold() == "size" or "size" in str(error).casefold()
+            )
+            fallback_size = _provider_fallback_size(size)
+            if not size_rejected or fallback_size == size:
+                raise error
+            body["size"] = fallback_size
+            response = await self._client.post(
+                "/images/generations",
+                json=body,
+                headers=headers,
+            )
+            if not 200 <= response.status_code < 300:
+                raise _safe_provider_error(response, model=self._model)
         data = response.json()
         items = data.get("data") or []
         b64 = items[0].get("b64_json") if items else None
@@ -277,7 +331,10 @@ class OpenAICompatImagesProvider:
             raise ValueError(
                 "El proveedor de imágenes OpenAI-compatible no devolvió 'data[0].b64_json'."
             )
-        return base64.b64decode(b64)
+        image = base64.b64decode(b64)
+        if body["size"] != requested_size:
+            return _fit_generated_image(image, target_size=requested_size)
+        return image
 
 
 def get_image_provider(settings: Any) -> ImageProvider:

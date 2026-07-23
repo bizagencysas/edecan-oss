@@ -16,8 +16,12 @@ test("Contenido hace visible creación, imagen, publicación y plan diario", () 
   assert.match(studio, /Publicar en LinkedIn/);
   assert.match(studio, /2 al día/);
   assert.match(studio, /3 al día/);
-  assert.match(studio, /EDITORIAL_TERRITORIES/);
-  assert.match(studio, /EDITORIAL_FORMATS/);
+  assert.doesNotMatch(studio, /EDITORIAL_TERRITORIES/);
+  assert.doesNotMatch(studio, /EDITORIAL_FORMATS/);
+  assert.match(studio, /Esta estrategia pertenece únicamente al usuario/);
+  assert.match(studio, /Audiencia/);
+  assert.match(studio, /Marca o negocio/);
+  assert.match(studio, /Temas que debe evitar/);
   assert.match(studio, /Borradores recientes/);
   assert.match(studio, /listFiles/);
   assert.match(studio, /ocho piezas anteriores/);

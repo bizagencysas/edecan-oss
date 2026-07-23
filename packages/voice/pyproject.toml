@@ -8,7 +8,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "httpx>=0.27",
     "aioboto3>=13.0",
-    "sqlalchemy[asyncio]>=2.0.30",
+    "sqlalchemy[asyncio]>=2.0.51",
     "edecan-core",
 ]
 

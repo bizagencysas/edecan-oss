@@ -56,9 +56,11 @@ struct BurbujaMensaje: View {
                 }
 
                 if mensaje.rol == .asistente && !mensaje.bloques.isEmpty {
-                    ForEach(Array(mensaje.bloques.enumerated()), id: \.offset) { _, bloque in
-                        BloqueChatView(bloque: bloque, client: client, onAction: onAction)
-                    }
+                    BloquesChatView(
+                        bloques: mensaje.bloques,
+                        client: client,
+                        onAction: onAction
+                    )
                 }
 
                 if mensaje.rol == .asistente && !mensaje.artefactos.isEmpty {
@@ -229,6 +231,64 @@ private func textoPlanoParaCopiar(_ texto: String) -> String {
 /// Render allowlisted de los bloques del contrato v1. Ningun bloque decide
 /// navegacion por su cuenta: todas las acciones vuelven a ``ChatView`` para
 /// aplicar validacion de URL, pantalla o prefill.
+private struct BloquesChatView: View {
+    let bloques: [ChatBlock]
+    let client: APIClient?
+    let onAction: (ChatAction) -> Void
+
+    var body: some View {
+        ForEach(bloques.indices, id: \.self) { index in
+            let bloque = bloques[index]
+            if esBloqueViaje(bloque) {
+                if index == bloques.startIndex || !esBloqueViaje(bloques[index - 1]) {
+                    CarruselViajes(
+                        bloques: Array(bloques[index...].prefix(while: esBloqueViaje)),
+                        onAction: onAction
+                    )
+                }
+            } else {
+                BloqueChatView(bloque: bloque, client: client, onAction: onAction)
+            }
+        }
+    }
+}
+
+private struct CarruselViajes: View {
+    let bloques: [ChatBlock]
+    let onAction: (ChatAction) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 10) {
+                ForEach(Array(bloques.enumerated()), id: \.offset) { _, bloque in
+                    switch bloque {
+                    case .flight(let flight):
+                        FlightCard(flight: flight, onAction: onAction)
+                            .frame(width: 252)
+                    case .hotel(let hotel):
+                        HotelCard(hotel: hotel, onAction: onAction)
+                            .frame(width: 252)
+                    default:
+                        EmptyView()
+                    }
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .accessibilityLabel("Opciones de viaje")
+    }
+}
+
+private func esBloqueViaje(_ bloque: ChatBlock) -> Bool {
+    switch bloque {
+    case .flight, .hotel:
+        true
+    default:
+        false
+    }
+}
+
 private struct BloqueChatView: View {
     let bloque: ChatBlock
     let client: APIClient?
@@ -263,42 +323,38 @@ private struct LinkPreviewCard: View {
     let onAction: (ChatAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 7) {
-                Image(systemName: "link")
-                Text(link.siteName ?? hostVisible)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                FuenteBadge(mode: link.sourceMode)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-
-            Text(link.title)
-                .font(.headline)
-            if let description = link.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-
-            if let url = ChatAction.httpURLSegura(link.url) {
-                Button {
-                    onAction(.openURL(id: "link-preview", label: "Abrir enlace", url: url))
-                } label: {
-                    Label("Abrir enlace", systemImage: "arrow.up.right")
+        if let url = ChatAction.httpURLSegura(link.url) {
+            Button {
+                onAction(.openURL(id: "link-preview", label: "Abrir enlace", url: url))
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "globe")
+                    Text(tituloVisible)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
                 }
-                .buttonStyle(.bordered)
-                .accessibilityHint("Se abre fuera de Edecan")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(EdecanTheme.morado)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            AccionesBloque(actions: link.actions, onAction: onAction)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Abrir \(tituloVisible) en el navegador interno")
+            .accessibilityHint("Abre una vista previa dentro de Edecán")
+        } else {
+            Text(tituloVisible)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .tarjetaBloque()
     }
 
-    private var hostVisible: String {
-        ChatAction.httpURLSegura(link.url)?.host ?? "Enlace"
+    private var tituloVisible: String {
+        let title = link.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { return title }
+        return ChatAction.httpURLSegura(link.url)?.host ?? link.url
     }
 }
 
@@ -307,10 +363,10 @@ private struct FlightCard: View {
     let onAction: (ChatAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Label(flight.airline, systemImage: "airplane")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer(minLength: 6)
                 FuenteBadge(mode: flight.sourceMode)
@@ -325,19 +381,19 @@ private struct FlightCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
                     Text("\(flight.currency) \(flight.price)")
-                        .font(.headline)
+                        .font(.subheadline.weight(.bold))
                     Text(flight.stops == 0 ? "Directo" : "\(flight.stops) escala\(flight.stops == 1 ? "" : "s")")
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(.title3.weight(.bold))
+            .font(.headline.weight(.bold))
 
             detalleViaje(inicio: flight.departure, fin: flight.arrival)
             metadatos(provider: flight.provider, taxes: flight.taxes, cancellation: flight.cancellation)
             AccionesBloque(actions: flight.actions, onAction: onAction)
         }
-        .tarjetaBloque()
+        .tarjetaBloque(compacta: true)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Vuelo de \(flight.origin) a \(flight.destination) con \(flight.airline), \(flight.currency) \(flight.price)")
     }
@@ -348,11 +404,11 @@ private struct HotelCard: View {
     let onAction: (ChatAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Label(hotel.name, systemImage: "building.2.fill")
-                    .font(.headline)
-                    .lineLimit(2)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                 Spacer(minLength: 6)
                 FuenteBadge(mode: hotel.sourceMode)
             }
@@ -367,13 +423,13 @@ private struct HotelCard: View {
                 }
                 Spacer()
                 Text("\(hotel.currency) \(hotel.price)")
-                    .font(.headline)
+                    .font(.subheadline.weight(.bold))
             }
             detalleViaje(inicio: hotel.checkin, fin: hotel.checkout)
             metadatos(provider: hotel.provider, taxes: hotel.taxes, cancellation: hotel.cancellation)
             AccionesBloque(actions: hotel.actions, onAction: onAction)
         }
-        .tarjetaBloque()
+        .tarjetaBloque(compacta: true)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Hotel \(hotel.name) en \(hotel.city), \(hotel.currency) \(hotel.price)")
     }
@@ -404,6 +460,7 @@ private struct AccionesBloque: View {
                     .lineLimit(1)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .tint(EdecanTheme.morado)
         }
     }
@@ -482,11 +539,14 @@ private func fechaVisible(_ raw: String) -> String {
 }
 
 private extension View {
-    func tarjetaBloque() -> some View {
+    func tarjetaBloque(compacta: Bool = false) -> some View {
         self
-            .padding(12)
+            .padding(compacta ? 10 : 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(EdecanTheme.morado.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            .background(
+                EdecanTheme.morado.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: compacta ? 12 : 14)
+            )
     }
 }
 

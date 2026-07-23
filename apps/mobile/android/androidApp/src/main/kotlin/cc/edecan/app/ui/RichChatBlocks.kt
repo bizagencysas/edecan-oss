@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -22,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import cc.edecan.app.ui.theme.EdecanColors
@@ -71,78 +76,132 @@ internal fun BloquesRicosMensaje(
     onCargarPreview: (ChatBlock.Media) -> Unit,
     onAction: (ChatAction) -> Unit,
 ) {
-    bloques.forEach { bloque ->
-        when (bloque) {
-            is ChatBlock.Media -> TarjetaMedia(
-                bloque = bloque,
-                preview = previews[bloque.artifact.fileId],
-                cargando = bloque.artifact.fileId in previewsCargando,
-                onCargar = { onCargarPreview(bloque) },
-            )
-            is ChatBlock.LinkPreview -> TarjetaEnlace(bloque, onAction)
-            is ChatBlock.Flight -> TarjetaVuelo(bloque, onAction)
-            is ChatBlock.Hotel -> TarjetaHotel(bloque, onAction)
-            is ChatBlock.Unknown -> bloque.fallbackText?.takeIf { it.isNotBlank() }?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall)
+    bloques.forEachIndexed { index, bloque ->
+        if (bloque.esBloqueViaje()) {
+            if (index == 0 || !bloques[index - 1].esBloqueViaje()) {
+                CarruselViajes(
+                    bloques = bloques.drop(index).takeWhile { it.esBloqueViaje() },
+                    onAction = onAction,
+                )
+            }
+        } else {
+            when (bloque) {
+                is ChatBlock.Media -> TarjetaMedia(
+                    bloque = bloque,
+                    preview = previews[bloque.artifact.fileId],
+                    cargando = bloque.artifact.fileId in previewsCargando,
+                    onCargar = { onCargarPreview(bloque) },
+                )
+                is ChatBlock.LinkPreview -> EnlaceInternet(bloque, onAction)
+                is ChatBlock.Unknown -> bloque.fallbackText?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+                is ChatBlock.Flight, is ChatBlock.Hotel -> Unit
             }
         }
     }
 }
 
 @Composable
-private fun TarjetaEnlace(bloque: ChatBlock.LinkPreview, onAction: (ChatAction) -> Unit) {
-    TarjetaRica {
-        EtiquetaFuente(bloque.sourceMode, bloque.siteName)
-        Text(bloque.title, style = MaterialTheme.typography.titleSmall)
-        bloque.description?.takeIf { it.isNotBlank() }?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall)
+private fun CarruselViajes(bloques: List<ChatBlock>, onAction: (ChatAction) -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        itemsIndexed(bloques) { _, bloque ->
+            when (bloque) {
+                is ChatBlock.Flight -> TarjetaVuelo(bloque, onAction)
+                is ChatBlock.Hotel -> TarjetaHotel(bloque, onAction)
+                else -> Unit
+            }
         }
-        bloque.observedAt?.let { Text("Consultado: $it", style = MaterialTheme.typography.labelSmall) }
-        Acciones(
-            acciones = bloque.actions.ifEmpty {
-                listOf(ChatAction.OpenUrl("open-link", "Abrir", bloque.url))
-            },
-            onAction = onAction,
+    }
+}
+
+private fun ChatBlock.esBloqueViaje(): Boolean = this is ChatBlock.Flight || this is ChatBlock.Hotel
+
+@Composable
+private fun EnlaceInternet(bloque: ChatBlock.LinkPreview, onAction: (ChatAction) -> Unit) {
+    val titulo = bloque.title.trim().ifBlank {
+        bloque.siteName?.trim().orEmpty().ifBlank { bloque.url }
+    }
+    TextButton(
+        onClick = { onAction(ChatAction.OpenUrl("open-link", "Abrir enlace", bloque.url)) },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = "↗ $titulo",
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
 
 @Composable
 private fun TarjetaVuelo(bloque: ChatBlock.Flight, onAction: (ChatAction) -> Unit) {
-    TarjetaRica {
+    TarjetaRica(modifier = Modifier.width(236.dp), compacta = true) {
         EtiquetaFuente(bloque.sourceMode, bloque.provider)
-        Text("${bloque.origin} → ${bloque.destination}", style = MaterialTheme.typography.titleMedium)
-        Text(bloque.airline, style = MaterialTheme.typography.bodyMedium)
+        Text("${bloque.origin} → ${bloque.destination}", style = MaterialTheme.typography.titleSmall)
+        Text(
+            bloque.airline,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         val horario = listOfNotNull(bloque.departure, bloque.arrival).joinToString(" → ")
-        if (horario.isNotBlank()) Text(horario, style = MaterialTheme.typography.bodySmall)
+        if (horario.isNotBlank()) {
+            Text(horario, style = MaterialTheme.typography.labelSmall, maxLines = 2)
+        }
         Text(
             if (bloque.stops == 0) "Directo" else "${bloque.stops} escala(s)",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
         )
         Text("${bloque.currency} ${bloque.price}", style = MaterialTheme.typography.titleSmall)
-        bloque.taxes?.let { Text("Impuestos: $it", style = MaterialTheme.typography.labelSmall) }
-        bloque.cancellation?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
-        bloque.expiresAt?.let { Text("Oferta válida hasta: $it", style = MaterialTheme.typography.labelSmall) }
-        Acciones(bloque.actions, onAction)
+        bloque.taxes?.let {
+            Text("Impuestos: $it", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+        bloque.cancellation?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        bloque.expiresAt?.let {
+            Text("Válida hasta: $it", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+        Acciones(bloque.actions, onAction, compactas = true)
     }
 }
 
 @Composable
 private fun TarjetaHotel(bloque: ChatBlock.Hotel, onAction: (ChatAction) -> Unit) {
-    TarjetaRica {
+    TarjetaRica(modifier = Modifier.width(236.dp), compacta = true) {
         EtiquetaFuente(bloque.sourceMode, bloque.provider)
-        Text(bloque.name, style = MaterialTheme.typography.titleMedium)
+        Text(
+            bloque.name,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Text(
             listOfNotNull(bloque.city, bloque.rating?.let { "$it★" }).joinToString(" · "),
             style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         val fechas = listOfNotNull(bloque.checkin, bloque.checkout).joinToString(" → ")
-        if (fechas.isNotBlank()) Text(fechas, style = MaterialTheme.typography.bodySmall)
+        if (fechas.isNotBlank()) Text(fechas, style = MaterialTheme.typography.labelSmall, maxLines = 2)
         Text("${bloque.currency} ${bloque.price}", style = MaterialTheme.typography.titleSmall)
-        bloque.taxes?.let { Text("Impuestos: $it", style = MaterialTheme.typography.labelSmall) }
-        bloque.cancellation?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
-        bloque.expiresAt?.let { Text("Oferta válida hasta: $it", style = MaterialTheme.typography.labelSmall) }
-        Acciones(bloque.actions, onAction)
+        bloque.taxes?.let {
+            Text("Impuestos: $it", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+        bloque.cancellation?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        bloque.expiresAt?.let {
+            Text("Válida hasta: $it", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+        Acciones(bloque.actions, onAction, compactas = true)
     }
 }
 
@@ -162,12 +221,36 @@ private fun EtiquetaFuente(sourceMode: String, provider: String?) {
 }
 
 @Composable
-private fun Acciones(acciones: List<ChatAction>, onAction: (ChatAction) -> Unit) {
+private fun Acciones(
+    acciones: List<ChatAction>,
+    onAction: (ChatAction) -> Unit,
+    compactas: Boolean = false,
+) {
     if (acciones.isEmpty()) return
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(if (compactas) 4.dp else 8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         acciones.take(3).forEach { accion ->
             if (accion !is ChatAction.Unknown && accion.label.isNotBlank()) {
-                OutlinedButton(onClick = { onAction(accion) }) { Text(accion.label) }
+                OutlinedButton(
+                    onClick = { onAction(accion) },
+                    contentPadding = if (compactas) {
+                        androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    } else {
+                        androidx.compose.material3.ButtonDefaults.ContentPadding
+                    },
+                ) {
+                    Text(
+                        accion.label,
+                        style = if (compactas) {
+                            MaterialTheme.typography.labelSmall
+                        } else {
+                            MaterialTheme.typography.labelLarge
+                        },
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }
@@ -376,15 +459,19 @@ private fun decodificarImagenAcotada(bytes: ByteArray): ImageBitmap? {
 }
 
 @Composable
-private fun TarjetaRica(content: @Composable ColumnScope.() -> Unit) {
+private fun TarjetaRica(
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    compacta: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        modifier = modifier,
+        shape = RoundedCornerShape(if (compacta) 12.dp else 14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compacta) 4.dp else 6.dp),
+            modifier = Modifier.fillMaxWidth().padding(if (compacta) 10.dp else 12.dp),
             content = content,
         )
     }

@@ -147,10 +147,26 @@ extern "C" {
 }
 
 #[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
 fn capture_screen(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     use base64::Engine as _;
+
+    // Esta consulta no abre ningún diálogo. El teléfono pide frames de forma
+    // continua: lanzar `screencapture` sin autorización haría que macOS
+    // mostrara el mismo modal una y otra vez. El helper autorizado es el
+    // capturador primario; este bridge solo es un fallback seguro.
+    if !unsafe { CGPreflightScreenCaptureAccess() } {
+        return Err(
+            "Grabacion de pantalla no esta autorizada para el proceso principal de Edecan".into(),
+        );
+    }
 
     let display = params
         .get("display")
@@ -173,11 +189,6 @@ fn capture_screen(
     if include_cursor {
         command.arg("-C");
     }
-    // No se usa CGPreflightScreenCaptureAccess como puerta de entrada. En
-    // macOS puede devolver `false` para una app autorizada que lanza el
-    // capturador del sistema y producir un falso bloqueo permanente. El
-    // camino que usa Jarvis y el contrato real de macOS son mas fiables:
-    // ejecutar `screencapture` desde la app responsable y validar su salida.
     let captured = command
         .arg(&output)
         .output()

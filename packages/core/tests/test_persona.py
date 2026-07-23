@@ -198,6 +198,7 @@ def test_prompt_compone_core_identity_y_motores_cognitivos_separados():
         "## Memory Engine",
         "## Planning Engine",
         "## Execution Engine",
+        "## Freshness Engine",
         "## Tool Orchestrator",
         "## Computer Control",
         "## Learning Engine",
@@ -218,6 +219,8 @@ def test_prompt_no_inventa_causas_de_errores_ni_desautoriza_a_la_persona():
     assert "nunca inventes que un modelo, api o función no existe" in prompt
     assert "compruébalo con la fuente o el error real antes de contradecirla" in prompt
     assert "nunca la trates como desinformada" in prompt
+    assert "tu memoria de entrenamiento no es una fuente de actualidad" in prompt
+    assert "sin comprobarlo primero" in prompt
 
 
 def test_core_identity_es_el_texto_canonico_entregado_sin_reescrituras():
@@ -234,13 +237,14 @@ def test_core_identity_es_el_texto_canonico_entregado_sin_reescrituras():
 def test_arquitectura_cognitiva_separa_nucleo_de_modulos_versionables():
     from edecan_core.cognitive_architecture import DEFAULT_COGNITIVE_ARCHITECTURE
 
-    assert DEFAULT_COGNITIVE_ARCHITECTURE.version == "1.0"
+    assert DEFAULT_COGNITIVE_ARCHITECTURE.version == "1.1"
     assert DEFAULT_COGNITIVE_ARCHITECTURE.core.key == "core_identity"
     assert [module.key for module in DEFAULT_COGNITIVE_ARCHITECTURE.modules] == [
         "persona",
         "memory",
         "planning",
         "execution",
+        "freshness",
         "tool_orchestrator",
         "computer_control",
         "learning",

@@ -129,7 +129,11 @@ async def test_tavily_search_parsea_resultados():
     assert b'"api_key":"clave-tavily"' in enviado.content
 
 
-async def test_buscar_web_tool_usa_stub_por_defecto_y_resume(make_ctx):
+async def test_buscar_web_tool_resume_resultados_del_proveedor(make_ctx, monkeypatch):
+    async def proveedor_stub(_ctx):
+        return StubSearch()
+
+    monkeypatch.setattr("edecan_toolkit.research.get_tenant_search_provider", proveedor_stub)
     resultado = await BuscarWebTool().run(make_ctx(), {"consulta": "recetas veganas", "k": 2})
     assert len(resultado.data["resultados"]) == 2
     assert "recetas veganas" in resultado.content

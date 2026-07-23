@@ -850,24 +850,6 @@ def _screenshot_via_screencapture(
     if not isinstance(include_cursor, bool):
         raise ActionError("'include_cursor' debe ser true o false")
 
-    bridge_result = _desktop_bridge_call(
-        "screenshot",
-        {"display": display_index, "include_cursor": include_cursor},
-    )
-    if bridge_result is not None:
-        encoded = bridge_result.get("image_b64")
-        if not isinstance(encoded, str) or not encoded:
-            raise ActionError("el puente nativo devolvio una captura invalida")
-        try:
-            image_bytes = base64.b64decode(encoded, validate=True)
-            from PIL import Image  # type: ignore[import-not-found]
-
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                width, height = image.size
-        except (binascii.Error, ImportError, OSError, ValueError) as exc:
-            raise ActionError(f"el puente nativo devolvio una captura invalida: {exc}") from exc
-        return image_bytes, int(width), int(height), origin_x, origin_y
-
     # El visor movil solicita cuadros de forma continua. Invocar
     # ``screencapture`` mientras TCC esta desactivado hace que macOS vuelva a
     # mostrar su modal por cada intento, lo que deja al usuario atrapado en
@@ -875,7 +857,38 @@ def _screenshot_via_screencapture(
     # tiene el permiso antes de servir capturas. Edecan hace lo mismo de forma
     # explicita: comprueba TCC sin solicitar nada y solo ejecuta la captura
     # cuando el permiso ya esta concedido.
-    if not _macos_screen_capture_allowed():
+    helper_allowed = _macos_screen_capture_allowed()
+    if not helper_allowed:
+        # El permiso de macOS pertenece a una identidad ejecutable concreta.
+        # Si la identidad estable de ``edecan-local`` no está autorizada,
+        # probamos el proceso principal de la app. Nunca hacemos lo contrario:
+        # en instalaciones reales el helper puede estar autorizado mientras
+        # TCC rechaza al proceso Tauri, y priorizar el bridge provoca un modal
+        # infinito aunque el usuario ya concedió el permiso correcto.
+        try:
+            bridge_result = _desktop_bridge_call(
+                "screenshot",
+                {"display": display_index, "include_cursor": include_cursor},
+            )
+        except ActionError:
+            logger.info(
+                "El proceso principal tampoco puede capturar; no se invocará screencapture.",
+                exc_info=True,
+            )
+            bridge_result = None
+        if bridge_result is not None:
+            encoded = bridge_result.get("image_b64")
+            if not isinstance(encoded, str) or not encoded:
+                raise ActionError("el puente nativo devolvio una captura invalida")
+            try:
+                image_bytes = base64.b64decode(encoded, validate=True)
+                from PIL import Image  # type: ignore[import-not-found]
+
+                with Image.open(io.BytesIO(image_bytes)) as image:
+                    width, height = image.size
+            except (binascii.Error, ImportError, OSError, ValueError) as exc:
+                raise ActionError(f"el puente nativo devolvio una captura invalida: {exc}") from exc
+            return image_bytes, int(width), int(height), origin_x, origin_y
         raise ActionError(
             "Grabacion de pantalla esta desactivada para Edecan. Abre "
             "Configuracion del Sistema > Privacidad y seguridad > "

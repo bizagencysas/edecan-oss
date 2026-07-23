@@ -206,6 +206,89 @@ async def test_cambiar_modelo_no_cambia_las_capacidades_ofrecidas():
     assert provider_b.received_requests[0].model == "modelo-nube"
 
 
+@pytest.mark.asyncio
+async def test_hecho_volatil_se_investiga_antes_de_responder_sin_cards_ni_eventos_de_tool():
+    web = FakeTool(
+        name="buscar_web",
+        result=ToolResult(
+            content=(
+                "1. Models | OpenAI API — https://developers.openai.com/api/docs/models\n"
+                "   GPT-5.6 Sol, Terra y Luna son modelos oficiales."
+            ),
+            presentation=[
+                {
+                    "type": "link_preview",
+                    "url": "https://developers.openai.com/api/docs/models",
+                    "fallback_text": "Models",
+                }
+            ],
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(web)
+    provider = FakeProvider([[text_chunk("Son tres modelos oficiales."), usage_chunk()]])
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider, model="gpt-5.6-terra"), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="¿Cuál es la diferencia entre Luna, Terra y Sol de ChatGPT?",
+        flags={},
+    )
+
+    assert len(web.calls) == 1
+    assert "fuentes oficiales primarias" in web.calls[0]["consulta"]
+    assert web.calls[0]["k"] == 6
+    assert [type(event) for event in events] == [TextDeltaEvent, DoneEvent]
+    prompt = provider.received_requests[0].system
+    assert "## Evidencia actual automática" in prompt
+    assert "https://developers.openai.com/api/docs/models" in prompt
+    assert "Modelo activo: gpt-5.6-terra" in prompt
+    assert "Fecha actual:" in prompt
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_grounding_no_permite_negar_desde_memoria():
+    registry = ToolRegistry()
+    registry.register(FakeTool(name="buscar_web", raises=RuntimeError("sin red")))
+    provider = FakeProvider([[text_chunk("No pude verificarlo."), usage_chunk()]])
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="¿Existe actualmente el modelo X de OpenAI?",
+        flags={},
+    )
+
+    assert [type(event) for event in events] == [TextDeltaEvent, DoneEvent]
+    prompt = provider.received_requests[0].system
+    assert "No adivines ni niegues la afirmación" in prompt
+    assert "qué quedó sin verificar" in prompt
+
+
+@pytest.mark.asyncio
+async def test_peticion_creativa_no_hace_busqueda_automatica():
+    web = FakeTool(name="buscar_web")
+    registry = ToolRegistry()
+    registry.register(web)
+    provider = FakeProvider([[text_chunk("Poema"), usage_chunk()]])
+
+    await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Escribe un poema sobre la luna.",
+        flags={},
+    )
+
+    assert web.calls == []
+    assert "## Evidencia actual automática" not in provider.received_requests[0].system
+
+
 # --------------------------------------------------------------------------
 # Turno con una herramienta no peligrosa
 # --------------------------------------------------------------------------

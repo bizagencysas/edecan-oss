@@ -532,7 +532,31 @@ def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(
     assert called is False
 
 
-def test_native_macos_capture_prefers_authorized_desktop_bridge(monkeypatch):
+def test_native_macos_capture_prefers_authorized_helper_over_desktop_bridge(monkeypatch):
+    from PIL import Image
+
+    def fake_run(command, **kwargs):
+        Image.new("RGB", (100, 80)).save(Path(command[-1]), format="PNG")
+        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
+    monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
+    monkeypatch.setattr(
+        actions,
+        "_desktop_bridge_call",
+        lambda action, params: (_ for _ in ()).throw(
+            AssertionError("no debe usar el bridge si edecan-local ya está autorizado")
+        ),
+    )
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+
+    image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})
+
+    assert image_bytes.startswith(b"\x89PNG")
+    assert (width, height, origin_x, origin_y) == (100, 80, 0, 0)
+
+
+def test_native_macos_capture_uses_desktop_bridge_only_if_helper_is_not_authorized(monkeypatch):
     from PIL import Image
 
     buffer = io.BytesIO()
@@ -546,7 +570,7 @@ def test_native_macos_capture_prefers_authorized_desktop_bridge(monkeypatch):
     monkeypatch.setattr(
         actions,
         "_macos_screen_capture_allowed",
-        lambda: (_ for _ in ()).throw(AssertionError("no debe consultar TCC en el sidecar")),
+        lambda: False,
     )
 
     image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})

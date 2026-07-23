@@ -69,11 +69,14 @@ export default function LlamadasPage() {
 
   const [agentId, setAgentId] = useState("");
   const [toE164, setToE164] = useState("");
+  const [recipientName, setRecipientName] = useState("");
   const [goal, setGoal] = useState("");
   const [hasConsent, setHasConsent] = useState(false);
   const [consentSource, setConsentSource] = useState("");
   const [confirmDestination, setConfirmDestination] = useState(false);
+  const [confirmRecipient, setConfirmRecipient] = useState(false);
   const [confirmGoal, setConfirmGoal] = useState(false);
+  const [confirmAgent, setConfirmAgent] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,8 +95,9 @@ export default function LlamadasPage() {
       setCalls(recentCalls);
       setLlmReady(Boolean(credentials.llm));
       setTtsReady(Boolean(credentials.voice_tts));
-      if (!agentId && agents.length > 0) {
-        const preferred = agents.find((item) => item.is_default) ?? agents[0];
+      const outboundAgents = agents.filter((item) => item.handles_outbound);
+      if (!agentId && outboundAgents.length > 0) {
+        const preferred = outboundAgents.find((item) => item.is_default) ?? outboundAgents[0];
         setAgentId(preferred.id);
         setGoal(preferred.default_goal);
       }
@@ -114,7 +118,15 @@ export default function LlamadasPage() {
     () => templates.find((template) => template.id === agentId) ?? null,
     [agentId, templates],
   );
-  const setupReady = Boolean(twilioNumber && llmReady && templates.length > 0);
+  const outboundAgents = useMemo(
+    () => templates.filter((template) => template.handles_outbound),
+    [templates],
+  );
+  const inboundAgent = useMemo(
+    () => templates.find((template) => template.is_inbound_default) ?? null,
+    [templates],
+  );
+  const setupReady = Boolean(twilioNumber && llmReady && outboundAgents.length > 0);
 
   function chooseAgent(nextId: string) {
     setAgentId(nextId);
@@ -141,13 +153,18 @@ export default function LlamadasPage() {
       });
       const prepared = await preparePhoneCall({
         to_e164: toE164,
+        recipient_name: recipientName.trim(),
         goal: goal.trim(),
-        agent_template_id: agentId || undefined,
+        agent_template_id: agentId,
       });
       setDraft(prepared);
       setConfirmDestination(false);
+      setConfirmRecipient(false);
       setConfirmGoal(false);
-      setSuccess("Borrador listo. Revisa el número y el objetivo antes de iniciar la llamada.");
+      setConfirmAgent(false);
+      setSuccess(
+        "Borrador listo. Revisa la persona, el número, el agente y el objetivo antes de llamar.",
+      );
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo preparar la llamada.");
@@ -157,7 +174,15 @@ export default function LlamadasPage() {
   }
 
   async function confirm() {
-    if (!draft || !confirmDestination || !confirmGoal) return;
+    if (
+      !draft ||
+      !confirmDestination ||
+      !confirmRecipient ||
+      !confirmGoal ||
+      !confirmAgent
+    ) {
+      return;
+    }
     setBusy("confirm");
     setError(null);
     setSuccess(null);
@@ -180,7 +205,7 @@ export default function LlamadasPage() {
     try {
       const result = await setupIncomingCalls();
       setSuccess(
-        `Listo. Las llamadas que entren a ${result.phone_number} serán atendidas por tu agente predeterminado.`,
+        `Listo. Las llamadas que entren a ${result.phone_number} serán atendidas por ${result.agent_name}.`,
       );
     } catch (err) {
       setError(
@@ -230,9 +255,13 @@ export default function LlamadasPage() {
                   href="/app/ajustes#conexiones"
                 />
                 <SetupStatus
-                  ready={templates.length > 0}
+                  ready={outboundAgents.length > 0}
                   title="Agente"
-                  detail={templates.length > 0 ? `${templates.length} configurado(s)` : "Cuéntale a Edecan qué debe hacer"}
+                  detail={
+                    outboundAgents.length > 0
+                      ? `${outboundAgents.length} disponible(s) para llamar`
+                      : "Configura una identidad para llamadas salientes"
+                  }
                   href="#agentes"
                 />
                 <SetupStatus
@@ -253,7 +282,7 @@ export default function LlamadasPage() {
           <Card>
             <CardHeader
               title="Recibir llamadas"
-              description="Edecan configura tu número de Twilio para que el agente predeterminado atienda, transcriba y deje un resumen."
+              description="El agente entrante predeterminado atenderá con su propia identidad, voz y límites."
             />
             <CardBody>
               <div className="flex flex-wrap items-center justify-between gap-4">
@@ -262,14 +291,16 @@ export default function LlamadasPage() {
                     {twilioNumber ?? "Todavía no hay un número conectado"}
                   </p>
                   <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                    Puedes usar este botón también para reparar el webhook si cambiaste el túnel o el dominio.
+                    {inboundAgent
+                      ? `${inboundAgent.name} se presenta como ${inboundAgent.agent_name}.`
+                      : "Elige primero un agente predeterminado para recibir llamadas."}
                   </p>
                 </div>
                 <Button
                   type="button"
                   variant="secondary"
                   loading={busy === "incoming"}
-                  disabled={!twilioNumber || templates.length === 0}
+                  disabled={!twilioNumber || !inboundAgent}
                   onClick={() => void configureIncoming()}
                 >
                   Configurar o reparar recepción
@@ -293,7 +324,7 @@ export default function LlamadasPage() {
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Field label="Agente que llamará" htmlFor="call-agent">
                       <Select id="call-agent" value={agentId} onChange={(event) => chooseAgent(event.target.value)} required>
-                        {templates.map((template) => (
+                        {outboundAgents.map((template) => (
                           <option key={template.id} value={template.id}>
                             {template.name} · {template.agent_name}
                           </option>
@@ -311,6 +342,24 @@ export default function LlamadasPage() {
                       />
                     </Field>
                   </div>
+                  <Field
+                    label="A quién pertenece ese número"
+                    htmlFor="call-recipient"
+                    hint="Nombre de la persona o empresa. Edecan nunca lo deduce solo por el teléfono."
+                  >
+                    <Input
+                      id="call-recipient"
+                      value={recipientName}
+                      onChange={(event) => {
+                        setRecipientName(event.target.value);
+                        setDraft(null);
+                      }}
+                      placeholder="María Pérez"
+                      autoComplete="name"
+                      maxLength={160}
+                      required
+                    />
+                  </Field>
                   <Field label="Qué debe conseguir en esta llamada" htmlFor="call-goal">
                     <Textarea
                       id="call-goal"
@@ -351,15 +400,32 @@ export default function LlamadasPage() {
                 <div className="mt-5 rounded-xl border-2 border-brand-300 bg-brand-50/60 p-4 dark:border-brand-800 dark:bg-brand-950/20">
                   <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Confirmación final</p>
                   <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-                    <div><dt className="text-slate-500">Destino</dt><dd className="font-medium">{draft.to_e164}</dd></div>
-                    <div><dt className="text-slate-500">Agente</dt><dd className="font-medium">{draft.agent?.name ?? selectedAgent?.agent_name}</dd></div>
+                    <div><dt className="text-slate-500">Persona</dt><dd className="font-medium">{draft.recipient_name}</dd></div>
+                    <div><dt className="text-slate-500">Número</dt><dd className="font-medium">{draft.to_e164}</dd></div>
+                    <div>
+                      <dt className="text-slate-500">Agente exacto</dt>
+                      <dd className="font-medium">
+                        {draft.agent?.template_name ?? selectedAgent?.name} ·{" "}
+                        {draft.agent?.name ?? selectedAgent?.agent_name}
+                      </dd>
+                    </div>
                     <div className="sm:col-span-2"><dt className="text-slate-500">Objetivo</dt><dd className="font-medium">{draft.goal}</dd></div>
                   </dl>
                   <div className="mt-4 space-y-2">
                     <Checkbox
+                      checked={confirmRecipient}
+                      onChange={(event) => setConfirmRecipient(event.target.checked)}
+                      label={`Confirmo que el número pertenece a ${draft.recipient_name}`}
+                    />
+                    <Checkbox
                       checked={confirmDestination}
                       onChange={(event) => setConfirmDestination(event.target.checked)}
                       label={`Revisé y confirmo el número ${draft.to_e164}`}
+                    />
+                    <Checkbox
+                      checked={confirmAgent}
+                      onChange={(event) => setConfirmAgent(event.target.checked)}
+                      label={`Confirmo que debe llamar ${draft.agent?.template_name ?? "este agente"}`}
                     />
                     <Checkbox
                       checked={confirmGoal}
@@ -371,7 +437,12 @@ export default function LlamadasPage() {
                     type="button"
                     className="mt-4"
                     loading={busy === "confirm"}
-                    disabled={!confirmDestination || !confirmGoal}
+                    disabled={
+                      !confirmDestination ||
+                      !confirmRecipient ||
+                      !confirmGoal ||
+                      !confirmAgent
+                    }
                     onClick={() => void confirm()}
                   >
                     Llamar ahora
@@ -393,7 +464,11 @@ export default function LlamadasPage() {
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <p className="font-medium text-slate-900 dark:text-slate-100">
-                            {call.direction === "incoming" ? call.from_e164 : call.to_e164}
+                            {call.direction === "incoming"
+                              ? call.from_e164
+                              : call.recipient_name
+                                ? `${call.recipient_name} · ${call.to_e164}`
+                                : call.to_e164}
                           </p>
                           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{call.goal}</p>
                         </div>

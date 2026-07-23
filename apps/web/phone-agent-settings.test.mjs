@@ -15,7 +15,14 @@ test("Ajustes ofrece agentes de llamadas reutilizables con lenguaje humano", () 
   assert.match(settings, /Ventas consultivas/);
   assert.match(settings, /Seguimiento y citas/);
   assert.match(settings, /hasta 20 identidades separadas/);
-  assert.match(settings, /atender llamadas entrantes/);
+  assert.match(settings, /Puede recibir llamadas/);
+  assert.match(settings, /Cómo piensa y conversa/);
+  assert.match(settings, /Problemas que sí puede resolver/);
+  assert.match(settings, /Problemas que no puede resolver/);
+  assert.match(settings, /Acciones que sí puede realizar/);
+  assert.match(settings, /Lo que nunca debe hacer/);
+  assert.match(settings, /Cuándo debe pedir ayuda/);
+  assert.match(settings, /Cómo sabe que terminó bien/);
   assert.match(settings, /Qué debe lograr normalmente/);
   assert.match(settings, /Información que este agente puede usar y decir/);
   assert.match(settings, /Edecan no comparte el resto de tu memoria/);
@@ -25,10 +32,11 @@ test("Ajustes ofrece agentes de llamadas reutilizables con lenguaje humano", () 
   assert.match(settings, /ninguna plantilla puede saltarse el consentimiento ni la confirmación final/);
 });
 
-test("Llamadas tiene diagnóstico, configuración guiada y dos confirmaciones", () => {
+test("Llamadas tiene diagnóstico, configuración guiada y preflight completo", () => {
   const calls = source("./src/app/(app)/app/llamadas/page.tsx");
   const nav = source("./src/components/layout/nav-items.ts");
   const connectors = source("./src/components/configuracion/ConnectorsSettings.tsx");
+  const confirmation = source("./src/components/chat/ConfirmationCard.tsx");
 
   assert.match(nav, /href: "\/app\/llamadas",\s*label: "Llamadas"/);
   assert.match(calls, /Qué falta para llamar/);
@@ -39,7 +47,15 @@ test("Llamadas tiene diagnóstico, configuración guiada y dos confirmaciones", 
   assert.match(calls, /Configurar o reparar recepción/);
   assert.match(calls, /setupIncomingCalls/);
   assert.match(calls, /confirmDestination/);
+  assert.match(calls, /confirmRecipient/);
   assert.match(calls, /confirmGoal/);
+  assert.match(calls, /confirmAgent/);
+  assert.match(calls, /Agente exacto/);
+  assert.match(confirmation, /name === "llamar_contacto"/);
+  assert.match(confirmation, /args\.destinatario/);
+  assert.match(confirmation, /args\.telefono_e164/);
+  assert.match(confirmation, /args\.agente/);
+  assert.match(confirmation, /args\.objetivo/);
   assert.match(connectors, /id="connector-twilio"/);
 });
 

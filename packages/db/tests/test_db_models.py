@@ -157,18 +157,31 @@ def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llama
     assert templates.columns["knowledge_context"].nullable is False
     assert templates.columns["required_information"].nullable is False
     assert templates.columns["voice_id"].nullable is True
+    assert templates.columns["operating_profile"].nullable is False
+    assert templates.columns["handles_inbound"].nullable is False
+    assert templates.columns["handles_outbound"].nullable is False
+    assert templates.columns["is_inbound_default"].nullable is False
     default_index = next(
         index for index in templates.indexes if index.name == "uq_phone_agent_templates_default"
     )
     assert default_index.unique is True
     assert str(default_index.dialect_options["postgresql"]["where"]) == "is_default"
+    inbound_default_index = next(
+        index
+        for index in templates.indexes
+        if index.name == "uq_phone_agent_templates_inbound_default"
+    )
+    assert inbound_default_index.unique is True
+    assert str(inbound_default_index.dialect_options["postgresql"]["where"]) == "is_inbound_default"
 
     calls = Base.metadata.tables["phone_calls"].columns
     for field in (
+        "recipient_name",
         "agent_template_id",
         "agent_template_name",
         "agent_name",
         "agent_prompt",
+        "agent_operating_profile",
         "opening_message",
         "voice_id",
     ):

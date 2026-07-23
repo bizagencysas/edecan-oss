@@ -193,6 +193,10 @@ class Repo(Protocol):
         knowledge_context: str = "",
         required_information: str = "",
         voice_id: str | None = None,
+        operating_profile: dict[str, Any] | None = None,
+        handles_inbound: bool = True,
+        handles_outbound: bool = True,
+        is_inbound_default: bool = False,
     ) -> Row: ...
     async def list_phone_agent_templates(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
@@ -203,6 +207,9 @@ class Repo(Protocol):
     async def get_default_phone_agent_template(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> Row | None: ...
+    async def get_inbound_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None: ...
     async def update_phone_agent_template(
         self,
         *,
@@ -211,6 +218,9 @@ class Repo(Protocol):
         fields: dict[str, Any],
     ) -> Row | None: ...
     async def clear_default_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None: ...
+    async def clear_inbound_phone_agent_template(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
     ) -> None: ...
     async def delete_phone_agent_template(
@@ -226,6 +236,7 @@ class Repo(Protocol):
         from_e164: str,
         to_e164: str,
         goal: str,
+        recipient_name: str | None = None,
         status: str = "draft",
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
@@ -234,6 +245,7 @@ class Repo(Protocol):
         agent_prompt: str | None = None,
         opening_message: str | None = None,
         voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
     ) -> Row: ...
     async def list_phone_calls(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, limit: int = 50
@@ -915,16 +927,24 @@ class SqlRepo:
         knowledge_context: str = "",
         required_information: str = "",
         voice_id: str | None = None,
+        operating_profile: dict[str, Any] | None = None,
+        handles_inbound: bool = True,
+        handles_outbound: bool = True,
+        is_inbound_default: bool = False,
     ) -> Row:
         row = await self._first(
             """
             INSERT INTO phone_agent_templates (
                 id, tenant_id, user_id, name, agent_name, persona_prompt, default_goal,
-                opening_message, knowledge_context, required_information, voice_id, is_default,
+                opening_message, knowledge_context, required_information, voice_id,
+                operating_profile, handles_inbound, handles_outbound, is_default,
+                is_inbound_default,
                 created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :name, :agent_name, :persona_prompt, :default_goal,
-                :opening_message, :knowledge_context, :required_information, :voice_id, :is_default,
+                :opening_message, :knowledge_context, :required_information, :voice_id,
+                CAST(:operating_profile AS jsonb), :handles_inbound, :handles_outbound, :is_default,
+                :is_inbound_default,
                 :now, :now
             ) RETURNING *
             """,
@@ -940,7 +960,11 @@ class SqlRepo:
                 "knowledge_context": knowledge_context,
                 "required_information": required_information,
                 "voice_id": voice_id,
+                "operating_profile": _j(operating_profile or {}),
+                "handles_inbound": handles_inbound,
+                "handles_outbound": handles_outbound,
                 "is_default": is_default,
+                "is_inbound_default": is_inbound_default,
                 "now": _now(),
             },
         )
@@ -983,6 +1007,20 @@ class SqlRepo:
             {"tenant_id": tenant_id, "user_id": user_id},
         )
 
+    async def get_inbound_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM phone_agent_templates
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND is_inbound_default AND handles_inbound
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id},
+        )
+
     async def update_phone_agent_template(
         self,
         *,
@@ -999,12 +1037,21 @@ class SqlRepo:
             "knowledge_context",
             "required_information",
             "voice_id",
+            "operating_profile",
+            "handles_inbound",
+            "handles_outbound",
             "is_default",
+            "is_inbound_default",
         }
         clean = {key: value for key, value in fields.items() if key in allowed}
         if not clean:
             return await self.get_phone_agent_template(tenant_id=tenant_id, template_id=template_id)
-        set_clause = ", ".join(f"{key} = :{key}" for key in clean)
+        set_clause = ", ".join(
+            (f"{key} = CAST(:{key} AS jsonb)" if key == "operating_profile" else f"{key} = :{key}")
+            for key in clean
+        )
+        if "operating_profile" in clean:
+            clean["operating_profile"] = _j(clean["operating_profile"])
         return await self._first(
             f"UPDATE phone_agent_templates SET {set_clause}, updated_at = :now "
             "WHERE tenant_id = :tenant_id AND id = :id RETURNING *",
@@ -1021,6 +1068,25 @@ class SqlRepo:
             SET is_default = false, updated_at = :now
             WHERE tenant_id = :tenant_id AND user_id = :user_id
               AND is_default {extra}
+            """,
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "except_id": except_id,
+                "now": _now(),
+            },
+        )
+
+    async def clear_inbound_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None:
+        extra = "AND id <> :except_id" if except_id is not None else ""
+        await self._exec(
+            f"""
+            UPDATE phone_agent_templates
+            SET is_inbound_default = false, updated_at = :now
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND is_inbound_default {extra}
             """,
             {
                 "tenant_id": tenant_id,
@@ -1050,6 +1116,7 @@ class SqlRepo:
         from_e164: str,
         to_e164: str,
         goal: str,
+        recipient_name: str | None = None,
         status: str = "draft",
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
@@ -1058,19 +1125,21 @@ class SqlRepo:
         agent_prompt: str | None = None,
         opening_message: str | None = None,
         voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
     ) -> Row:
         row = await self._first(
             """
             INSERT INTO phone_calls (
                 id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
-                goal, agent_template_id, agent_template_name, agent_name, agent_prompt,
-                opening_message, voice_id,
+                recipient_name, goal, agent_template_id, agent_template_name, agent_name,
+                agent_prompt, opening_message, voice_id, agent_operating_profile,
                 status, provider, provider_call_sid, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
-                :to_e164, :goal, :agent_template_id, :agent_template_name, :agent_name,
-                :agent_prompt,
-                :opening_message, :voice_id, :status, 'twilio', :provider_call_sid, :now, :now
+                :to_e164, :recipient_name, :goal, :agent_template_id, :agent_template_name,
+                :agent_name, :agent_prompt, :opening_message, :voice_id,
+                CAST(:agent_operating_profile AS jsonb), :status, 'twilio',
+                :provider_call_sid, :now, :now
             ) RETURNING *
             """,
             {
@@ -1081,6 +1150,7 @@ class SqlRepo:
                 "direction": direction,
                 "from_e164": from_e164,
                 "to_e164": to_e164,
+                "recipient_name": recipient_name,
                 "goal": goal,
                 "agent_template_id": agent_template_id,
                 "agent_template_name": agent_template_name,
@@ -1088,6 +1158,7 @@ class SqlRepo:
                 "agent_prompt": agent_prompt,
                 "opening_message": opening_message,
                 "voice_id": voice_id,
+                "agent_operating_profile": _j(agent_operating_profile),
                 "status": status,
                 "provider_call_sid": provider_call_sid,
                 "now": _now(),

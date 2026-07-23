@@ -397,8 +397,9 @@ class ListarAgentesLlamadasTool(Tool):
     name = "listar_agentes_llamadas"
     description = (
         "Lista los agentes telefónicos configurados por esta persona, sus nombres exactos, "
-        "objetivos y cuál atiende por defecto. Úsala antes de llamar cuando el nombre pedido "
-        "sea dudoso. Nunca inventes un agente ni sustituyas uno por otro."
+        "identidades, funciones, capacidades, límites, direcciones y voces. Úsala antes de "
+        "llamar cuando el nombre pedido sea dudoso. Nunca inventes un agente ni sustituyas "
+        "uno por otro."
     )
     requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
     input_schema = {"type": "object", "properties": {}}
@@ -407,10 +408,11 @@ class ListarAgentesLlamadasTool(Tool):
         result = await ctx.session.execute(
             sql_text(
                 """
-                SELECT id, name, agent_name, default_goal, is_default
+                SELECT id, name, agent_name, default_goal, operating_profile,
+                       handles_inbound, handles_outbound, is_default, is_inbound_default
                 FROM phone_agent_templates
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
-                ORDER BY is_default DESC, created_at ASC, id ASC
+                ORDER BY is_default DESC, is_inbound_default DESC, created_at ASC, id ASC
                 """
             ),
             {"tenant_id": str(ctx.tenant_id), "user_id": str(ctx.user_id)},
@@ -424,14 +426,25 @@ class ListarAgentesLlamadasTool(Tool):
                 ),
                 data={"agentes": []},
             )
-        lines = [
-            (
-                f"- {row['name']} (se presenta como {row['agent_name']})"
-                f"{' · predeterminado y entrantes' if row['is_default'] else ''}: "
-                f"{row['default_goal']}"
+        lines: list[str] = []
+        for row in rows:
+            profile = dict(row.get("operating_profile") or {})
+            directions: list[str] = []
+            if row.get("handles_outbound", True):
+                directions.append("salientes")
+            if row.get("handles_inbound", True):
+                directions.append("entrantes")
+            defaults: list[str] = []
+            if row.get("is_default"):
+                defaults.append("predeterminado para llamar")
+            if row.get("is_inbound_default"):
+                defaults.append("predeterminado para recibir")
+            role = str(profile.get("funcion_y_mision") or row["default_goal"]).strip()
+            suffix = f" · {', '.join(defaults)}" if defaults else ""
+            lines.append(
+                f"- {row['name']} (se presenta como {row['agent_name']}; "
+                f"{' y '.join(directions) or 'sin dirección'}{suffix}): {role}"
             )
-            for row in rows
-        ]
         return ToolResult(
             content="Agentes de llamada disponibles:\n" + "\n".join(lines),
             data={
@@ -441,7 +454,11 @@ class ListarAgentesLlamadasTool(Tool):
                         "nombre": row["name"],
                         "identidad": row["agent_name"],
                         "objetivo": row["default_goal"],
-                        "predeterminado": bool(row["is_default"]),
+                        "perfil_operativo": dict(row.get("operating_profile") or {}),
+                        "atiende_entrantes": bool(row.get("handles_inbound", True)),
+                        "realiza_salientes": bool(row.get("handles_outbound", True)),
+                        "predeterminado_salientes": bool(row["is_default"]),
+                        "predeterminado_entrantes": bool(row.get("is_inbound_default")),
                     }
                     for row in rows
                 ]
@@ -456,9 +473,11 @@ class ConfigurarAgenteLlamadasTool(Tool):
     description = (
         "Crea o actualiza un agente telefónico reutilizable. Antes de invocarla, reúne con "
         "preguntas breves lo necesario: nombre para seleccionarlo, identidad al presentarse, "
-        "función, objetivo, forma de conversar, contexto autorizado frente a terceros y datos "
-        "que debe obtener. No inventes precios, políticas ni información del negocio. Si falta "
-        "contexto esencial, pregúntalo. Un mismo nombre actualiza el agente existente."
+        "misión, problemas que puede y no puede resolver, acciones permitidas, prohibiciones, "
+        "escalamiento, criterio de éxito, forma de conversar, voz, contexto autorizado frente "
+        "a terceros y datos que debe obtener. No inventes precios, políticas ni información "
+        "del negocio. Si falta contexto esencial, pregúntalo. Un mismo nombre actualiza el "
+        "agente existente."
     )
     requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
     input_schema = {
@@ -475,6 +494,36 @@ class ConfigurarAgenteLlamadasTool(Tool):
             "personalidad": {
                 "type": "string",
                 "description": "Cómo escucha, pregunta, explica, negocia y cierra.",
+            },
+            "funcion_y_mision": {
+                "type": "string",
+                "description": "Rol específico, propósito y responsabilidad principal del agente.",
+            },
+            "problemas_que_resuelve": {
+                "type": "string",
+                "description": "Solicitudes y problemas que este agente sí puede atender.",
+            },
+            "problemas_fuera_de_alcance": {
+                "type": "string",
+                "description": "Solicitudes y problemas que este agente no puede resolver.",
+            },
+            "acciones_permitidas": {
+                "type": "string",
+                "description": "Acciones concretas que este agente sí puede realizar.",
+            },
+            "acciones_prohibidas": {
+                "type": "string",
+                "description": "Lo que este agente nunca debe decir, prometer ni hacer.",
+            },
+            "reglas_de_escalamiento": {
+                "type": "string",
+                "description": (
+                    "Cuándo debe detenerse, pedir ayuda, transferir o dejar un recado."
+                ),
+            },
+            "criterio_de_exito": {
+                "type": "string",
+                "description": "Cómo reconoce un resultado correcto y cómo cierra la llamada.",
             },
             "objetivo": {
                 "type": "string",
@@ -504,12 +553,41 @@ class ConfigurarAgenteLlamadasTool(Tool):
                     "para usar la voz predeterminada."
                 ),
             },
+            "atiende_entrantes": {
+                "type": "boolean",
+                "description": "Si esta identidad puede atender llamadas entrantes.",
+            },
+            "realiza_salientes": {
+                "type": "boolean",
+                "description": "Si esta identidad puede realizar llamadas salientes.",
+            },
+            "predeterminado_salientes": {
+                "type": "boolean",
+                "description": "Si es el agente predeterminado para llamadas salientes.",
+            },
+            "predeterminado_entrantes": {
+                "type": "boolean",
+                "description": "Si es el agente predeterminado para llamadas entrantes.",
+            },
             "predeterminado": {
                 "type": "boolean",
-                "description": "Si atiende entrantes y se usa cuando no se indica otro.",
+                "description": (
+                    "Compatibilidad: si es true y no se indican los dos campos anteriores, "
+                    "lo vuelve predeterminado para entrantes y salientes."
+                ),
             },
         },
-        "required": ["nombre", "identidad", "personalidad", "objetivo"],
+        "required": [
+            "nombre",
+            "identidad",
+            "personalidad",
+            "funcion_y_mision",
+            "problemas_que_resuelve",
+            "problemas_fuera_de_alcance",
+            "acciones_permitidas",
+            "acciones_prohibidas",
+            "objetivo",
+        ],
     }
 
     async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -521,11 +599,34 @@ class ConfigurarAgenteLlamadasTool(Tool):
         knowledge_context = _cap_str(args.get("contexto_autorizado"), 6000)
         required_information = _cap_str(args.get("informacion_a_obtener"), 3000)
         voice_id = _cap_str(args.get("voice_id"), 200)
-        if not all((name, agent_name, persona_prompt, default_goal)):
+        operating_profile = {
+            "funcion_y_mision": _cap_str(args.get("funcion_y_mision"), 2000),
+            "capabilities": _cap_str(args.get("problemas_que_resuelve"), 4000),
+            "out_of_scope": _cap_str(args.get("problemas_fuera_de_alcance"), 4000),
+            "allowed_actions": _cap_str(args.get("acciones_permitidas"), 4000),
+            "prohibited_actions": _cap_str(args.get("acciones_prohibidas"), 4000),
+            "escalation_rules": _cap_str(args.get("reglas_de_escalamiento"), 3000),
+            "success_criteria": _cap_str(args.get("criterio_de_exito"), 2000),
+        }
+        if not all(
+            (
+                name,
+                agent_name,
+                persona_prompt,
+                operating_profile["funcion_y_mision"],
+                operating_profile["capabilities"],
+                operating_profile["out_of_scope"],
+                operating_profile["allowed_actions"],
+                operating_profile["prohibited_actions"],
+                default_goal,
+            )
+        ):
             return ToolResult(
                 content=(
-                    "Antes de guardar necesito el nombre del agente, cómo se presenta, su "
-                    "forma de conversar y el objetivo que debe conseguir."
+                    "Antes de guardar necesito el nombre del agente, cómo se presenta, cómo "
+                    "piensa y conversa, su misión, qué problemas puede y no puede resolver, "
+                    "qué acciones puede realizar, qué tiene prohibido y el objetivo que debe "
+                    "conseguir."
                 )
             )
 
@@ -545,7 +646,68 @@ class ConfigurarAgenteLlamadasTool(Tool):
             },
         )
         existing = existing_result.mappings().first()
-        make_default = bool(args.get("predeterminado"))
+        if existing is not None:
+            current_profile = dict(existing.get("operating_profile") or {})
+            profile_args = {
+                "funcion_y_mision": "funcion_y_mision",
+                "capabilities": "problemas_que_resuelve",
+                "out_of_scope": "problemas_fuera_de_alcance",
+                "allowed_actions": "acciones_permitidas",
+                "prohibited_actions": "acciones_prohibidas",
+                "escalation_rules": "reglas_de_escalamiento",
+                "success_criteria": "criterio_de_exito",
+            }
+            for profile_key, arg_key in profile_args.items():
+                if arg_key not in args:
+                    operating_profile[profile_key] = str(current_profile.get(profile_key) or "")
+        legacy_default_supplied = "predeterminado" in args
+        legacy_default = bool(args.get("predeterminado"))
+        handles_inbound = bool(
+            args.get(
+                "atiende_entrantes",
+                existing.get("handles_inbound", True) if existing is not None else True,
+            )
+        )
+        handles_outbound = bool(
+            args.get(
+                "realiza_salientes",
+                existing.get("handles_outbound", True) if existing is not None else True,
+            )
+        )
+        if not handles_inbound and not handles_outbound:
+            return ToolResult(
+                content="El agente debe atender llamadas entrantes, salientes o ambas."
+            )
+        make_default = bool(
+            args.get(
+                "predeterminado_salientes",
+                legacy_default
+                if legacy_default_supplied
+                else (existing.get("is_default", False) if existing is not None else False),
+            )
+        )
+        make_inbound_default = bool(
+            args.get(
+                "predeterminado_entrantes",
+                legacy_default
+                if legacy_default_supplied
+                else (existing.get("is_inbound_default", False) if existing is not None else False),
+            )
+        )
+        if make_default and not handles_outbound:
+            return ToolResult(
+                content=(
+                    "Un agente sin llamadas salientes no puede ser el "
+                    "predeterminado para llamar."
+                )
+            )
+        if make_inbound_default and not handles_inbound:
+            return ToolResult(
+                content=(
+                    "Un agente sin llamadas entrantes no puede ser el "
+                    "predeterminado para recibir."
+                )
+            )
         if existing is None:
             count_result = await ctx.session.execute(
                 sql_text(
@@ -562,7 +724,8 @@ class ConfigurarAgenteLlamadasTool(Tool):
                 return ToolResult(
                     content="Ya tienes 20 agentes de llamada. Elimina uno antes de crear otro."
                 )
-            make_default = make_default or total == 0
+            make_default = make_default or (total == 0 and handles_outbound)
+            make_inbound_default = make_inbound_default or (total == 0 and handles_inbound)
 
         if make_default:
             await ctx.session.execute(
@@ -571,6 +734,22 @@ class ConfigurarAgenteLlamadasTool(Tool):
                     UPDATE phone_agent_templates
                     SET is_default = false, updated_at = :now
                     WHERE tenant_id = :tenant_id AND user_id = :user_id AND is_default
+                    """
+                ),
+                {
+                    "tenant_id": str(ctx.tenant_id),
+                    "user_id": str(ctx.user_id),
+                    "now": datetime.now(UTC),
+                },
+            )
+        if make_inbound_default:
+            await ctx.session.execute(
+                sql_text(
+                    """
+                    UPDATE phone_agent_templates
+                    SET is_inbound_default = false, updated_at = :now
+                    WHERE tenant_id = :tenant_id AND user_id = :user_id
+                      AND is_inbound_default
                     """
                 ),
                 {
@@ -591,7 +770,11 @@ class ConfigurarAgenteLlamadasTool(Tool):
             "knowledge_context": knowledge_context,
             "required_information": required_information,
             "voice_id": voice_id or None,
+            "operating_profile": json.dumps(operating_profile, ensure_ascii=False),
+            "handles_inbound": handles_inbound,
+            "handles_outbound": handles_outbound,
             "is_default": make_default,
+            "is_inbound_default": make_inbound_default,
             "now": datetime.now(UTC),
         }
         if existing is None:
@@ -602,14 +785,18 @@ class ConfigurarAgenteLlamadasTool(Tool):
                     INSERT INTO phone_agent_templates (
                         id, tenant_id, user_id, name, agent_name, persona_prompt,
                         default_goal, opening_message, knowledge_context,
-                        required_information, voice_id, is_default, created_at, updated_at
+                        required_information, voice_id, operating_profile,
+                        handles_inbound, handles_outbound, is_default,
+                        is_inbound_default, created_at, updated_at
                     ) VALUES (
                         CAST(:id AS uuid), CAST(:tenant_id AS uuid), CAST(:user_id AS uuid),
                         :name, :agent_name, :persona_prompt, :default_goal, :opening_message,
-                        :knowledge_context, :required_information, :voice_id, :is_default,
-                        :now, :now
+                        :knowledge_context, :required_information, :voice_id,
+                        CAST(:operating_profile AS jsonb), :handles_inbound,
+                        :handles_outbound, :is_default, :is_inbound_default, :now, :now
                     )
-                    RETURNING id, name, agent_name, default_goal, is_default
+                    RETURNING id, name, agent_name, default_goal, is_default,
+                              is_inbound_default, handles_inbound, handles_outbound
                     """
                 ),
                 values,
@@ -617,8 +804,6 @@ class ConfigurarAgenteLlamadasTool(Tool):
             action = "creado"
         else:
             values["id"] = str(existing["id"])
-            # Si no pidió volverlo predeterminado, conserva el estado actual.
-            values["is_default"] = make_default or bool(existing.get("is_default"))
             saved_result = await ctx.session.execute(
                 sql_text(
                     """
@@ -629,11 +814,17 @@ class ConfigurarAgenteLlamadasTool(Tool):
                         knowledge_context = :knowledge_context,
                         required_information = :required_information,
                         voice_id = :voice_id,
-                        is_default = :is_default, updated_at = :now
+                        operating_profile = CAST(:operating_profile AS jsonb),
+                        handles_inbound = :handles_inbound,
+                        handles_outbound = :handles_outbound,
+                        is_default = :is_default,
+                        is_inbound_default = :is_inbound_default,
+                        updated_at = :now
                     WHERE tenant_id = CAST(:tenant_id AS uuid)
                       AND user_id = CAST(:user_id AS uuid)
                       AND id = CAST(:id AS uuid)
-                    RETURNING id, name, agent_name, default_goal, is_default
+                    RETURNING id, name, agent_name, default_goal, is_default,
+                              is_inbound_default, handles_inbound, handles_outbound
                     """
                 ),
                 values,
@@ -653,7 +844,10 @@ class ConfigurarAgenteLlamadasTool(Tool):
                 "nombre": saved["name"],
                 "identidad": saved["agent_name"],
                 "objetivo": saved["default_goal"],
-                "predeterminado": bool(saved["is_default"]),
+                "predeterminado_salientes": bool(saved["is_default"]),
+                "predeterminado_entrantes": bool(saved["is_inbound_default"]),
+                "atiende_entrantes": bool(saved["handles_inbound"]),
+                "realiza_salientes": bool(saved["handles_outbound"]),
             },
         )
 
@@ -664,11 +858,11 @@ class LlamarContactoTool(Tool):
     name = "llamar_contacto"
     description = (
         "Prepara y realiza una llamada telefónica real desde el número Twilio conectado por "
-        "el usuario. Si la persona menciona un agente guardado, pasa su nombre exacto en "
-        "`agente`; Edecan debe usar esa identidad y nunca sustituirla por otra. Requiere "
-        "mostrar y confirmar explícitamente el número internacional, el agente elegido y el "
-        "objetivo exacto antes de ejecutarse; también exige consentimiento de voz vigente del "
-        "destinatario. La llamada y su transcripción continúan en la misma conversación."
+        "el usuario. Solo puedes invocarla cuando tengas el nombre de la persona destinataria, "
+        "su número internacional, el objetivo exacto y el agente guardado exacto. Si falta "
+        "cualquiera, pregunta en el chat y NO invoques esta herramienta. Edecan debe usar esa "
+        "identidad y nunca sustituirla por otra. La tarjeta de confirmación muestra los cuatro "
+        "datos antes de ejecutar y también exige consentimiento de voz vigente."
     )
     requires_flags = frozenset({_FLAG_VOICE_TELEPHONY})
     dangerous = True
@@ -679,6 +873,13 @@ class LlamarContactoTool(Tool):
                 "type": "string",
                 "description": "Destino internacional exacto, por ejemplo +573001234567.",
             },
+            "destinatario": {
+                "type": "string",
+                "description": (
+                    "Nombre de la persona o empresa a quien pertenece el número. "
+                    "Si no se sabe, pregúntalo antes de invocar."
+                ),
+            },
             "objetivo": {
                 "type": "string",
                 "description": "Qué debe conseguir Edecan durante la llamada.",
@@ -687,11 +888,11 @@ class LlamarContactoTool(Tool):
                 "type": "string",
                 "description": (
                     "Nombre de la plantilla o identidad de llamada solicitada por la persona, "
-                    "por ejemplo «Agente de negocios». Se omite solo si no pidió una concreta."
+                    "por ejemplo «Agente de negocios». Es obligatorio y debe ser exacto."
                 ),
             },
         },
-        "required": ["telefono_e164", "objetivo"],
+        "required": ["telefono_e164", "destinatario", "objetivo", "agente"],
     }
 
     async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -700,6 +901,21 @@ class LlamarContactoTool(Tool):
             goal = normalize_goal(args.get("objetivo"))
         except ValueError as exc:
             return ToolResult(content=str(exc))
+        recipient_name = " ".join(str(args.get("destinatario") or "").split()).strip()
+        agent_reference = " ".join(str(args.get("agente") or "").split()).strip()
+        missing: list[str] = []
+        if len(recipient_name) < 2:
+            missing.append("a quién pertenece el número")
+        if not agent_reference:
+            missing.append("qué agente exacto debe llamar")
+        if missing:
+            return ToolResult(
+                content=(
+                    "Antes de preparar la llamada necesito saber "
+                    + " y ".join(missing)
+                    + ". Pregúntamelo y luego vuelve a intentarlo."
+                )
+            )
 
         extras = ctx.extras if isinstance(ctx.extras, dict) else {}
         dispatcher = extras.get("phone_call_dispatcher")
@@ -711,19 +927,20 @@ class LlamarContactoTool(Tool):
                 )
             )
         try:
-            dispatch_args: dict[str, Any] = {"to_e164": destination, "goal": goal}
-            agent_reference = " ".join(str(args.get("agente") or "").split()).strip()
-            if agent_reference:
-                dispatch_args["agent_ref"] = agent_reference
-            data = await dispatcher(**dispatch_args)
+            data = await dispatcher(
+                to_e164=destination,
+                recipient_name=recipient_name,
+                goal=goal,
+                agent_ref=agent_reference,
+            )
         except TelephonyError as exc:
             return ToolResult(content=f"No pude iniciar la llamada: {exc}")
         agent_label = str(data.get("agent_name") or data.get("agent_template_name") or "").strip()
         agent_sentence = f" usando a {agent_label}" if agent_label else ""
         return ToolResult(
             content=(
-                f"La llamada a {destination} quedó iniciada{agent_sentence} con el objetivo "
-                f"confirmado: {goal}. "
+                f"La llamada a {recipient_name} ({destination}) quedó iniciada"
+                f"{agent_sentence} con el objetivo confirmado: {goal}. "
                 "Puedes seguir su estado y transcripción en Actividad."
             ),
             data={

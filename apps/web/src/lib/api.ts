@@ -516,6 +516,8 @@ export async function listPhoneCalls(): Promise<PhoneCall[]> {
 export async function setupIncomingCalls(): Promise<{
   status: "ready";
   phone_number: string;
+  agent_name: string;
+  agent_template_name: string;
 }> {
   return apiJson("/v1/phone/incoming/setup", { method: "POST" });
 }
@@ -523,6 +525,7 @@ export async function setupIncomingCalls(): Promise<{
 /** Prepara una llamada y devuelve el borrador verificable. Nunca llama por sí sola. */
 export async function preparePhoneCall(input: {
   to_e164: string;
+  recipient_name: string;
   goal?: string;
   agent_template_id?: string;
   conversation_id?: string;
@@ -534,13 +537,22 @@ export async function preparePhoneCall(input: {
 }
 
 export async function confirmPhoneCall(call: PhoneCall): Promise<PhoneCall> {
+  if (!call.recipient_name || !call.agent?.template_id) {
+    throw new Error(
+      "La llamada no tiene una persona y un agente verificables. Prepárala de nuevo.",
+    );
+  }
   return apiJson<PhoneCall>(`/v1/phone/calls/${call.id}/confirm`, {
     method: "POST",
     body: {
       expected_to_e164: call.to_e164,
+      expected_recipient_name: call.recipient_name,
       expected_goal: call.goal,
+      expected_agent_template_id: call.agent?.template_id,
       confirmed_destination: true,
+      confirmed_recipient: true,
       confirmed_goal: true,
+      confirmed_agent: true,
     },
   });
 }

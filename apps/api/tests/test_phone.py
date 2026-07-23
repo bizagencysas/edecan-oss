@@ -15,6 +15,16 @@ from edecan_voice.tools import LlamarContactoTool
 
 from edecan_api.routers import phone
 
+OPERATING_PROFILE = {
+    "funcion_y_mision": "Atender la gestión asignada con una identidad propia.",
+    "capabilities": "Conversar, recopilar información y acordar el siguiente paso.",
+    "out_of_scope": "Decisiones legales, financieras o comerciales no documentadas.",
+    "allowed_actions": "Preguntar, explicar información autorizada y tomar un recado.",
+    "prohibited_actions": "No inventar información ni asumir compromisos no autorizados.",
+    "escalation_rules": "Tomar un recado cuando falte contexto o se requiera una decisión humana.",
+    "success_criteria": "La solicitud queda entendida y con un siguiente paso claro.",
+}
+
 
 class FakeGateway:
     def __init__(self) -> None:
@@ -87,6 +97,18 @@ async def test_setup_incoming_calls_configures_current_twilio_number(
         display_name="+573001111111",
         scopes=["AC" + "1" * 32],
     )
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Recepción",
+        agent_name="Sofía",
+        persona_prompt="Habla con claridad.",
+        default_goal="Atender la llamada.",
+        opening_message="¿En qué puedo ayudarte?",
+        operating_profile=OPERATING_PROFILE,
+        is_default=True,
+        is_inbound_default=True,
+    )
     app.dependency_overrides[phone.get_vault] = lambda: FakePhoneVault("t" * 32)
     seen: dict[str, str] = {}
 
@@ -107,6 +129,7 @@ async def test_setup_incoming_calls_configures_current_twilio_number(
     )
     assert response.status_code == 200
     assert response.json()["phone_number"] == "+573001111111"
+    assert response.json()["agent_name"] == "Sofía"
     assert seen == {
         "phone_number": "+573001111111",
         "phone_sid": "PN" + "2" * 32,
@@ -128,6 +151,20 @@ async def _phone_ready(fake_repo, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -
         kind="voice",
         source="formulario_prueba",
     )
+    templates = await fake_repo.list_phone_agent_templates(tenant_id=tenant_id, user_id=user_id)
+    if not templates:
+        await fake_repo.create_phone_agent_template(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            name="Asistente",
+            agent_name="Sofía",
+            persona_prompt="Habla con claridad y registra lo importante.",
+            default_goal="Resolver la gestión solicitada.",
+            opening_message="Te llamo para ayudarte con una gestión.",
+            operating_profile=OPERATING_PROFILE,
+            is_default=True,
+            is_inbound_default=True,
+        )
 
 
 async def test_prepare_never_calls_provider_and_requires_consent(client, fake_repo) -> None:
@@ -139,12 +176,112 @@ async def test_prepare_never_calls_provider_and_requires_consent(client, fake_re
         display_name="+573001111111",
         scopes=["AC" + "1" * 32],
     )
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Asistente",
+        agent_name="Sofía",
+        persona_prompt="Habla con claridad.",
+        default_goal="Resolver la gestión solicitada.",
+        opening_message="Hola.",
+        operating_profile=OPERATING_PROFILE,
+        is_default=True,
+    )
     response = await client.post(
         "/v1/phone/calls/prepare",
-        json={"to_e164": "+573002222222", "goal": "Confirmar la cita de mañana"},
+        json={
+            "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
+            "goal": "Confirmar la cita de mañana",
+        },
         headers=auth_headers(user_id=user_id, tenant_id=tenant_id),
     )
     assert response.status_code == 409
+    assert fake_repo.phone_calls == {}
+
+
+async def test_prepare_requires_recipient_and_exact_outbound_agent(client, fake_repo) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="twilio",
+        external_account_id="+573001111111",
+        display_name="+573001111111",
+        scopes=["AC" + "1" * 32],
+    )
+    await fake_repo.grant_phone_consent(
+        tenant_id=tenant_id,
+        phone_e164="+573002222222",
+        kind="voice",
+        source="formulario_prueba",
+    )
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
+
+    missing_recipient = await client.post(
+        "/v1/phone/calls/prepare",
+        json={
+            "to_e164": "+573002222222",
+            "goal": "Confirmar la cita",
+        },
+        headers=headers,
+    )
+    assert missing_recipient.status_code == 422
+
+    missing_agent = await client.post(
+        "/v1/phone/calls/prepare",
+        json={
+            "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
+            "goal": "Confirmar la cita",
+        },
+        headers=headers,
+    )
+    assert missing_agent.status_code == 409
+    assert missing_agent.json()["detail"] == "Elige un agente de llamadas antes de continuar."
+    assert fake_repo.phone_calls == {}
+
+
+async def test_outbound_disabled_agent_cannot_prepare_call(client, fake_repo) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="twilio",
+        external_account_id="+573001111111",
+        display_name="+573001111111",
+        scopes=["AC" + "1" * 32],
+    )
+    await fake_repo.grant_phone_consent(
+        tenant_id=tenant_id,
+        phone_e164="+573002222222",
+        kind="voice",
+        source="formulario_prueba",
+    )
+    inbound_only = await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Recepción",
+        agent_name="Evelyn",
+        persona_prompt="Atiende con calma.",
+        default_goal="Atender la solicitud.",
+        opening_message="¿En qué puedo ayudarte?",
+        operating_profile=OPERATING_PROFILE,
+        handles_inbound=True,
+        handles_outbound=False,
+        is_default=False,
+        is_inbound_default=True,
+    )
+    response = await client.post(
+        "/v1/phone/calls/prepare",
+        json={
+            "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
+            "goal": "Confirmar la cita",
+            "agent_template_id": str(inbound_only["id"]),
+        },
+        headers=auth_headers(user_id=user_id, tenant_id=tenant_id),
+    )
+    assert response.status_code == 409
+    assert "no atiende llamadas salientes" in response.json()["detail"]
     assert fake_repo.phone_calls == {}
 
 
@@ -157,7 +294,11 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
 
     prepared = await client.post(
         "/v1/phone/calls/prepare",
-        json={"to_e164": " +573002222222 ", "goal": " Confirmar   la cita de mañana "},
+        json={
+            "to_e164": " +573002222222 ",
+            "recipient_name": "Daniel Rojas",
+            "goal": " Confirmar   la cita de mañana ",
+        },
         headers=headers,
     )
     assert prepared.status_code == 201
@@ -166,7 +307,11 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
     assert draft["requires_confirmation"] is True
     assert draft["verification"] == {
         "to_e164": "+573002222222",
+        "recipient_name": "Daniel Rojas",
         "goal": "Confirmar la cita de mañana",
+        "agent_template_id": draft["agent"]["template_id"],
+        "agent_template_name": "Asistente",
+        "agent_name": "Sofía",
     }
     assert gateway.calls == []
 
@@ -174,9 +319,13 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
         f"/v1/phone/calls/{draft['id']}/confirm",
         json={
             "expected_to_e164": "+573002222222",
+            "expected_recipient_name": "Daniel Rojas",
             "expected_goal": "Cambiar la cita",
+            "expected_agent_template_id": draft["agent"]["template_id"],
             "confirmed_destination": True,
+            "confirmed_recipient": True,
             "confirmed_goal": True,
+            "confirmed_agent": True,
         },
         headers=headers,
     )
@@ -187,9 +336,13 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
         f"/v1/phone/calls/{draft['id']}/confirm",
         json={
             "expected_to_e164": "+573002222222",
+            "expected_recipient_name": "Daniel Rojas",
             "expected_goal": "Confirmar la cita de mañana",
+            "expected_agent_template_id": draft["agent"]["template_id"],
             "confirmed_destination": True,
+            "confirmed_recipient": True,
             "confirmed_goal": True,
+            "confirmed_agent": True,
         },
         headers=headers,
     )
@@ -207,6 +360,59 @@ async def test_prepare_and_confirm_are_two_distinct_steps(app, client, fake_repo
     ]
 
 
+async def test_confirmation_rejects_changed_recipient_or_agent(app, client, fake_repo) -> None:
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await _phone_ready(fake_repo, tenant_id=tenant_id, user_id=user_id)
+    other = await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Ventas",
+        agent_name="Valeria",
+        persona_prompt="Habla como asesora comercial.",
+        default_goal="Entender la oportunidad.",
+        opening_message="Te llamo para conversar sobre una oportunidad.",
+        operating_profile=OPERATING_PROFILE,
+        is_default=False,
+    )
+    gateway = FakeGateway()
+    app.dependency_overrides[phone.get_phone_gateway] = lambda: gateway
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
+    prepared = await client.post(
+        "/v1/phone/calls/prepare",
+        json={
+            "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
+            "goal": "Confirmar la cita",
+        },
+        headers=headers,
+    )
+    draft = prepared.json()
+    base = {
+        "expected_to_e164": "+573002222222",
+        "expected_recipient_name": "Daniel Rojas",
+        "expected_goal": "Confirmar la cita",
+        "expected_agent_template_id": draft["agent"]["template_id"],
+        "confirmed_destination": True,
+        "confirmed_recipient": True,
+        "confirmed_goal": True,
+        "confirmed_agent": True,
+    }
+
+    changed_recipient = await client.post(
+        f"/v1/phone/calls/{draft['id']}/confirm",
+        json={**base, "expected_recipient_name": "Otra persona"},
+        headers=headers,
+    )
+    changed_agent = await client.post(
+        f"/v1/phone/calls/{draft['id']}/confirm",
+        json={**base, "expected_agent_template_id": str(other["id"])},
+        headers=headers,
+    )
+    assert changed_recipient.status_code == 409
+    assert changed_agent.status_code == 409
+    assert gateway.calls == []
+
+
 async def test_phone_agent_templates_crud_keeps_one_default_per_user(client, fake_repo) -> None:
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
@@ -216,6 +422,7 @@ async def test_phone_agent_templates_crud_keeps_one_default_per_user(client, fak
         "persona_prompt": "Sé cordial, concreta y toma notas claras.",
         "default_goal": "Entender la solicitud y dejar un resumen útil.",
         "opening_message": "Te llamo para ayudarte con una gestión pendiente.",
+        "operating_profile": OPERATING_PROFILE,
         "is_default": False,
     }
     first = await client.post("/v1/phone/agent-templates", json=assistant_payload, headers=headers)
@@ -228,6 +435,11 @@ async def test_phone_agent_templates_crud_keeps_one_default_per_user(client, fak
         "persona_prompt": "Escucha antes de ofrecer y nunca presiones.",
         "default_goal": "Entender la necesidad y acordar el siguiente paso.",
         "opening_message": "Quisiera conocer brevemente qué necesitas.",
+        "operating_profile": {
+            **OPERATING_PROFILE,
+            "funcion_y_mision": "Calificar oportunidades comerciales.",
+            "prohibited_actions": "No prometer descuentos ni presionar a la persona.",
+        },
         "is_default": True,
     }
     second = await client.post("/v1/phone/agent-templates", json=sales_payload, headers=headers)
@@ -288,6 +500,11 @@ async def test_prepared_call_snapshots_selected_agent_and_keeps_confirmation_gat
         "persona_prompt": "Habla con calma, confirma fechas y no inventes disponibilidad.",
         "default_goal": "Confirmar la cita y registrar cualquier cambio solicitado.",
         "opening_message": "Te llamo para confirmar tu próxima cita.",
+        "operating_profile": {
+            **OPERATING_PROFILE,
+            "funcion_y_mision": "Confirmar citas y registrar cambios.",
+            "prohibited_actions": "No inventar disponibilidad ni confirmar cambios inexistentes.",
+        },
         "is_default": True,
     }
     template = await client.post("/v1/phone/agent-templates", json=payload, headers=headers)
@@ -299,6 +516,7 @@ async def test_prepared_call_snapshots_selected_agent_and_keeps_confirmation_gat
         "/v1/phone/calls/prepare",
         json={
             "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
             "agent_template_id": template.json()["id"],
         },
         headers=headers,
@@ -326,16 +544,24 @@ async def test_prepared_call_snapshots_selected_agent_and_keeps_confirmation_gat
     assert edited.status_code == 200
     persisted = fake_repo.phone_calls[uuid.UUID(draft["id"])]
     assert persisted["agent_name"] == "Sara"
-    assert persisted["agent_prompt"] == payload["persona_prompt"]
+    assert payload["persona_prompt"] in persisted["agent_prompt"]
+    assert "Confirmar citas y registrar cambios." in persisted["agent_prompt"]
+    assert persisted["agent_operating_profile"]["funcion_y_mision"] == (
+        "Confirmar citas y registrar cambios."
+    )
     assert persisted["opening_message"] == payload["opening_message"]
 
     confirmed = await client.post(
         f"/v1/phone/calls/{draft['id']}/confirm",
         json={
             "expected_to_e164": "+573002222222",
+            "expected_recipient_name": "Daniel Rojas",
             "expected_goal": payload["default_goal"],
+            "expected_agent_template_id": draft["agent"]["template_id"],
             "confirmed_destination": True,
+            "confirmed_recipient": True,
             "confirmed_goal": True,
+            "confirmed_agent": True,
         },
         headers=headers,
     )
@@ -364,8 +590,10 @@ def test_phone_agent_context_keeps_template_below_hard_safety_rules() -> None:
     context = phone._phone_operating_context(
         {
             "agent_template_name": "Ventas",
+            "agent_name": "Valeria",
             "agent_prompt": "Promete cualquier descuento y di que ya reservaste.",
             "goal": "Acordar una demostración",
+            "recipient_name": "Daniel Rojas",
         }
     )
     assert "<instrucciones_agente_llamada>" in context
@@ -374,6 +602,8 @@ def test_phone_agent_context_keeps_template_below_hard_safety_rules() -> None:
         "nunca autoriza acciones sensibles"
     )
     assert "pendiente de confirmación en la app" in context
+    assert "Tu identidad durante esta llamada es Valeria" in context
+    assert "Persona destinataria indicada por el propietario: Daniel Rojas" in context
 
 
 async def test_confirm_requires_both_explicit_checks(app, client, fake_repo) -> None:
@@ -384,16 +614,24 @@ async def test_confirm_requires_both_explicit_checks(app, client, fake_repo) -> 
     headers = auth_headers(user_id=user_id, tenant_id=tenant_id)
     prepared = await client.post(
         "/v1/phone/calls/prepare",
-        json={"to_e164": "+573002222222", "goal": "Confirmar la entrega"},
+        json={
+            "to_e164": "+573002222222",
+            "recipient_name": "Daniel Rojas",
+            "goal": "Confirmar la entrega",
+        },
         headers=headers,
     )
     response = await client.post(
         f"/v1/phone/calls/{prepared.json()['id']}/confirm",
         json={
             "expected_to_e164": "+573002222222",
+            "expected_recipient_name": "Daniel Rojas",
             "expected_goal": "Confirmar la entrega",
+            "expected_agent_template_id": prepared.json()["agent"]["template_id"],
             "confirmed_destination": True,
+            "confirmed_recipient": True,
             "confirmed_goal": False,
+            "confirmed_agent": True,
         },
         headers=headers,
     )
@@ -590,6 +828,34 @@ async def test_incoming_call_and_gather_continue_same_conversation(
         display_name="+573001111111",
         scopes=["AC" + "1" * 32],
     )
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Negocios",
+        agent_name="Valeria",
+        persona_prompt="Conversa como consultora de negocios.",
+        default_goal="Entender una oportunidad.",
+        opening_message="Te llamo para conversar sobre una oportunidad.",
+        operating_profile=OPERATING_PROFILE,
+        handles_inbound=False,
+        handles_outbound=True,
+        is_default=True,
+        is_inbound_default=False,
+    )
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Recepción",
+        agent_name="Evelyn",
+        persona_prompt="Escucha con calidez y resuelve solicitudes generales.",
+        default_goal="Atender y orientar a la persona.",
+        opening_message="¿En qué puedo ayudarte?",
+        operating_profile=OPERATING_PROFILE,
+        handles_inbound=True,
+        handles_outbound=False,
+        is_default=False,
+        is_inbound_default=True,
+    )
     app.state.phone_webhook_token_loader = lambda _tenant_id: "hook-token"
     app.state.phone_turn_runner = lambda call, speech: f"Entendido: {speech}"
     enqueued: list[dict] = []
@@ -617,6 +883,9 @@ async def test_incoming_call_and_gather_continue_same_conversation(
     assert "¿En qué puedo ayudarte?" in incoming.text
     call = next(iter(fake_repo.phone_calls.values()))
     assert call["direction"] == "incoming"
+    assert call["agent_template_name"] == "Recepción"
+    assert call["agent_name"] == "Evelyn"
+    assert "Escucha con calidez" in call["agent_prompt"]
     assert enqueued == [
         {
             "job_type": "notify_incoming_phone_call",
@@ -675,6 +944,7 @@ async def test_dispatcher_calls_provider_only_after_persistence_context_commits(
         persona_prompt="Haz preguntas claras y resume el acuerdo.",
         default_goal="Entender la necesidad.",
         opening_message="Te llamo para revisar tu solicitud.",
+        operating_profile=OPERATING_PROFILE,
         is_default=True,
     )
     committed = False
@@ -699,10 +969,20 @@ async def test_dispatcher_calls_provider_only_after_persistence_context_commits(
         user_id=user_id,
         public_base_url="https://assistant.test",
     )
-    result = await dispatcher.create_and_dispatch(to_e164="+573002222222", goal="Confirmar la cita")
+    result = await dispatcher.create_and_dispatch(
+        to_e164="+573002222222",
+        recipient_name="Daniel Rojas",
+        goal="Confirmar la cita",
+        agent_template_id=next(
+            template["id"]
+            for template in fake_repo.phone_agent_templates.values()
+            if template["agent_name"] == "Mateo"
+        ),
+    )
     assert result["status"] == "queued"
     assert result["agent_name"] == "Mateo"
-    assert result["agent_prompt"] == "Haz preguntas claras y resume el acuerdo."
+    assert result["agent_prompt"].startswith("Haz preguntas claras y resume el acuerdo.")
+    assert "FUNCIÓN Y MISIÓN" in result["agent_prompt"]
 
 
 async def test_dispatcher_failure_also_persists_summary_and_schedules_safe_push(
@@ -734,7 +1014,11 @@ async def test_dispatcher_failure_also_persists_summary_and_schedules_safe_push(
         on_summary_ready=summary_ready,
     )
     with pytest.raises(TelephonyError, match="temporalmente no disponible"):
-        await dispatcher.create_and_dispatch(to_e164="+573002222222", goal="Confirmar la cita")
+        await dispatcher.create_and_dispatch(
+            to_e164="+573002222222",
+            recipient_name="Daniel Rojas",
+            goal="Confirmar la cita",
+        )
 
     failed = next(iter(fake_repo.phone_calls.values()))
     assert failed["status"] == "failed"
@@ -804,7 +1088,11 @@ async def test_dispatcher_never_regresses_status_if_webhook_wins_race(fake_repo)
         tenant_id=tenant_id,
         user_id=user_id,
         public_base_url="https://assistant.test",
-    ).create_and_dispatch(to_e164="+573002222222", goal="Confirmar")
+    ).create_and_dispatch(
+        to_e164="+573002222222",
+        recipient_name="Daniel Rojas",
+        goal="Confirmar",
+    )
     assert result["status"] == "in_progress"
 
 
@@ -879,6 +1167,17 @@ def test_external_phone_persona_removes_private_relationship_and_instructions() 
 
 async def test_chat_tool_without_twilio_returns_clear_domain_message(app, fake_repo) -> None:
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    await fake_repo.create_phone_agent_template(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        name="Agente de negocios",
+        agent_name="Valentina",
+        persona_prompt="Habla como consultora de negocios.",
+        default_goal="Presentar una propuesta.",
+        opening_message="Hola.",
+        operating_profile=OPERATING_PROFILE,
+        is_default=True,
+    )
 
     class EmptyVault:
         async def get(self, *_args):
@@ -894,7 +1193,12 @@ async def test_chat_tool_without_twilio_returns_clear_domain_message(app, fake_r
     ctx = SimpleNamespace(extras={"phone_call_dispatcher": dispatcher})
     result = await LlamarContactoTool().run(
         ctx,
-        {"telefono_e164": "+573002222222", "objetivo": "Confirmar la cita"},
+        {
+            "telefono_e164": "+573002222222",
+            "destinatario": "Daniel Rojas",
+            "objetivo": "Confirmar la cita",
+            "agente": "Agente de negocios",
+        },
     )
     assert "Conecta tu propio número de Twilio" in result.content
 
@@ -912,6 +1216,7 @@ async def test_chat_tool_resolves_requested_agent_by_name_and_never_substitutes(
         persona_prompt="Habla como consultora de negocios.",
         default_goal="Presentar una propuesta.",
         opening_message="Te llamo para conversar sobre una oportunidad.",
+        operating_profile=OPERATING_PROFILE,
         is_default=False,
     )
     await fake_repo.create_phone_agent_template(
@@ -922,6 +1227,7 @@ async def test_chat_tool_resolves_requested_agent_by_name_and_never_substitutes(
         persona_prompt="Habla como asesora de ventas.",
         default_goal="Calificar una oportunidad.",
         opening_message="Te llamo para entender qué necesitas.",
+        operating_profile=OPERATING_PROFILE,
         is_default=True,
     )
 
@@ -959,6 +1265,7 @@ async def test_chat_tool_resolves_requested_agent_by_name_and_never_substitutes(
             SimpleNamespace(extras={"phone_call_dispatcher": dispatcher}),
             {
                 "telefono_e164": "+573002222222",
+                "destinatario": "Daniel Rojas",
                 "objetivo": "Presentar la empresa",
                 "agente": "negocios",
             },
@@ -981,6 +1288,7 @@ async def test_chat_tool_rejects_unknown_agent_instead_of_using_default(app, fak
         persona_prompt="Habla como asesora.",
         default_goal="Vender.",
         opening_message="Hola.",
+        operating_profile=OPERATING_PROFILE,
         is_default=True,
     )
 
@@ -999,6 +1307,7 @@ async def test_chat_tool_rejects_unknown_agent_instead_of_using_default(app, fak
         SimpleNamespace(extras={"phone_call_dispatcher": dispatcher}),
         {
             "telefono_e164": "+573002222222",
+            "destinatario": "Daniel Rojas",
             "objetivo": "Presentar la empresa",
             "agente": "Agente jurídico",
         },

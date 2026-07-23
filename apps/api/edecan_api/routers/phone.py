@@ -37,7 +37,7 @@ from edecan_voice.telephony import (
     verify_twilio_signature,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from edecan_api.config import Settings
 from edecan_api.deps import (
@@ -106,8 +106,23 @@ def _template_snapshot(template: dict[str, Any] | None) -> dict[str, Any]:
             "agent_prompt": None,
             "opening_message": None,
             "voice_id": None,
+            "agent_operating_profile": None,
         }
     prompt_parts = [str(template["persona_prompt"]).strip()]
+    operating_profile = dict(template.get("operating_profile") or {})
+    profile_sections = (
+        ("funcion_y_mision", "FUNCIÓN Y MISIÓN"),
+        ("capabilities", "PROBLEMAS QUE SÍ PUEDES RESOLVER"),
+        ("out_of_scope", "PROBLEMAS FUERA DE TU ALCANCE"),
+        ("allowed_actions", "ACCIONES QUE SÍ PUEDES REALIZAR"),
+        ("prohibited_actions", "LÍMITES Y ACCIONES PROHIBIDAS"),
+        ("escalation_rules", "CUÁNDO ESCALAR O TOMAR UN RECADO"),
+        ("success_criteria", "CRITERIO DE ÉXITO Y CIERRE"),
+    )
+    for key, heading in profile_sections:
+        content = str(operating_profile.get(key) or "").strip()
+        if content:
+            prompt_parts.extend([f"<{key}>", f"{heading}:\n{content}", f"</{key}>"])
     knowledge_context = str(template.get("knowledge_context") or "").strip()
     required_information = str(template.get("required_information") or "").strip()
     if knowledge_context:
@@ -133,6 +148,7 @@ def _template_snapshot(template: dict[str, Any] | None) -> dict[str, Any]:
         "agent_prompt": "\n".join(prompt_parts),
         "opening_message": template["opening_message"] or None,
         "voice_id": template.get("voice_id") or None,
+        "agent_operating_profile": operating_profile,
     }
 
 
@@ -163,6 +179,13 @@ def _dedupe_phrases(values: list[str], *, limit: int = 6) -> list[str]:
 
 def _sentences(text: str) -> list[str]:
     return [piece for piece in re.split(r"(?<=[.!?])\s+|\n+", text) if piece.strip()]
+
+
+def _normalize_recipient_name(value: Any) -> str:
+    name = " ".join(str(value or "").split()).strip()
+    if len(name) < 2:
+        raise ValueError("Indica a quién pertenece el número antes de llamar.")
+    return name[:160]
 
 
 def _phone_audio_cache_key(call_id: uuid.UUID, token: str) -> str:
@@ -392,10 +415,12 @@ class TransactionalPhoneDispatcher:
         self,
         *,
         to_e164: str,
+        recipient_name: str,
         goal: str,
         agent_template_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         destination = normalize_e164(to_e164)
+        recipient = _normalize_recipient_name(recipient_name)
         normalized_goal = normalize_goal(goal)
         async with self._repo_transaction(self._tenant_id) as repo:
             account = await _twilio_account(repo, self._tenant_id)
@@ -416,7 +441,7 @@ class TransactionalPhoneDispatcher:
             conversation = await repo.create_conversation(
                 tenant_id=self._tenant_id,
                 user_id=self._user_id,
-                title=f"Llamada a {destination}",
+                title=f"Llamada a {recipient}",
                 channel="phone",
             )
             call = await repo.create_phone_call(
@@ -426,6 +451,7 @@ class TransactionalPhoneDispatcher:
                 direction="outgoing",
                 from_e164=account["external_account_id"],
                 to_e164=destination,
+                recipient_name=recipient,
                 goal=normalized_goal,
                 status="confirmed",
                 **_template_snapshot(template),
@@ -440,20 +466,35 @@ class TransactionalPhoneDispatcher:
                 tenant_id=self._tenant_id,
                 conversation_id=conversation["id"],
                 role="user",
-                content={"text": f"Llama a {destination}. Objetivo: {normalized_goal}"},
+                content={
+                    "text": (
+                        f"Llama a {recipient} ({destination}) con el agente "
+                        f"{template['name']}. Objetivo: {normalized_goal}"
+                    )
+                },
             )
             await repo.add_phone_call_event(
                 tenant_id=self._tenant_id,
                 call_id=call["id"],
                 event_type="confirmed",
-                payload={"destination_verified": True, "goal_verified": True},
+                payload={
+                    "destination_verified": True,
+                    "recipient_verified": True,
+                    "goal_verified": True,
+                    "agent_verified": True,
+                },
             )
             await repo.add_audit_log(
                 tenant_id=self._tenant_id,
                 actor_user_id=self._user_id,
                 action="phone.call_confirmed",
                 target=str(call["id"]),
-                meta={"to_e164": destination, "goal": normalized_goal},
+                meta={
+                    "to_e164": destination,
+                    "recipient_name": recipient,
+                    "goal": normalized_goal,
+                    "agent_template_id": str(template["id"]),
+                },
             )
         # El context manager ya cerró/committeó aquí. Solo ahora sale red.
         return await self._send_persisted(call)
@@ -479,7 +520,12 @@ class TransactionalPhoneDispatcher:
                 tenant_id=self._tenant_id,
                 call_id=call_id,
                 event_type="confirmed",
-                payload={"destination_verified": True, "goal_verified": True},
+                payload={
+                    "destination_verified": True,
+                    "recipient_verified": True,
+                    "goal_verified": True,
+                    "agent_verified": True,
+                },
             )
             await repo.add_audit_log(
                 tenant_id=self._tenant_id,
@@ -555,6 +601,35 @@ class TransactionalPhoneDispatcher:
         return updated
 
 
+class PhoneAgentOperatingProfileIn(BaseModel):
+    funcion_y_mision: str = Field(min_length=1, max_length=2000)
+    capabilities: str = Field(min_length=1, max_length=4000)
+    out_of_scope: str = Field(min_length=1, max_length=4000)
+    allowed_actions: str = Field(min_length=1, max_length=4000)
+    prohibited_actions: str = Field(min_length=1, max_length=4000)
+    escalation_rules: str = Field(default="", max_length=3000)
+    success_criteria: str = Field(default="", max_length=2000)
+
+    @field_validator(
+        "funcion_y_mision",
+        "capabilities",
+        "out_of_scope",
+        "allowed_actions",
+        "prohibited_actions",
+    )
+    @classmethod
+    def _required_profile_text(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("Este campo de identidad operativa no puede quedar vacío.")
+        return clean
+
+    @field_validator("escalation_rules", "success_criteria")
+    @classmethod
+    def _optional_profile_text(cls, value: str) -> str:
+        return value.strip()
+
+
 class PhoneAgentTemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     agent_name: str = Field(min_length=1, max_length=80)
@@ -564,7 +639,11 @@ class PhoneAgentTemplateIn(BaseModel):
     knowledge_context: str = Field(default="", max_length=6000)
     required_information: str = Field(default="", max_length=3000)
     voice_id: str = Field(default="", max_length=200)
+    operating_profile: PhoneAgentOperatingProfileIn
+    handles_inbound: bool = True
+    handles_outbound: bool = True
     is_default: bool = False
+    is_inbound_default: bool = False
 
     @field_validator("name", "agent_name", "persona_prompt", "default_goal")
     @classmethod
@@ -584,9 +663,20 @@ class PhoneAgentTemplateIn(BaseModel):
     def _optional_text(cls, value: str) -> str:
         return value.strip()
 
+    @model_validator(mode="after")
+    def _directions_are_coherent(self) -> PhoneAgentTemplateIn:
+        if not self.handles_inbound and not self.handles_outbound:
+            raise ValueError("El agente debe atender llamadas entrantes, salientes o ambas.")
+        if self.is_default and not self.handles_outbound:
+            raise ValueError("El agente saliente predeterminado debe permitir llamadas salientes.")
+        if self.is_inbound_default and not self.handles_inbound:
+            raise ValueError("El agente entrante predeterminado debe permitir llamadas entrantes.")
+        return self
+
 
 class PrepareCallIn(BaseModel):
     to_e164: str = Field(min_length=1)
+    recipient_name: str = Field(min_length=1, max_length=160)
     goal: str | None = Field(default=None, max_length=500)
     conversation_id: uuid.UUID | None = None
     agent_template_id: uuid.UUID | None = None
@@ -594,9 +684,13 @@ class PrepareCallIn(BaseModel):
 
 class ConfirmCallIn(BaseModel):
     expected_to_e164: str = Field(min_length=1)
+    expected_recipient_name: str = Field(min_length=1, max_length=160)
     expected_goal: str = Field(min_length=1, max_length=500)
+    expected_agent_template_id: uuid.UUID
     confirmed_destination: bool
+    confirmed_recipient: bool
     confirmed_goal: bool
+    confirmed_agent: bool
 
 
 def _require_telephony(user: CurrentUser) -> None:
@@ -611,6 +705,7 @@ def _out(row: dict[str, Any], *, events: list[dict[str, Any]] | None = None) -> 
         "direction": row["direction"],
         "from_e164": row["from_e164"],
         "to_e164": row["to_e164"],
+        "recipient_name": row.get("recipient_name"),
         "goal": row["goal"],
         "agent": (
             {
@@ -656,7 +751,11 @@ def _template_out(row: dict[str, Any]) -> dict[str, Any]:
         "knowledge_context": row.get("knowledge_context") or "",
         "required_information": row.get("required_information") or "",
         "voice_id": row.get("voice_id") or "",
+        "operating_profile": row.get("operating_profile") or {},
+        "handles_inbound": bool(row.get("handles_inbound", True)),
+        "handles_outbound": bool(row.get("handles_outbound", True)),
         "is_default": bool(row.get("is_default")),
+        "is_inbound_default": bool(row.get("is_inbound_default")),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -668,12 +767,28 @@ async def _selected_template(
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,
     template_id: uuid.UUID | None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     if template_id is None:
-        return await repo.get_default_phone_agent_template(tenant_id=tenant_id, user_id=user_id)
+        template = await repo.get_default_phone_agent_template(tenant_id=tenant_id, user_id=user_id)
+        if template is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Elige un agente de llamadas antes de continuar.",
+            )
+        if not template.get("handles_outbound", True):
+            raise HTTPException(
+                status_code=409,
+                detail="El agente predeterminado no está habilitado para llamadas salientes.",
+            )
+        return template
     template = await repo.get_phone_agent_template(tenant_id=tenant_id, template_id=template_id)
     if template is None or template["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    if not template.get("handles_outbound", True):
+        raise HTTPException(
+            status_code=409,
+            detail=f"El agente «{template['name']}» no atiende llamadas salientes.",
+        )
     return template
 
 
@@ -771,44 +886,49 @@ def phone_tool_dispatcher_for(
     async def dispatch(
         *,
         to_e164: str,
+        recipient_name: str,
         goal: str,
-        agent_ref: str | None = None,
+        agent_ref: str,
     ) -> dict[str, Any]:
         try:
-            selected_id: uuid.UUID | None = None
-            if agent_ref:
-                templates = await repo.list_phone_agent_templates(
-                    tenant_id=tenant_id, user_id=user_id
+            if not agent_ref.strip():
+                raise TelephonyError(
+                    "Falta elegir el agente de llamada. Pregunta cuál debe usar antes de llamar."
                 )
-                reference = " ".join(agent_ref.split()).casefold()
-                exact = [
-                    item
-                    for item in templates
-                    if reference
-                    in {
-                        str(item.get("name") or "").casefold(),
-                        str(item.get("agent_name") or "").casefold(),
-                    }
-                ]
-                candidates = exact or [
-                    item
-                    for item in templates
-                    if reference in str(item.get("name") or "").casefold()
-                    or reference in str(item.get("agent_name") or "").casefold()
-                ]
-                if len(candidates) != 1:
-                    available = ", ".join(str(item["name"]) for item in templates) or "ninguno"
-                    if not candidates:
-                        raise TelephonyError(
-                            f"No encontré el agente «{agent_ref}». "
-                            f"Agentes disponibles: {available}."
-                        )
-                    matches = ", ".join(str(item["name"]) for item in candidates)
+            templates = await repo.list_phone_agent_templates(tenant_id=tenant_id, user_id=user_id)
+            reference = " ".join(agent_ref.split()).casefold()
+            exact = [
+                item
+                for item in templates
+                if reference
+                in {
+                    str(item.get("name") or "").casefold(),
+                    str(item.get("agent_name") or "").casefold(),
+                }
+            ]
+            candidates = exact or [
+                item
+                for item in templates
+                if reference in str(item.get("name") or "").casefold()
+                or reference in str(item.get("agent_name") or "").casefold()
+            ]
+            if len(candidates) != 1:
+                available = ", ".join(str(item["name"]) for item in templates) or "ninguno"
+                if not candidates:
                     raise TelephonyError(
-                        f"«{agent_ref}» coincide con varios agentes: {matches}. "
-                        "Indica el nombre exacto."
+                        f"No encontré el agente «{agent_ref}». Agentes disponibles: {available}."
                     )
-                selected_id = candidates[0]["id"]
+                matches = ", ".join(str(item["name"]) for item in candidates)
+                raise TelephonyError(
+                    f"«{agent_ref}» coincide con varios agentes: {matches}. "
+                    "Indica el nombre exacto."
+                )
+            selected = candidates[0]
+            if not selected.get("handles_outbound", True):
+                raise TelephonyError(
+                    f"El agente «{selected['name']}» no está habilitado para llamadas salientes."
+                )
+            selected_id = selected["id"]
             gateway = TwilioVoiceClient(await _credentials(repo, vault, tenant_id))
             service = TransactionalPhoneDispatcher(
                 repo_transaction=_repo_transactions(request),
@@ -824,6 +944,7 @@ def phone_tool_dispatcher_for(
             )
             return await service.create_and_dispatch(
                 to_e164=to_e164,
+                recipient_name=recipient_name,
                 goal=goal,
                 agent_template_id=selected_id,
             )
@@ -908,9 +1029,14 @@ async def create_phone_agent_template(
     if any(row["name"].casefold() == body.name.casefold() for row in existing):
         raise HTTPException(status_code=409, detail="Ya tienes un agente con ese nombre.")
 
-    make_default = body.is_default or not existing
+    make_default = body.is_default or (not existing and body.handles_outbound)
+    make_inbound_default = body.is_inbound_default or (not existing and body.handles_inbound)
     if make_default:
         await repo.clear_default_phone_agent_template(
+            tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        )
+    if make_inbound_default:
+        await repo.clear_inbound_phone_agent_template(
             tenant_id=current_user.tenant_id, user_id=current_user.user_id
         )
     created = await repo.create_phone_agent_template(
@@ -924,14 +1050,22 @@ async def create_phone_agent_template(
         knowledge_context=body.knowledge_context,
         required_information=body.required_information,
         voice_id=body.voice_id or None,
+        operating_profile=body.operating_profile.model_dump(),
+        handles_inbound=body.handles_inbound,
+        handles_outbound=body.handles_outbound,
         is_default=make_default,
+        is_inbound_default=make_inbound_default,
     )
     await repo.add_audit_log(
         tenant_id=current_user.tenant_id,
         actor_user_id=current_user.user_id,
         action="phone.agent_template_created",
         target=str(created["id"]),
-        meta={"name": created["name"], "is_default": make_default},
+        meta={
+            "name": created["name"],
+            "is_default": make_default,
+            "is_inbound_default": make_inbound_default,
+        },
     )
     return _template_out(created)
 
@@ -963,6 +1097,12 @@ async def update_phone_agent_template(
             user_id=current_user.user_id,
             except_id=template_id,
         )
+    if body.is_inbound_default:
+        await repo.clear_inbound_phone_agent_template(
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
+            except_id=template_id,
+        )
     updated = await repo.update_phone_agent_template(
         tenant_id=current_user.tenant_id,
         template_id=template_id,
@@ -975,7 +1115,11 @@ async def update_phone_agent_template(
             "knowledge_context": body.knowledge_context,
             "required_information": body.required_information,
             "voice_id": body.voice_id or None,
+            "operating_profile": body.operating_profile.model_dump(),
+            "handles_inbound": body.handles_inbound,
+            "handles_outbound": body.handles_outbound,
             "is_default": body.is_default,
+            "is_inbound_default": body.is_inbound_default,
         },
     )
     assert updated is not None
@@ -984,7 +1128,11 @@ async def update_phone_agent_template(
         actor_user_id=current_user.user_id,
         action="phone.agent_template_updated",
         target=str(template_id),
-        meta={"name": updated["name"], "is_default": bool(updated["is_default"])},
+        meta={
+            "name": updated["name"],
+            "is_default": bool(updated["is_default"]),
+            "is_inbound_default": bool(updated["is_inbound_default"]),
+        },
     )
     return _template_out(updated)
 
@@ -1006,15 +1154,24 @@ async def delete_phone_agent_template(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Agente de llamada no encontrado.")
+    remaining = await repo.list_phone_agent_templates(
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
     if current.get("is_default"):
-        remaining = await repo.list_phone_agent_templates(
-            tenant_id=current_user.tenant_id, user_id=current_user.user_id
-        )
-        if remaining:
+        outbound = next((item for item in remaining if item.get("handles_outbound", True)), None)
+        if outbound:
             await repo.update_phone_agent_template(
                 tenant_id=current_user.tenant_id,
-                template_id=remaining[0]["id"],
+                template_id=outbound["id"],
                 fields={"is_default": True},
+            )
+    if current.get("is_inbound_default"):
+        inbound = next((item for item in remaining if item.get("handles_inbound", True)), None)
+        if inbound:
+            await repo.update_phone_agent_template(
+                tenant_id=current_user.tenant_id,
+                template_id=inbound["id"],
+                fields={"is_inbound_default": True},
             )
     await repo.add_audit_log(
         tenant_id=current_user.tenant_id,
@@ -1046,6 +1203,14 @@ async def setup_incoming_calls(
 ) -> dict[str, Any]:
     """Configura o repara en Twilio la recepción de llamadas de este número."""
     _require_telephony(current_user)
+    inbound_agent = await repo.get_inbound_phone_agent_template(
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+    )
+    if inbound_agent is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Elige primero qué agente atenderá las llamadas entrantes.",
+        )
     credentials = await _credentials(repo, vault, current_user.tenant_id)
     async with httpx.AsyncClient(timeout=12.0) as http_client:
         phone_sid = await _verify_twilio_phone_ownership(
@@ -1074,6 +1239,8 @@ async def setup_incoming_calls(
     return {
         "status": "ready",
         "phone_number": credentials.phone_number,
+        "agent_name": inbound_agent["agent_name"],
+        "agent_template_name": inbound_agent["name"],
     }
 
 
@@ -1110,7 +1277,8 @@ async def prepare_call(
     )
     try:
         destination = normalize_e164(body.to_e164)
-        goal = normalize_goal(body.goal or (template or {}).get("default_goal"))
+        recipient_name = _normalize_recipient_name(body.recipient_name)
+        goal = normalize_goal(body.goal or template.get("default_goal"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1136,7 +1304,7 @@ async def prepare_call(
         conversation = await repo.create_conversation(
             tenant_id=current_user.tenant_id,
             user_id=current_user.user_id,
-            title=f"Llamada a {destination}",
+            title=f"Llamada a {recipient_name}",
             channel="phone",
         )
 
@@ -1147,6 +1315,7 @@ async def prepare_call(
         direction="outgoing",
         from_e164=account["external_account_id"],
         to_e164=destination,
+        recipient_name=recipient_name,
         goal=goal,
         **_template_snapshot(template),
     )
@@ -1156,20 +1325,34 @@ async def prepare_call(
         event_type="prepared",
         payload={
             "destination_verified": False,
+            "recipient_verified": False,
             "goal_verified": False,
-            "agent_template_id": str(template["id"]) if template is not None else None,
+            "agent_verified": False,
+            "agent_template_id": str(template["id"]),
         },
     )
     await repo.add_message(
         tenant_id=current_user.tenant_id,
         conversation_id=conversation["id"],
         role="user",
-        content={"text": f"Llama a {destination}. Objetivo: {goal}"},
+        content={
+            "text": (
+                f"Llama a {recipient_name} ({destination}) con el agente "
+                f"{template['name']}. Objetivo: {goal}"
+            )
+        },
     )
     return {
         **_out(call),
         "requires_confirmation": True,
-        "verification": {"to_e164": destination, "goal": goal},
+        "verification": {
+            "to_e164": destination,
+            "recipient_name": recipient_name,
+            "goal": goal,
+            "agent_template_id": str(template["id"]),
+            "agent_template_name": template["name"],
+            "agent_name": template["agent_name"],
+        },
     }
 
 
@@ -1187,19 +1370,36 @@ async def confirm_call(
         raise HTTPException(status_code=404, detail="Llamada no encontrada.")
     if call["status"] != "draft":
         raise HTTPException(status_code=409, detail="Esta llamada ya fue procesada.")
-    if not body.confirmed_destination or not body.confirmed_goal:
+    if not all(
+        (
+            body.confirmed_destination,
+            body.confirmed_recipient,
+            body.confirmed_goal,
+            body.confirmed_agent,
+        )
+    ):
         raise HTTPException(
-            status_code=422, detail="Confirma explícitamente el destino y el objetivo."
+            status_code=422,
+            detail="Confirma explícitamente la persona, el número, el agente y el objetivo.",
         )
     try:
         expected_destination = normalize_e164(body.expected_to_e164)
+        expected_recipient = _normalize_recipient_name(body.expected_recipient_name)
         expected_goal = normalize_goal(body.expected_goal)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if expected_destination != call["to_e164"] or expected_goal != call["goal"]:
+    if (
+        expected_destination != call["to_e164"]
+        or expected_recipient.casefold() != str(call.get("recipient_name") or "").casefold()
+        or expected_goal != call["goal"]
+        or body.expected_agent_template_id != call.get("agent_template_id")
+    ):
         raise HTTPException(
             status_code=409,
-            detail="El destino o el objetivo cambiaron. Revisa de nuevo antes de llamar.",
+            detail=(
+                "La persona, el número, el agente o el objetivo cambiaron. "
+                "Revisa de nuevo antes de llamar."
+            ),
         )
     if not await repo.has_phone_consent(
         tenant_id=current_user.tenant_id, phone_e164=call["to_e164"], kind="voice"
@@ -1267,6 +1467,11 @@ def _phone_operating_context(call: dict[str, Any]) -> str:
         parts.extend(
             [
                 f"Perfil seleccionado: {call.get('agent_template_name') or 'Agente de llamada'}.",
+                (
+                    f"Tu identidad durante esta llamada es "
+                    f"{call.get('agent_name') or call.get('agent_template_name')}. "
+                    "No adoptes la personalidad de otro agente ni la identidad general de Edecan."
+                ),
                 "<instrucciones_agente_llamada>",
                 str(call["agent_prompt"]),
                 "</instrucciones_agente_llamada>",
@@ -1275,6 +1480,10 @@ def _phone_operating_context(call: dict[str, Any]) -> str:
     parts.extend(
         [
             f"Objetivo de esta llamada: {call['goal']}.",
+            (
+                f"Persona destinataria indicada por el propietario: "
+                f"{call.get('recipient_name') or 'no identificada'}."
+            ),
             (
                 "La plantilla define tono, argumentos y preguntas, pero nunca autoriza acciones "
                 "sensibles. No ejecutes ni afirmes que enviaste, compraste, reservaste, cambiaste "
@@ -1321,7 +1530,13 @@ async def _phone_reply(
             tenant_id=tenant_id, conversation_id=call["conversation_id"], limit=20
         )
         persona_row = await tenant_repo.get_persona(tenant_id=tenant_id, user_id=call["user_id"])
-        persona = _external_phone_persona(persona_row)
+        persona = _external_phone_persona(persona_row).model_copy(
+            update={
+                "nombre_asistente": str(
+                    call.get("agent_name") or call.get("agent_template_name") or "Edecan"
+                )
+            }
+        )
         # El interlocutor telefónico no está autenticado como propietario.
         # Se conserva la persona/tono, pero jamás se expone memoria privada.
         memories: list[str] = []
@@ -1444,6 +1659,17 @@ async def incoming_voice(
                         reject_twiml("Esta cuenta todavía no tiene una persona responsable."),
                         media_type="application/xml",
                     )
+                inbound_template = await tenant_repo.get_inbound_phone_agent_template(
+                    tenant_id=tenant_id, user_id=user_id
+                )
+                if inbound_template is None:
+                    return Response(
+                        reject_twiml(
+                            "Este número todavía no tiene un agente configurado "
+                            "para recibir llamadas."
+                        ),
+                        media_type="application/xml",
+                    )
                 conversation = await tenant_repo.create_conversation(
                     tenant_id=tenant_id,
                     user_id=user_id,
@@ -1460,11 +1686,7 @@ async def incoming_voice(
                     goal="Atender la llamada entrante y ayudar a la persona.",
                     status="in_progress",
                     provider_call_sid=call_sid,
-                    **_template_snapshot(
-                        await tenant_repo.get_default_phone_agent_template(
-                            tenant_id=tenant_id, user_id=user_id
-                        )
-                    ),
+                    **_template_snapshot(inbound_template),
                 )
                 await tenant_repo.add_phone_call_event(
                     tenant_id=tenant_id,

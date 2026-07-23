@@ -320,9 +320,23 @@ export interface PhoneAgentTemplate {
   knowledge_context: string;
   required_information: string;
   voice_id: string;
+  operating_profile: PhoneAgentOperatingProfile;
+  handles_inbound: boolean;
+  handles_outbound: boolean;
   is_default: boolean;
+  is_inbound_default: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface PhoneAgentOperatingProfile {
+  funcion_y_mision: string;
+  capabilities: string;
+  out_of_scope: string;
+  allowed_actions: string;
+  prohibited_actions: string;
+  escalation_rules: string;
+  success_criteria: string;
 }
 
 export interface PhoneAgentTemplateInput {
@@ -334,7 +348,11 @@ export interface PhoneAgentTemplateInput {
   knowledge_context: string;
   required_information: string;
   voice_id: string;
+  operating_profile: PhoneAgentOperatingProfile;
+  handles_inbound: boolean;
+  handles_outbound: boolean;
   is_default: boolean;
+  is_inbound_default: boolean;
 }
 
 export interface PhoneCallSummary {
@@ -359,6 +377,7 @@ export interface PhoneCall {
   direction: "incoming" | "outgoing";
   from_e164: string;
   to_e164: string;
+  recipient_name: string | null;
   goal: string;
   agent: {
     template_id: string | null;
@@ -378,7 +397,11 @@ export interface PhoneCall {
   requires_confirmation?: boolean;
   verification?: {
     to_e164: string;
+    recipient_name: string;
     goal: string;
+    agent_template_id: string;
+    agent_template_name: string;
+    agent_name: string;
   };
 }
 

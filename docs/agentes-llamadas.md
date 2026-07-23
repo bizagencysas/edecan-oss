@@ -6,24 +6,36 @@ plantilla define:
 
 - un nombre interno para reconocerla;
 - el nombre con el que el agente se presenta;
-- su personalidad y forma de conversar;
+- su criterio, personalidad y forma de conversar;
+- su función y misión;
+- los problemas que sí puede resolver;
+- los problemas que están fuera de su alcance;
+- las acciones concretas que puede realizar;
+- las acciones y promesas que tiene prohibidas;
+- cuándo debe pedir ayuda, transferir o tomar un recado;
+- cómo reconoce un resultado correcto y cierra la llamada;
 - un objetivo reutilizable;
 - una primera frase opcional;
 - el contexto comercial que sí puede compartir con terceros;
 - la información que debe preguntar y obtener;
 - una voz opcional de la cuenta ElevenLabs del propietario;
-- si será el agente predeterminado para entrantes y llamadas sin agente explícito.
+- si puede recibir llamadas, hacer llamadas o ambas;
+- si será el agente predeterminado para entrantes, salientes o cada canal por
+  separado.
 
 Se administran desde **Llamadas → Agentes de llamadas**, desde el chat con
 `configurar_agente_llamadas`, o mediante `/v1/phone/agent-templates`. El primer
-perfil creado se vuelve predeterminado; solo puede existir uno predeterminado
-por usuario.
+perfil creado se vuelve predeterminado para las direcciones que atiende. Solo
+puede existir un predeterminado saliente y un predeterminado entrante por
+usuario. Pueden ser dos identidades completamente distintas, con voces,
+criterios y alcances diferentes.
 
 ## Por qué cada llamada guarda una copia
 
-Al preparar una llamada, `phone_calls` copia el nombre, prompt y apertura de la
-plantilla. `agent_template_id` conserva la procedencia, pero no es la fuente de
-verdad de una llamada ya creada. Por eso:
+Al preparar una llamada, `phone_calls` copia el destinatario, nombre, prompt,
+perfil operativo, apertura y voz de la plantilla. `agent_template_id` conserva
+la procedencia, pero no es la fuente de verdad de una llamada ya creada. Por
+eso:
 
 - editar una plantilla solo afecta llamadas futuras;
 - eliminarla no cambia el historial ni una llamada pendiente;
@@ -39,10 +51,11 @@ por la persona debe ser lo que llega al proveedor.
 Chat o API
   → herramienta peligrosa / POST prepare
   → valida cuenta Twilio y consentimiento de voz
-  → resuelve plantilla explícita o predeterminada
+  → exige nombre del destinatario, número, objetivo y agente exacto
+  → resuelve la plantilla explícita sin sustituir identidades
   → guarda conversación + borrador + snapshot
-  → muestra número y objetivo para confirmación
-  → confirmación explícita
+  → muestra persona + número + agente + objetivo para verificación
+  → cuatro confirmaciones explícitas
   → commit en PostgreSQL
   → Twilio REST inicia la llamada
   → webhook firmado entrega saludo con la voz del agente
@@ -53,11 +66,13 @@ Chat o API
   → job reclama una sola vez el push genérico best-effort
 ```
 
-La ruta de chat `llamar_contacto` continúa siendo `dangerous=True`. Si la
-persona dice «con el agente de negocios», el dispatcher resuelve el nombre
-exacto de la plantilla. Si no existe o coincide con varios agentes, detiene la
+La ruta de chat `llamar_contacto` continúa siendo `dangerous=True`. Antes de
+invocarla el modelo debe tener persona destinataria, número internacional,
+objetivo y agente exacto. Si falta la persona o el agente, Edecan pregunta en el
+chat y no llama. Si el agente no existe o coincide con varios, detiene la
 acción y muestra los nombres disponibles; nunca sustituye silenciosamente el
-agente solicitado por otro. Twilio solo se invoca después del gate existente.
+agente solicitado por otro. La tarjeta sensible vuelve a mostrar los cuatro
+datos y Twilio solo se invoca después de la aprobación humana.
 La API permite elegir otra plantilla con `agent_template_id` en
 `POST /v1/phone/calls/prepare` y omitir `goal` para usar su objetivo
 predeterminado.
@@ -99,13 +114,15 @@ bloqueada.
   prohíben ejecutar o afirmar acciones sensibles. El canal telefónico no recibe
   tools de compra, envío, reserva o modificación.
 - El saludo siempre declara que quien habla es un asistente automatizado.
-- Consentimiento, doble confirmación y auditoría siguen siendo obligatorios.
+- Consentimiento, verificación de persona, número, agente y objetivo, más
+  auditoría, siguen siendo obligatorios.
 - La plantilla no programa llamadas, no crea campañas y no decide destinatarios.
 
 ## Llamadas entrantes y voces
 
-El agente predeterminado atiende las llamadas que llegan al número Twilio
-conectado. Al conectar un número nuevo, Edecan configura automáticamente su
+El agente entrante predeterminado atiende las llamadas que llegan al número
+Twilio conectado. Puede ser distinto del agente saliente predeterminado. Al
+conectar un número nuevo, Edecan configura automáticamente su
 webhook de voz. El botón **Configurar o reparar recepción** repite esa operación
 de forma segura si cambió el dominio o el túnel.
 
@@ -126,4 +143,4 @@ El motor OSS actual sigue siendo conversacional por turnos con `<Gather>`. No es
 todavía una conversación full-duplex con interrupciones naturales; alcanzar esa
 latencia requiere Media Streams, STT incremental y audio bidireccional. Esta
 limitación no relaja la selección exacta del agente, el consentimiento ni la
-doble confirmación.
+verificación de persona, número, agente y objetivo seguida de aprobación final.

@@ -117,10 +117,13 @@ Al conectar un número, Edecan configura automáticamente el webhook de voz
 - `POST /v1/phone/twilio/calls/{id}/gather` — turnos conversacionales con `<Gather input="speech">`.
 - `POST /v1/phone/twilio/calls/{id}/status` — estado y duración.
 
-Todos validan `X-Twilio-Signature`. El agente predeterminado atiende las
-entrantes; un agente solicitado por nombre atiende la saliente. La conversación
-telefónica conserva su identidad, objetivo, contexto autorizado, preguntas y
-voz, pero usa un hilo `channel="phone"` separado: un interlocutor externo no
+Todos validan `X-Twilio-Signature`. El agente entrante predeterminado atiende
+las entrantes; un agente saliente elegido por nombre atiende la saliente. Pueden
+ser identidades distintas y cada una conserva su propia voz, misión, problemas
+que resuelve, asuntos fuera de alcance, acciones permitidas, prohibiciones,
+reglas de escalamiento y criterio de cierre. La conversación telefónica
+conserva ese perfil, su objetivo, contexto autorizado y preguntas, pero usa un
+hilo `channel="phone"` separado: un interlocutor externo no
 recibe memorias, instrucciones privadas, rasgos ni el estilo de relación del
 propietario. Los turnos y errores seguros quedan en `phone_call_events` y se
 consultan desde **Actividad**. `PHONE_MAX_TURNS` (default `8`) acota cada
@@ -208,7 +211,7 @@ apto para esto sin una migración nueva.
 
 ## Checklist legal para operar llamadas y SMS
 
-> Las referencias de esta sección a `TwilioTenantClient`, SMS y campañas corresponden a la extensión opcional legada. El núcleo OSS actual no ofrece SMS ni campañas: solo llamadas individuales con consentimiento previo y doble confirmación. Antes de usar esas llamadas con fines comerciales, el operador sigue siendo responsable de aplicar los controles jurisdiccionales de horario, identificación y baja que correspondan.
+> Las referencias de esta sección a `TwilioTenantClient`, SMS y campañas corresponden a la extensión opcional legada. El núcleo OSS actual no ofrece SMS ni campañas: solo llamadas individuales con consentimiento previo, verificación de persona, número, agente y objetivo, y aprobación final. Antes de usar esas llamadas con fines comerciales, el operador sigue siendo responsable de aplicar los controles jurisdiccionales de horario, identificación y baja que correspondan.
 
 Estos seis controles son condiciones **obligatorias** de diseño, no opcionales de configuración. Aplican tanto a llamadas/SMS individuales como a pasos de campaña.
 

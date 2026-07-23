@@ -34,9 +34,31 @@ const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
     "'ejecutar_comando' o 'git_commit'.",
   llamar_contacto:
     "Esto iniciará una llamada real y puede tener costo en tu cuenta de Twilio. " +
-    "Comprueba el número internacional y el objetivo exacto que aparecen abajo. " +
+    "Comprueba la persona, el número internacional, el agente exacto y el objetivo. " +
     "Aprueba solo si reconoces a la persona y tienes su consentimiento para recibir la llamada.",
 };
+
+function CallPreflight({ args }: { args: Record<string, unknown> }) {
+  const fields = [
+    ["Persona", args.destinatario],
+    ["Número", args.telefono_e164],
+    ["Agente", args.agente],
+    ["Objetivo", args.objetivo],
+  ] as const;
+
+  return (
+    <dl className="mt-3 grid gap-2 rounded-xl border border-amber-200 bg-white/70 p-3 text-xs dark:border-amber-800 dark:bg-black/20 sm:grid-cols-2">
+      {fields.map(([label, value]) => (
+        <div key={label} className={label === "Objetivo" ? "sm:col-span-2" : ""}>
+          <dt className="text-amber-700 dark:text-amber-300">{label}</dt>
+          <dd className="mt-0.5 font-semibold text-amber-950 dark:text-amber-100">
+            {String(value || "Falta confirmar")}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export function ConfirmationCard({
   name,
@@ -63,9 +85,13 @@ export function ConfirmationCard({
           {advertenciaEspecifica}
         </p>
       )}
-      <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-white/70 p-2 text-xs text-amber-900 dark:bg-black/20 dark:text-amber-100">
-        {JSON.stringify(args, null, 2)}
-      </pre>
+      {name === "llamar_contacto" ? (
+        <CallPreflight args={args} />
+      ) : (
+        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-white/70 p-2 text-xs text-amber-900 dark:bg-black/20 dark:text-amber-100">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      )}
       <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
         Es una acción marcada como sensible: requiere tu confirmación antes de ejecutarse.
       </p>

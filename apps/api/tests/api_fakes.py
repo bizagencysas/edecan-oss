@@ -323,6 +323,10 @@ class FakeRepo:
         knowledge_context: str = "",
         required_information: str = "",
         voice_id: str | None = None,
+        operating_profile: dict[str, Any] | None = None,
+        handles_inbound: bool = True,
+        handles_outbound: bool = True,
+        is_inbound_default: bool = False,
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -336,7 +340,11 @@ class FakeRepo:
             "knowledge_context": knowledge_context,
             "required_information": required_information,
             "voice_id": voice_id,
+            "operating_profile": operating_profile or {},
+            "handles_inbound": handles_inbound,
+            "handles_outbound": handles_outbound,
             "is_default": is_default,
+            "is_inbound_default": is_inbound_default,
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -366,6 +374,15 @@ class FakeRepo:
         rows = await self.list_phone_agent_templates(tenant_id=tenant_id, user_id=user_id)
         return next((row for row in rows if row["is_default"]), None)
 
+    async def get_inbound_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        rows = await self.list_phone_agent_templates(tenant_id=tenant_id, user_id=user_id)
+        return next(
+            (row for row in rows if row.get("is_inbound_default") and row.get("handles_inbound")),
+            None,
+        )
+
     async def update_phone_agent_template(
         self,
         *,
@@ -392,6 +409,18 @@ class FakeRepo:
                 row["is_default"] = False
                 row["updated_at"] = _now()
 
+    async def clear_inbound_phone_agent_template(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, except_id: uuid.UUID | None = None
+    ) -> None:
+        for row in self.phone_agent_templates.values():
+            if (
+                row["tenant_id"] == tenant_id
+                and row["user_id"] == user_id
+                and row["id"] != except_id
+            ):
+                row["is_inbound_default"] = False
+                row["updated_at"] = _now()
+
     async def delete_phone_agent_template(
         self, *, tenant_id: uuid.UUID, template_id: uuid.UUID
     ) -> bool:
@@ -414,6 +443,7 @@ class FakeRepo:
         from_e164: str,
         to_e164: str,
         goal: str,
+        recipient_name: str | None = None,
         status: str = "draft",
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
@@ -422,6 +452,7 @@ class FakeRepo:
         agent_prompt: str | None = None,
         opening_message: str | None = None,
         voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -431,6 +462,7 @@ class FakeRepo:
             "direction": direction,
             "from_e164": from_e164,
             "to_e164": to_e164,
+            "recipient_name": recipient_name,
             "goal": goal,
             "agent_template_id": agent_template_id,
             "agent_template_name": agent_template_name,
@@ -438,6 +470,7 @@ class FakeRepo:
             "agent_prompt": agent_prompt,
             "opening_message": opening_message,
             "voice_id": voice_id,
+            "agent_operating_profile": agent_operating_profile,
             "status": status,
             "provider": "twilio",
             "provider_call_sid": provider_call_sid,

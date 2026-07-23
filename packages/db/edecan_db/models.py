@@ -1506,6 +1506,13 @@ class PhoneAgentTemplate(IDMixin, TenantScopedMixin, TimestampMixin, Base):
             unique=True,
             postgresql_where=text("is_default"),
         ),
+        Index(
+            "uq_phone_agent_templates_inbound_default",
+            "tenant_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_inbound_default"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -1519,7 +1526,19 @@ class PhoneAgentTemplate(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     knowledge_context: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     required_information: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operating_profile: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    handles_inbound: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    handles_outbound: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_inbound_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -1559,6 +1578,7 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     direction: Mapped[str] = mapped_column(Text, nullable=False)
     from_e164: Mapped[str] = mapped_column(Text, nullable=False)
     to_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    recipient_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     agent_template_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -1571,6 +1591,7 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     agent_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     opening_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_operating_profile: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="twilio")
     provider_call_sid: Mapped[str | None] = mapped_column(Text, nullable=True)

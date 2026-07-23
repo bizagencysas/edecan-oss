@@ -178,6 +178,7 @@ async def test_configurar_agente_desde_chat_guarda_contexto_autorizado(make_ctx)
             [],  # agente inexistente
             [{"total": 0}],
             [],
+            [],
             [
                 {
                     "id": saved_id,
@@ -185,6 +186,9 @@ async def test_configurar_agente_desde_chat_guarda_contexto_autorizado(make_ctx)
                     "agent_name": "Valentina",
                     "default_goal": "Acordar una reunión",
                     "is_default": True,
+                    "is_inbound_default": True,
+                    "handles_inbound": True,
+                    "handles_outbound": True,
                 }
             ],
         ]
@@ -195,6 +199,11 @@ async def test_configurar_agente_desde_chat_guarda_contexto_autorizado(make_ctx)
             "nombre": "Negocios",
             "identidad": "Valentina",
             "personalidad": "Consultiva y clara.",
+            "funcion_y_mision": "Conseguir reuniones con prospectos adecuados.",
+            "problemas_que_resuelve": "Descubrimiento y coordinación de demostraciones.",
+            "problemas_fuera_de_alcance": "Asesoría legal y soporte técnico profundo.",
+            "acciones_permitidas": "Calificar, explicar la oferta y coordinar una reunión.",
+            "acciones_prohibidas": "No inventar precios ni prometer resultados.",
             "objetivo": "Acordar una reunión",
             "contexto_autorizado": "La demostración dura 20 minutos.",
             "informacion_a_obtener": "Necesidad y fecha.",
@@ -206,6 +215,16 @@ async def test_configurar_agente_desde_chat_guarda_contexto_autorizado(make_ctx)
     assert insert_params["knowledge_context"] == "La demostración dura 20 minutos."
     assert insert_params["required_information"] == "Necesidad y fecha."
     assert insert_params["is_default"] is True
+    assert insert_params["is_inbound_default"] is True
+    assert json.loads(insert_params["operating_profile"]) == {
+        "funcion_y_mision": "Conseguir reuniones con prospectos adecuados.",
+        "capabilities": "Descubrimiento y coordinación de demostraciones.",
+        "out_of_scope": "Asesoría legal y soporte técnico profundo.",
+        "allowed_actions": "Calificar, explicar la oferta y coordinar una reunión.",
+        "prohibited_actions": "No inventar precios ni prometer resultados.",
+        "escalation_rules": "",
+        "success_criteria": "",
+    }
 
 
 async def test_listar_agentes_devuelve_nombres_exactos(make_ctx):
@@ -218,13 +237,18 @@ async def test_listar_agentes_devuelve_nombres_exactos(make_ctx):
                     "agent_name": "Valentina",
                     "default_goal": "Presentar la propuesta",
                     "is_default": True,
+                    "is_inbound_default": True,
+                    "handles_inbound": True,
+                    "handles_outbound": True,
+                    "operating_profile": {"funcion_y_mision": "Abrir oportunidades comerciales."},
                 }
             ]
         ]
     )
     result = await ListarAgentesLlamadasTool().run(make_ctx(session=session), {})
     assert result.data["agentes"][0]["nombre"] == "Agente de negocios"
-    assert "predeterminado y entrantes" in result.content
+    assert "predeterminado para llamar" in result.content
+    assert "predeterminado para recibir" in result.content
 
 
 async def test_llamar_contacto_delega_en_dispatcher_transaccional(make_ctx):
@@ -235,26 +259,60 @@ async def test_llamar_contacto_delega_en_dispatcher_transaccional(make_ctx):
         return {"call_id": uuid4(), "conversation_id": uuid4(), "status": "queued"}
 
     ctx = make_ctx(extras={"phone_call_dispatcher": dispatch})
-    result = await LlamarContactoTool().run(
+    incomplete = await LlamarContactoTool().run(
         ctx,
         {"telefono_e164": " +573001234567 ", "objetivo": " Confirmar  la cita "},
     )
-    assert calls == [{"to_e164": "+573001234567", "goal": "Confirmar la cita"}]
-    assert result.data["status"] == "queued"
+    assert calls == []
+    assert "a quién pertenece" in incomplete.content
+    assert "qué agente exacto" in incomplete.content
 
-    await LlamarContactoTool().run(
+    result = await LlamarContactoTool().run(
         ctx,
         {
             "telefono_e164": "+573001234568",
+            "destinatario": "Daniel Rojas",
             "objetivo": "Presentar la propuesta",
             "agente": "Negocios",
         },
     )
     assert calls[-1] == {
         "to_e164": "+573001234568",
+        "recipient_name": "Daniel Rojas",
         "goal": "Presentar la propuesta",
         "agent_ref": "Negocios",
     }
+    assert result.data["status"] == "queued"
+
+
+async def test_llamar_contacto_no_invoca_dispatcher_si_falta_destinatario_o_agente(make_ctx):
+    calls: list[dict[str, str]] = []
+
+    async def dispatch(**kwargs):
+        calls.append(kwargs)
+        return {"status": "queued"}
+
+    ctx = make_ctx(extras={"phone_call_dispatcher": dispatch})
+    missing_recipient = await LlamarContactoTool().run(
+        ctx,
+        {
+            "telefono_e164": "+573001234567",
+            "objetivo": "Confirmar la cita",
+            "agente": "Seguimiento",
+        },
+    )
+    missing_agent = await LlamarContactoTool().run(
+        ctx,
+        {
+            "telefono_e164": "+573001234567",
+            "destinatario": "Daniel Rojas",
+            "objetivo": "Confirmar la cita",
+        },
+    )
+
+    assert calls == []
+    assert "a quién pertenece" in missing_recipient.content
+    assert "qué agente exacto" in missing_agent.content
 
 
 def test_ninguna_tool_de_voz_avanzada_clona_nada():

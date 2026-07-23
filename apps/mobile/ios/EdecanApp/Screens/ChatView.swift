@@ -18,6 +18,7 @@ struct ChatView: View {
     @State private var mostrandoVoz = false
     @State private var mostrandoHistorial = false
     @State private var mostrandoSelectorArchivos = false
+    @State private var mostrandoSelectorFotos = false
     @State private var mostrandoCamara = false
     @State private var fotosSeleccionadas: [PhotosPickerItem] = []
     @State private var adjuntosPendientes: [AdjuntoPendiente] = []
@@ -82,6 +83,14 @@ struct ChatView: View {
                 allowedContentTypes: [.item],
                 allowsMultipleSelection: true,
                 onCompletion: recibirArchivos
+            )
+            .photosPicker(
+                isPresented: $mostrandoSelectorFotos,
+                selection: $fotosSeleccionadas,
+                maxSelectionCount: max(1, 10 - adjuntosPendientes.count),
+                selectionBehavior: .continuousAndOrdered,
+                matching: .images,
+                preferredItemEncoding: .automatic
             )
             .onChange(of: fotosSeleccionadas) { _, nuevasFotos in
                 guard !nuevasFotos.isEmpty else { return }
@@ -258,11 +267,15 @@ struct ChatView: View {
                         botonPreset("Post", icono: "text.bubble", texto: "Crea un post sobre ")
                     }
                     Section("Adjuntar") {
-                        PhotosPicker(
-                            selection: $fotosSeleccionadas,
-                            maxSelectionCount: max(1, 10 - adjuntosPendientes.count),
-                            matching: .images
-                        ) {
+                        Button {
+                            // Presentar PhotosPicker desde dentro de un Menu en
+                            // el mismo ciclo puede perder la presentación en un
+                            // dispositivo real. Esperamos a que el menú cierre.
+                            Task { @MainActor in
+                                await Task.yield()
+                                mostrandoSelectorFotos = true
+                            }
+                        } label: {
                             Label("Elegir fotos", systemImage: "photo.on.rectangle")
                         }
                         Button {

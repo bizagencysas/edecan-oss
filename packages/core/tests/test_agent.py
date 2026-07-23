@@ -176,7 +176,7 @@ async def test_turno_sin_tools_emite_text_delta_y_done_en_orden():
     assert events[1].text == " mundo"
     assert events[2].usage == {"input_tokens": 3, "output_tokens": 5}
     # Se resolvió el LLM una sola vez para todo el turno.
-    assert router.resolve_calls == [("principal", {})]
+    assert router.resolve_calls == [("rapido", {})]
 
 
 @pytest.mark.asyncio

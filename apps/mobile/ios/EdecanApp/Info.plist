@@ -31,23 +31,25 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>EdecanUpdateChannel</key>
 	<string>$(EDECAN_IOS_UPDATE_CHANNEL)</string>
 	<key>EdecanUpdateManifestURL</key>
 	<string>$(EDECAN_IOS_UPDATE_MANIFEST_URL)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Edecán usa la cámara únicamente para escanear el QR de conexión que muestra tu computador.</string>
+	<string>Edecán usa la cámara para escanear el QR de conexión y para adjuntar fotos que tú decidas enviar en el chat.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Edecán usa tu red local para conectarse de forma directa y privada con tu computador después de escanear su QR.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Edecán accede únicamente a las fotos que tú elijas para adjuntarlas en el chat.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Edecan usa el reconocimiento de voz del dispositivo para convertir tus solicitudes en texto sin exigir una clave externa.</string>
 	<key>UILaunchScreen</key>

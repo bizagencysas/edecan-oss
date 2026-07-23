@@ -1,5 +1,6 @@
 import SwiftUI
 import EdecanKit
+import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
@@ -17,6 +18,8 @@ struct ChatView: View {
     @State private var mostrandoVoz = false
     @State private var mostrandoHistorial = false
     @State private var mostrandoSelectorArchivos = false
+    @State private var mostrandoCamara = false
+    @State private var fotosSeleccionadas: [PhotosPickerItem] = []
     @State private var adjuntosPendientes: [AdjuntoPendiente] = []
     @State private var tareasSubida: [UUID: Task<Void, Never>] = [:]
     @State private var artefactoDescargandoId: String?
@@ -63,12 +66,27 @@ struct ChatView: View {
             .sheet(item: $previewTarget) { target in
                 SecurePreviewSheet(target: target, client: session.client)
             }
+            .sheet(isPresented: $mostrandoCamara) {
+                CapturadorFotoChat { resultado in
+                    mostrandoCamara = false
+                    if case .success(let imagen) = resultado {
+                        prepararFotoCapturada(imagen)
+                    } else if case .failure(let error) = resultado {
+                        viewModel.errorMensaje = "No se pudo tomar la foto: \(error.localizedDescription)"
+                    }
+                }
+                .ignoresSafeArea()
+            }
             .fileImporter(
                 isPresented: $mostrandoSelectorArchivos,
                 allowedContentTypes: [.item],
                 allowsMultipleSelection: true,
                 onCompletion: recibirArchivos
             )
+            .onChange(of: fotosSeleccionadas) { _, nuevasFotos in
+                guard !nuevasFotos.isEmpty else { return }
+                Task { await recibirFotos(nuevasFotos) }
+            }
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     cabeceraDeConversacion
@@ -239,7 +257,23 @@ struct ChatView: View {
                         botonPreset("App", icono: "apps.iphone", texto: "Crea una app para ")
                         botonPreset("Post", icono: "text.bubble", texto: "Crea un post sobre ")
                     }
-                    Section {
+                    Section("Adjuntar") {
+                        PhotosPicker(
+                            selection: $fotosSeleccionadas,
+                            maxSelectionCount: max(1, 10 - adjuntosPendientes.count),
+                            matching: .images
+                        ) {
+                            Label("Elegir fotos", systemImage: "photo.on.rectangle")
+                        }
+                        Button {
+                            guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                                viewModel.errorMensaje = "La cámara no está disponible en este dispositivo."
+                                return
+                            }
+                            mostrandoCamara = true
+                        } label: {
+                            Label("Tomar foto", systemImage: "camera")
+                        }
                         Button {
                             mostrandoSelectorArchivos = true
                         } label: {
@@ -462,6 +496,71 @@ struct ChatView: View {
             }
         } catch {
             viewModel.errorMensaje = "No se pudieron seleccionar los archivos: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func recibirFotos(_ items: [PhotosPickerItem]) async {
+        defer { fotosSeleccionadas = [] }
+        guard let client = session.client else {
+            viewModel.errorMensaje = "No hay sesión activa."
+            return
+        }
+        let disponibles = max(0, 10 - adjuntosPendientes.count)
+        guard disponibles > 0 else {
+            viewModel.errorMensaje = "Puedes adjuntar hasta 10 archivos por mensaje."
+            return
+        }
+        for (indice, item) in items.prefix(disponibles).enumerated() {
+            do {
+                guard let datos = try await item.loadTransferable(type: Data.self) else {
+                    throw CocoaError(.fileReadUnknown)
+                }
+                let tipo = item.supportedContentTypes.first(where: { $0.conforms(to: .image) }) ?? .jpeg
+                let extensionArchivo = tipo.preferredFilenameExtension ?? "jpg"
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("edecan-foto-\(UUID().uuidString).\(extensionArchivo)")
+                try datos.write(to: url, options: .atomic)
+                let pendiente = AdjuntoPendiente(
+                    localURL: url,
+                    filename: "foto-\(indice + 1).\(extensionArchivo)",
+                    mimeType: tipo.preferredMIMEType ?? "image/jpeg"
+                )
+                adjuntosPendientes.append(pendiente)
+                iniciarSubida(pendiente, client: client)
+            } catch {
+                viewModel.errorMensaje = "No se pudo preparar una de las fotos: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    @MainActor
+    private func prepararFotoCapturada(_ imagen: UIImage) {
+        guard let client = session.client else {
+            viewModel.errorMensaje = "No hay sesión activa."
+            return
+        }
+        guard adjuntosPendientes.count < 10 else {
+            viewModel.errorMensaje = "Puedes adjuntar hasta 10 archivos por mensaje."
+            return
+        }
+        guard let datos = imagen.jpegData(compressionQuality: 0.9) else {
+            viewModel.errorMensaje = "No se pudo preparar la foto."
+            return
+        }
+        do {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("edecan-camara-\(UUID().uuidString).jpg")
+            try datos.write(to: url, options: .atomic)
+            let pendiente = AdjuntoPendiente(
+                localURL: url,
+                filename: "foto-camara.jpg",
+                mimeType: "image/jpeg"
+            )
+            adjuntosPendientes.append(pendiente)
+            iniciarSubida(pendiente, client: client)
+        } catch {
+            viewModel.errorMensaje = "No se pudo preparar la foto: \(error.localizedDescription)"
         }
     }
 
@@ -729,6 +828,47 @@ private struct HojaCompartir: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+private struct CapturadorFotoChat: UIViewControllerRepresentable {
+    let onResult: (Result<UIImage, Error>) -> Void
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onResult: (Result<UIImage, Error>) -> Void
+
+        init(onResult: @escaping (Result<UIImage, Error>) -> Void) {
+            self.onResult = onResult
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            guard let image = info[.originalImage] as? UIImage else {
+                onResult(.failure(CocoaError(.fileReadUnknown)))
+                return
+            }
+            onResult(.success(image))
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onResult: onResult)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let controller = UIImagePickerController()
+        controller.sourceType = .camera
+        controller.cameraCaptureMode = .photo
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
 }
 
 private func limpiarArchivoTemporal(_ url: URL) {

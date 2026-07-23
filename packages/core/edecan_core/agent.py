@@ -57,7 +57,10 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ITERATIONS = 8
 """Tope de vueltas LLM↔herramientas dentro de UN turno (ARCHITECTURE.md §10.7)."""
 
-_LLM_ALIAS = "principal"
+# Un turno conversacional debe sentirse inmediato. El trabajo pesado no usa
+# este default: el Orchestrator crea cada especialista con su alias explícito
+# (normalmente ``profundo``).
+_LLM_ALIAS = "rapido"
 _RESULT_PREVIEW_LEN = 400
 _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
@@ -235,7 +238,7 @@ class Agent:
     (`.id`/`.name`/`.arguments`) y `.usage` (`.input_tokens`/`.output_tokens`)
     — exactamente la forma de `edecan_llm.router.LLMRouter`/`LLMProvider`.
 
-    `model_alias` (opcional, default `None` → `_LLM_ALIAS`/`"principal"`): el
+    `model_alias` (opcional, default `None` → `_LLM_ALIAS`/`"rapido"`): el
     alias que este `Agent` resuelve en `llm_router.resolve(alias, flags)` para
     TODO el turno. Existe para que `edecan_agents.orchestrator.Orchestrator`
     pueda construir un `Agent` por paso con el `model_alias` del

@@ -98,10 +98,10 @@ class AnalizarImagenTool(Tool):
         pregunta = str(args.get("pregunta") or "").strip() or _PREGUNTA_DEFECTO
         try:
             respuesta = await ctx.llm.complete(
-                "principal",
+                "rapido",
                 flags,
                 CompletionRequest(
-                    model="principal",
+                    model="rapido",
                     system=_SYSTEM_PROMPT,
                     messages=[
                         ChatMessage(

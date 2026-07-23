@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "websockets>=13.0",
+    "websockets>=16.1.1",
     "pyyaml>=6.0",
     "send2trash>=1.8.3",
 ]

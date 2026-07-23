@@ -1296,9 +1296,11 @@ async def prepare_call(
 
     if body.conversation_id is not None:
         conversation = await repo.get_conversation(
-            tenant_id=current_user.tenant_id, conversation_id=body.conversation_id
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=body.conversation_id,
         )
-        if conversation is None or conversation["user_id"] != current_user.user_id:
+        if conversation is None:
             raise HTTPException(status_code=404, detail="Conversación no encontrada.")
     else:
         conversation = await repo.create_conversation(

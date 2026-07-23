@@ -351,7 +351,9 @@ async def test_conversations_and_messages(db) -> None:
             assert {c["id"] for c in listado} == {sin_titulo["id"], con_titulo["id"]}
 
             fetched = await repo.get_conversation(
-                tenant_id=tenant_id, conversation_id=con_titulo["id"]
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=con_titulo["id"],
             )
             assert fetched is not None
             assert fetched["id"] == con_titulo["id"]
@@ -382,7 +384,9 @@ async def test_conversations_and_messages(db) -> None:
 
             # `add_message` también refresca `conversations.updated_at`.
             conv_after = await repo.get_conversation(
-                tenant_id=tenant_id, conversation_id=con_titulo["id"]
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=con_titulo["id"],
             )
             assert conv_after is not None
             assert conv_after["updated_at"] >= con_titulo["updated_at"]
@@ -400,14 +404,22 @@ async def test_conversations_and_messages(db) -> None:
             assert [row["id"] for row in todos] == [m1["id"], m2["id"], m3["id"]]
 
             assert await repo.delete_conversation(
-                tenant_id=tenant_id, conversation_id=sin_titulo["id"]
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=sin_titulo["id"],
             )
             assert (
-                await repo.get_conversation(tenant_id=tenant_id, conversation_id=sin_titulo["id"])
+                await repo.get_conversation(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    conversation_id=sin_titulo["id"],
+                )
                 is None
             )
             assert not await repo.delete_conversation(
-                tenant_id=tenant_id, conversation_id=sin_titulo["id"]
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=sin_titulo["id"],
             )
     finally:
         await _cleanup(tenant_id, user_id)

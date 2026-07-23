@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 
 class SseClientRequestTest {
     @Test
@@ -128,4 +129,46 @@ class SseClientRequestTest {
         assertEquals(3, error.retryAfterSeconds)
         assertEquals("Edecán sigue trabajando.", error.message)
     }
+
+    @Test
+    fun confirmacionRequeridaCierraNormalmenteElStreamInicial() = runTest {
+        val client = clienteConConfirmacion()
+
+        val events = SseClient().stream(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/messages",
+            accessToken = "access-chat",
+            bodyJson = "{}",
+            idempotencyKey = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+        ).toList()
+
+        val confirmation = assertIs<ChatEvent.ConfirmationRequired>(events.single())
+        assertEquals("call-1", confirmation.toolCallId)
+        assertEquals("enviar_correo", confirmation.name)
+    }
+
+    @Test
+    fun replayConConfirmacionRequeridaNoEntraEnBucleDeReconexion() = runTest {
+        val client = clienteConConfirmacion()
+
+        val events = SseClient().resume(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+            accessToken = "access-chat",
+        ).toList()
+
+        val confirmation = assertIs<ChatEvent.ConfirmationRequired>(events.single())
+        assertEquals("call-1", confirmation.toolCallId)
+        assertEquals("enviar_correo", confirmation.name)
+    }
+
+    private fun clienteConConfirmacion() = HttpClient(MockEngine {
+        respond(
+            "event: confirmation.required\n" +
+                "data: {\"type\":\"confirmation_required\",\"tool_call_id\":\"call-1\"," +
+                "\"name\":\"enviar_correo\",\"args\":{\"to\":\"ana@example.com\"}}\n\n",
+            HttpStatusCode.OK,
+            headersOf(HttpHeaders.ContentType, "text/event-stream"),
+        )
+    })
 }

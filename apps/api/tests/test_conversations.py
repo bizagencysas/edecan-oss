@@ -351,7 +351,7 @@ def test_historical_secret_is_redacted_when_serialized_or_sent_back_to_llm() -> 
     assert "[REDACTED]" in json.dumps(outgoing, default=str)
 
 
-async def test_conversation_can_be_renamed_and_is_tenant_scoped(client) -> None:
+async def test_conversation_can_be_renamed_and_is_user_and_tenant_scoped(client) -> None:
     tenant_id = uuid.uuid4()
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
     conversation_id = await _create_conversation(client, headers)
@@ -364,15 +364,24 @@ async def test_conversation_can_be_renamed_and_is_tenant_scoped(client) -> None:
 
     assert renamed.status_code == 200
     assert renamed.json()["title"] == "Lanzamiento de Edecán"
-    other_headers = auth_headers(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
+    other_user_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
     )
-    denied = await client.patch(
+    denied_user = await client.patch(
         f"/v1/conversations/{conversation_id}",
         json={"title": "No permitido"},
-        headers=other_headers,
+        headers=other_user_headers,
     )
-    assert denied.status_code == 404
+    other_tenant_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic"
+    )
+    denied_tenant = await client.patch(
+        f"/v1/conversations/{conversation_id}",
+        json={"title": "Tampoco permitido"},
+        headers=other_tenant_headers,
+    )
+    assert denied_user.status_code == 404
+    assert denied_tenant.status_code == 404
 
 
 async def test_post_message_idempotency_replays_exact_sse_without_duplicate_side_effects(
@@ -476,8 +485,9 @@ async def test_in_flight_message_attempt_returns_202_without_false_failure(
     import edecan_api.routers.conversations as conversations_module
 
     tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     headers = auth_headers(
-        user_id=uuid.uuid4(),
+        user_id=user_id,
         tenant_id=tenant_id,
         plan_key="hosted_basic",
     )
@@ -485,6 +495,7 @@ async def test_in_flight_message_attempt_returns_202_without_false_failure(
     attempt_id = uuid.uuid4()
     redis_key = conversations_module._message_idempotency_key(
         tenant_id=tenant_id,
+        user_id=user_id,
         conversation_id=uuid.UUID(conversation_id),
         idempotency_key=attempt_id,
     )
@@ -507,14 +518,15 @@ async def test_in_flight_message_attempt_returns_202_without_false_failure(
     assert response.headers["cache-control"] == "no-store"
 
 
-async def test_message_attempt_resume_is_tenant_scoped_and_expiry_safe(
+async def test_message_attempt_resume_is_user_and_tenant_scoped_and_expiry_safe(
     client, fake_redis
 ) -> None:
     import edecan_api.routers.conversations as conversations_module
 
     tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     headers = auth_headers(
-        user_id=uuid.uuid4(),
+        user_id=user_id,
         tenant_id=tenant_id,
         plan_key="hosted_basic",
     )
@@ -522,6 +534,7 @@ async def test_message_attempt_resume_is_tenant_scoped_and_expiry_safe(
     attempt_id = uuid.uuid4()
     redis_key = conversations_module._message_idempotency_key(
         tenant_id=tenant_id,
+        user_id=user_id,
         conversation_id=uuid.UUID(conversation_id),
         idempotency_key=attempt_id,
     )
@@ -537,21 +550,31 @@ async def test_message_attempt_resume_is_tenant_scoped_and_expiry_safe(
         ex=3600,
     )
 
-    other_headers = auth_headers(
+    other_user_headers = auth_headers(
+        user_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        plan_key="hosted_basic",
+    )
+    other_tenant_headers = auth_headers(
         user_id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
         plan_key="hosted_basic",
     )
-    denied = await client.get(
+    denied_user = await client.get(
         f"/v1/conversations/{conversation_id}/message-attempts/{attempt_id}",
-        headers=other_headers,
+        headers=other_user_headers,
+    )
+    denied_tenant = await client.get(
+        f"/v1/conversations/{conversation_id}/message-attempts/{attempt_id}",
+        headers=other_tenant_headers,
     )
     missing = await client.get(
         f"/v1/conversations/{conversation_id}/message-attempts/{uuid.uuid4()}",
         headers=headers,
     )
 
-    assert denied.status_code == 404
+    assert denied_user.status_code == 404
+    assert denied_tenant.status_code == 404
     assert missing.status_code == 404
     assert "reanudación" in missing.json()["detail"]
 
@@ -1094,6 +1117,31 @@ async def test_get_conversation_from_another_tenant_returns_404(client) -> None:
 
     response = await client.get(f"/v1/conversations/{conversation_id}", headers=headers_b)
     assert response.status_code == 404
+
+
+async def test_get_and_delete_conversation_from_another_user_returns_404(client) -> None:
+    tenant_id = uuid.uuid4()
+    owner_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    other_user_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, owner_headers)
+
+    fetched = await client.get(
+        f"/v1/conversations/{conversation_id}", headers=other_user_headers
+    )
+    deleted = await client.delete(
+        f"/v1/conversations/{conversation_id}", headers=other_user_headers
+    )
+    owner_still_has_it = await client.get(
+        f"/v1/conversations/{conversation_id}", headers=owner_headers
+    )
+
+    assert fetched.status_code == 404
+    assert deleted.status_code == 404
+    assert owner_still_has_it.status_code == 200
 
 
 async def test_delete_conversation(client) -> None:

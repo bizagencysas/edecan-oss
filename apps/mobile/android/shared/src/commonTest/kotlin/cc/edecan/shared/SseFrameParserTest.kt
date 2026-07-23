@@ -180,4 +180,21 @@ class SseFrameParserTest {
         assertTrue(terminal.finalizado)
         terminal.validarCierre()
     }
+
+    @Test
+    fun confirmacion_requerida_cierra_el_stream_mientras_espera_al_usuario() {
+        val terminal = SseTerminalState()
+
+        assertTrue(
+            terminal.aceptar(
+                ChatEvent.ConfirmationRequired(
+                    toolCallId = "call-1",
+                    name = "enviar_correo",
+                ),
+            ),
+        )
+        assertTrue(terminal.finalizado)
+        assertTrue(!terminal.aceptar(ChatEvent.TextDelta("no debe llegar")))
+        terminal.validarCierre()
+    }
 }

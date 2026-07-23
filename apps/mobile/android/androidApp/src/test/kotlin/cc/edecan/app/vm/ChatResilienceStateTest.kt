@@ -1,6 +1,7 @@
 package cc.edecan.app.vm
 
 import androidx.lifecycle.SavedStateHandle
+import cc.edecan.shared.ChatEvent
 import cc.edecan.shared.Conversation
 import cc.edecan.shared.edecanJson
 import kotlin.test.Test
@@ -11,6 +12,26 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ChatResilienceStateTest {
+    @Test
+    fun errorDelAgenteEsUnCierreTerminalNoUnaPerdidaDeConexion() {
+        val error = ChatEvent.ErrorEvent("  El proveedor no respondió.  ")
+
+        assertEquals("El proveedor no respondió.", error.mensajeDeFalloTerminal())
+        assertNull(ChatEvent.Done().mensajeDeFalloTerminal())
+        assertNull(ChatEvent.TextDelta("parcial").mensajeDeFalloTerminal())
+    }
+
+    @Test
+    fun errorTerminalRetiraLaClaveParaQueReintentarCreeOtroIntento() {
+        var next = 0
+        val keys = ClavesIntentoLogico { "key-${next++}" }
+        val fallido = keys.nueva("m1")
+
+        keys.completar("m1")
+
+        assertNotEquals(fallido, keys.reintentar("m1"))
+    }
+
     @Test
     fun reintentarReutilizaLaClaveHastaExitoONuevoContenido() {
         var next = 0

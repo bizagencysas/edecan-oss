@@ -234,16 +234,25 @@ internal class SseFrameParser(private val json: Json = edecanJson) {
     }
 }
 
-/** Contrato terminal de un turno SSE: el primer `done`/`error` gana y
- * cualquier evento posterior se ignora. Un EOF sin marcador terminal es una
- * respuesta truncada, no un éxito. */
+/** Contrato terminal de una petición SSE: el primer `done`, `error` o
+ * `confirmation_required` gana y cualquier evento posterior se ignora.
+ *
+ * Una confirmación no termina el objetivo completo, pero sí cierra
+ * deliberadamente este stream mientras el backend espera la decisión humana.
+ * Un EOF sin ninguno de esos marcadores sigue siendo una respuesta truncada. */
 internal class SseTerminalState {
     var finalizado: Boolean = false
         private set
 
     fun aceptar(evento: ChatEvent): Boolean {
         if (finalizado) return false
-        if (evento is ChatEvent.Done || evento is ChatEvent.ErrorEvent) finalizado = true
+        if (
+            evento is ChatEvent.Done ||
+            evento is ChatEvent.ErrorEvent ||
+            evento is ChatEvent.ConfirmationRequired
+        ) {
+            finalizado = true
+        }
         return true
     }
 

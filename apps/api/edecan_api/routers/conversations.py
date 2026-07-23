@@ -220,7 +220,9 @@ async def get_conversation(
     redis_client: redis_asyncio.Redis = Depends(get_redis),
 ) -> dict[str, Any]:
     row = await repo.get_conversation(
-        tenant_id=current_user.tenant_id, conversation_id=conversation_id
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
@@ -250,6 +252,7 @@ async def rename_conversation(
         raise HTTPException(status_code=422, detail="Escribe un nombre para la conversación.")
     row = await repo.update_conversation_title(
         tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
         conversation_id=conversation_id,
         title=title,
         source="manual",
@@ -266,7 +269,9 @@ async def delete_conversation(
     repo: Repo = Depends(get_repo),
 ) -> None:
     deleted = await repo.delete_conversation(
-        tenant_id=current_user.tenant_id, conversation_id=conversation_id
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
@@ -417,6 +422,7 @@ async def _refresh_conversation_titles(*, current_user: CurrentUser, repo: Repo)
             continue
         await repo.update_conversation_title(
             tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
             conversation_id=row["id"],
             title=title,
             source=source,
@@ -771,9 +777,13 @@ async def _pop_pending_confirmation(
 
 
 def _message_idempotency_key(
-    *, tenant_id: uuid.UUID, conversation_id: uuid.UUID, idempotency_key: uuid.UUID
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    idempotency_key: uuid.UUID,
 ) -> str:
-    return f"chat_idempotency:{tenant_id}:{conversation_id}:{idempotency_key}"
+    return f"chat_idempotency:{tenant_id}:{user_id}:{conversation_id}:{idempotency_key}"
 
 
 def _message_request_hash(body: ChatMessageIn) -> str:
@@ -1603,12 +1613,14 @@ async def resume_message_attempt(
 
     conversation = await repo.get_conversation(
         tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
         conversation_id=conversation_id,
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
     redis_key = _message_idempotency_key(
         tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
         conversation_id=conversation_id,
         idempotency_key=idempotency_key,
     )
@@ -1640,7 +1652,9 @@ async def post_message(
 ) -> StreamingResponse:
     tenant = current_user.tenant
     conversation = await repo.get_conversation(
-        tenant_id=tenant.tenant_id, conversation_id=conversation_id
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
@@ -1652,6 +1666,7 @@ async def post_message(
         request_hash = _message_request_hash(body)
         redis_idempotency_key = _message_idempotency_key(
             tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
             conversation_id=conversation_id,
             idempotency_key=idempotency_key,
         )
@@ -1764,6 +1779,7 @@ async def post_message(
         )
         await repo.update_conversation_title(
             tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
             conversation_id=conversation_id,
             title=automatic_title,
             only_if_empty=True,
@@ -1864,7 +1880,9 @@ async def confirm_tool_call(
 ) -> StreamingResponse:
     tenant = current_user.tenant
     conversation = await repo.get_conversation(
-        tenant_id=tenant.tenant_id, conversation_id=conversation_id
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")

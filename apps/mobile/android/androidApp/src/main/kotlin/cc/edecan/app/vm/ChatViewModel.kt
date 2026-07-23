@@ -275,6 +275,15 @@ internal fun SavedStateHandle.turnoPendientePersistido(): TurnoPendientePersisti
     return if (conversationId != null && key != null) TurnoPendientePersistido(conversationId, key) else null
 }
 
+/** Un `error` del agente es un cierre válido del protocolo SSE, no una caída
+ * del transporte. Se extrae sin lanzar dentro del collector porque cualquier
+ * excepción de ese collector atraviesa `emit` y la capa Ktor podría
+ * normalizarla erróneamente como `SseException.Conexion`. */
+internal fun ChatEvent.mensajeDeFalloTerminal(): String? =
+    (this as? ChatEvent.ErrorEvent)?.message
+        ?.trim()
+        ?.ifEmpty { "Edecán no pudo completar este mensaje." }
+
 /** Quita cualquier fragmento incompleto antes de consumir el replay completo.
  * Sin este reset, los deltas que llegaron antes de minimizar se duplicarían. */
 internal fun ChatUiState.prepararReanudacion(idRespuesta: String): ChatUiState = copy(
@@ -886,6 +895,24 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         var completado = false
         var recuperar = bodyJson == null
         var fallosDeConexion = 0
+        fun registrarFallo(mensaje: String) {
+            _uiState.update { state ->
+                state.copy(
+                    errorMensaje = mensaje,
+                    borrador = if (state.borrador.isBlank() && idUsuario != null) {
+                        state.mensajes.firstOrNull { it.id == idUsuario }?.texto.orEmpty()
+                    } else state.borrador,
+                    mensajes = state.mensajes.map { message ->
+                        if (message.id == idUsuario) {
+                            message.copy(estadoEntrega = EstadoEntrega.FALLIDO)
+                        } else {
+                            message
+                        }
+                    },
+                )
+            }
+            savedStateHandle[DRAFT_KEY] = _uiState.value.borrador
+        }
         try {
             var yaRefresco = false
             while (true) {
@@ -911,6 +938,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                         )
                     }
                     var recibioEvento = false
+                    var falloTerminal: String? = null
                     eventos.collect { evento ->
                         if (!recibioEvento) {
                             recibioEvento = true
@@ -918,7 +946,18 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                             _uiState.update { it.copy(recuperandoTurno = false, errorMensaje = null) }
                         }
                         idUsuario?.let(::marcarEntregado)
-                        aplicar(evento, idRespuesta, api)
+                        val mensajeDeFallo = evento.mensajeDeFalloTerminal()
+                        if (mensajeDeFallo != null) {
+                            falloTerminal = mensajeDeFallo
+                        } else {
+                            aplicar(evento, idRespuesta, api)
+                        }
+                    }
+                    if (falloTerminal != null) {
+                        // Se lanza DESPUÉS de que el Flow terminó. Así no cruza
+                        // el límite del collector ni puede convertirse en un
+                        // falso error de conexión dentro de `SseClient`.
+                        throw FalloTerminalDelAgente(requireNotNull(falloTerminal))
                     }
                     completado = true
                     break
@@ -964,20 +1003,16 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: FalloTerminalDelAgente) {
+            idempotencyKey?.let(::limpiarTurnoPendiente)
+            // El servidor ya cerró y guardó este intento con `error`. Un tap en
+            // Reintentar debe crear otra UUID en vez de reproducir eternamente
+            // el mismo replay fallido.
+            idUsuario?.let(clavesIdempotencia::completar)
+            registrarFallo(e.message ?: "Edecán no pudo completar este mensaje.")
         } catch (e: Exception) {
             idempotencyKey?.let(::limpiarTurnoPendiente)
-            _uiState.update { state ->
-                state.copy(
-                    errorMensaje = e.message ?: "No pude completar el mensaje.",
-                    borrador = if (state.borrador.isBlank() && idUsuario != null) {
-                        state.mensajes.firstOrNull { it.id == idUsuario }?.texto.orEmpty()
-                    } else state.borrador,
-                    mensajes = state.mensajes.map { message ->
-                        if (message.id == idUsuario) message.copy(estadoEntrega = EstadoEntrega.FALLIDO) else message
-                    },
-                )
-            }
-            savedStateHandle[DRAFT_KEY] = _uiState.value.borrador
+            registrarFallo(e.message ?: "No pude completar el mensaje.")
         } finally {
             despertarReconexion?.complete(Unit)
             despertarReconexion = null
@@ -1157,7 +1192,10 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                     },
                 )
             }
-            is ChatEvent.ErrorEvent -> throw IllegalStateException(evento.message)
+            // El cierre `error` se consume en `correrTurno`, fuera del
+            // collector. Mantener esta rama inocua hace el `when` exhaustivo y
+            // evita que una llamada futura vuelva a confundir agente con red.
+            is ChatEvent.ErrorEvent -> Unit
             is ChatEvent.Unknown -> Unit
         }
     }
@@ -1214,6 +1252,8 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
         const val DRAFT_KEY = "chat_draft"
         const val MAX_ATTACHMENTS = 10
     }
+
+    private class FalloTerminalDelAgente(message: String) : Exception(message)
 
     override fun onCleared() {
         // SavedStateHandle pertenece al Activity padre: se borra

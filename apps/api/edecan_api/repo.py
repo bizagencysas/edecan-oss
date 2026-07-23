@@ -149,19 +149,20 @@ class Repo(Protocol):
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Row]: ...
     async def get_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> Row | None: ...
     async def update_conversation_title(
         self,
         *,
         tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
         source: str | None = None,
     ) -> Row | None: ...
     async def delete_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> bool: ...
     async def add_message(
         self,
@@ -808,17 +809,21 @@ class SqlRepo:
         )
 
     async def get_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> Row | None:
         return await self._first(
-            "SELECT * FROM conversations WHERE tenant_id = :tenant_id AND id = :id",
-            {"tenant_id": tenant_id, "id": conversation_id},
+            """
+            SELECT * FROM conversations
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id, "id": conversation_id},
         )
 
     async def update_conversation_title(
         self,
         *,
         tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
@@ -832,11 +837,12 @@ class SqlRepo:
             f"""
             UPDATE conversations
             SET title = :title {source_set}, updated_at = :now
-            WHERE tenant_id = :tenant_id AND id = :id {empty_guard}
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id {empty_guard}
             RETURNING *
             """,
             {
                 "tenant_id": tenant_id,
+                "user_id": user_id,
                 "id": conversation_id,
                 "title": title,
                 "source": source,
@@ -845,11 +851,14 @@ class SqlRepo:
         )
 
     async def delete_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> bool:
         deleted = await self._exec(
-            "DELETE FROM conversations WHERE tenant_id = :tenant_id AND id = :id",
-            {"tenant_id": tenant_id, "id": conversation_id},
+            """
+            DELETE FROM conversations
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id, "id": conversation_id},
         )
         return deleted > 0
 

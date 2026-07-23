@@ -597,10 +597,14 @@ class FakeRepo:
         return dict(row)
 
     async def get_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> Row | None:
         row = self.conversations.get(conversation_id)
-        if row is not None and row["tenant_id"] == tenant_id:
+        if (
+            row is not None
+            and row["tenant_id"] == tenant_id
+            and row["user_id"] == user_id
+        ):
             return dict(row)
         return None
 
@@ -608,13 +612,18 @@ class FakeRepo:
         self,
         *,
         tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         title: str,
         only_if_empty: bool = False,
         source: str | None = None,
     ) -> Row | None:
         row = self.conversations.get(conversation_id)
-        if row is None or row["tenant_id"] != tenant_id:
+        if (
+            row is None
+            or row["tenant_id"] != tenant_id
+            or row["user_id"] != user_id
+        ):
             return None
         if (
             only_if_empty
@@ -629,10 +638,14 @@ class FakeRepo:
         return dict(row)
 
     async def delete_conversation(
-        self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> bool:
         row = self.conversations.get(conversation_id)
-        if row is not None and row["tenant_id"] == tenant_id:
+        if (
+            row is not None
+            and row["tenant_id"] == tenant_id
+            and row["user_id"] == user_id
+        ):
             del self.conversations[conversation_id]
             self.messages.pop(conversation_id, None)
             return True

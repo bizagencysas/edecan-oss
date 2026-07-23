@@ -56,7 +56,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.release.outputs.tag }}"
-          git cat-file -e "refs/tags/$TAG^{commit}"
+          TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+          test -n "$TAG_COMMIT"
+          git fetch origin main
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main || {
+            echo "::error::El tag de Android no pertenece a main"
+            exit 1
+          }
           VERSION="${TAG#v}"
           BUILD_FILE="apps/mobile/android/androidApp/build.gradle.kts"
           VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' "$BUILD_FILE" | head -1)"
@@ -120,8 +126,23 @@ jobs:
           SOURCE="apps/mobile/android/androidApp/build/outputs/apk/release/androidApp-release.apk"
           test -f "$SOURCE"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
           test -x "$APKSIGNER"
+          test -x "$AAPT"
           "$APKSIGNER" verify --verbose --print-certs "$SOURCE"
+          BADGING="$("$AAPT" dump badging "$SOURCE" | head -1)"
+          [[ "$BADGING" == *"name='cc.edecan.app'"* ]] || {
+            echo "::error::El APK no pertenece a cc.edecan.app"
+            exit 1
+          }
+          [[ "$BADGING" == *"versionCode='${{ steps.metadata.outputs.version_code }}'"* ]] || {
+            echo "::error::El versionCode del APK no coincide con Gradle"
+            exit 1
+          }
+          [[ "$BADGING" == *"versionName='${{ steps.metadata.outputs.version }}'"* ]] || {
+            echo "::error::El versionName del APK no coincide con el tag"
+            exit 1
+          }
           mkdir -p release-artifacts
           ASSET="Edecan-Android-${{ steps.metadata.outputs.version }}.apk"
           cp "$SOURCE" "release-artifacts/$ASSET"

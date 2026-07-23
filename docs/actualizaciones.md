@@ -89,14 +89,14 @@ Ejemplo de release estable:
 
 ```bash
 # primero actualiza las versiones del crate, tauri.conf.json y apps/web
-git tag -s v0.8.0 -m "Edecán 0.8.0"
+git tag -a v0.8.0 -m "Edecán 0.8.0"
 git push bizagency v0.8.0
 ```
 
 Ejemplo de vista previa:
 
 ```bash
-git tag -s v0.8.0-beta.1 -m "Edecán 0.8.0 beta 1"
+git tag -a v0.8.0-beta.1 -m "Edecán 0.8.0 beta 1"
 git push bizagency v0.8.0-beta.1
 ```
 
@@ -130,7 +130,9 @@ Un fork debe generar su propio par de claves y cambiar tanto la clave pública
 como los endpoints. Reutilizar el identificador o la clave oficial haría que
 el fork dependiera del canal de otra organización.
 
-iOS usa la actualización firmada de App Store. Android puede usar Google Play
-o el canal firmado de la distribución OSS, descrito en
-[`movil-android.md`](./movil-android.md). El updater Tauri de esta página se
-limita deliberadamente a macOS, Windows y Linux.
+iOS consulta su propio manifiesto HTTPS y abre la fuente oficial que cada
+distribuidor configure: App Store, TestFlight, AltStore, SideStore o una URL de
+instalación firmada. iOS siempre conserva la decisión final de instalar.
+Android puede usar Google Play o el canal firmado de la distribución OSS,
+descrito en [`movil-android.md`](./movil-android.md). El updater Tauri de esta
+página se limita deliberadamente a macOS, Windows y Linux.

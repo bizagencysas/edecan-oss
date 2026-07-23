@@ -697,9 +697,8 @@ private struct GaleriaEdecanPicker: View {
     let onConfirmar: ([GaleriaFoto]) -> Void
 
     private let columnas = [
-        GridItem(.flexible(), spacing: 3),
-        GridItem(.flexible(), spacing: 3),
-        GridItem(.flexible(), spacing: 3)
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
     ]
 
     var body: some View {
@@ -783,11 +782,13 @@ private struct GaleriaEdecanPicker: View {
                 )
                 .padding(.top, 100)
             } else {
-                LazyVGrid(columns: columnas, spacing: 3) {
+                LazyVGrid(columns: columnas, spacing: 10) {
                     ForEach(recursos, id: \.localIdentifier) { recurso in
                         celda(recurso)
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
             }
         }
         .scrollIndicators(.hidden)
@@ -799,8 +800,8 @@ private struct GaleriaEdecanPicker: View {
             alternar(recurso.localIdentifier)
         } label: {
             MiniaturaGaleria(asset: recurso)
-                .aspectRatio(1, contentMode: .fill)
-                .clipped()
+                .aspectRatio(0.82, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay {
                     if posicion != nil {
                         EdecanTheme.degradado.opacity(0.16)
@@ -821,11 +822,15 @@ private struct GaleriaEdecanPicker: View {
                     .padding(8)
                 }
                 .overlay {
-                    if posicion != nil {
-                        RoundedRectangle(cornerRadius: 1)
-                            .stroke(EdecanTheme.degradado, lineWidth: 3)
-                    }
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(
+                            posicion == nil
+                                ? AnyShapeStyle(.white.opacity(0.18))
+                                : AnyShapeStyle(EdecanTheme.degradado),
+                            lineWidth: posicion == nil ? 1 : 3
+                        )
                 }
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(posicion == nil ? "Seleccionar foto" : "Foto seleccionada número \(posicion!)")
@@ -1009,17 +1014,35 @@ private struct MiniaturaGaleria: View {
     @State private var solicitud: PHImageRequestID?
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.quaternary)
-            if let imagen {
-                Image(uiImage: imagen)
-                    .resizable()
-                    .scaledToFill()
-                    .transition(.opacity)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
+        GeometryReader { proxy in
+            ZStack {
+                Rectangle()
+                    .fill(Color(uiColor: .secondarySystemBackground))
+                if let imagen {
+                    // El fondo ocupa la tarjeta sin dejar bandas duras, pero
+                    // la imagen principal siempre se muestra completa.
+                    Image(uiImage: imagen)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .blur(radius: 20)
+                        .scaleEffect(1.15)
+                        .opacity(0.48)
+                        .clipped()
+
+                    Image(uiImage: imagen)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(
+                            width: proxy.size.width - 10,
+                            height: proxy.size.height - 10
+                        )
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                        .transition(.opacity)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
         }
         .task(id: asset.localIdentifier) {

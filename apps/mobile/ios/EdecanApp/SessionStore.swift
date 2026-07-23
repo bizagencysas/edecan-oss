@@ -25,6 +25,7 @@ public final class SessionStore {
     private var contentEpoch = 0
     private var baseURLActual: URL?
     private let chatLocalState = ChatLocalStateStore()
+    private let pendingChatAttemptStore = PendingChatAttemptStore()
 
     public init() {}
 
@@ -38,7 +39,7 @@ public final class SessionStore {
         // puede reaparecer bajo la siguiente cuenta. En el primer arranque
         // con la URL persistida `client` aún es nil y sí se permite restaurar.
         if client != nil || url == nil {
-            chatLocalState.clearAll()
+            limpiarEstadoLocalDelChat()
         }
         clientGeneration += 1
         baseURLActual = url
@@ -100,7 +101,7 @@ public final class SessionStore {
     public func marcarSesionValida() {
         // Login/registro comienza siempre con estado local limpio. Evita que
         // un cierre abrupto anterior exponga borradores a otra identidad.
-        chatLocalState.clearAll()
+        limpiarEstadoLocalDelChat()
         contentEpoch += 1
         me = nil
         sesionValida = true
@@ -108,7 +109,7 @@ public final class SessionStore {
 
     private func manejarExpiracionGlobal(clientGeneration generation: Int) {
         guard generation == clientGeneration else { return }
-        chatLocalState.clearAll()
+        limpiarEstadoLocalDelChat()
         contentEpoch += 1
         me = nil
         sesionValida = false
@@ -126,13 +127,21 @@ public final class SessionStore {
     /// en segundo plano — best-effort (nunca bloquea ni falla el cierre de
     /// sesión: WP-V4-01 puede no haber aterrizado, o puede fallar por red).
     public func cerrarSesion(deviceId: String? = nil) async {
-        chatLocalState.clearAll()
+        limpiarEstadoLocalDelChat()
         contentEpoch += 1
         me = nil
         errorMensaje = nil
         sesionValida = false
         guard let client else { return }
         await client.cerrarSesion(deviceId: deviceId)
+    }
+
+    /// Borradores e intentos pendientes siempre pertenecen a una identidad y
+    /// un servidor concretos. Se eliminan juntos al cambiar cualquiera de los
+    /// dos para impedir recuperación cruzada entre tenants.
+    private func limpiarEstadoLocalDelChat() {
+        chatLocalState.clearAll()
+        pendingChatAttemptStore.clear()
     }
 
     // MARK: - Emparejamiento por dispositivo (WP-V4-01, contrato en paralelo)

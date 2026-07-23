@@ -397,6 +397,7 @@ cuenta Developer del propio cliente.
 |---|---|
 | Autenticación (login, **registro**, refresh automático, Keychain) | **Real** |
 | Chat con streaming SSE (`text_delta`, indicador de herramienta) | **Real** |
+| Reanudación del chat tras minimizar, cambiar de red o recrear el proceso | **Real** — el host conserva el turno; iOS persiste solo conversación + UUID, consulta `GET .../message-attempts/{uuid}` al volver y reemplaza cualquier fragmento con el replay canónico. No intenta sostener un socket contra las restricciones de batería de iOS. |
 | **Confirmar/rechazar una herramienta peligrosa desde el chat** (`POST .../confirm`, tarjeta inline Aprobar/Rechazar) | **Real** — `ChatViewModel.confirmacionPendiente` + `TarjetaConfirmacion`, compartida con Voz |
 | **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — botón de micrófono dentro de Chat; enlaza a Ajustes si falta una voz real |
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
@@ -406,7 +407,7 @@ cuenta Developer del propio cliente.
 | **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
-| `EdecanKit` completo con 90 tests offline | **Real** |
+| `EdecanKit` completo con 146 tests offline | **Real** |
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
 | Actividad (`GET /v1/me` + accesos), Ajustes (datos + cerrar sesión) | **Real** |
 | Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |

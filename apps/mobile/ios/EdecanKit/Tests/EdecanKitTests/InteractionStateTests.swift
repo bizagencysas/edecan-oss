@@ -64,4 +64,37 @@ struct InteractionStateTests {
         #expect(store.draft(conversationId: nil).isEmpty)
         #expect(defaults.string(forKey: "edecan.appearance.theme") == "conservar")
     }
+
+    @Test func intentoPendienteSePersisteSinPromptCrudoYSeEliminaAlCompletar() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PendingChatAttemptStore.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingChatAttemptStore(directoryURL: directory)
+        let key = try #require(UUID(uuidString: "DE09B042-756A-44BB-A9F0-D95FB1B4A140"))
+        let pending = PendingChatAttempt(
+            idempotencyKey: key,
+            conversationId: "conversation-1",
+            localMessageId: "local-message-1"
+        )
+
+        try store.save(pending)
+
+        #expect(try store.load() == pending)
+        let restored = try #require(try store.load())
+        #expect(restored.isRecoverable())
+
+        store.clear()
+        #expect(try store.load() == nil)
+    }
+
+    @Test func intentoPendienteExpiradoNoSeReanuda() {
+        let pending = PendingChatAttempt(
+            idempotencyKey: UUID(),
+            conversationId: "conversation-1",
+            localMessageId: "local-message-1",
+            createdAt: Date(timeIntervalSinceNow: -(26 * 60 * 60))
+        )
+
+        #expect(pending.isRecoverable() == false)
+    }
 }

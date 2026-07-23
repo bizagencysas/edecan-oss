@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var tabRouter
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var mostrandoVoz = false
@@ -110,6 +111,14 @@ struct ChatView: View {
             }
             .onChange(of: textoActual) { _, nuevo in
                 guardarBorrador(nuevo, conversationId: viewModel.conversacionId)
+            }
+            .onChange(of: scenePhase, initial: true) { _, nuevaFase in
+                let activa = nuevaFase == .active
+                viewModel.actualizarEstadoAplicacion(activa: activa)
+                guard activa, let client = session.client else { return }
+                Task {
+                    await viewModel.reanudarIntentoPendienteSiNecesario(client: client)
+                }
             }
             .onChange(of: tabRouter.solicitudPendiente?.id) { _, nuevaId in
                 guard nuevaId != nil, let solicitud = tabRouter.consumirSolicitud() else { return }

@@ -17,7 +17,7 @@ import Foundation
 public struct SSEClient: Sendable {
     public enum SSEError: Error, LocalizedError, Sendable, Equatable {
         case respuestaInvalida
-        case servidor(status: Int)
+        case servidor(status: Int, retryAfter: TimeInterval?)
         case eventoInvalido(detalle: String)
         case conexion(detalle: String)
 
@@ -25,7 +25,7 @@ public struct SSEClient: Sendable {
             switch self {
             case .respuestaInvalida:
                 return "El servidor envió una respuesta que no se pudo interpretar."
-            case .servidor(let status):
+            case .servidor(let status, _):
                 return "El servidor rechazó la conexión de chat (\(status))."
             case .eventoInvalido(let detalle):
                 return "Edecán envió un evento de chat que no se pudo leer: \(detalle)"
@@ -57,8 +57,16 @@ public struct SSEClient: Sendable {
                     guard let http = response as? HTTPURLResponse else {
                         throw SSEError.respuestaInvalida
                     }
-                    guard (200..<300).contains(http.statusCode) else {
-                        throw SSEError.servidor(status: http.statusCode)
+                    // Un chat SSE válido siempre responde 200. `202` se usa
+                    // deliberadamente por el endpoint de reanudación para
+                    // indicar que el mismo turno continúa en el servidor.
+                    guard http.statusCode == 200 else {
+                        let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+                            .flatMap(TimeInterval.init)
+                        throw SSEError.servidor(
+                            status: http.statusCode,
+                            retryAfter: retryAfter
+                        )
                     }
 
                     var nombreEvento: String?

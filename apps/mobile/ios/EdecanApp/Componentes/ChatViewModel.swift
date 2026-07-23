@@ -192,8 +192,16 @@ final class ChatViewModel {
     var errorMensaje: String?
 
     private let sseClient = SSEClient()
+    private let pendingAttemptStore: PendingChatAttemptStore
     private var inicializado = false
+    private var inicioCompleto = false
     private var seguimientoMisiones: [String: Task<Void, Never>] = [:]
+    private var aplicacionActiva = true
+    private var recuperacionEnCurso = false
+
+    init(pendingAttemptStore: PendingChatAttemptStore = PendingChatAttemptStore()) {
+        self.pendingAttemptStore = pendingAttemptStore
+    }
 
     var tituloConversacionActual: String {
         guard let conversacionId,
@@ -212,11 +220,72 @@ final class ChatViewModel {
         inicializado = true
         await cargarConversaciones(client: client)
 
-        if let preferredConversationId,
-           conversaciones.contains(where: { $0.id == preferredConversationId }) {
-            await abrirConversacion(id: preferredConversationId, client: client)
+        let pending = cargarIntentoPendienteValido()
+        let preferredId = pending?.conversationId ?? preferredConversationId
+        if let preferredId,
+           conversaciones.contains(where: { $0.id == preferredId }) {
+            await abrirConversacion(id: preferredId, client: client)
         } else if let first = conversaciones.first {
             await abrirConversacion(id: first.id, client: client)
+        }
+
+        inicioCompleto = true
+        if pending != nil {
+            await reanudarIntentoPendienteSiNecesario(client: client)
+        }
+    }
+
+    /// SwiftUI informa la fase de la escena. No intentamos mantener un socket
+    /// artificialmente vivo en background, algo que iOS no garantiza: el
+    /// servidor continúa el turno y, al volver, se recupera su replay.
+    func actualizarEstadoAplicacion(activa: Bool) {
+        aplicacionActiva = activa
+    }
+
+    /// Punto idempotente para foreground. Si el proceso siguió vivo, evita una
+    /// segunda recuperación mientras el envío original está activo. Si iOS lo
+    /// recreó, reconstruye la burbuja y consulta la operación persistida.
+    func reanudarIntentoPendienteSiNecesario(client: APIClient) async {
+        guard inicioCompleto, aplicacionActiva, !enviando, !recuperacionEnCurso,
+              let pending = cargarIntentoPendienteValido()
+        else { return }
+
+        recuperacionEnCurso = true
+        errorMensaje = nil
+        defer {
+            enviando = false
+            recuperacionEnCurso = false
+        }
+
+        do {
+            if conversacionId != pending.conversationId {
+                await abrirConversacion(id: pending.conversationId, client: client)
+                guard conversacionId == pending.conversationId else { return }
+            }
+
+            enviando = true
+            let responseIndex = prepararBurbujasParaReanudacion()
+            try await recuperarReplay(
+                pending,
+                indiceRespuesta: responseIndex,
+                client: client
+            )
+            limpiarIntentoPendiente(siCoincide: pending.idempotencyKey)
+            await cargarConversaciones(client: client)
+        } catch is CancellationError {
+            // Conserva el estado. El próximo foreground vuelve por la misma UUID.
+        } catch {
+            // Solo los errores definitivos llegan aquí. Una pérdida temporal de
+            // red permanece silenciosa dentro de `recuperarReplay`.
+            limpiarIntentoPendiente(siCoincide: pending.idempotencyKey)
+            if let userIndex = mensajes.firstIndex(where: { $0.id == pending.localMessageId }) {
+                mensajes[userIndex].falloEnvio = true
+                mensajes[userIndex].logicalAttempt = nil
+            }
+            mensajes.removeAll {
+                $0.rol == .asistente && $0.enProgreso && $0.texto.isEmpty
+            }
+            errorMensaje = error.localizedDescription
         }
     }
 
@@ -332,42 +401,91 @@ final class ChatViewModel {
         }
 
         var indiceRespuestaCreada: Int?
+        var pending: PendingChatAttempt?
         do {
             let conversationId = try await asegurarConversacion(client: client)
+            let pendingAttempt = PendingChatAttempt(
+                idempotencyKey: logicalAttempt.idempotencyKey,
+                conversationId: conversationId,
+                localMessageId: mensajeId
+            )
+            // Este registro se escribe antes del POST. Si iOS suspende o mata
+            // el proceso después de entregar la petición, el próximo arranque
+            // recupera el replay por UUID sin volver a enviar el prompt.
+            try pendingAttemptStore.save(pendingAttempt)
+            pending = pendingAttempt
+
             let indiceRespuesta = mensajes.count
             indiceRespuestaCreada = indiceRespuesta
             mensajes.append(Mensaje(rol: .asistente, texto: "", enProgreso: true))
-            defer {
-                if mensajes.indices.contains(indiceRespuesta) {
-                    mensajes[indiceRespuesta].enProgreso = false
-                }
-            }
 
             struct Body: Encodable {
                 let text: String
                 let attachments: [String]
             }
-            try await consumirStreamConRefresh(
-                client: client,
-                path: "/v1/conversations/\(conversationId)/messages",
-                body: Body(text: texto, attachments: attachmentIds),
-                idempotencyKey: logicalAttempt.idempotencyKey,
-                indiceRespuesta: indiceRespuesta
-            )
+            let body = Body(text: texto, attachments: attachmentIds)
+            do {
+                try await consumirStreamConRefresh(
+                    client: client,
+                    path: "/v1/conversations/\(conversationId)/messages",
+                    body: body,
+                    idempotencyKey: logicalAttempt.idempotencyKey,
+                    indiceRespuesta: indiceRespuesta
+                )
+            } catch {
+                guard Self.esInterrupcionRecuperable(error) else { throw error }
+                // El mismo POST/key es seguro y cubre el caso en que la red
+                // cayó antes de que el servidor reclamara el turno. Si ya lo
+                // reclamó, responde 409 y pasamos al GET de estado/replay.
+                try await esperarAplicacionActiva()
+                restablecerRespuestaParaReplay(indiceRespuesta)
+                do {
+                    try await consumirStreamConRefresh(
+                        client: client,
+                        path: "/v1/conversations/\(conversationId)/messages",
+                        body: body,
+                        idempotencyKey: logicalAttempt.idempotencyKey,
+                        indiceRespuesta: indiceRespuesta
+                    )
+                } catch {
+                    guard Self.esInterrupcionRecuperable(error) else { throw error }
+                    try await recuperarReplay(
+                        pendingAttempt,
+                        indiceRespuesta: indiceRespuesta,
+                        client: client
+                    )
+                }
+            }
             if errorMensaje != nil {
                 if mensajes.indices.contains(indiceUsuario) { mensajes[indiceUsuario].falloEnvio = true }
+                limpiarIntentoPendiente(siCoincide: logicalAttempt.idempotencyKey)
                 removerRespuestaFallida(indiceRespuesta)
                 return false
             }
-            if mensajes.indices.contains(indiceUsuario) {
-                mensajes[indiceUsuario].falloEnvio = false
-                mensajes[indiceUsuario].logicalAttempt = nil
-                mensajes[indiceUsuario].textoTransporte = nil
+            limpiarIntentoPendiente(siCoincide: logicalAttempt.idempotencyKey)
+            marcarIntentoCompletado(mensajeId: mensajeId)
+            if mensajes.indices.contains(indiceRespuesta) {
+                mensajes[indiceRespuesta].enProgreso = false
             }
             await cargarConversaciones(client: client)
             return true
+        } catch is CancellationError {
+            // Suspensión/cierre de la vista no es un fallo del trabajo. El
+            // registro protegido queda listo para `scenePhase == .active` o
+            // para el siguiente arranque.
+            if let responseIndex = indiceRespuestaCreada,
+               mensajes.indices.contains(responseIndex) {
+                mensajes[responseIndex].enProgreso = true
+            }
+            return false
         } catch {
-            if mensajes.indices.contains(indiceUsuario) { mensajes[indiceUsuario].falloEnvio = true }
+            if let pending {
+                limpiarIntentoPendiente(siCoincide: pending.idempotencyKey)
+            }
+            if mensajes.indices.contains(indiceUsuario) {
+                mensajes[indiceUsuario].falloEnvio = true
+                mensajes[indiceUsuario].logicalAttempt = nil
+            }
             if let responseIndex = indiceRespuestaCreada {
                 removerRespuestaFallida(responseIndex)
             }
@@ -490,11 +608,160 @@ final class ChatViewModel {
                     }
                 }
                 return
-            } catch SSEClient.SSEError.servidor(let status) where status == 401 && !yaRefresco {
+            } catch SSEClient.SSEError.servidor(let status, _) where status == 401 && !yaRefresco {
                 yaRefresco = true
                 try await client.refrescar()
             }
         }
+    }
+
+    /// Consume el replay sin aplicarlo sobre deltas parciales, porque el replay
+    /// contiene el turno completo. Al terminar recarga historial, artefactos,
+    /// progreso y confirmaciones desde la fuente de verdad.
+    private func recuperarReplay(
+        _ pending: PendingChatAttempt,
+        indiceRespuesta: Int,
+        client: APIClient
+    ) async throws {
+        var refrescoAutenticacionDisponible = true
+        var demoraConexion: TimeInterval = 1
+
+        while true {
+            try Task.checkCancellation()
+            try await esperarAplicacionActiva()
+            let request = try await construirPeticionDeReplay(pending, client: client)
+            do {
+                // Antes del replay completo se descarta cualquier fragmento
+                // que alcanzó a llegar por el socket original.
+                restablecerRespuestaParaReplay(indiceRespuesta)
+                for try await _ in sseClient.stream(request) {}
+
+                let detail = try await client.obtenerConversacion(id: pending.conversationId)
+                guard conversacionId == pending.conversationId else {
+                    throw CancellationError()
+                }
+                mensajes = Self.mensajesDesdeHistorial(detail.messages)
+                restaurarConfirmacion(detail.pendingConfirmation)
+                iniciarSeguimientosPersistidos(client: client)
+                return
+            } catch SSEClient.SSEError.servidor(let status, let retryAfter)
+                where status == 202 {
+                // El backend conserva la ejecución aunque el socket móvil haya
+                // desaparecido. No se presenta como error ni se vuelve a crear
+                // el mensaje.
+                try await Task.sleep(
+                    for: .seconds(max(0.5, min(retryAfter ?? 1, 10)))
+                )
+                demoraConexion = 1
+            } catch SSEClient.SSEError.servidor(let status, _)
+                where status == 401 && refrescoAutenticacionDisponible {
+                refrescoAutenticacionDisponible = false
+                try await client.refrescar()
+            } catch let error where Self.esErrorDeConexion(error) {
+                // Backoff acotado y sin banner rojo. En background iOS suele
+                // suspender este Task; en foreground retoma con la misma UUID.
+                try await Task.sleep(for: .seconds(demoraConexion))
+                demoraConexion = min(demoraConexion * 2, 10)
+            }
+        }
+    }
+
+    private func construirPeticionDeReplay(
+        _ pending: PendingChatAttempt,
+        client: APIClient
+    ) async throws -> URLRequest {
+        let path = "/v1/conversations/\(pending.conversationId)/message-attempts/"
+            + pending.idempotencyKey.uuidString.lowercased()
+        let url = try await client.urlCompleta(path)
+        let token = try await client.tokenDeAccesoValido()
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func esperarAplicacionActiva() async throws {
+        while !aplicacionActiva {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    private func cargarIntentoPendienteValido() -> PendingChatAttempt? {
+        do {
+            guard let pending = try pendingAttemptStore.load() else { return nil }
+            guard pending.isRecoverable() else {
+                pendingAttemptStore.clear()
+                return nil
+            }
+            return pending
+        } catch {
+            pendingAttemptStore.clear()
+            return nil
+        }
+    }
+
+    private func limpiarIntentoPendiente(siCoincide idempotencyKey: UUID) {
+        guard let pending = try? pendingAttemptStore.load(),
+              pending.idempotencyKey == idempotencyKey
+        else { return }
+        pendingAttemptStore.clear()
+    }
+
+    private func marcarIntentoCompletado(mensajeId: String) {
+        guard let index = mensajes.firstIndex(where: { $0.id == mensajeId }) else { return }
+        mensajes[index].falloEnvio = false
+        mensajes[index].logicalAttempt = nil
+        mensajes[index].textoTransporte = nil
+    }
+
+    private func restablecerRespuestaParaReplay(_ index: Int) {
+        guard mensajes.indices.contains(index), mensajes[index].rol == .asistente else { return }
+        mensajes[index].texto = ""
+        mensajes[index].artefactos = []
+        mensajes[index].bloques = []
+        mensajes[index].trabajo = nil
+        mensajes[index].enProgreso = true
+        herramientaActiva = nil
+        confirmacionPendiente = nil
+        errorMensaje = nil
+    }
+
+    private func prepararBurbujasParaReanudacion() -> Int {
+        if let index = mensajes.lastIndex(where: {
+            $0.rol == .asistente && $0.enProgreso
+        }) {
+            restablecerRespuestaParaReplay(index)
+            return index
+        }
+        let index = mensajes.count
+        mensajes.append(Mensaje(rol: .asistente, texto: "", enProgreso: true))
+        return index
+    }
+
+    private static func esInterrupcionRecuperable(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if esErrorDeConexion(error) { return true }
+        if case SSEClient.SSEError.servidor(let status, _) = error {
+            return status == 409 || status == 502 || status == 503 || status == 504
+        }
+        return false
+    }
+
+    private static func esErrorDeConexion(_ error: Error) -> Bool {
+        if case SSEClient.SSEError.conexion = error { return true }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .networkConnectionLost, .notConnectedToInternet, .timedOut,
+                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .internationalRoamingOff, .dataNotAllowed:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
     }
 
     private func removerRespuestaFallida(_ index: Int) {

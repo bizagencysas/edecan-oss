@@ -421,6 +421,141 @@ async def test_post_message_idempotency_replays_exact_sse_without_duplicate_side
     assert [event["kind"] for event in fake_repo.usage_events].count("messages") == 1
 
 
+async def test_completed_message_attempt_can_resume_without_resending_body(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    runs = 0
+
+    class ScriptedAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            nonlocal runs
+            runs += 1
+            yield {"type": "text_delta", "text": "Resultado recuperable."}
+            yield {"type": "done", "usage": {"input_tokens": 1, "output_tokens": 2}}
+
+    monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        plan_key="hosted_basic",
+    )
+    attempt_id = str(uuid.uuid4())
+    conversation_id = await _create_conversation(client, headers)
+
+    first = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "Continúa aunque cierre el teléfono"},
+        headers={**headers, "Idempotency-Key": attempt_id},
+    )
+    resumed = await client.get(
+        f"/v1/conversations/{conversation_id}/message-attempts/{attempt_id}",
+        headers=headers,
+    )
+
+    assert first.status_code == resumed.status_code == 200
+    assert resumed.headers["content-type"].startswith("text/event-stream")
+    assert resumed.headers["idempotency-replayed"] == "true"
+    assert resumed.headers["cache-control"] == "no-store"
+    assert resumed.text == first.text
+    assert runs == 1
+    assert [message["role"] for message in fake_repo.messages[uuid.UUID(conversation_id)]] == [
+        "user",
+        "assistant",
+    ]
+
+
+async def test_in_flight_message_attempt_returns_202_without_false_failure(
+    client, fake_redis
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        plan_key="hosted_basic",
+    )
+    conversation_id = await _create_conversation(client, headers)
+    attempt_id = uuid.uuid4()
+    redis_key = conversations_module._message_idempotency_key(
+        tenant_id=tenant_id,
+        conversation_id=uuid.UUID(conversation_id),
+        idempotency_key=attempt_id,
+    )
+    owner, existing = await conversations_module._claim_message_idempotency(
+        fake_redis,
+        redis_key=redis_key,
+        request_hash="hash",
+        ttl_seconds=3600,
+    )
+    assert owner is not None and existing is None
+
+    response = await client.get(
+        f"/v1/conversations/{conversation_id}/message-attempts/{attempt_id}",
+        headers=headers,
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "in_flight"}
+    assert response.headers["retry-after"] == "1"
+    assert response.headers["cache-control"] == "no-store"
+
+
+async def test_message_attempt_resume_is_tenant_scoped_and_expiry_safe(
+    client, fake_redis
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        plan_key="hosted_basic",
+    )
+    conversation_id = await _create_conversation(client, headers)
+    attempt_id = uuid.uuid4()
+    redis_key = conversations_module._message_idempotency_key(
+        tenant_id=tenant_id,
+        conversation_id=uuid.UUID(conversation_id),
+        idempotency_key=attempt_id,
+    )
+    await fake_redis.set(
+        redis_key,
+        json.dumps(
+            {
+                "status": "completed",
+                "request_hash": "hash",
+                "events": ["event: message.done\ndata: {\"type\":\"done\",\"usage\":{}}\n\n"],
+            }
+        ),
+        ex=3600,
+    )
+
+    other_headers = auth_headers(
+        user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        plan_key="hosted_basic",
+    )
+    denied = await client.get(
+        f"/v1/conversations/{conversation_id}/message-attempts/{attempt_id}",
+        headers=other_headers,
+    )
+    missing = await client.get(
+        f"/v1/conversations/{conversation_id}/message-attempts/{uuid.uuid4()}",
+        headers=headers,
+    )
+
+    assert denied.status_code == 404
+    assert missing.status_code == 404
+    assert "reanudación" in missing.json()["detail"]
+
+
 async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disconnect(
     fake_redis,
 ) -> None:

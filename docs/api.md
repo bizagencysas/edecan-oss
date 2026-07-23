@@ -200,9 +200,9 @@ reintento devuelve el flujo SSE exacto sin insertar otro mensaje, consumir cuota
 volver a ejecutar herramientas; `Idempotency-Replayed` indica `false` en el original
 y `true` en el replay. Reutilizar la clave con otro body responde `409` y una clave
 que no sea UUID responde `422`. Para hacer seguro el replay aun si la conexión cae,
-los requests que incluyen esta cabecera se completan y guardan en el servidor antes
-de abrir la respuesta; los clientes antiguos, sin cabecera, conservan el streaming
-incremental en vivo sin cambios.
+el productor del turno queda desacoplado del socket y conserva el replay completo;
+los clientes antiguos, sin cabecera, conservan el streaming incremental en vivo sin
+cambios.
 
 Respuesta: `Content-Type: text/event-stream`. Cada evento SSE tiene un `event:` (uno de los 6 nombres pinned) y un `data:` con el JSON del `AgentEvent` correspondiente (`edecan_schemas.chat`, ver `ARCHITECTURE.md` §10.7):
 
@@ -234,6 +234,23 @@ data: {"type":"tool_end","name":"delegar_mision","result_preview":"Misión cread
 event: message.done
 data: {"type":"done","usage":{"input_tokens":812,"output_tokens":143}}
 ```
+
+### `GET /v1/conversations/{id}/message-attempts/{idempotency_key}`
+
+Auth: Bearer (access). Recupera un turno idempotente sin volver a enviar su texto
+original. Está diseñado para iOS y Android: el sistema operativo puede suspender la
+app y cerrar el SSE, pero Edecán continúa trabajando en el host. El teléfono
+persiste únicamente la conversación y la UUID del intento, nunca el prompt ni una
+credencial.
+
+- `202` + `Retry-After: 1` + `{"status":"in_flight"}`: el turno sigue trabajando.
+- `200 text/event-stream`: replay exacto del turno terminado, con
+  `Idempotency-Replayed: true`.
+- `404`: conversación ajena, intento desconocido o replay ya expirado.
+- `409`: estado almacenado inválido; se falla cerrado.
+
+La consulta siempre envía `Cache-Control: no-store` y queda aislada por usuario,
+tenant, conversación e intento.
 
 El loop del agente corre como máximo **8 iteraciones** de tool-use por turno. Si una herramienta marcada `dangerous=True` (p. ej. `enviar_correo`, `publicar_social` o, en la extensión comercial externa `edecan_premium`, `llamar_contacto`, `enviar_sms`, `lanzar_campana`) no está pre-aprobada, el turno se detiene emitiendo `confirmation_required` en vez de ejecutarla.
 

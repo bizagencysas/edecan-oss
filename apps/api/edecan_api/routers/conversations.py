@@ -54,7 +54,7 @@ from edecan_schemas import (
 )
 from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from edecan_api.config import Settings, get_settings
@@ -814,6 +814,50 @@ async def _replay_sse(chunks: list[str]) -> AsyncIterator[str]:
         yield chunk
 
 
+def _resume_response_for_idempotency_record(
+    *,
+    record: dict[str, Any],
+    idempotency_key: uuid.UUID,
+) -> JSONResponse | StreamingResponse:
+    """Expone el estado de un turno sin volver a enviar su texto original.
+
+    Los clientes móviles solo necesitan persistir la UUID del intento y la
+    conversación. Así pueden quedar suspendidos por iOS/Android, regresar
+    horas después y recuperar el replay exacto sin guardar prompts ni
+    credenciales en disco y sin ejecutar dos veces una herramienta.
+    """
+
+    common_headers = {
+        "Cache-Control": "no-store",
+        "Idempotency-Key": str(idempotency_key),
+    }
+    if record.get("status") == "in_flight":
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "in_flight"},
+            headers={**common_headers, "Retry-After": "1"},
+        )
+    if record.get("status") != "completed" or not isinstance(record.get("events"), list):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El estado de este turno no se puede recuperar con seguridad.",
+        )
+    chunks = record["events"]
+    if not all(isinstance(chunk, str) for chunk in chunks):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El flujo guardado de este turno está dañado.",
+        )
+    return StreamingResponse(
+        _replay_sse(chunks),
+        media_type="text/event-stream",
+        headers={
+            **common_headers,
+            "Idempotency-Replayed": "true",
+        },
+    )
+
+
 async def _stream_and_complete_idempotency(
     *,
     stream: AsyncIterator[str],
@@ -1520,6 +1564,47 @@ def _preflight_pending_turn(
 # ---------------------------------------------------------------------------
 # Rutas
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{conversation_id}/message-attempts/{idempotency_key}",
+    response_model=None,
+)
+async def resume_message_attempt(
+    conversation_id: uuid.UUID,
+    idempotency_key: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_streaming_repo),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
+) -> JSONResponse | StreamingResponse:
+    """Recupera un turno después de suspender o cerrar el cliente móvil.
+
+    No acepta el body original a propósito. La identidad autenticada, el
+    tenant, la conversación y la UUID idempotente forman la única clave
+    necesaria para consultar un intento ya reclamado.
+    """
+
+    conversation = await repo.get_conversation(
+        tenant_id=current_user.tenant_id,
+        conversation_id=conversation_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+    redis_key = _message_idempotency_key(
+        tenant_id=current_user.tenant_id,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+    )
+    record = await _load_idempotency_record(redis_client, redis_key=redis_key)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ese turno ya no está disponible para reanudación.",
+        )
+    return _resume_response_for_idempotency_record(
+        record=record,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.post("/{conversation_id}/messages")

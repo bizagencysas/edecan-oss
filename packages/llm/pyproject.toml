@@ -1,6 +1,6 @@
 [project]
 name = "edecan-llm"
-version = "0.7.3"
+version = "0.7.4"
 description = "Edecán — abstracción de proveedor LLM (Anthropic, OpenAI-compatible, Vertex AI/Gemini, Claude CLI, Codex CLI, Ollama, Bedrock stub)"
 requires-python = ">=3.12"
 readme = "README.md"

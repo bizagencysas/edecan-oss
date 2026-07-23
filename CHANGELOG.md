@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-07-23
+
+### Added
+
+- Resumable mobile chat attempts with authenticated status lookup, exact SSE
+  replay and completion notifications after a phone suspends the app
+- Signed stable and preview update channels for the installed macOS, Windows
+  and Linux applications
+- An OSS Android update channel that verifies the downloaded APK size, hash,
+  package identity, version and installed signing certificate
+- A fail-closed iOS update channel that opens only an explicitly configured
+  App Store, TestFlight, AltStore, SideStore or signed HTTPS destination
+
+### Changed
+
+- iOS and Android now restore in-flight chat work when returning to the
+  foreground instead of presenting a false send failure
+- Runtime version reporting now derives from installed package metadata
+- Desktop, Android and iOS publishers share one serialized update-channel
+  writer so platform manifests cannot overwrite one another
+- Every public package and native client now reports version 0.7.4
+
+### Fixed
+
+- Backgrounded mobile requests no longer cancel the producer when the client
+  socket disappears
+- Python and web dependency audits are clean in the release pipeline
+
+### Security
+
+- Update signing keys and Android keystores remain outside Git and are supplied
+  to release jobs only through repository secrets
+- Update packages never include conversations, memories, credentials, user
+  files or local configuration
+
 ## [0.7.3] - 2026-07-23
 
 ### Added

@@ -616,6 +616,40 @@ export interface SocialContentResult {
   requires_human_confirmation: boolean;
 }
 
+export interface SocialEditorialProfile {
+  platform: "linkedin" | "x";
+  configured: boolean;
+  version: number;
+  purpose: string;
+  audience: string;
+  voice: string;
+  content_pillars: string[];
+  preferred_formats: string[];
+  visual_identity: string;
+  image_rules: string;
+  calls_to_action: string;
+  avoid: string;
+  notes: string;
+}
+
+export async function getSocialEditorialProfile(
+  platform: "linkedin" | "x" = "linkedin",
+): Promise<SocialEditorialProfile> {
+  return apiJson<SocialEditorialProfile>(
+    `/v1/content/social/profile?platform=${encodeURIComponent(platform)}`,
+  );
+}
+
+export async function updateSocialEditorialProfile(
+  platform: "linkedin" | "x",
+  input: Omit<SocialEditorialProfile, "platform" | "configured" | "version">,
+): Promise<SocialEditorialProfile> {
+  return apiJson<SocialEditorialProfile>(
+    `/v1/content/social/profile?platform=${encodeURIComponent(platform)}`,
+    { method: "PUT", body: input },
+  );
+}
+
 export async function createSocialContent(input: {
   platform: "linkedin" | "x";
   topic: string;

@@ -265,7 +265,7 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "social",
             }
         ),
-        frozenset({"crear_contenido_social", "generar_imagen"}),
+        frozenset({"configurar_perfil_social", "crear_contenido_social", "generar_imagen"}),
     ),
     (
         frozenset({"video", "videos"}),
@@ -571,6 +571,7 @@ _ROUTED_TOOL_NAMES = frozenset().union(
     _SELF_REPAIR_TOOL_NAMES,
     {"crear_artefactos"},
     {"configurar_credencial"},
+    {"configurar_perfil_social"},
 )
 
 
@@ -593,6 +594,7 @@ def select_tool_specs(
 
     normalized_current = _normalize(user_text)
     current_tokens = set(normalized_current.split())
+    slash_command = _slash_command(user_text)
     # El historial ayuda a resolver elipsis ("sí, hazlo", "también para
     # mañana"), pero no debe contaminar una petición nueva y autosuficiente.
     # Solo se hereda en turnos cortos o con un marcador explícito de
@@ -665,8 +667,10 @@ def select_tool_specs(
         ):
             selected_names.add(spec.name)
 
-    if _is_self_repair_intent(normalized, tokens):
+    if _is_self_repair_intent(normalized, tokens) or slash_command in {"fix", "oss"}:
         selected_names.update(_SELF_REPAIR_TOOL_NAMES)
+    elif slash_command == "changes":
+        selected_names.update({"acceder_codigo_local", "diagnosticar_autorreparacion_local"})
 
     if selected_names.intersection(_CONNECTOR_TOOL_NAMES) or tokens.intersection(
         {"api", "conecta", "conectar", "conexion", "credencial", "credenciales", "token"}
@@ -695,10 +699,54 @@ def build_capability_guidance(
     return _GUIDANCE_ES.format(selected=selected, catalog=catalog)
 
 
+def build_slash_command_guidance(user_text: str, *, language: str) -> str:
+    """Semántica estable de comandos locales, separada del modelo conectado."""
+
+    command = _slash_command(user_text)
+    if not command:
+        return ""
+    if language == "en":
+        return {
+            "fix": (
+                "The user invoked /fix. Diagnose Edecan's configured local source first. "
+                "Then propose the smallest verified repair through the official confirmation gate."
+            ),
+            "oss": (
+                "The user invoked /oss. Work only in the configured public OSS checkout. "
+                "Do not read, copy, or commit private infrastructure, credentials, personal data, "
+                "or private-only directories. Diagnose first and keep changes locally reviewable."
+            ),
+            "changes": (
+                "The user invoked /changes. This is read-only: summarize git status, diff, and "
+                "recent commits. Do not edit, stage, commit, integrate, or push."
+            ),
+        }[command]
+    return {
+        "fix": (
+            "La persona invocó /fix. Diagnostica primero el código local configurado de Edecán. "
+            "Después propone la reparación mínima verificable mediante el gate oficial."
+        ),
+        "oss": (
+            "La persona invocó /oss. Trabaja únicamente en el checkout OSS público configurado. "
+            "No leas, copies ni confirmes infraestructura privada, credenciales, datos personales "
+            "o directorios privados. Diagnostica primero y deja los cambios revisables localmente."
+        ),
+        "changes": (
+            "La persona invocó /changes. Es solo lectura: resume git status, diff y commits "
+            "recientes. No edites, prepares, confirmes, integres ni publiques cambios."
+        ),
+    }[command]
+
+
 def _normalize(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text.casefold())
     without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", " ", without_marks).strip()
+
+
+def _slash_command(text: str) -> str | None:
+    match = re.match(r"^\s*/(fix|oss|changes)(?:\s|$)", text, flags=re.IGNORECASE)
+    return match.group(1).casefold() if match else None
 
 
 def _is_self_repair_intent(normalized: str, tokens: set[str]) -> bool:

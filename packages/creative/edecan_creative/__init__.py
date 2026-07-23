@@ -21,7 +21,7 @@ from .providers import (
     get_image_provider,
     get_tenant_image_provider,
 )
-from .social import CrearContenidoSocialTool
+from .social import ConfigurarPerfilSocialTool, CrearContenidoSocialTool
 from .tools import (
     CrearDocumentoTool,
     CrearPdfTool,
@@ -36,6 +36,7 @@ __all__ = [
     "IMAGES_CONNECTOR_KEY",
     "CrearDocumentoTool",
     "CrearContenidoSocialTool",
+    "ConfigurarPerfilSocialTool",
     "CrearPdfTool",
     "CrearPodcastTool",
     "CrearPresentacionTool",
@@ -61,6 +62,7 @@ def get_all_tools() -> list[Tool]:
     por el flag de plan `tools.podcast`, ver `edecan_creative.tools`."""
     return [
         GenerarImagenTool(),
+        ConfigurarPerfilSocialTool(),
         CrearContenidoSocialTool(),
         CrearDocumentoTool(),
         CrearPresentacionTool(),

@@ -24,7 +24,11 @@ from edecan_connectors.social.linkedin import create_post as create_linkedin_pos
 from edecan_core import ToolContext
 from edecan_core.freshness import assess_freshness, grounding_queries, official_source_domains
 from edecan_core.queue import enqueue
-from edecan_creative.social import CrearContenidoSocialTool
+from edecan_creative.social import (
+    CrearContenidoSocialTool,
+    get_editorial_profile,
+    save_editorial_profile,
+)
 from edecan_design_studio.studio_tools import (
     AdministrarProyectoCreativoTool,
     CrearEditarProyectoCreativoTool,
@@ -57,7 +61,7 @@ router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 
-_LLM_ALIAS = "principal"
+_LLM_ALIAS = "profundo"
 _MAX_RESPONSE_TOKENS = 1800
 _PLATFORM_LIMITS = {"linkedin": 3000, "x": 8_000}
 
@@ -82,6 +86,25 @@ class SocialContentCreateIn(BaseModel):
     objective: str = Field(default="Enseñar algo útil", min_length=1, max_length=120)
     tone: str = Field(default="Claro y humano", min_length=1, max_length=80)
     with_image: bool = True
+
+
+class SocialEditorialProfileIn(BaseModel):
+    purpose: str = Field(default="", max_length=4000)
+    audience: str = Field(default="", max_length=4000)
+    voice: str = Field(default="", max_length=4000)
+    content_pillars: list[str] = Field(default_factory=list, max_length=20)
+    preferred_formats: list[str] = Field(default_factory=list, max_length=20)
+    visual_identity: str = Field(default="", max_length=4000)
+    image_rules: str = Field(default="", max_length=4000)
+    calls_to_action: str = Field(default="", max_length=4000)
+    avoid: str = Field(default="", max_length=4000)
+    notes: str = Field(default="", max_length=4000)
+
+
+class SocialEditorialProfileOut(SocialEditorialProfileIn):
+    platform: Literal["linkedin", "x"] = "linkedin"
+    configured: bool = False
+    version: int = 0
 
 
 class SocialContentArtifactOut(BaseModel):
@@ -193,40 +216,39 @@ class StudioProjectActionIn(BaseModel):
     project_name: str | None = Field(default=None, alias="projectName", max_length=160)
     brand_name: str | None = Field(default=None, alias="brandName", max_length=160)
     brand_tokens: str | None = Field(default=None, alias="brandTokens", max_length=80_000)
-    mode: Literal[
-        "mockup",
-        "carousel",
-        "ad",
-        "post",
-        "landing",
-        "email",
-        "deck",
-        "general",
-    ] | None = None
+    mode: (
+        Literal[
+            "mockup",
+            "carousel",
+            "ad",
+            "post",
+            "landing",
+            "email",
+            "deck",
+            "general",
+        ]
+        | None
+    ) = None
     width: int | None = Field(default=None, ge=320, le=4096)
     height: int | None = Field(default=None, ge=320, le=4096)
     count: int | None = Field(default=None, ge=1, le=4)
     quality: Literal["fast", "balanced", "max"] | None = None
     files: list[str] = Field(default_factory=list, max_length=12)
-    export_format: Literal["html", "png", "pdf"] | None = Field(
-        default=None, alias="exportFormat"
-    )
+    export_format: Literal["html", "png", "pdf"] | None = Field(default=None, alias="exportFormat")
     include_archived: bool | None = Field(default=None, alias="includeArchived")
     template_name: str | None = Field(default=None, alias="templateName", max_length=160)
     template_description: str | None = Field(
         default=None, alias="templateDescription", max_length=500
     )
-    template_category: Literal[
-        "prototype", "deck", "landing", "marketing", "other"
-    ] | None = Field(default=None, alias="templateCategory")
+    template_category: Literal["prototype", "deck", "landing", "marketing", "other"] | None = Field(
+        default=None, alias="templateCategory"
+    )
     repos: list[str] = Field(default_factory=list, max_length=25)
     corpus_limit: int | None = Field(default=None, alias="corpusLimit", ge=1, le=20)
     screen_briefs: list[dict[str, Any]] = Field(
         default_factory=list, alias="screenBriefs", max_length=8
     )
-    languages: list[Literal["en", "es", "pt", "fr"]] = Field(
-        default_factory=list, max_length=4
-    )
+    languages: list[Literal["en", "es", "pt", "fr"]] = Field(default_factory=list, max_length=4)
     theme: dict[str, Any] | None = None
     tidy_actions: list[dict[str, Any]] = Field(
         default_factory=list, alias="tidyActions", max_length=100
@@ -415,6 +437,16 @@ async def create_social_content(
         llm_router=llm_router,
         vault=vault,
     )
+    editorial_profile = await get_editorial_profile(tool_context, body.platform)
+    editorial_context = (
+        "\nPerfil editorial persistente de esta persona:\n"
+        + json.dumps(editorial_profile, ensure_ascii=False)
+        if editorial_profile.get("configured")
+        else (
+            "\nEsta persona aún no configuró una estrategia editorial. Conserva un resultado "
+            "útil y neutral, pero no inventes audiencia, experiencia ni identidad de marca."
+        )
+    )
     sources = await _research_social_topic(tool_context, body.topic.strip())
     research_context = (
         "\nFuentes oficiales actuales para verificar afirmaciones:\n"
@@ -442,6 +474,7 @@ async def create_social_content(
                     f"Objetivo: {body.objective.strip()}\n"
                     f"Tono: {body.tone.strip()}\n"
                     f"Crear imagen: {'sí' if body.with_image else 'no'}"
+                    f"{editorial_context}"
                     f"{research_context}"
                 ),
             )
@@ -507,8 +540,7 @@ async def create_social_content(
         # Un proveedor push/cola sin configurar no convierte un contenido ya
         # creado en un error de cara a la persona.
         logger.warning(
-            "No se pudo encolar la notificación del Content Studio "
-            "(tenant_id=%s user_id=%s)",
+            "No se pudo encolar la notificación del Content Studio (tenant_id=%s user_id=%s)",
             current_user.tenant_id,
             current_user.user_id,
             exc_info=True,
@@ -524,6 +556,46 @@ async def create_social_content(
         sources=[SocialContentSourceOut.model_validate(item) for item in sources],
         artifacts=[SocialContentArtifactOut.model_validate(item) for item in artifacts],
     )
+
+
+@router.get("/social/profile", response_model=SocialEditorialProfileOut)
+async def get_social_editorial_profile(
+    platform: Literal["linkedin", "x"] = "linkedin",
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+    settings: Settings = Depends(get_settings),
+    vault: Any = Depends(get_vault),
+    llm_router: LLMRouter = Depends(get_llm_router),
+) -> SocialEditorialProfileOut:
+    ctx = _tool_context(
+        current_user=current_user,
+        session=session,
+        settings=settings,
+        llm_router=llm_router,
+        vault=vault,
+    )
+    return SocialEditorialProfileOut.model_validate(await get_editorial_profile(ctx, platform))
+
+
+@router.put("/social/profile", response_model=SocialEditorialProfileOut)
+async def put_social_editorial_profile(
+    body: SocialEditorialProfileIn,
+    platform: Literal["linkedin", "x"] = "linkedin",
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+    settings: Settings = Depends(get_settings),
+    vault: Any = Depends(get_vault),
+    llm_router: LLMRouter = Depends(get_llm_router),
+) -> SocialEditorialProfileOut:
+    ctx = _tool_context(
+        current_user=current_user,
+        session=session,
+        settings=settings,
+        llm_router=llm_router,
+        vault=vault,
+    )
+    saved = await save_editorial_profile(ctx, platform, body.model_dump())
+    return SocialEditorialProfileOut.model_validate(saved)
 
 
 async def _load_private_publish_image(
@@ -620,8 +692,7 @@ async def publish_social_content(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "La autorización de LinkedIn ya no está disponible. "
-                "Vuelve a conectar la cuenta."
+                "La autorización de LinkedIn ya no está disponible. Vuelve a conectar la cuenta."
             ),
         )
 
@@ -744,9 +815,7 @@ async def run_studio_project_action(
                 artifact_id = None
         event_id = artifact_id or str(uuid4())
         notification_kind = (
-            "design_export_ready"
-            if body.action in {"export", "share-package"}
-            else "design_ready"
+            "design_export_ready" if body.action in {"export", "share-package"} else "design_ready"
         )
         notification_payload = {
             "user_id": str(current_user.user_id),

@@ -1140,6 +1140,34 @@ class UserProfile(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
 
 
+class SocialEditorialProfile(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Estrategia social configurable por persona y plataforma.
+
+    ``config`` mantiene un contrato evolutivo sin convertir preferencias
+    editoriales en columnas rígidas. La clave compuesta impide que dos
+    usuarios o tenants compartan accidentalmente una estrategia.
+    """
+
+    __tablename__ = "social_editorial_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "platform",
+            name="uq_social_editorial_profiles_owner_platform",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+
+
 # ---------------------------------------------------------------------------
 # v3 (ARCHITECTURE.md §12e, dueño WP-V3-01)
 # ---------------------------------------------------------------------------
@@ -1681,6 +1709,7 @@ ALL_MODELS: tuple[type[Base], ...] = (
     HealthLog,
     LearningProgress,
     UserProfile,
+    SocialEditorialProfile,
     # --- v3 (ARCHITECTURE.md §12e) -------------------------------------------
     Skill,
     # --- v4 (ARCHITECTURE.md §13) --------------------------------------------
@@ -1704,8 +1733,9 @@ ALL_MODELS: tuple[type[Base], ...] = (
 """Las 23 tablas de v1 (`ARCHITECTURE.md` §10.3) + las 14 de v2
 (`ROADMAP_V2.md` §7.4) + la 1 de v3 (`ARCHITECTURE.md` §12e) + las 3 de v4
 (`ARCHITECTURE.md` §13) + las 5 de v5 (`ARCHITECTURE.md` §14) + las 2 de v6
-(`ARCHITECTURE.md` §15) + 3 de telefonía v0.4 = 51 tablas. Las globales sin RLS (`Tenant`, `User`,
-`TenantKey`) van agrupadas primero, como en la sección "Globales (sin RLS)"
+(`ARCHITECTURE.md` §15) + 3 de telefonía v0.4 + 1 perfil editorial = 52 tablas.
+Las globales sin RLS (`Tenant`, `User`, `TenantKey`) van agrupadas primero,
+como en la sección "Globales (sin RLS)"
 de arriba; el resto respeta el mismo orden relativo en que aparecen en
 §10.3, las 14 de v2 van a continuación en el mismo orden en que aparecen en
 §7.4, `Skill` (única tabla v3) sigue, `Product`/`StockMove`/`AdDraft` (v4,

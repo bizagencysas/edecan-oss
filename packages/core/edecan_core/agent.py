@@ -44,7 +44,11 @@ from edecan_schemas import (
     ToolStartEvent,
 )
 
-from .capability_routing import build_capability_guidance, select_tool_specs
+from .capability_routing import (
+    build_capability_guidance,
+    build_slash_command_guidance,
+    select_tool_specs,
+)
 from .freshness import assess_freshness, grounding_queries, official_source_domains
 from .llm_types import ChatMessage, CompletionRequest
 from .persona import build_system_prompt
@@ -374,11 +378,22 @@ class Agent:
             all_specs=[*all_base_specs, *all_extra_specs],
             language=persona.idioma,
         )
+        slash_command_context = build_slash_command_guidance(
+            user_text,
+            language=persona.idioma,
+        )
         system_prompt = build_system_prompt(
             persona,
             memories,
             extra_context="\n\n".join(
-                part for part in (runtime_context, freshness_context, capability_context) if part
+                part
+                for part in (
+                    runtime_context,
+                    freshness_context,
+                    capability_context,
+                    slash_command_context,
+                )
+                if part
             ),
         )
         approved_tool_calls = set(ctx.extras.get(_EXTRAS_APPROVED_TOOL_CALLS, set()))
@@ -452,9 +467,7 @@ class Agent:
         expected_sources = ", ".join(domains)
         if language == "en":
             expected_line = (
-                f"Expected first-party domains: {expected_sources}.\n"
-                if expected_sources
-                else ""
+                f"Expected first-party domains: {expected_sources}.\n" if expected_sources else ""
             )
             return (
                 "## Automatic current evidence\n"
@@ -808,9 +821,7 @@ def _runtime_context(
     now: datetime,
     language: str,
 ) -> str:
-    provider_name = str(
-        getattr(provider, "name", None) or provider.__class__.__name__
-    ).strip()
+    provider_name = str(getattr(provider, "name", None) or provider.__class__.__name__).strip()
     timezone_name = str(now.tzname() or "local")
     if language == "en":
         return (
@@ -856,11 +867,7 @@ def _search_result_is_empty(result: ToolResult) -> bool:
 def _contains_official_source(result: ToolResult, domains: tuple[str, ...]) -> bool:
     data = result.data if isinstance(result.data, dict) else {}
     resultados = data.get("resultados")
-    urls = [
-        str(item.get("url") or "")
-        for item in resultados or []
-        if isinstance(item, dict)
-    ]
+    urls = [str(item.get("url") or "") for item in resultados or [] if isinstance(item, dict)]
     if not urls:
         urls = re.findall(r"https?://[^\s)\]>]+", result.content)
     for url in urls:

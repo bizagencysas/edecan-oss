@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from edecan_core.capability_routing import build_capability_guidance, select_tool_specs
+from edecan_core.capability_routing import (
+    build_capability_guidance,
+    build_slash_command_guidance,
+    select_tool_specs,
+)
 from edecan_schemas import ToolSpec
 
 
@@ -49,6 +53,7 @@ ALL_SPECS = [
     _spec("generar_contenido", "Redacta texto."),
     _spec("publicar_social", "Publica contenido en una red conectada."),
     _spec("crear_contenido_social", "Crea posts e imágenes para redes."),
+    _spec("configurar_perfil_social", "Configura la estrategia personal para redes."),
     _spec("generar_imagen", "Genera una imagen original."),
     _spec("usar_estudio_creativo", "Usa Studio para trabajos creativos locales."),
     _spec("usar_estudio_creativo_premium", "Usa Studio para imagen, video y producto."),
@@ -58,6 +63,38 @@ ALL_SPECS = [
     _spec("administrar_proyecto_creativo", "Organiza un proyecto creativo."),
     _spec("usar_computadora", "Opera mouse y teclado con confirmación."),
 ]
+
+
+def test_linkedin_permite_consultar_y_cambiar_estrategia_personal():
+    names = {
+        spec.name
+        for spec in select_tool_specs(
+            ALL_SPECS,
+            "Quiero cambiar cómo piensas y escribes mis posts de LinkedIn.",
+        )
+    }
+    assert "configurar_perfil_social" in names
+    assert "crear_contenido_social" in names
+
+
+def test_slash_fix_expone_autorreparacion_y_contexto_explicito():
+    names = {spec.name for spec in select_tool_specs(ALL_SPECS, "/fix el creador de PDF")}
+    assert {
+        "acceder_codigo_local",
+        "diagnosticar_autorreparacion_local",
+        "gestionar_autorreparacion_local",
+    } <= names
+    assert "Diagnostica primero" in build_slash_command_guidance(
+        "/fix el creador de PDF", language="es"
+    )
+
+
+def test_slash_changes_es_solo_lectura():
+    names = {spec.name for spec in select_tool_specs(ALL_SPECS, "/changes")}
+    assert "acceder_codigo_local" in names
+    assert "diagnosticar_autorreparacion_local" in names
+    assert "gestionar_autorreparacion_local" not in names
+    assert "solo lectura" in build_slash_command_guidance("/changes", language="es")
 
 
 def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_ajenos():

@@ -123,7 +123,7 @@ async def test_content_studio_creates_private_editable_package(
     ]
     assert FakeSocialTool.calls[0][1]["con_imagen"] is True
     assert FakeSocialTool.calls[0][0].tenant_id == tenant_id
-    assert llm.calls[0][0] == "principal"
+    assert llm.calls[0][0] == "profundo"
     event = fake_repo.usage_events[-1]
     assert event["kind"] == "llm_tokens"
     assert event["quantity"] == 78

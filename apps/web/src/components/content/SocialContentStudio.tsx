@@ -20,9 +20,12 @@ import {
 import {
   createSocialContent,
   downloadFile,
+  getSocialEditorialProfile,
   listFiles,
   listConnectors,
   publishLinkedInContent,
+  updateSocialEditorialProfile,
+  type SocialEditorialProfile,
   type SocialContentResult,
 } from "@/lib/api";
 import {
@@ -164,6 +167,8 @@ export function SocialContentStudio() {
   const [automationsAvailable, setAutomationsAvailable] = useState(true);
   const [recentDrafts, setRecentDrafts] = useState<RecentDraft[]>([]);
   const [loadingDrafts, setLoadingDrafts] = useState(true);
+  const [editorialProfile, setEditorialProfile] = useState<SocialEditorialProfile | null>(null);
+  const [savingEditorialProfile, setSavingEditorialProfile] = useState(false);
   const objectUrlRef = useRef<string | null>(null);
 
   const visual = useMemo(() => imageArtifact(result), [result]);
@@ -200,12 +205,25 @@ export function SocialContentStudio() {
     }
   }, []);
 
+  const refreshEditorialProfile = useCallback(async () => {
+    try {
+      setEditorialProfile(await getSocialEditorialProfile("linkedin"));
+    } catch {
+      setEditorialProfile(null);
+    }
+  }, []);
+
   useEffect(() => {
-    void Promise.allSettled([refreshConnections(), refreshPlan(), refreshDrafts()]);
+    void Promise.allSettled([
+      refreshConnections(),
+      refreshPlan(),
+      refreshDrafts(),
+      refreshEditorialProfile(),
+    ]);
     return () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     };
-  }, [refreshConnections, refreshDrafts, refreshPlan]);
+  }, [refreshConnections, refreshDrafts, refreshEditorialProfile, refreshPlan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -346,6 +364,32 @@ export function SocialContentStudio() {
     }
   }
 
+  function updateEditorialField(
+    field: keyof Omit<SocialEditorialProfile, "platform" | "configured" | "version">,
+    value: string | string[],
+  ) {
+    if (!editorialProfile) return;
+    setEditorialProfile({ ...editorialProfile, [field]: value });
+  }
+
+  async function handleSaveEditorialProfile() {
+    if (!editorialProfile) return;
+    setSavingEditorialProfile(true);
+    setError(null);
+    try {
+      const { platform: _platform, configured: _configured, version: _version, ...input } =
+        editorialProfile;
+      setEditorialProfile(await updateSocialEditorialProfile("linkedin", input));
+      setSuccess(
+        "Forma de trabajar LinkedIn guardada. Edecán la usará también cuando se lo pidas por chat.",
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No pude guardar el perfil editorial.");
+    } finally {
+      setSavingEditorialProfile(false);
+    }
+  }
+
   function restoreDraft(draft: RecentDraft) {
     const artifacts = [
       {
@@ -397,6 +441,109 @@ export function SocialContentStudio() {
 
       {error && <Alert variant="error">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}
+
+      <Card>
+        <CardHeader
+          title="Cómo quieres que Edecán trabaje LinkedIn"
+          description="Esta estrategia es solo tuya. También puedes cambiarla por chat, por ejemplo: «Haz mis posts más personales y usa imágenes de producto reales»."
+          actions={
+            editorialProfile?.configured ? <Badge variant="success">Personalizado</Badge> : null
+          }
+        />
+        <CardBody className="space-y-4">
+          {editorialProfile ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Objetivo" htmlFor="editorial-purpose">
+                  <Textarea
+                    id="editorial-purpose"
+                    value={editorialProfile.purpose}
+                    onChange={(event) => updateEditorialField("purpose", event.target.value)}
+                    placeholder="Qué quieres conseguir con LinkedIn."
+                  />
+                </Field>
+                <Field label="Audiencia" htmlFor="editorial-audience">
+                  <Textarea
+                    id="editorial-audience"
+                    value={editorialProfile.audience}
+                    onChange={(event) => updateEditorialField("audience", event.target.value)}
+                    placeholder="A quién le hablas y qué necesita."
+                  />
+                </Field>
+                <Field label="Voz y lenguaje" htmlFor="editorial-voice">
+                  <Textarea
+                    id="editorial-voice"
+                    value={editorialProfile.voice}
+                    onChange={(event) => updateEditorialField("voice", event.target.value)}
+                    placeholder="Cómo debe sonar, expresiones preferidas, idioma y nivel de formalidad."
+                  />
+                </Field>
+                <Field label="Dirección visual" htmlFor="editorial-visual">
+                  <Textarea
+                    id="editorial-visual"
+                    value={editorialProfile.visual_identity}
+                    onChange={(event) => updateEditorialField("visual_identity", event.target.value)}
+                    placeholder="Estilo, colores, fotografía, composición y relación con tu marca."
+                  />
+                </Field>
+                <Field label="Reglas para las imágenes" htmlFor="editorial-image-rules">
+                  <Textarea
+                    id="editorial-image-rules"
+                    value={editorialProfile.image_rules}
+                    onChange={(event) => updateEditorialField("image_rules", event.target.value)}
+                    placeholder="Qué debe aparecer, qué no, y cómo comprobar que la imagen sí corresponde al post."
+                  />
+                </Field>
+                <Field label="Qué debe evitar" htmlFor="editorial-avoid">
+                  <Textarea
+                    id="editorial-avoid"
+                    value={editorialProfile.avoid}
+                    onChange={(event) => updateEditorialField("avoid", event.target.value)}
+                    placeholder="Temas, estilos, clichés, afirmaciones o recursos visuales prohibidos."
+                  />
+                </Field>
+                <Field label="Pilares de contenido" htmlFor="editorial-pillars">
+                  <Textarea
+                    id="editorial-pillars"
+                    value={editorialProfile.content_pillars.join("\n")}
+                    onChange={(event) =>
+                      updateEditorialField(
+                        "content_pillars",
+                        event.target.value.split("\n").filter(Boolean),
+                      )
+                    }
+                    placeholder={"Un pilar por línea\nProducto\nAprendizajes\nCasos reales"}
+                  />
+                </Field>
+                <Field label="Formatos preferidos" htmlFor="editorial-formats">
+                  <Textarea
+                    id="editorial-formats"
+                    value={editorialProfile.preferred_formats.join("\n")}
+                    onChange={(event) =>
+                      updateEditorialField(
+                        "preferred_formats",
+                        event.target.value.split("\n").filter(Boolean),
+                      )
+                    }
+                    placeholder={"Un formato por línea\nHistoria breve\nAnálisis\nCarrusel"}
+                  />
+                </Field>
+              </div>
+              <Button
+                type="button"
+                onClick={handleSaveEditorialProfile}
+                loading={savingEditorialProfile}
+              >
+                Guardar forma de trabajar
+              </Button>
+            </>
+          ) : (
+            <Alert variant="info">
+              No pude cargar esta configuración todavía. Puedes configurarla desde el chat.
+            </Alert>
+          )}
+        </CardBody>
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <Card>

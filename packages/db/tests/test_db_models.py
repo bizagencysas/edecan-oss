@@ -107,6 +107,7 @@ EXPECTED_TABLES_V6 = {
 }
 
 EXPECTED_TABLES_PHONE = {"phone_agent_templates", "phone_calls", "phone_call_events"}
+EXPECTED_TABLES_EDITORIAL = {"social_editorial_profiles"}
 
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
@@ -116,6 +117,7 @@ EXPECTED_TABLES = (
     | EXPECTED_TABLES_V5
     | EXPECTED_TABLES_V6
     | EXPECTED_TABLES_PHONE
+    | EXPECTED_TABLES_EDITORIAL
 )
 
 
@@ -123,10 +125,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 51
+    assert len(Base.metadata.tables) == 52
 
 
-def test_hay_exactamente_51_tablas_pinned():
+def test_hay_exactamente_52_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -147,7 +149,7 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     # 20 de v1 + 14 de v2 + 1 de v3 + 3 de v4 + 5 de v5 + 2 de v6 (ninguna de
     # las tablas nuevas es global, ver ROADMAP_V2.md §7.4/ARCHITECTURE.md
     # §12e/§13/§14/§15: todas tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 48
+    assert len(RLS_TABLES) == 49
 
 
 def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llamada():

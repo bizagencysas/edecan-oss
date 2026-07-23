@@ -12,17 +12,166 @@ import json
 import logging
 import re
 import textwrap
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from edecan_core import Tool, ToolContext, ToolResult
 from PIL import Image, ImageDraw, ImageFont
+from sqlalchemy import text
 
 from ._files import Uploader, subir_archivo
 from .providers import ImageProvider, StubImageProvider, get_tenant_image_provider
 from .tools import _cap_str, _slug
 
 logger = logging.getLogger(__name__)
+
+_EDITORIAL_FIELDS = (
+    "purpose",
+    "audience",
+    "voice",
+    "content_pillars",
+    "preferred_formats",
+    "visual_identity",
+    "image_rules",
+    "calls_to_action",
+    "avoid",
+    "notes",
+)
+
+
+async def get_editorial_profile(ctx: ToolContext, platform: str = "linkedin") -> dict[str, Any]:
+    # Embedders y pruebas pueden sustituir el almacenamiento. Crear una pieza
+    # debe degradar a un perfil vacío en vez de tumbar toda la experiencia.
+    if ctx.session is None:
+        return {"platform": platform, "configured": False, "version": 0}
+    result = await ctx.session.execute(
+        text(
+            """
+            SELECT config, version
+            FROM social_editorial_profiles
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND platform = :platform
+            """
+        ),
+        {
+            "tenant_id": str(ctx.tenant_id),
+            "user_id": str(ctx.user_id),
+            "platform": platform,
+        },
+    )
+    row = result.mappings().first()
+    if row is None:
+        return {"platform": platform, "configured": False, "version": 0}
+    raw = row.get("config")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    config = dict(raw) if isinstance(raw, dict) else {}
+    return {
+        "platform": platform,
+        "configured": any(bool(config.get(field)) for field in _EDITORIAL_FIELDS),
+        "version": int(row.get("version") or 1),
+        **config,
+    }
+
+
+async def save_editorial_profile(
+    ctx: ToolContext, platform: str, patch: dict[str, Any]
+) -> dict[str, Any]:
+    if ctx.session is None:
+        raise RuntimeError("Esta instalación no tiene almacenamiento de perfil disponible.")
+    current = await get_editorial_profile(ctx, platform)
+    config = {field: current.get(field, "") for field in _EDITORIAL_FIELDS}
+    for field in _EDITORIAL_FIELDS:
+        if field not in patch:
+            continue
+        value = patch[field]
+        if isinstance(value, list):
+            config[field] = [str(item).strip()[:240] for item in value[:20] if str(item).strip()]
+        else:
+            config[field] = str(value or "").strip()[:4000]
+    version = int(current.get("version") or 0) + 1
+    await ctx.session.execute(
+        text(
+            """
+            INSERT INTO social_editorial_profiles (
+                id, tenant_id, user_id, platform, config, version, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :user_id, :platform, CAST(:config AS jsonb),
+                :version, now(), now()
+            )
+            ON CONFLICT (tenant_id, user_id, platform) DO UPDATE
+            SET config = EXCLUDED.config,
+                version = EXCLUDED.version,
+                updated_at = now()
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": str(ctx.tenant_id),
+            "user_id": str(ctx.user_id),
+            "platform": platform,
+            "config": json.dumps(config),
+            "version": version,
+        },
+    )
+    return {"platform": platform, "configured": True, "version": version, **config}
+
+
+class ConfigurarPerfilSocialTool(Tool):
+    name = "configurar_perfil_social"
+    description = (
+        "Consulta o cambia la estrategia editorial personal de LinkedIn o X: objetivo, audiencia, "
+        "voz, pilares, formatos, identidad visual, reglas para imágenes, llamadas a la acción y "
+        "temas prohibidos. Si faltan audiencia, objetivo o voz, pregunta antes de guardar; nunca "
+        "inventes esas decisiones."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "accion": {"type": "string", "enum": ["ver", "actualizar"]},
+            "plataforma": {"type": "string", "enum": ["linkedin", "x"], "default": "linkedin"},
+            **{
+                field: {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": f"Preferencia editorial: {field}.",
+                }
+                for field in _EDITORIAL_FIELDS
+            },
+        },
+        "required": ["accion"],
+    }
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        platform = str(args.get("plataforma") or "linkedin").strip().lower()
+        if platform not in {"linkedin", "x"}:
+            return ToolResult(content="La plataforma debe ser LinkedIn o X.")
+        if args.get("accion") == "ver":
+            profile = await get_editorial_profile(ctx, platform)
+            return ToolResult(
+                content=(
+                    f"Perfil editorial de {platform} cargado."
+                    if profile["configured"]
+                    else f"Todavía no hay un perfil editorial de {platform}. Pregunta objetivo, "
+                    "audiencia, voz y dirección visual para configurarlo."
+                ),
+                data=profile,
+            )
+        patch = {field: args[field] for field in _EDITORIAL_FIELDS if field in args}
+        if not patch:
+            return ToolResult(
+                content="Dime qué quieres cambiar del objetivo, audiencia, voz o dirección visual."
+            )
+        profile = await save_editorial_profile(ctx, platform, patch)
+        return ToolResult(
+            content=(
+                f"Actualicé tu forma de trabajar {platform}. Se aplicará a las próximas piezas."
+            ),
+            data=profile,
+        )
 
 
 @dataclass(frozen=True)
@@ -45,9 +194,7 @@ PLATFORMS: dict[str, PlatformSpec] = {
         "Facebook", 63206, "1200x630", "natural, conversacional y fácil de compartir"
     ),
     "threads": PlatformSpec("Threads", 500, "1080x1080", "conversacional y conciso"),
-    "tiktok": PlatformSpec(
-        "TikTok", 2200, "1080x1920", "caption breve con un gancho verificable"
-    ),
+    "tiktok": PlatformSpec("TikTok", 2200, "1080x1920", "caption breve con un gancho verificable"),
 }
 
 _MAX_TOPIC_CHARS = 300
@@ -107,9 +254,7 @@ def _split_x_thread(text: str, limit: int = 280) -> list[str]:
         required_digits = len(str(len(chunks)))
         if required_digits == total_digits:
             total = len(chunks)
-            return [
-                f"{chunk} {index}/{total}" for index, chunk in enumerate(chunks, start=1)
-            ]
+            return [f"{chunk} {index}/{total}" for index, chunk in enumerate(chunks, start=1)]
         total_digits = required_digits
 
 

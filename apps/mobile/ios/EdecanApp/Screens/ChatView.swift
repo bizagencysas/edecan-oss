@@ -1,6 +1,6 @@
 import SwiftUI
 import EdecanKit
-import PhotosUI
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 
@@ -20,7 +20,6 @@ struct ChatView: View {
     @State private var mostrandoSelectorArchivos = false
     @State private var mostrandoSelectorFotos = false
     @State private var mostrandoCamara = false
-    @State private var fotosSeleccionadas: [PhotosPickerItem] = []
     @State private var adjuntosPendientes: [AdjuntoPendiente] = []
     @State private var tareasSubida: [UUID: Task<Void, Never>] = [:]
     @State private var artefactoDescargandoId: String?
@@ -78,24 +77,20 @@ struct ChatView: View {
                 }
                 .ignoresSafeArea()
             }
+            .fullScreenCover(isPresented: $mostrandoSelectorFotos) {
+                GaleriaEdecanPicker(
+                    limite: max(1, 10 - adjuntosPendientes.count)
+                ) { fotos in
+                    mostrandoSelectorFotos = false
+                    Task { await recibirFotos(fotos) }
+                }
+            }
             .fileImporter(
                 isPresented: $mostrandoSelectorArchivos,
                 allowedContentTypes: [.item],
                 allowsMultipleSelection: true,
                 onCompletion: recibirArchivos
             )
-            .photosPicker(
-                isPresented: $mostrandoSelectorFotos,
-                selection: $fotosSeleccionadas,
-                maxSelectionCount: max(1, 10 - adjuntosPendientes.count),
-                selectionBehavior: .continuousAndOrdered,
-                matching: .images,
-                preferredItemEncoding: .automatic
-            )
-            .onChange(of: fotosSeleccionadas) { _, nuevasFotos in
-                guard !nuevasFotos.isEmpty else { return }
-                Task { await recibirFotos(nuevasFotos) }
-            }
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     cabeceraDeConversacion
@@ -268,9 +263,6 @@ struct ChatView: View {
                     }
                     Section("Adjuntar") {
                         Button {
-                            // Presentar PhotosPicker desde dentro de un Menu en
-                            // el mismo ciclo puede perder la presentación en un
-                            // dispositivo real. Esperamos a que el menú cierre.
                             Task { @MainActor in
                                 await Task.yield()
                                 mostrandoSelectorFotos = true
@@ -513,8 +505,7 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func recibirFotos(_ items: [PhotosPickerItem]) async {
-        defer { fotosSeleccionadas = [] }
+    private func recibirFotos(_ fotos: [GaleriaFoto]) async {
         guard let client = session.client else {
             viewModel.errorMensaje = "No hay sesión activa."
             return
@@ -524,20 +515,15 @@ struct ChatView: View {
             viewModel.errorMensaje = "Puedes adjuntar hasta 10 archivos por mensaje."
             return
         }
-        for (indice, item) in items.prefix(disponibles).enumerated() {
+        for (indice, foto) in fotos.prefix(disponibles).enumerated() {
             do {
-                guard let datos = try await item.loadTransferable(type: Data.self) else {
-                    throw CocoaError(.fileReadUnknown)
-                }
-                let tipo = item.supportedContentTypes.first(where: { $0.conforms(to: .image) }) ?? .jpeg
-                let extensionArchivo = tipo.preferredFilenameExtension ?? "jpg"
                 let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("edecan-foto-\(UUID().uuidString).\(extensionArchivo)")
-                try datos.write(to: url, options: .atomic)
+                    .appendingPathComponent("edecan-foto-\(UUID().uuidString).\(foto.extensionArchivo)")
+                try foto.datos.write(to: url, options: .atomic)
                 let pendiente = AdjuntoPendiente(
                     localURL: url,
-                    filename: "foto-\(indice + 1).\(extensionArchivo)",
-                    mimeType: tipo.preferredMIMEType ?? "image/jpeg"
+                    filename: "foto-\(indice + 1).\(foto.extensionArchivo)",
+                    mimeType: foto.mimeType
                 )
                 adjuntosPendientes.append(pendiente)
                 iniciarSubida(pendiente, client: client)
@@ -688,6 +674,384 @@ struct ChatView: View {
         }
     }
 
+}
+
+private struct GaleriaFoto: Sendable {
+    let datos: Data
+    let extensionArchivo: String
+    let mimeType: String
+}
+
+/// Galería visual propia de Edecán. Mantiene la selección y la lectura de
+/// originales dentro del dispositivo; el chat solo recibe los elementos que
+/// la persona confirma explícitamente.
+private struct GaleriaEdecanPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var autorizacion = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var recursos: [PHAsset] = []
+    @State private var seleccion: [String] = []
+    @State private var cargando = false
+    @State private var error: String?
+
+    let limite: Int
+    let onConfirmar: ([GaleriaFoto]) -> Void
+
+    private let columnas = [
+        GridItem(.flexible(), spacing: 3),
+        GridItem(.flexible(), spacing: 3),
+        GridItem(.flexible(), spacing: 3)
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(uiColor: .systemBackground).ignoresSafeArea()
+
+                switch autorizacion {
+                case .authorized, .limited:
+                    galeria
+                case .notDetermined:
+                    ProgressView("Preparando tus fotos…")
+                case .denied, .restricted:
+                    accesoDenegado
+                @unknown default:
+                    accesoDenegado
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                cabecera
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if autorizacion == .authorized || autorizacion == .limited {
+                    barraConfirmacion
+                }
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .task {
+                await solicitarAccesoSiHaceFalta()
+            }
+        }
+        .interactiveDismissDisabled(cargando)
+    }
+
+    private var cabecera: some View {
+        HStack(spacing: 14) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: 38, height: 38)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .disabled(cargando)
+            .accessibilityLabel("Cerrar galería")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Tus momentos")
+                    .font(.title3.bold())
+                Text(seleccion.isEmpty ? "Elige lo que quieras compartir" : "\(seleccion.count) de \(limite) seleccionadas")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Image(systemName: "sparkles")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(EdecanTheme.degradado)
+                .frame(width: 38, height: 38)
+                .background(EdecanTheme.degradado.opacity(0.12), in: Circle())
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.separator.opacity(0.35))
+                .frame(height: 0.5)
+        }
+    }
+
+    private var galeria: some View {
+        ScrollView {
+            if recursos.isEmpty {
+                ContentUnavailableView(
+                    "No hay fotos disponibles",
+                    systemImage: "photo.on.rectangle.angled",
+                    description: Text("Cuando tengas fotos en este iPhone aparecerán aquí.")
+                )
+                .padding(.top, 100)
+            } else {
+                LazyVGrid(columns: columnas, spacing: 3) {
+                    ForEach(recursos, id: \.localIdentifier) { recurso in
+                        celda(recurso)
+                    }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private func celda(_ recurso: PHAsset) -> some View {
+        let posicion = seleccion.firstIndex(of: recurso.localIdentifier).map { $0 + 1 }
+        return Button {
+            alternar(recurso.localIdentifier)
+        } label: {
+            MiniaturaGaleria(asset: recurso)
+                .aspectRatio(1, contentMode: .fill)
+                .clipped()
+                .overlay {
+                    if posicion != nil {
+                        EdecanTheme.degradado.opacity(0.16)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    ZStack {
+                        Circle()
+                            .fill(posicion == nil ? .black.opacity(0.28) : EdecanTheme.morado)
+                            .stroke(.white, lineWidth: 2)
+                        if let posicion {
+                            Text("\(posicion)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .frame(width: 28, height: 28)
+                    .padding(8)
+                }
+                .overlay {
+                    if posicion != nil {
+                        RoundedRectangle(cornerRadius: 1)
+                            .stroke(EdecanTheme.degradado, lineWidth: 3)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(posicion == nil ? "Seleccionar foto" : "Foto seleccionada número \(posicion!)")
+    }
+
+    private var barraConfirmacion: some View {
+        VStack(spacing: 9) {
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button {
+                confirmar()
+            } label: {
+                HStack(spacing: 10) {
+                    if cargando {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Image(systemName: seleccion.count == 1 ? "photo.fill" : "photo.stack.fill")
+                    }
+                    Text(textoConfirmacion)
+                        .font(.headline)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(EdecanTheme.degradado, in: Capsule())
+                .shadow(color: EdecanTheme.morado.opacity(0.3), radius: 18, y: 8)
+            }
+            .disabled(seleccion.isEmpty || cargando)
+            .opacity(seleccion.isEmpty ? 0.45 : 1)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private var textoConfirmacion: String {
+        if cargando { return "Preparando fotos…" }
+        if seleccion.isEmpty { return "Selecciona tus fotos" }
+        if seleccion.count == 1 { return "Adjuntar una foto" }
+        return "Adjuntar \(seleccion.count) fotos"
+    }
+
+    private var accesoDenegado: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(EdecanTheme.degradado.opacity(0.13))
+                    .frame(width: 92, height: 92)
+                Image(systemName: "photo.badge.exclamationmark")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(EdecanTheme.degradado)
+            }
+            Text("Tus fotos siguen siendo tuyas")
+                .font(.title2.bold())
+            Text("Permite el acceso para elegir imágenes. Edecán solo prepara las que selecciones y nunca revisa el resto.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 28)
+            Button("Abrir configuración") {
+                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                UIApplication.shared.open(url)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(EdecanTheme.morado)
+        }
+        .padding()
+    }
+
+    @MainActor
+    private func solicitarAccesoSiHaceFalta() async {
+        if autorizacion == .notDetermined {
+            autorizacion = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        }
+        if autorizacion == .authorized || autorizacion == .limited {
+            cargarRecursos()
+        }
+    }
+
+    @MainActor
+    private func cargarRecursos() {
+        let opciones = PHFetchOptions()
+        opciones.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        opciones.fetchLimit = 1_000
+        let resultado = PHAsset.fetchAssets(with: .image, options: opciones)
+        var nuevos: [PHAsset] = []
+        nuevos.reserveCapacity(resultado.count)
+        resultado.enumerateObjects { recurso, _, _ in
+            nuevos.append(recurso)
+        }
+        recursos = nuevos
+    }
+
+    private func alternar(_ id: String) {
+        error = nil
+        if let indice = seleccion.firstIndex(of: id) {
+            seleccion.remove(at: indice)
+        } else if seleccion.count < limite {
+            seleccion.append(id)
+        } else {
+            error = "Puedes elegir hasta \(limite) fotos para este mensaje."
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+    }
+
+    private func confirmar() {
+        guard !seleccion.isEmpty else { return }
+        cargando = true
+        error = nil
+        let ids = seleccion
+        Task {
+            do {
+                let fotos = try await cargarOriginales(ids)
+                await MainActor.run {
+                    cargando = false
+                    onConfirmar(fotos)
+                }
+            } catch {
+                await MainActor.run {
+                    cargando = false
+                    self.error = "No pudimos preparar una foto. Inténtalo de nuevo."
+                }
+            }
+        }
+    }
+
+    private func cargarOriginales(_ ids: [String]) async throws -> [GaleriaFoto] {
+        let resultado = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+        var porId: [String: PHAsset] = [:]
+        resultado.enumerateObjects { recurso, _, _ in
+            porId[recurso.localIdentifier] = recurso
+        }
+
+        var fotos: [GaleriaFoto] = []
+        for id in ids {
+            guard let recurso = porId[id] else { continue }
+            fotos.append(try await Self.datosOriginales(de: recurso))
+        }
+        return fotos
+    }
+
+    private static func datosOriginales(de recurso: PHAsset) async throws -> GaleriaFoto {
+        try await withCheckedThrowingContinuation { continuation in
+            let opciones = PHImageRequestOptions()
+            opciones.isNetworkAccessAllowed = true
+            opciones.deliveryMode = .highQualityFormat
+            opciones.version = .current
+            PHImageManager.default().requestImageDataAndOrientation(
+                for: recurso,
+                options: opciones
+            ) { datos, identificadorTipo, _, info in
+                if let error = info?[PHImageErrorKey] as? Error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let datos else {
+                    continuation.resume(throwing: CocoaError(.fileReadUnknown))
+                    return
+                }
+                let tipo = identificadorTipo.flatMap(UTType.init) ?? .jpeg
+                continuation.resume(returning: GaleriaFoto(
+                    datos: datos,
+                    extensionArchivo: tipo.preferredFilenameExtension ?? "jpg",
+                    mimeType: tipo.preferredMIMEType ?? "image/jpeg"
+                ))
+            }
+        }
+    }
+}
+
+private struct MiniaturaGaleria: View {
+    @Environment(\.displayScale) private var displayScale
+    let asset: PHAsset
+    @State private var imagen: UIImage?
+    @State private var solicitud: PHImageRequestID?
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.quaternary)
+            if let imagen {
+                Image(uiImage: imagen)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .task(id: asset.localIdentifier) {
+            cargar()
+        }
+        .onDisappear {
+            if let solicitud {
+                PHImageManager.default().cancelImageRequest(solicitud)
+            }
+        }
+    }
+
+    private func cargar() {
+        // 180 puntos cubren incluso celdas amplias de iPad sin leer el
+        // original completo. displayScale evita depender de UIScreen.main.
+        let lado = 180 * displayScale
+        let opciones = PHImageRequestOptions()
+        opciones.deliveryMode = .opportunistic
+        opciones.resizeMode = .fast
+        opciones.isNetworkAccessAllowed = true
+        solicitud = PHCachingImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: lado, height: lado),
+            contentMode: .aspectFill,
+            options: opciones
+        ) { resultado, _ in
+            guard let resultado else { return }
+            withAnimation(.easeOut(duration: 0.18)) {
+                imagen = resultado
+            }
+        }
+    }
 }
 
 private struct AdjuntoPendiente: Identifiable, Equatable {

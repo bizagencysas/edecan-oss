@@ -6,9 +6,18 @@ import shutil
 import subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("publish_update_channel.sh")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "publish_update_channel.sh"
 REAL_GIT = shutil.which("git")
 assert REAL_GIT
+
+PLATFORMS = (
+    "darwin-aarch64-app",
+    "linux-x86_64-appimage",
+    "linux-x86_64-deb",
+    "linux-x86_64-rpm",
+    "windows-x86_64-nsis",
+    "windows-x86_64-msi",
+)
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -27,25 +36,24 @@ def init_identity(repo: Path) -> None:
     git(repo, "config", "user.email", "updates@example.test")
 
 
-def android_manifest(channel: str, version_code: int, version_name: str) -> str:
+def desktop_manifest(version: str) -> str:
     return json.dumps(
         {
-            "schema_version": 1,
-            "channel": channel,
-            "version_code": version_code,
-            "version_name": version_name,
-            "published_at": "2026-07-23T00:00:00Z",
-            "release_notes": "",
-            "apk": {
-                "url": f"https://example.test/Edecan-{version_name}.apk",
-                "sha256": "a" * 64,
-                "size_bytes": 123,
+            "version": version,
+            "notes": "",
+            "pub_date": "2026-07-23T00:00:00Z",
+            "platforms": {
+                platform: {
+                    "url": f"https://example.test/{platform}",
+                    "signature": f"signature-{platform}",
+                }
+                for platform in PLATFORMS
             },
         }
     )
 
 
-def test_channel_push_retries_race_and_preserves_desktop_manifests(
+def test_desktop_channel_retries_race_and_preserves_mobile_manifests(
     tmp_path: Path,
 ) -> None:
     bare = tmp_path / "remote.git"
@@ -55,25 +63,25 @@ def test_channel_push_retries_race_and_preserves_desktop_manifests(
     git(tmp_path, "init", "--bare", str(bare))
     git(tmp_path, "init", "-b", "main", str(seed))
     init_identity(seed)
-    (seed / "stable.json").write_text("desktop stable\n", encoding="utf-8")
-    (seed / "preview.json").write_text("desktop preview\n", encoding="utf-8")
-    git(seed, "add", "stable.json", "preview.json")
-    git(seed, "commit", "-m", "desktop channels")
+    (seed / "stable.json").write_text(desktop_manifest("0.7.3"), encoding="utf-8")
+    (seed / "android-stable.json").write_text("android old\n", encoding="utf-8")
+    (seed / "ios-stable.json").write_text("ios stable\n", encoding="utf-8")
+    git(seed, "add", "stable.json", "android-stable.json", "ios-stable.json")
+    git(seed, "commit", "-m", "seed channels")
     git(seed, "remote", "add", "origin", str(bare))
     git(seed, "push", "origin", "HEAD:refs/heads/update-channels")
 
     git(tmp_path, "clone", "--branch", "update-channels", str(bare), str(competitor))
     init_identity(competitor)
-    (competitor / "preview.json").write_text(
-        "desktop preview won the race\n",
+    (competitor / "android-stable.json").write_text(
+        "android won the race\n",
         encoding="utf-8",
     )
-    git(competitor, "add", "preview.json")
-    git(competitor, "commit", "-m", "concurrent desktop preview")
+    git(competitor, "add", "android-stable.json")
+    git(competitor, "commit", "-m", "concurrent Android channel")
 
-    android_manifest_path = seed / "new-android-stable.json"
-    stable_candidate = android_manifest("stable", 9, "0.7.4")
-    android_manifest_path.write_text(stable_candidate, encoding="utf-8")
+    candidate = seed / "latest.json"
+    candidate.write_text(desktop_manifest("0.7.4"), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -92,7 +100,6 @@ exec "$REAL_GIT" "$@"
         encoding="utf-8",
     )
     fake_git.chmod(0o755)
-
     environment = os.environ.copy()
     environment.update(
         {
@@ -104,8 +111,9 @@ exec "$REAL_GIT" "$@"
             "EDECAN_UPDATE_CHANNEL_RETRY_DELAY_SECONDS": "0",
         }
     )
+
     subprocess.run(
-        [str(SCRIPT), str(android_manifest_path), "stable", "origin"],
+        [str(SCRIPT), str(candidate), "stable", "origin"],
         cwd=seed,
         env=environment,
         check=True,
@@ -114,57 +122,30 @@ exec "$REAL_GIT" "$@"
     )
 
     git(tmp_path, "clone", "--branch", "update-channels", str(bare), str(checkout))
-    assert (checkout / "stable.json").read_text(encoding="utf-8") == "desktop stable\n"
-    assert (checkout / "preview.json").read_text(
-        encoding="utf-8"
-    ) == "desktop preview won the race\n"
+    published = json.loads((checkout / "stable.json").read_text(encoding="utf-8"))
+    assert published["version"] == "0.7.4"
     assert (checkout / "android-stable.json").read_text(
         encoding="utf-8"
-    ) == stable_candidate
-    assert not (checkout / "android-preview.json").exists()
-
-    preview_manifest = seed / "new-android-preview.json"
-    preview_candidate = android_manifest("preview", 10, "0.8.0-beta.1")
-    preview_manifest.write_text(preview_candidate, encoding="utf-8")
-    subprocess.run(
-        [str(SCRIPT), str(preview_manifest), "preview", "origin"],
-        cwd=seed,
-        env=environment,
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    git(checkout, "pull", "--ff-only")
-    assert (checkout / "android-stable.json").read_text(
-        encoding="utf-8"
-    ) == stable_candidate
-    assert (checkout / "android-preview.json").read_text(
-        encoding="utf-8"
-    ) == preview_candidate
-    assert (checkout / "stable.json").read_text(encoding="utf-8") == "desktop stable\n"
+    ) == "android won the race\n"
+    assert (checkout / "ios-stable.json").read_text(encoding="utf-8") == "ios stable\n"
 
 
-def test_channel_rejects_regressive_manifest_and_keeps_remote(
-    tmp_path: Path,
-) -> None:
+def test_desktop_channel_rejects_regressive_version(tmp_path: Path) -> None:
     bare = tmp_path / "remote.git"
     seed = tmp_path / "seed"
     checkout = tmp_path / "result"
     git(tmp_path, "init", "--bare", str(bare))
     git(tmp_path, "init", "-b", "main", str(seed))
     init_identity(seed)
-    current = android_manifest("stable", 12, "0.9.0")
-    (seed / "android-stable.json").write_text(current, encoding="utf-8")
-    git(seed, "add", "android-stable.json")
-    git(seed, "commit", "-m", "current Android stable")
+    current = desktop_manifest("0.8.0")
+    (seed / "stable.json").write_text(current, encoding="utf-8")
+    git(seed, "add", "stable.json")
+    git(seed, "commit", "-m", "current stable")
     git(seed, "remote", "add", "origin", str(bare))
     git(seed, "push", "origin", "HEAD:refs/heads/update-channels")
 
-    candidate = seed / "candidate.json"
-    candidate.write_text(
-        android_manifest("stable", 11, "0.8.0"),
-        encoding="utf-8",
-    )
+    candidate = seed / "latest.json"
+    candidate.write_text(desktop_manifest("0.7.9"), encoding="utf-8")
     result = subprocess.run(
         [str(SCRIPT), str(candidate), "stable", "origin"],
         cwd=seed,
@@ -177,6 +158,6 @@ def test_channel_rejects_regressive_manifest_and_keeps_remote(
     )
 
     assert result.returncode != 0
-    assert "regressive Android channel" in result.stderr
+    assert "regressive desktop channel" in result.stderr
     git(tmp_path, "clone", "--branch", "update-channels", str(bare), str(checkout))
-    assert (checkout / "android-stable.json").read_text(encoding="utf-8") == current
+    assert (checkout / "stable.json").read_text(encoding="utf-8") == current

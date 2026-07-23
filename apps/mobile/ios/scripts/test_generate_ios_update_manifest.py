@@ -122,19 +122,53 @@ def test_transition_uses_semver_and_build_without_allowing_downgrade() -> None:
             expected_channel="preview",
         )
 
+    mutated_same_build = dict(newer, release_notes="No puede mutarse.")
+    with pytest.raises(ValueError, match="already published and immutable"):
+        MODULE.validate_transition(
+            newer,
+            mutated_same_build,
+            expected_channel="preview",
+        )
+
+    timestamp_only = dict(newer, published_at="2026-07-23T23:59:59Z")
+    MODULE.validate_transition(
+        newer,
+        timestamp_only,
+        expected_channel="preview",
+    )
+
+
+def test_manifest_uses_a_repeatable_release_timestamp() -> None:
+    published_at = MODULE.parse_published_at("2026-07-23T12:34:56Z")
+    arguments = {
+        "tag": "v0.8.0",
+        "channel": "stable",
+        "version": "0.8.0",
+        "build_number": 10,
+        "install_url": "https://apps.apple.com/app/id123456789",
+        "release_notes": "Mismos bytes.",
+        "published_at": published_at,
+    }
+
+    assert MODULE.build_manifest(**arguments) == MODULE.build_manifest(**arguments)
+    with pytest.raises(ValueError, match="RFC 3339 UTC"):
+        MODULE.parse_published_at("2026-07-23T12:34:56")
+
 
 def test_release_workflow_is_noop_without_configured_install_url() -> None:
     workflow = (
-        Path(__file__).resolve().parents[4]
-        / ".github"
-        / "workflows"
-        / "release-ios.yml"
+        Path(__file__).resolve().parents[4] / ".github" / "workflows" / "release-ios.yml"
     ).read_text(encoding="utf-8")
 
     assert "vars.EDECAN_IOS_INSTALL_URL" in workflow
     assert "needs.gate.outputs.enabled == 'true'" in workflow
-    assert "group: release-update-channels" in workflow
+    assert "group: release-ios-updates" in workflow
+    assert "group: release-update-channels" not in workflow
     assert "astral-sh/setup-uv@" in workflow
     assert "uv run --frozen pytest -q apps/mobile/ios/scripts" in workflow
-    assert "publish_update_channel.sh" in workflow
+    assert "finalize-github-release.sh" in workflow
     assert "ios-${{ steps.metadata.outputs.channel }}.json" in workflow
+    assert "scripts/release/upload-github-release-asset.sh" in workflow
+    assert "scripts/release/ensure-github-release.sh" in workflow
+    assert '--published-at "$RELEASE_CREATED_AT"' in workflow
+    assert "--clobber" not in workflow

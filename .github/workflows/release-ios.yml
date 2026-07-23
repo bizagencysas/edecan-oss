@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-update-channels
+  # No cancela un release móvil distinto mientras espera a escritorio.
+  # El publicador iOS conserva el árbol remoto y reintenta non-fast-forward.
+  group: release-ios-updates
   cancel-in-progress: false
 
 jobs:
@@ -122,18 +124,17 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.release.outputs.tag }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            PRERELEASE=()
-            if test "${{ steps.metadata.outputs.channel }}" = "preview"; then
-              PRERELEASE=(--prerelease)
-            fi
-            gh release create "$TAG" --verify-tag \
-              --title "Edecán ${{ steps.metadata.outputs.version }}" \
-              --generate-notes "${PRERELEASE[@]}" ||
-              sleep 5
-          fi
-          gh release view "$TAG" >/dev/null
+          scripts/release/ensure-github-release.sh \
+            "$TAG" \
+            "${{ steps.metadata.outputs.version }}" \
+            "${{ steps.metadata.outputs.channel }}"
           gh release view "$TAG" --json body --jq .body > release-notes.md
+          RELEASE_CREATED_AT="$(
+            gh release view "$TAG" --json createdAt --jq .createdAt
+          )"
+          test -n "$RELEASE_CREATED_AT"
+          test "$RELEASE_CREATED_AT" != "null"
+          echo "RELEASE_CREATED_AT=$RELEASE_CREATED_AT" >> "$GITHUB_ENV"
 
       - name: Generate fail-closed iOS channel manifest
         shell: bash
@@ -146,21 +147,24 @@ jobs:
             --version "${{ steps.metadata.outputs.version }}" \
             --build-number "${{ steps.metadata.outputs.build_number }}" \
             --install-url "$EDECAN_IOS_INSTALL_URL" \
+            --published-at "$RELEASE_CREATED_AT" \
             --notes-file release-notes.md \
             --output "$OUTPUT"
           echo "IOS_MANIFEST=$OUTPUT" >> "$GITHUB_ENV"
 
       - name: Attach manifest to the immutable release
-        run: gh release upload "${{ steps.release.outputs.tag }}" "$IOS_MANIFEST" --clobber
+        run: >-
+          scripts/release/upload-github-release-asset.sh
+          "${{ steps.release.outputs.tag }}"
+          "$IOS_MANIFEST"
 
-      - name: Move iOS channel without replacing other manifests
+      - name: Publish only when every configured platform is complete
         shell: bash
-        env:
-          EDECAN_UPDATE_CHANNEL_MAX_ATTEMPTS: "5"
         run: |
           set -euo pipefail
-          gh auth setup-git
-          apps/mobile/ios/scripts/publish_update_channel.sh \
-            "$IOS_MANIFEST" \
+          scripts/release/finalize-github-release.sh \
+            "${{ steps.release.outputs.tag }}" \
+            "${{ steps.metadata.outputs.version }}" \
             "${{ steps.metadata.outputs.channel }}" \
+            true \
             origin

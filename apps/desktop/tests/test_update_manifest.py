@@ -82,3 +82,82 @@ def test_manifest_rejects_ambiguous_platform_artifacts(tmp_path: Path) -> None:
             version="0.8.0",
             notes="",
         )
+
+
+def test_channel_transition_rejects_downgrade_and_wrong_release_kind(
+    tmp_path: Path,
+) -> None:
+    _write_artifacts(tmp_path)
+    current = MODULE.build_manifest(
+        artifacts=tmp_path,
+        repository="bizagencysas/edecan-oss",
+        tag="v0.8.0",
+        version="0.8.0",
+        notes="",
+    )
+    candidate = dict(current)
+    candidate["version"] = "0.7.9"
+
+    with pytest.raises(ValueError, match="cannot move backward"):
+        MODULE.validate_transition(current, candidate, expected_channel="stable")
+
+    preview = dict(current)
+    preview["version"] = "0.9.0-beta.1"
+    with pytest.raises(ValueError, match="stable cannot publish"):
+        MODULE.validate_transition(current, preview, expected_channel="stable")
+
+    with pytest.raises(ValueError, match="preview requires"):
+        MODULE.validate_transition(None, current, expected_channel="preview")
+
+
+def test_channel_transition_allows_monotonic_or_idempotent_publication(
+    tmp_path: Path,
+) -> None:
+    _write_artifacts(tmp_path)
+    current = MODULE.build_manifest(
+        artifacts=tmp_path,
+        repository="bizagencysas/edecan-oss",
+        tag="v0.8.0",
+        version="0.8.0",
+        notes="",
+    )
+    candidate = dict(current)
+    candidate["version"] = "0.9.0"
+
+    MODULE.validate_transition(current, candidate, expected_channel="stable")
+    MODULE.validate_transition(current, current, expected_channel="stable")
+
+    timestamp_only = dict(current)
+    timestamp_only["pub_date"] = "2026-07-23T23:59:59Z"
+    MODULE.validate_transition(current, timestamp_only, expected_channel="stable")
+
+    mutated = dict(current)
+    mutated["notes"] = "El mismo número no puede cambiar después de publicarse."
+    with pytest.raises(ValueError, match="already published and immutable"):
+        MODULE.validate_transition(current, mutated, expected_channel="stable")
+
+
+def test_manifest_uses_a_repeatable_release_timestamp(tmp_path: Path) -> None:
+    _write_artifacts(tmp_path)
+    published_at = MODULE.parse_published_at("2026-07-23T12:34:56Z")
+
+    first = MODULE.build_manifest(
+        artifacts=tmp_path,
+        repository="bizagencysas/edecan-oss",
+        tag="v0.8.0",
+        version="0.8.0",
+        notes="Mismos bytes.",
+        published_at=published_at,
+    )
+    second = MODULE.build_manifest(
+        artifacts=tmp_path,
+        repository="bizagencysas/edecan-oss",
+        tag="v0.8.0",
+        version="0.8.0",
+        notes="Mismos bytes.",
+        published_at=published_at,
+    )
+
+    assert first == second
+    with pytest.raises(ValueError, match="RFC 3339 UTC"):
+        MODULE.parse_published_at("2026-07-23T12:34:56")

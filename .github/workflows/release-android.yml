@@ -15,8 +15,9 @@ permissions:
   contents: write
 
 concurrency:
-  # Comparte el único escritor de update-channels con desktop e iOS.
-  group: release-update-channels
+  # Las publicaciones Android se serializan entre sí. Los publicadores de las
+  # otras plataformas pueden avanzar en paralelo y cada push reintenta carreras.
+  group: release-android-updates
   cancel-in-progress: false
 
 jobs:
@@ -129,7 +130,31 @@ jobs:
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
           test -x "$APKSIGNER"
           test -x "$AAPT"
-          "$APKSIGNER" verify --verbose --print-certs "$SOURCE"
+          SIGNATURE_OUTPUT="$("$APKSIGNER" verify --verbose --print-certs "$SOURCE")"
+          printf '%s\n' "$SIGNATURE_OUTPUT"
+          mapfile -t SIGNER_DIGESTS < <(
+            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p' \
+              <<< "$SIGNATURE_OUTPUT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | tr -d '[:space:]:'
+          )
+          test "${#SIGNER_DIGESTS[@]}" -eq 1 || {
+            echo "::error::El APK debe tener exactamente un firmante"
+            exit 1
+          }
+          EXPECTED_SIGNER="$(
+            tr '[:upper:]' '[:lower:]' \
+              < apps/mobile/android/release-signing-cert.sha256 \
+              | tr -d '[:space:]:'
+          )"
+          [[ "$EXPECTED_SIGNER" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::La huella Android fijada en el repo no es válida"
+            exit 1
+          }
+          test "${SIGNER_DIGESTS[0]}" = "$EXPECTED_SIGNER" || {
+            echo "::error::El APK no pertenece a la clave pública Android fijada"
+            exit 1
+          }
           BADGING="$("$AAPT" dump badging "$SOURCE" | head -1)"
           [[ "$BADGING" == *"name='cc.edecan.app'"* ]] || {
             echo "::error::El APK no pertenece a cc.edecan.app"
@@ -155,17 +180,17 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.release.outputs.tag }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            PRERELEASE=()
-            if test "${{ steps.metadata.outputs.channel }}" = "preview"; then
-              PRERELEASE=(--prerelease)
-            fi
-            gh release create "$TAG" --verify-tag --title "Edecán ${{ steps.metadata.outputs.version }}" \
-              --generate-notes "${PRERELEASE[@]}" ||
-              sleep 5
-          fi
-          gh release view "$TAG" >/dev/null
+          scripts/release/ensure-github-release.sh \
+            "$TAG" \
+            "${{ steps.metadata.outputs.version }}" \
+            "${{ steps.metadata.outputs.channel }}"
           gh release view "$TAG" --json body --jq .body > release-notes.md
+          RELEASE_CREATED_AT="$(
+            gh release view "$TAG" --json createdAt --jq .createdAt
+          )"
+          test -n "$RELEASE_CREATED_AT"
+          test "$RELEASE_CREATED_AT" != "null"
+          echo "RELEASE_CREATED_AT=$RELEASE_CREATED_AT" >> "$GITHUB_ENV"
 
       - name: Generate fail-closed Android channel manifest
         shell: bash
@@ -178,6 +203,7 @@ jobs:
             --channel "${{ steps.metadata.outputs.channel }}" \
             --version-code "${{ steps.metadata.outputs.version_code }}" \
             --version-name "${{ steps.metadata.outputs.version }}" \
+            --published-at "$RELEASE_CREATED_AT" \
             --notes-file release-notes.md \
             --output "release-artifacts/android-${{ steps.metadata.outputs.channel }}.json"
 
@@ -185,18 +211,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "${{ steps.release.outputs.tag }}" release-artifacts/* --clobber
+          scripts/release/upload-github-release-asset.sh \
+            "${{ steps.release.outputs.tag }}" \
+            release-artifacts/*
 
-      - name: Move Android channel without replacing desktop manifests
+      - name: Publish only when every configured platform is complete
         shell: bash
         env:
-          EDECAN_UPDATE_CHANNEL_MAX_ATTEMPTS: "5"
+          EDECAN_IOS_INSTALL_URL: ${{ vars.EDECAN_IOS_INSTALL_URL }}
         run: |
           set -euo pipefail
-          gh auth setup-git
-          apps/mobile/android/scripts/publish_update_channel.sh \
-            "release-artifacts/android-${{ steps.metadata.outputs.channel }}.json" \
+          IOS_REQUIRED=false
+          if test -n "$EDECAN_IOS_INSTALL_URL"; then
+            IOS_REQUIRED=true
+          fi
+          scripts/release/finalize-github-release.sh \
+            "${{ steps.release.outputs.tag }}" \
+            "${{ steps.metadata.outputs.version }}" \
             "${{ steps.metadata.outputs.channel }}" \
+            "$IOS_REQUIRED" \
             origin
 
       - name: Remove keystore

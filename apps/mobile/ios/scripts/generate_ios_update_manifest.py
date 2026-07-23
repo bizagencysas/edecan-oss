@@ -22,9 +22,26 @@ SEMVER_RE = re.compile(
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 CHANNELS = {"stable", "preview"}
+DERIVED_TIMESTAMP_FIELD = "published_at"
 INSTALL_SCHEMES = {"https", "itms-apps", "itms-beta", "altstore", "sidestore"}
 MAX_NOTES_LENGTH = 20_000
 MAX_URL_LENGTH = 2_048
+
+
+def parse_published_at(value: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{DERIVED_TIMESTAMP_FIELD} must be an RFC 3339 UTC timestamp.")
+    try:
+        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00")
+    except ValueError as error:
+        raise ValueError(f"{DERIVED_TIMESTAMP_FIELD} must be an RFC 3339 UTC timestamp.") from error
+    if parsed.utcoffset() != UTC.utcoffset(None):
+        raise ValueError(f"{DERIVED_TIMESTAMP_FIELD} must use UTC.")
+    return parsed
+
+
+def immutable_release_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in manifest.items() if key != DERIVED_TIMESTAMP_FIELD}
 
 
 def parse_semver(value: str) -> tuple[tuple[int, int, int], tuple[str, ...]]:
@@ -79,8 +96,7 @@ def validate_install_url(value: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in INSTALL_SCHEMES:
         raise ValueError(
-            "install_url must use App Store, TestFlight, AltStore, "
-            "SideStore or HTTPS."
+            "install_url must use App Store, TestFlight, AltStore, SideStore or HTTPS."
         )
     if parts.username is not None or parts.password is not None or parts.fragment:
         raise ValueError("install_url cannot contain credentials or a fragment.")
@@ -91,9 +107,7 @@ def validate_install_url(value: str) -> str:
 
     if scheme in {"https", "itms-apps", "itms-beta"} and not parts.hostname:
         raise ValueError(f"{scheme} install_url requires a host.")
-    if scheme in {"altstore", "sidestore"} and not (
-        parts.netloc or parts.path or parts.query
-    ):
+    if scheme in {"altstore", "sidestore"} and not (parts.netloc or parts.path or parts.query):
         raise ValueError(f"{scheme} install_url is incomplete.")
     return value
 
@@ -109,6 +123,12 @@ def validate_manifest(manifest: dict[str, Any], *, expected_channel: str) -> Non
     _, prerelease = parse_semver(version)
     if expected_channel == "stable" and prerelease:
         raise ValueError("stable cannot publish a prerelease.")
+    if expected_channel == "preview" and not prerelease:
+        raise ValueError("preview requires a SemVer prerelease.")
+    published_at = manifest.get(DERIVED_TIMESTAMP_FIELD)
+    if not isinstance(published_at, str):
+        raise ValueError(f"manifest {DERIVED_TIMESTAMP_FIELD} is missing.")
+    parse_published_at(published_at)
     build_number = manifest.get("build_number")
     if not isinstance(build_number, int) or isinstance(build_number, bool) or build_number <= 0:
         raise ValueError("build_number must be a positive integer.")
@@ -134,16 +154,21 @@ def validate_transition(
     )
     if precedence < 0:
         raise ValueError(
-            f"channel cannot move backward from {current['version']} "
-            f"to {candidate['version']}."
+            f"channel cannot move backward from {current['version']} to {candidate['version']}."
         )
-    if (
-        precedence == 0
-        and int(candidate["build_number"]) < int(current["build_number"])
-    ):
+    if precedence == 0 and int(candidate["build_number"]) < int(current["build_number"]):
         raise ValueError(
             f"channel cannot move build backward from {current['build_number']} "
             f"to {candidate['build_number']}."
+        )
+    if (
+        precedence == 0
+        and int(candidate["build_number"]) == int(current["build_number"])
+        and immutable_release_payload(candidate) != immutable_release_payload(current)
+    ):
+        raise ValueError(
+            f"iOS build {candidate['version']} "
+            f"({candidate['build_number']}) is already published and immutable."
         )
 
 
@@ -175,7 +200,7 @@ def build_manifest(
         "channel": channel,
         "version": version,
         "build_number": build_number,
-        "published_at": (published_at or datetime.now(UTC))
+        DERIVED_TIMESTAMP_FIELD: (published_at or datetime.now(UTC))
         .astimezone(UTC)
         .isoformat()
         .replace("+00:00", "Z"),
@@ -193,6 +218,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-number", type=int, required=True)
     parser.add_argument("--install-url", required=True)
+    parser.add_argument("--published-at")
     parser.add_argument("--notes-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -207,6 +233,7 @@ def main() -> None:
         build_number=args.build_number,
         install_url=args.install_url,
         release_notes=notes,
+        published_at=(parse_published_at(args.published_at) if args.published_at else None),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(f"{args.output.suffix}.tmp")

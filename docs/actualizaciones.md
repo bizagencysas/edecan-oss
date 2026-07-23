@@ -41,6 +41,7 @@ clave pública compilada en la app antes de instalarlo.
 Edecán usa `tauri-plugin-updater` y firmas minisign:
 
 1. La clave pública está en `apps/desktop/src-tauri/tauri.conf.json`.
+   Su copia legible y auditable vive en `apps/desktop/updater.pub`.
 2. La clave privada no vive en Git, en el instalador ni en el manifiesto.
 3. El workflow genera un paquete y una firma por formato instalado:
    `.app`, AppImage, `.deb`, `.rpm`, NSIS y MSI.
@@ -50,13 +51,18 @@ Edecán usa `tauri-plugin-updater` y firmas minisign:
    intente ejecutar el instalador NSIS.
 5. El puntero del canal se mueve únicamente después de publicar todos los
    artefactos y el manifiesto.
-6. La app rechaza cualquier artefacto cuya firma no corresponda a la clave
-   pública incorporada.
+6. Cada job vuelve a verificar su artefacto contra `updater.pub`, y la app
+   rechaza cualquier archivo cuya firma no corresponda a esa misma raíz.
+7. Un tag, versión o build ya publicado es inmutable. Los workflows no
+   reemplazan assets con `--clobber`; una corrección siempre recibe una
+   versión nueva.
 
 La firma del updater y la firma del sistema operativo resuelven problemas
-distintos. Para distribución pública también deben configurarse Developer ID
-y notarización en macOS y Authenticode en Windows. Una firma Tauri válida no
-elimina por sí sola las advertencias de Gatekeeper o SmartScreen.
+distintos. El release público de macOS falla si no encuentra una identidad
+Developer ID Application válida, si no pertenece al Team ID fijado o si Apple
+no puede notarizarla. Windows todavía necesita Authenticode para eliminar las
+advertencias de SmartScreen; la firma Tauri sí impide que el actualizador
+instale un paquete ajeno.
 
 ## Publicar una versión
 
@@ -65,8 +71,8 @@ se ejecuta con tags `v*`, valida que el tag y las versiones de Cargo/Tauri
 coincidan, exige que el tag pertenezca a `main`, construye y prueba cada
 plataforma de forma nativa y publica el release. Los tags finales mueven
 `stable.json`; los prereleases mueven `preview.json`. Un canal nunca retrocede
-a una versión SemVer anterior y solo un release puede mover los canales a la
-vez.
+a una versión SemVer anterior. Cada plataforma serializa sus propios releases
+y reintenta cualquier carrera al conservar el árbol remoto completo.
 
 Antes del primer release configura estos secrets en el repositorio:
 
@@ -74,6 +80,17 @@ Antes del primer release configura estos secrets en el repositorio:
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | Contenido completo de la clave privada del updater |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Contraseña de esa clave, vacía si fue creada sin contraseña |
+| `MACOS_CERTIFICATE_P12_BASE64` | Developer ID Application exportado como P12 y codificado en base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | Contraseña del P12 |
+| `MACOS_NOTARY_API_KEY_ID` | Key ID de App Store Connect usado para notarizar |
+| `MACOS_NOTARY_API_ISSUER` | Issuer ID de App Store Connect |
+| `MACOS_NOTARY_API_PRIVATE_KEY_BASE64` | Archivo `AuthKey_*.p8` codificado en base64 |
+
+Configura también la variable pública `MACOS_EXPECTED_TEAM_ID`. El workflow
+importa el P12 en un llavero efímero, comprueba identidad y Team ID, notariza,
+envía también el DMG final a `notarytool`, grapa y valida ambos tickets y
+elimina las credenciales del runner al terminar. Nunca publica una build
+macOS con firma ad-hoc.
 
 La clave inicial se generó fuera del repositorio en:
 
@@ -136,3 +153,9 @@ instalación firmada. iOS siempre conserva la decisión final de instalar.
 Android puede usar Google Play o el canal firmado de la distribución OSS,
 descrito en [`movil-android.md`](./movil-android.md). El updater Tauri de esta
 página se limita deliberadamente a macOS, Windows y Linux.
+
+El APK OSS tiene una segunda raíz fijada en
+`apps/mobile/android/release-signing-cert.sha256`. El workflow compara contra
+ella el certificado real del APK antes de publicar. Cambiar el secret del
+keystore sin actualizar conscientemente esa raíz detiene el release en vez de
+entregar una aplicación que Android no pueda actualizar sobre la existente.

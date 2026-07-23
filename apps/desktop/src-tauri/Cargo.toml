@@ -40,6 +40,10 @@ tauri-plugin-shell = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
+# Verificador independiente usado por CI para demostrar que cada artefacto
+# publicado pertenece a la misma raíz minisign compilada en la aplicación.
+minisign-verify = "=0.2.5"
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Capacidad criptográfica efímera que une exclusivamente el sidecar local con
@@ -79,8 +83,7 @@ hound = "3.5.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 # El control remoto debe ejecutarse desde el proceso .app al que macOS
 # concede TCC, no desde el sidecar Python. CoreGraphics sintetiza input desde
-# esa identidad y base64 transporta capturas por el socket local privado.
-base64 = "0.22"
+# esa identidad. Las capturas viajan codificadas por el socket local privado.
 core-graphics = { version = "0.25", features = ["highsierra"] }
 
 [profile.release]

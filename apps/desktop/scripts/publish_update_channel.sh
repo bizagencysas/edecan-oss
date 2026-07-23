@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Move one Android manifest on update-channels without replacing any desktop
-# manifest. Every push is based on the exact remote head observed in that
-# attempt; a concurrent publisher causes a non-fast-forward and a bounded
-# retry against the new head.
+# Publica stable.json o preview.json sin reemplazar los canales móviles.
+# Cada intento parte del HEAD remoto exacto. Si otro publicador gana la carrera,
+# el push non-fast-forward falla y el siguiente intento conserva su árbol.
 set -u -o pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
@@ -16,9 +15,9 @@ REMOTE=${3:-origin}
 MAX_ATTEMPTS=${EDECAN_UPDATE_CHANNEL_MAX_ATTEMPTS:-5}
 RETRY_DELAY_SECONDS=${EDECAN_UPDATE_CHANNEL_RETRY_DELAY_SECONDS:-2}
 REMOTE_REF=refs/heads/update-channels
-CHANNEL_FILE="android-$CHANNEL.json"
+CHANNEL_FILE="$CHANNEL.json"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-GENERATOR="$SCRIPT_DIR/generate_android_update_manifest.py"
+GENERATOR="$SCRIPT_DIR/generate-update-manifest.py"
 
 if [[ "$CHANNEL" != stable && "$CHANNEL" != preview ]]; then
   echo "channel must be stable or preview" >&2
@@ -51,9 +50,9 @@ import sys
 from pathlib import Path
 
 module_path, current_path, candidate_path, channel = sys.argv[1:]
-spec = importlib.util.spec_from_file_location("android_update_manifest", module_path)
+spec = importlib.util.spec_from_file_location("desktop_update_manifest", module_path)
 if spec is None or spec.loader is None:
-    raise SystemExit("cannot load Android manifest validator")
+    raise SystemExit("cannot load desktop manifest validator")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 current = None
@@ -71,7 +70,6 @@ publish_attempt() {
   remote_line=$(git ls-remote --heads "$REMOTE" "$REMOTE_REF") || return 1
   base=${remote_line%%[[:space:]]*}
   if [[ "$base" == "$remote_line" ]]; then
-    # Empty output means this is the first channel publication.
     base=
   fi
 
@@ -80,7 +78,7 @@ publish_attempt() {
     git fetch --no-tags "$REMOTE" "$REMOTE_REF" || return 1
     git cat-file -e "$base^{commit}" || return 1
     if git cat-file -e "$base:$CHANNEL_FILE" 2>/dev/null; then
-      current_file=$(mktemp "${TMPDIR:-/tmp}/edecan-android-current.XXXXXX") || return 1
+      current_file=$(mktemp "${TMPDIR:-/tmp}/edecan-desktop-current.XXXXXX") || return 1
       git show "$base:$CHANNEL_FILE" > "$current_file" || {
         rm -f "$current_file"
         return 1
@@ -97,7 +95,7 @@ publish_attempt() {
     return 2
   fi
 
-  index=$(mktemp "${TMPDIR:-/tmp}/edecan-update-index.XXXXXX") || return 1
+  index=$(mktemp "${TMPDIR:-/tmp}/edecan-desktop-update-index.XXXXXX") || return 1
   rm -f "$index"
   export GIT_INDEX_FILE=$index
 
@@ -132,14 +130,14 @@ publish_attempt() {
   }
 
   if [[ -n "$base" ]]; then
-    commit=$(printf 'release: move Android %s channel\n' "$CHANNEL" |
+    commit=$(printf 'release: move desktop %s channel\n' "$CHANNEL" |
       git commit-tree "$tree" -p "$base") || {
         unset GIT_INDEX_FILE
         rm -f "$index"
         return 1
       }
   else
-    commit=$(printf 'release: initialize Android %s channel\n' "$CHANNEL" |
+    commit=$(printf 'release: initialize desktop %s channel\n' "$CHANNEL" |
       git commit-tree "$tree") || {
         unset GIT_INDEX_FILE
         rm -f "$index"
@@ -164,7 +162,7 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1)); do
     exit 0
   fi
   if (( status == 2 )); then
-    echo "Invalid or regressive Android channel transition; channel left unchanged." >&2
+    echo "Invalid or regressive desktop channel transition; channel left unchanged." >&2
     exit 1
   fi
   if (( attempt < MAX_ATTEMPTS )); then

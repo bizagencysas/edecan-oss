@@ -18,10 +18,19 @@ body {
   @apply bg-brand-200 text-brand-950;
 }
 
-/* wordmark "edecán" — mismo tratamiento (Baloo 2, 800, redondo) que el
-   sitio de marketing (`Documents/edecan/src/app/globals.css`). */
+/* Wordmark redondo y grueso sin descargar fuentes durante el build.
+   Prioriza familias nativas de macOS, Windows y Linux para que el
+   empaquetado de escritorio también funcione sin conexión. */
 .wordmark {
-  font-family: var(--font-wordmark), ui-sans-serif, system-ui, sans-serif;
+  font-family:
+    ui-rounded,
+    "SF Pro Rounded",
+    "Arial Rounded MT Bold",
+    "Nunito Sans",
+    "Trebuchet MS",
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   font-weight: 800;
   letter-spacing: -0.005em;
 }

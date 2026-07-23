@@ -22,6 +22,7 @@ persistida (ver `_stream_agent_events`).
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import hashlib
 import json
@@ -32,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+import aioboto3
 import redis.asyncio as redis_asyncio
 from edecan_core.agent import (
     Agent,
@@ -431,10 +433,16 @@ async def _refresh_conversation_titles(*, current_user: CurrentUser, repo: Repo)
 
 def _attachment_context_line(item: dict[str, Any]) -> str:
     file_id = item.get("file_id")
+    mime = str(item.get("mime") or "application/octet-stream")
+    instruction = (
+        "la imagen ya está incluida en este turno; respóndela directamente "
+        "sin llamar una herramienta"
+        if mime.split(";", 1)[0].lower() in _DIRECT_VISION_MIMES
+        else f"usa leer_archivo(file_id={file_id}) para ver su contenido antes de responder"
+    )
     return (
         f"- file_id={file_id} · {item.get('filename') or 'archivo'}"
-        f" · {item.get('mime') or 'application/octet-stream'}"
-        f" · usa leer_archivo(file_id={file_id}) para ver su contenido antes de responder"
+        f" · {mime} · {instruction}"
     )
 
 
@@ -457,6 +465,77 @@ async def _resolve_message_attachments(
             }
         )
     return attachments
+
+
+_DIRECT_VISION_MIMES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+_DIRECT_VISION_MAX_BYTES = 10 * 1024 * 1024
+_DIRECT_VISION_MAX_IMAGES = 10
+
+
+async def _direct_multimodal_content(
+    *,
+    settings: Settings,
+    user_text: str,
+    attachments: list[dict[str, str | None]],
+    repo: Repo,
+    tenant_id: uuid.UUID,
+) -> str | list[dict[str, Any]]:
+    """Construye el primer turno multimodal sin una llamada intermedia a tools.
+
+    Las imágenes siguen privadas: se descargan desde el bucket del dueño,
+    viajan como bloques base64 únicamente hacia el proveedor seleccionado y
+    nunca se convierten en URL pública. Si storage falla o el adjunto no es
+    una imagen compatible, el contrato anterior de ``file_id`` permanece
+    disponible como texto y ``leer_archivo`` puede resolverlo.
+    """
+
+    image_rows: list[tuple[str, str]] = []
+    for item in attachments[:_DIRECT_VISION_MAX_IMAGES]:
+        mime = str(item.get("mime") or "").split(";", 1)[0].lower()
+        file_id = item.get("file_id")
+        if mime not in _DIRECT_VISION_MIMES or not file_id:
+            continue
+        try:
+            row = await repo.get_file(tenant_id=tenant_id, file_id=uuid.UUID(str(file_id)))
+        except (TypeError, ValueError):
+            continue
+        if row is None or int(row.get("size_bytes") or 0) > _DIRECT_VISION_MAX_BYTES:
+            continue
+        key = str(row.get("s3_key") or "")
+        if key:
+            image_rows.append((mime, key))
+
+    if not image_rows:
+        return user_text
+
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    try:
+        session = aioboto3.Session()
+        async with session.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            endpoint_url=settings.AWS_ENDPOINT_URL,
+        ) as s3:
+            for mime, key in image_rows:
+                response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=key)
+                raw = await response["Body"].read(_DIRECT_VISION_MAX_BYTES + 1)
+                if not raw or len(raw) > _DIRECT_VISION_MAX_BYTES:
+                    continue
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": base64.b64encode(raw).decode("ascii"),
+                        },
+                    }
+                )
+    except Exception:  # noqa: BLE001 - storage degradable; la tool sigue disponible
+        logger.warning("No se pudieron insertar imágenes directamente en el turno", exc_info=True)
+        return user_text
+
+    return blocks if len(blocks) > 1 else user_text
 
 
 def _rows_to_chat_messages(rows: list[dict[str, Any]]) -> list[ChatMessage]:
@@ -1705,6 +1784,13 @@ async def post_message(
     if attachments:
         stored_user_content["attachments"] = attachments
     user_text = _extract_text(stored_user_content)
+    direct_user_content = await _direct_multimodal_content(
+        settings=settings,
+        user_text=user_text,
+        attachments=attachments,
+        repo=repo,
+        tenant_id=tenant.tenant_id,
+    )
 
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
@@ -1741,6 +1827,8 @@ async def post_message(
         ),
         profile_context=profile_context,
     )
+    if not isinstance(direct_user_content, str):
+        ctx.extras["direct_user_content"] = direct_user_content
     # MCP bring-your-own (ARCHITECTURE.md §15): tools de los servidores MCP
     # que el tenant conectó, fusionadas SOLO para este turno — nunca tocan el
     # `registry` compartido (ver `Agent.run_turn`/`get_mcp_tools_for_tenant`).

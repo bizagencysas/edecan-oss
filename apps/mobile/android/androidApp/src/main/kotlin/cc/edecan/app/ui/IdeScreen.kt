@@ -11,23 +11,31 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -54,6 +62,7 @@ fun IdeScreen(
 ) {
     val uiState by ideViewModel.uiState.collectAsState()
     val api = sessionViewModel.api
+    var pestana by remember { mutableStateOf("Archivos") }
 
     LaunchedEffect(api) { api?.let { ideViewModel.cargar(it) } }
 
@@ -83,12 +92,56 @@ fun IdeScreen(
                 uiState.archivoRuta != null -> VisorArchivo(
                     contenido = uiState.archivoContenido,
                     cargando = uiState.cargandoArchivo,
+                    guardando = uiState.guardandoArchivo,
+                    modificado = uiState.archivoContenido != uiState.archivoContenidoOriginal,
+                    onCambiar = ideViewModel::cambiarContenido,
+                    onGuardar = { api?.let(ideViewModel::guardarArchivo) },
                 )
-                else -> ArbolDeArchivos(
-                    entradas = uiState.entradas,
-                    truncado = uiState.truncado,
-                    onAbrirArchivo = { ruta -> api?.let { ideViewModel.abrirArchivo(ruta, it) } },
-                )
+                else -> Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = uiState.rutaActual,
+                            onValueChange = ideViewModel::cambiarRuta,
+                            label = { Text("Ruta del proyecto") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(
+                            onClick = { api?.let { ideViewModel.cargar(it, forzar = true) } },
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) { Text("Ir") }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        listOf("Archivos", "Agente", "Terminal").forEach { item ->
+                            TextButton(onClick = { pestana = item }, modifier = Modifier.weight(1f)) {
+                                Text(item, color = if (pestana == item) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    when (pestana) {
+                        "Terminal" -> TerminalIDE(
+                            comando = uiState.comando,
+                            salida = uiState.salidaTerminal,
+                            ejecutando = uiState.ejecutandoComando,
+                            onComando = ideViewModel::cambiarComando,
+                            onEjecutar = { api?.let(ideViewModel::ejecutar) },
+                        )
+                        "Agente" -> EmptyState(
+                            emoji = "✨",
+                            titulo = "Agente del proyecto",
+                            descripcion = "Pídele en el chat que trabaje en ${uiState.rutaActual.ifBlank { "la carpeta compartida" }}. El progreso aparecerá en vivo.",
+                            etiquetaRoadmap = null,
+                        )
+                        else -> ArbolDeArchivos(
+                            entradas = uiState.entradas,
+                            truncado = uiState.truncado,
+                            onAbrirArchivo = { ruta -> api?.let { ideViewModel.abrirArchivo(ruta, it) } },
+                        )
+                    }
+                }
             }
 
             uiState.errorMensaje?.let { error ->
@@ -98,6 +151,44 @@ fun IdeScreen(
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TerminalIDE(
+    comando: String,
+    salida: String,
+    ejecutando: Boolean,
+    onComando: (String) -> Unit,
+    onEjecutar: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(12.dp)
+            .background(androidx.compose.ui.graphics.Color(0xFF0B0D13), RoundedCornerShape(18.dp)),
+    ) {
+        Text(
+            salida.ifBlank { "Terminal segura del proyecto." },
+            color = androidx.compose.ui.graphics.Color(0xFF65E6B1),
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(14.dp),
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+        ) {
+            Text("$", color = androidx.compose.ui.graphics.Color(0xFF65E6B1))
+            OutlinedTextField(
+                value = comando,
+                onValueChange = onComando,
+                singleLine = true,
+                enabled = !ejecutando,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Button(onClick = onEjecutar, enabled = comando.isNotBlank() && !ejecutando) {
+                if (ejecutando) CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                else Text("↑")
             }
         }
     }
@@ -148,7 +239,14 @@ private fun FilaArbol(entrada: IdeEntrada, onAbrirArchivo: (String) -> Unit) {
 }
 
 @Composable
-private fun VisorArchivo(contenido: String?, cargando: Boolean) {
+private fun VisorArchivo(
+    contenido: String?,
+    cargando: Boolean,
+    guardando: Boolean,
+    modificado: Boolean,
+    onCambiar: (String) -> Unit,
+    onGuardar: () -> Unit,
+) {
     if (cargando || contenido == null) {
         Box(modifier = Modifier.fillMaxSize()) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -157,14 +255,22 @@ private fun VisorArchivo(contenido: String?, cargando: Boolean) {
     }
     Column(modifier = Modifier.fillMaxSize()) {
         HorizontalDivider()
-        Box(
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (modificado) "Cambios sin guardar" else "Guardado", modifier = Modifier.weight(1f))
+            Button(onClick = onGuardar, enabled = modificado && !guardando) {
+                if (guardando) CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                else Text("Guardar")
+            }
+        }
+        OutlinedTextField(
+            value = contenido,
+            onValueChange = onCambiar,
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .horizontalScroll(rememberScrollState())
                 .padding(16.dp),
-        ) {
-            Text(contenido, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-        }
+        )
     }
 }

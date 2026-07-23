@@ -332,7 +332,14 @@ class Agent:
         extra_tools: Sequence[Tool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         memories = await self._recall_memories(ctx, persona, user_text)
-        messages: list[ChatMessage] = [*history, ChatMessage(role="user", content=user_text)]
+        user_content = ctx.extras.get("direct_user_content")
+        messages: list[ChatMessage] = [
+            *history,
+            ChatMessage(
+                role="user",
+                content=user_content if user_content is not None else user_text,
+            ),
+        ]
         # `extra_by_name`: solo las `extra_tools` que (a) tienen sus
         # `requires_flags` satisfechos por `flags` y (b) NO colisionan de
         # nombre con el registry base — ver el docstring de `run_turn`.

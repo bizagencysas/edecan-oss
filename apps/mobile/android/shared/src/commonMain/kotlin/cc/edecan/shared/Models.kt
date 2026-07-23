@@ -679,3 +679,11 @@ data class IdeFileOut(
 )
 
 val IdeFileOut.esBinario: Boolean get() = encoding == "base64"
+
+@Serializable
+data class IdeRunOut(
+    val stdout: String = "",
+    val stderr: String = "",
+    @SerialName("exit_code") val exitCode: Int = -1,
+    val truncated: Boolean = false,
+)

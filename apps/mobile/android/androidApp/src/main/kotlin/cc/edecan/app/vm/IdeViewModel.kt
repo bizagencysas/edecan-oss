@@ -30,7 +30,13 @@ data class IdeUiState(
     val truncado: Boolean = false,
     val archivoRuta: String? = null,
     val archivoContenido: String? = null,
+    val archivoContenidoOriginal: String? = null,
     val cargandoArchivo: Boolean = false,
+    val guardandoArchivo: Boolean = false,
+    val rutaActual: String = "",
+    val comando: String = "",
+    val salidaTerminal: String = "",
+    val ejecutandoComando: Boolean = false,
     val errorMensaje: String? = null,
 )
 
@@ -59,17 +65,55 @@ class IdeViewModel : ViewModel() {
                     _uiState.update { it.copy(cargando = false, conectado = false) }
                     return@launch
                 }
-                val arbol = api.ideTree()
+                val ruta = _uiState.value.rutaActual.trim().ifBlank { null }
+                val arbol = api.ideTree(ruta)
                 _uiState.update {
                     it.copy(
                         cargando = false,
                         conectado = true,
                         entradas = aplanar(arbol),
+                        rutaActual = arbol.path.takeUnless { value -> value == "." }.orEmpty(),
                         truncado = arbol.truncated,
                     )
                 }
             } catch (e: ApiException) {
                 _uiState.update { it.copy(cargando = false, errorMensaje = e.message) }
+            }
+        }
+    }
+
+    fun cambiarRuta(value: String) = _uiState.update { it.copy(rutaActual = value) }
+    fun cambiarComando(value: String) = _uiState.update { it.copy(comando = value) }
+
+    fun ejecutar(api: EdecanApi) {
+        val command = _uiState.value.comando.trim()
+        if (command.isEmpty() || _uiState.value.ejecutandoComando) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    comando = "",
+                    ejecutandoComando = true,
+                    salidaTerminal = it.salidaTerminal + "\n$ $command\n",
+                    errorMensaje = null,
+                )
+            }
+            try {
+                val result = api.ideRun(command)
+                _uiState.update {
+                    it.copy(
+                        ejecutandoComando = false,
+                        salidaTerminal = it.salidaTerminal + result.stdout + result.stderr +
+                            "\n[exit ${result.exitCode}]\n",
+                    )
+                }
+            } catch (e: ApiException) {
+                _uiState.update {
+                    it.copy(
+                        ejecutandoComando = false,
+                        salidaTerminal = it.salidaTerminal + "\n${e.message}\n",
+                        errorMensaje = e.message,
+                    )
+                }
             }
         }
     }
@@ -86,15 +130,43 @@ class IdeViewModel : ViewModel() {
                 } else {
                     archivo.content
                 }
-                _uiState.update { it.copy(cargandoArchivo = false, archivoContenido = contenido) }
+                _uiState.update {
+                    it.copy(
+                        cargandoArchivo = false,
+                        archivoContenido = contenido,
+                        archivoContenidoOriginal = contenido,
+                    )
+                }
             } catch (e: ApiException) {
                 _uiState.update { it.copy(cargandoArchivo = false, errorMensaje = e.message) }
             }
         }
     }
 
+    fun cambiarContenido(value: String) = _uiState.update { it.copy(archivoContenido = value) }
+
+    fun guardarArchivo(api: EdecanApi) {
+        val state = _uiState.value
+        val ruta = state.archivoRuta ?: return
+        val content = state.archivoContenido ?: return
+        if (content == state.archivoContenidoOriginal || state.guardandoArchivo) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(guardandoArchivo = true, errorMensaje = null) }
+            try {
+                api.ideWrite(ruta, content)
+                _uiState.update {
+                    it.copy(guardandoArchivo = false, archivoContenidoOriginal = content)
+                }
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(guardandoArchivo = false, errorMensaje = e.message) }
+            }
+        }
+    }
+
     fun cerrarArchivo() {
-        _uiState.update { it.copy(archivoRuta = null, archivoContenido = null) }
+        _uiState.update {
+            it.copy(archivoRuta = null, archivoContenido = null, archivoContenidoOriginal = null)
+        }
     }
 
     private fun aplanar(arbol: IdeTreeOut): List<IdeEntrada> {

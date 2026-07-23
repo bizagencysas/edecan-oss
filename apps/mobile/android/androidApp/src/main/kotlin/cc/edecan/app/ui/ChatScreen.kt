@@ -6,11 +6,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,6 +63,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
@@ -89,6 +93,7 @@ import cc.edecan.shared.ArtifactRef
 import cc.edecan.shared.ChatAction
 import cc.edecan.shared.ChatBlock
 import cc.edecan.shared.DownloadedArtifact
+import cc.edecan.shared.EdecanApi
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.Dispatchers
@@ -319,6 +324,7 @@ fun ChatScreen(
                         items(chatState.mensajes, key = { it.id }) { mensaje ->
                             BurbujaMensaje(
                                 mensaje = mensaje,
+                                api = sessionViewModel.api,
                                 artefactoDescargandoId = artefactoDescargandoId,
                                 previews = previews,
                                 previewsCargando = previewsCargando,
@@ -562,6 +568,7 @@ internal fun TarjetaConfirmacion(
 @Composable
 private fun BurbujaMensaje(
     mensaje: MensajeUi,
+    api: EdecanApi?,
     artefactoDescargandoId: String?,
     previews: Map<String, VistaPreviaPrivada>,
     previewsCargando: Set<String>,
@@ -612,12 +619,16 @@ private fun BurbujaMensaje(
             }
             if (esUsuario && mensaje.adjuntos.isNotEmpty()) {
                 mensaje.adjuntos.forEach { adjunto ->
-                    Text(
-                        "📎 ${adjunto.filename}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.86f),
-                        maxLines = 1,
-                    )
+                    if (adjunto.mime?.lowercase()?.startsWith("image/") == true) {
+                        ImagenAdjuntaChat(adjunto, api)
+                    } else {
+                        Text(
+                            "📎 ${adjunto.filename}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.86f),
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
             if (esUsuario) {
@@ -660,6 +671,32 @@ private fun BurbujaMensaje(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ImagenAdjuntaChat(artifact: ArtifactRef, api: EdecanApi?) {
+    var image by remember(artifact.fileId) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(artifact.fileId, api) {
+        if (api == null || image != null) return@LaunchedEffect
+        runCatching { api.downloadArtifact(artifact).bytes }.getOrNull()?.let { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { image = it.asImageBitmap() }
+        }
+    }
+    Box(
+        modifier = Modifier.fillMaxWidth().size(width = 272.dp, height = 190.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .background(Color.White.copy(alpha = 0.10f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        image?.let {
+            Image(
+                bitmap = it,
+                contentDescription = "Imagen adjunta: ${artifact.filename}",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } ?: CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White)
     }
 }
 

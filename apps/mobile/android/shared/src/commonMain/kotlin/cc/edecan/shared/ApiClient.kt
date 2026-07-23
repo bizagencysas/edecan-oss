@@ -76,6 +76,10 @@ private data class CrearConversacionBody(val title: String? = null)
 
 @Serializable
 private data class RenombrarConversacionBody(val title: String)
+@Serializable
+private data class IdeRunBody(val command: String)
+@Serializable
+private data class IdeWriteBody(val path: String, val content: String)
 
 @Serializable
 private data class ErrorBody(val detail: String? = null)
@@ -794,6 +798,13 @@ class EdecanApi private constructor(
      * sandbox del companion. */
     suspend fun ideFile(path: String): IdeFileOut =
         conAutoRefresh { obtener("/v1/ide/file?path=${urlEncode(path)}") }
+
+    suspend fun ideRun(command: String): IdeRunOut =
+        conAutoRefresh { enviar("/v1/ide/run", IdeRunBody(command)) }
+
+    suspend fun ideWrite(path: String, content: String) {
+        conAutoRefresh { actualizarSinCuerpo("/v1/ide/file", IdeWriteBody(path, content)) }
+    }
 
     // -------------------------------------------------------------------
     // Emparejamiento de dispositivo (`/v1/devices`, contrato de WP-V4-01 —

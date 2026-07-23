@@ -54,3 +54,15 @@ public struct IDEFileOut: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
     }
 }
+
+public struct IDERunOut: Codable, Sendable, Equatable {
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int
+    public let truncated: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case stdout, stderr, truncated
+        case exitCode = "exit_code"
+    }
+}

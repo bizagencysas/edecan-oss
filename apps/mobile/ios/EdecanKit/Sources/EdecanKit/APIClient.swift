@@ -617,6 +617,22 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtenerConQuery("/v1/ide/file", [("path", path)]) }
     }
 
+    public func ideWrite(path: String, content: String) async throws {
+        struct Body: Encodable { let path: String; let content: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/file", method: "PUT", body: Body(path: path, content: content)
+            )
+        }
+    }
+
+    public func ideRun(command: String) async throws -> IDERunOut {
+        struct Body: Encodable { let command: String }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/ide/run", method: "POST", body: Body(command: command))
+        }
+    }
+
     // MARK: - Voz web (`ARCHITECTURE.md` §10.9, `apps/api/edecan_api/routers/voice.py`)
 
     /// `POST /v1/voice/transcribe` — sube `audioData` como `multipart/form-data`

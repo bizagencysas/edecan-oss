@@ -23,6 +23,13 @@ struct IDEView: View {
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var tabRouter
     @State private var viewModel = IDEViewModel()
+    @State private var pestaña: Pestaña = .archivos
+
+    private enum Pestaña: String, CaseIterable {
+        case archivos = "Archivos"
+        case agente = "Agente"
+        case terminal = "Terminal"
+    }
 
     var body: some View {
         NavigationStack {
@@ -39,7 +46,7 @@ struct IDEView: View {
                         etiquetaRoadmap: nil
                     )
                 } else {
-                    arbolDeArchivos
+                    estudio
                 }
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
@@ -53,6 +60,86 @@ struct IDEView: View {
                 visorDeArchivo(ruta: ruta)
             }
         }
+    }
+
+    private var estudio: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: "folder.fill").foregroundStyle(EdecanTheme.morado)
+                TextField("Ruta dentro de tu computadora", text: $viewModel.rutaActual)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit { Task { await viewModel.abrirRuta(client: session.client) } }
+                Button {
+                    Task { await viewModel.abrirRuta(client: session.client) }
+                } label: { Image(systemName: "arrow.right.circle.fill") }
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal)
+
+            Picker("Modo", selection: $pestaña) {
+                ForEach(Pestaña.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+
+            switch pestaña {
+            case .archivos:
+                arbolDeArchivos
+            case .agente:
+                VStack(spacing: 14) {
+                    Image(systemName: "sparkles.rectangle.stack.fill")
+                        .font(.system(size: 54))
+                        .foregroundStyle(EdecanTheme.morado)
+                    Text("Agente del proyecto").font(.title2.bold())
+                    Text("Pídele en el chat que trabaje en “\(viewModel.rutaActual.isEmpty ? "la carpeta compartida" : viewModel.rutaActual)”. Verás el progreso en vivo en la conversación.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(30)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .terminal:
+                terminal
+            }
+        }
+    }
+
+    private var terminal: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(viewModel.salidaTerminal.isEmpty ? "Terminal segura de \(viewModel.rutaActual.isEmpty ? "tu espacio" : viewModel.rutaActual)." : viewModel.salidaTerminal)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.35, green: 0.95, blue: 0.70))
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding()
+                        .id("terminal-end")
+                }
+                .background(Color(red: 0.04, green: 0.05, blue: 0.08))
+                .onChange(of: viewModel.salidaTerminal) { _, _ in
+                    withAnimation { proxy.scrollTo("terminal-end", anchor: .bottom) }
+                }
+            }
+            HStack {
+                Text("$").foregroundStyle(.green).font(.system(.body, design: .monospaced))
+                TextField("comando…", text: $viewModel.comando)
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit { Task { await viewModel.ejecutar(client: session.client) } }
+                Button {
+                    Task { await viewModel.ejecutar(client: session.client) }
+                } label: {
+                    if viewModel.ejecutandoComando { ProgressView() }
+                    else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                }
+            }
+            .padding()
+            .background(Color(red: 0.07, green: 0.08, blue: 0.12))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal)
     }
 
     private var sinCompanion: some View {
@@ -86,7 +173,12 @@ struct IDEView: View {
     }
 
     private var nodosRaiz: [NodoIDE] {
-        viewModel.arbol.map { NodoIDE(entry: $0, ruta: $0.name) }
+        viewModel.arbol.map {
+            NodoIDE(
+                entry: $0,
+                ruta: viewModel.rutaActual.isEmpty ? $0.name : "\(viewModel.rutaActual)/\($0.name)"
+            )
+        }
     }
 
     private func filaDeNodo(_ nodo: NodoIDE) -> some View {
@@ -133,11 +225,10 @@ struct IDEView: View {
                 ProgressView().padding(40)
             } else if let archivo = viewModel.archivoAbierto {
                 if archivo.encoding == "utf-8" {
-                    Text(archivo.content)
+                    TextEditor(text: $viewModel.contenidoEditable)
                         .font(.system(.footnote, design: .monospaced))
-                        .textSelection(.enabled)
                         .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minWidth: 700, minHeight: 700, alignment: .topLeading)
                 } else {
                     EmptyStateView(
                         icono: "doc.questionmark",
@@ -152,5 +243,19 @@ struct IDEView: View {
         }
         .navigationTitle((ruta as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await viewModel.guardar(client: session.client) }
+                } label: {
+                    if viewModel.guardandoArchivo { ProgressView() }
+                    else { Label("Guardar", systemImage: "square.and.arrow.down") }
+                }
+                .disabled(
+                    viewModel.archivoAbierto?.encoding != "utf-8" ||
+                    viewModel.contenidoEditable == viewModel.archivoAbierto?.content
+                )
+            }
+        }
     }
 }

@@ -43,15 +43,19 @@ struct BurbujaMensaje: View {
 
                 if !mensaje.adjuntos.isEmpty {
                     ForEach(mensaje.adjuntos) { attachment in
-                        Label(attachment.filename, systemImage: iconoAdjunto(attachment.mime))
-                            .font(.caption.weight(.medium))
-                            .lineLimit(1)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
-                            .background(
-                                mensaje.rol == .usuario ? Color.white.opacity(0.16) : EdecanTheme.morado.opacity(0.10),
-                                in: Capsule()
-                            )
+                        if attachment.mime?.lowercased().hasPrefix("image/") == true {
+                            VistaPreviaImagenAdjunta(attachment: attachment, client: client)
+                        } else {
+                            Label(attachment.filename, systemImage: iconoAdjunto(attachment.mime))
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(
+                                    mensaje.rol == .usuario ? Color.white.opacity(0.16) : EdecanTheme.morado.opacity(0.10),
+                                    in: Capsule()
+                                )
+                        }
                     }
                 }
 
@@ -128,6 +132,49 @@ struct BurbujaMensaje: View {
         if value.hasPrefix("audio/") { return "waveform" }
         if value == "application/pdf" { return "doc.richtext" }
         return "doc"
+    }
+}
+
+private struct VistaPreviaImagenAdjunta: View {
+    let attachment: ChatAttachment
+    let client: APIClient?
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Color.white.opacity(0.10)
+                    ProgressView().tint(.white)
+                }
+            }
+        }
+        .frame(minWidth: 180, maxWidth: 280, minHeight: 130, maxHeight: 220)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .bottomLeading) {
+            Text(attachment.filename)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(8)
+        }
+        .task(id: attachment.fileId) {
+            guard image == nil, let client else { return }
+            let artifact = ArtifactRef(
+                fileId: attachment.fileId,
+                filename: attachment.filename,
+                mime: attachment.mime
+            )
+            guard let downloaded = try? await client.descargarArtefacto(artifact) else { return }
+            image = UIImage(data: downloaded.data)
+        }
+        .accessibilityLabel("Imagen adjunta: \(attachment.filename)")
     }
 }
 

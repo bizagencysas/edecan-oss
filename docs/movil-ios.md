@@ -7,17 +7,19 @@ referencia para el CLIENTE que va a compilar su propia app, y el
 `README.md` de ese directorio es el arranque rápido para quien va a tocar
 el código.
 
-**Léelo antes de empezar:** esta app **nunca** se distribuye por App Store
-ni TestFlight — es una decisión de producto permanente, no una limitación
-temporal (ver la sección ["Nunca App Store, nunca TestFlight"](#nunca-app-store-nunca-testflight)
-más abajo). Cada cliente compila, firma e instala su propia copia.
+**Léelo antes de empezar:** cada distribución elige su mecanismo oficial.
+Puede ser App Store, TestFlight, AltStore/SideStore o una instalación firmada
+por el propio cliente. Edecán avisa cuando el manifiesto HTTPS del canal
+publica una versión superior y abre ese mecanismo; iOS sigue siendo quien
+autoriza e instala la actualización. Ver
+["Actualizaciones sin volver a clonar"](#actualizaciones-sin-volver-a-clonar).
 
 ## Resumen — el modelo en 4 ideas
 
-1. **Instalación local únicamente.** Se compila con Xcode/fastlane y se
-   instala por USB — igual que un desarrollador prueba su propia app
-   mientras la construye, pero pensado para que un cliente real la use día
-   a día.
+1. **Distribución configurable.** Se puede compilar con Xcode/fastlane e
+   instalar por USB, publicar en App Store/TestFlight o usar una fuente
+   AltStore/SideStore propia. El código móvil es el mismo; cambia la firma y
+   la URL oficial de instalación.
 2. **Tu propia cuenta Apple Developer Program.** Cada cliente firma con SU
    cuenta de pago ($99/año), nunca con la del dueño de Edecán — ver
    ["Requisitos"](#requisitos) para el porqué.
@@ -381,15 +383,68 @@ vez la identidad durable para recuperar tokens nuevos; un dispositivo
 revocado no puede hacerlo. URL/login/registro manual siguen disponibles como
 recuperación avanzada para self-hosting.
 
-## Nunca App Store, nunca TestFlight
+## Actualizaciones sin volver a clonar
 
-Decisión de producto **permanente**, no una limitación de esta iteración.
-Ninguna lane de `fastlane/Fastfile`
-sube nada a App Store Connect. TestFlight también pasa por App Store
-Connect (aunque con revisión más ligera que la tienda completa) — se
-descarta por el mismo motivo. La única vía de distribución es la que
-describe este documento: build ad-hoc firmado, instalado por USB con la
-cuenta Developer del propio cliente.
+La app consulta al volver a primer plano un manifiesto público HTTPS. El
+canal estable oficial usa por defecto:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-stable.json
+```
+
+Los builds preliminares usan el puntero análogo:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-preview.json
+```
+
+El manifiesto no contiene secretos:
+
+```json
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.7.4",
+  "build_number": 19,
+  "published_at": "2026-07-23T12:00:00Z",
+  "release_notes": "Chat más resistente y mejoras de estabilidad.",
+  "install_url": "https://testflight.apple.com/join/TU_CODIGO"
+}
+```
+
+`install_url` puede abrir App Store, TestFlight, AltStore, SideStore o una
+página HTTPS oficial con instrucciones/artefactos firmados. Edecán compara
+SemVer, nunca ofrece un downgrade, no mezcla `stable` y `preview`, conserva
+la última respuesta válida para uso offline y no repite el aviso para la
+misma versión. Si no hay una actualización válida, no aparece ninguna fila
+ni advertencia.
+
+Un fork configura su propia distribución al compilar:
+
+```bash
+xcodebuild \
+  EDECAN_IOS_UPDATE_CHANNEL=preview \
+  EDECAN_IOS_UPDATE_MANIFEST_URL=https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-preview.json \
+  ...
+```
+
+Para el productor oficial, configura primero la variable de repositorio
+`EDECAN_IOS_INSTALL_URL`. Si no existe, `release-ios.yml` termina como
+*no-op* seguro y no publica un enlace de ejemplo. Al crear un tag final mueve
+`ios-stable.json`; un tag SemVer preliminar mueve `ios-preview.json`. El
+publicador reintenta carreras contra Android/escritorio y modifica solo el
+puntero iOS, conservando los demás manifiestos de `update-channels`.
+
+Los valores también pueden cambiarse en `project.yml`; son configuración
+pública, no credenciales. El canal estable rechaza versiones preliminares.
+El canal preview permite avanzar a otra preview o a una versión final
+publicada dentro del mismo manifiesto preview.
+
+**Límite de la plataforma:** iOS no permite que una app normal reemplace su
+propio ejecutable silenciosamente. App Store, TestFlight y los instaladores
+alternativos autorizados controlan la instalación. Para builds ad-hoc
+instalados por USB, el manifiesto puede avisar y abrir la descarga o guía
+oficial, pero la persona debe completar la instalación firmada.
 
 ## Qué es real hoy vs. qué falta
 
@@ -398,6 +453,7 @@ cuenta Developer del propio cliente.
 | Autenticación (login, **registro**, refresh automático, Keychain) | **Real** |
 | Chat con streaming SSE (`text_delta`, indicador de herramienta) | **Real** |
 | Reanudación del chat tras minimizar, cambiar de red o recrear el proceso | **Real** — el host conserva el turno; iOS persiste solo conversación + UUID, consulta `GET .../message-attempts/{uuid}` al volver y reemplaza cualquier fragmento con el replay canónico. No intenta sostener un socket contra las restricciones de batería de iOS. |
+| Actualizaciones por manifiesto HTTPS (`stable`/`preview`, SemVer, ETag y caché offline) | **Real** — avisa solo cuando existe una versión superior y abre App Store, TestFlight, AltStore/SideStore o la URL oficial configurada; iOS realiza la instalación. |
 | **Confirmar/rechazar una herramienta peligrosa desde el chat** (`POST .../confirm`, tarjeta inline Aprobar/Rechazar) | **Real** — `ChatViewModel.confirmacionPendiente` + `TarjetaConfirmacion`, compartida con Voz |
 | **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — botón de micrófono dentro de Chat; enlaza a Ajustes si falta una voz real |
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |

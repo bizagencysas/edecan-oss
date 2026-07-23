@@ -33,6 +33,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>EdecanUpdateChannel</key>
+	<string>$(EDECAN_IOS_UPDATE_CHANNEL)</string>
+	<key>EdecanUpdateManifestURL</key>
+	<string>$(EDECAN_IOS_UPDATE_MANIFEST_URL)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

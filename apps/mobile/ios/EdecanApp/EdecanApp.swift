@@ -11,6 +11,7 @@ struct EdecanApp: App {
     @State private var pairingStore = PairingStore()
     @State private var session = SessionStore()
     @State private var push = PushNotificationCoordinator()
+    @State private var updates = AppUpdateCoordinator()
 
     var body: some Scene {
         WindowGroup {
@@ -18,6 +19,7 @@ struct EdecanApp: App {
                 .environment(pairingStore)
                 .environment(session)
                 .environment(push)
+                .environment(updates)
         }
     }
 }
@@ -29,6 +31,9 @@ private struct RaizDeLaApp: View {
     @Environment(PairingStore.self) private var pairingStore
     @Environment(SessionStore.self) private var session
     @Environment(PushNotificationCoordinator.self) private var push
+    @Environment(AppUpdateCoordinator.self) private var updates
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -60,6 +65,24 @@ private struct RaizDeLaApp: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .edecanAPNsRegistrationFailed)) { _ in
             push.marcarRegistroRemotoNoDisponible()
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if pairingStore.isPaired,
+               session.sesionValida,
+               let update = updates.bannerUpdate {
+                AppUpdateBanner(
+                    update: update,
+                    onDismiss: updates.dismissBanner,
+                    onOpen: {
+                        updates.markUpdateOpened(update)
+                        openURL(update.installURL)
+                    }
+                )
+            }
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            guard phase == .active else { return }
+            Task { await updates.checkIfNeeded() }
         }
     }
 }

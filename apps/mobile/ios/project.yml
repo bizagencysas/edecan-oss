@@ -45,6 +45,13 @@ settings:
     # va en este repo (ARCHITECTURE.md §0 — cero secretos/credenciales
     # reales).
     CODE_SIGN_STYLE: Automatic
+    # Canal público de actualización. Son valores de compilación, no secretos.
+    # Un fork puede reemplazarlos desde Xcode o la línea de comandos sin
+    # modificar Swift:
+    #   EDECAN_IOS_UPDATE_CHANNEL=preview
+    #   EDECAN_IOS_UPDATE_MANIFEST_URL=https://.../ios-preview.json
+    EDECAN_IOS_UPDATE_CHANNEL: stable
+    EDECAN_IOS_UPDATE_MANIFEST_URL: "https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-stable.json"
 
 packages:
   EdecanKit:
@@ -66,6 +73,8 @@ targets:
         CFBundleDisplayName: Edecán
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        EdecanUpdateChannel: "$(EDECAN_IOS_UPDATE_CHANNEL)"
+        EdecanUpdateManifestURL: "$(EDECAN_IOS_UPDATE_MANIFEST_URL)"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

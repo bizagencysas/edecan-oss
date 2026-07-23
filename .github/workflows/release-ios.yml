@@ -1,0 +1,166 @@
+name: iOS update channel
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-update-channels
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Check configured iOS distribution
+    runs-on: ubuntu-24.04
+    outputs:
+      enabled: ${{ steps.distribution.outputs.enabled }}
+    steps:
+      - name: Skip safely until an official install URL exists
+        id: distribution
+        shell: bash
+        env:
+          INSTALL_URL: ${{ vars.EDECAN_IOS_INSTALL_URL }}
+        run: |
+          if test -z "$INSTALL_URL"; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### iOS channel not published"
+              echo
+              echo "Set the repository variable \`EDECAN_IOS_INSTALL_URL\` "
+              echo "to an official App Store, TestFlight, AltStore, SideStore "
+              echo "or HTTPS installation URL. No placeholder was published."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish iOS stable or preview pointer
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EDECAN_IOS_INSTALL_URL: ${{ vars.EDECAN_IOS_INSTALL_URL }}
+    steps:
+      - name: Resolve requested tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          test "${TAG#v}" != "$TAG" || {
+            echo "::error::El tag debe comenzar por v"
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Validate tag, main ancestry and iOS version
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release.outputs.tag }}"
+          TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+          test -n "$TAG_COMMIT"
+          git fetch origin main
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main || {
+            echo "::error::El tag de iOS no pertenece a main"
+            exit 1
+          }
+
+          PROJECT="apps/mobile/ios/project.yml"
+          VERSION="$(sed -n 's/^[[:space:]]*MARKETING_VERSION: "\\([^"]*\\)"/\\1/p' "$PROJECT" | head -1)"
+          BUILD_NUMBER="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION: "\\([0-9][0-9]*\\)"/\\1/p' "$PROJECT" | head -1)"
+          test "$TAG" = "v$VERSION" || {
+            echo "::error::El tag $TAG no coincide con iOS $VERSION"
+            exit 1
+          }
+          test -n "$BUILD_NUMBER"
+          if [[ "$VERSION" == *-* ]]; then
+            CHANNEL="preview"
+          else
+            CHANNEL="stable"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+
+      - name: Test iOS manifest producer
+        run: uv run --frozen pytest -q apps/mobile/ios/scripts
+
+      - name: Create or reuse GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release.outputs.tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            PRERELEASE=()
+            if test "${{ steps.metadata.outputs.channel }}" = "preview"; then
+              PRERELEASE=(--prerelease)
+            fi
+            gh release create "$TAG" --verify-tag \
+              --title "Edecán ${{ steps.metadata.outputs.version }}" \
+              --generate-notes "${PRERELEASE[@]}" ||
+              sleep 5
+          fi
+          gh release view "$TAG" >/dev/null
+          gh release view "$TAG" --json body --jq .body > release-notes.md
+
+      - name: Generate fail-closed iOS channel manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="ios-${{ steps.metadata.outputs.channel }}.json"
+          python3 apps/mobile/ios/scripts/generate_ios_update_manifest.py \
+            --tag "${{ steps.release.outputs.tag }}" \
+            --channel "${{ steps.metadata.outputs.channel }}" \
+            --version "${{ steps.metadata.outputs.version }}" \
+            --build-number "${{ steps.metadata.outputs.build_number }}" \
+            --install-url "$EDECAN_IOS_INSTALL_URL" \
+            --notes-file release-notes.md \
+            --output "$OUTPUT"
+          echo "IOS_MANIFEST=$OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Attach manifest to the immutable release
+        run: gh release upload "${{ steps.release.outputs.tag }}" "$IOS_MANIFEST" --clobber
+
+      - name: Move iOS channel without replacing other manifests
+        shell: bash
+        env:
+          EDECAN_UPDATE_CHANNEL_MAX_ATTEMPTS: "5"
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          apps/mobile/ios/scripts/publish_update_channel.sh \
+            "$IOS_MANIFEST" \
+            "${{ steps.metadata.outputs.channel }}" \
+            origin

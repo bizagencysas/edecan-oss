@@ -12,6 +12,8 @@ struct PerfilView: View {
     @Environment(SessionStore.self) private var session
     @Environment(TabRouter.self) private var router
     @Environment(PushNotificationCoordinator.self) private var push
+    @Environment(AppUpdateCoordinator.self) private var updates
+    @Environment(\.openURL) private var openURL
     @State private var mostrarConfirmacionSalir = false
     @State private var mostrarEstudioDeContenido = false
     @State private var perfilVivo: LiveProfile?
@@ -23,6 +25,9 @@ struct PerfilView: View {
                     tarjetaDePersona
                     perfilPersonal
                     tarjetaDeEdecan
+                    if let update = updates.availableUpdate {
+                        tarjetaActualizacion(update)
+                    }
                     tarjetaNotificaciones
                     herramientas
                     modoAvanzado
@@ -181,6 +186,47 @@ struct PerfilView: View {
         }
         .buttonStyle(.plain)
         .disabled(push.estado == .activo)
+    }
+
+    private func tarjetaActualizacion(
+        _ update: IOSUpdateManifest
+    ) -> some View {
+        Button {
+            updates.markUpdateOpened(update)
+            openURL(update.installURL)
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(EdecanTheme.morado.opacity(0.13))
+                        .frame(width: 48, height: 48)
+                    Image(systemName: "arrow.down.app.fill")
+                        .foregroundStyle(EdecanTheme.morado)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Actualización \(update.versionText)")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(
+                        update.releaseNotes.isEmpty
+                            ? "Hay una nueva versión de Edecán."
+                            : update.releaseNotes
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 4)
+                Text(update.installKind.actionTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(EdecanTheme.morado)
+            }
+            .padding(16)
+            .tarjetaVidrio(esquina: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Abre el mecanismo oficial configurado para instalarla")
     }
 
     private var herramientas: some View {

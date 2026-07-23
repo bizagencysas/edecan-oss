@@ -126,6 +126,92 @@ _FACTUAL_INTENT = frozenset(
     }
 )
 
+_SEARCH_STOPWORDS = frozenset(
+    {
+        "a",
+        "al",
+        "and",
+        "cual",
+        "cuales",
+        "de",
+        "del",
+        "difference",
+        "diferencia",
+        "diferencias",
+        "el",
+        "en",
+        "entre",
+        "es",
+        "esta",
+        "hay",
+        "is",
+        "la",
+        "las",
+        "los",
+        "of",
+        "o",
+        "por",
+        "que",
+        "son",
+        "the",
+        "un",
+        "una",
+        "what",
+        "y",
+    }
+)
+
+# No contiene respuestas ni nombres de modelos. Solo identifica el lugar donde
+# un producto publica su verdad cambiante. Añadir un proveedor nuevo no exige
+# tocar el razonamiento ni los prompts.
+_OFFICIAL_SOURCE_PROFILES: tuple[tuple[frozenset[str], str, tuple[str, ...]], ...] = (
+    (
+        frozenset({"chatgpt", "codex", "gpt", "openai"}),
+        "OpenAI",
+        ("openai.com", "chatgpt.com"),
+    ),
+    (
+        frozenset({"anthropic", "claude"}),
+        "Anthropic",
+        ("anthropic.com",),
+    ),
+    (
+        frozenset({"gemini", "google"}),
+        "Google",
+        ("ai.google.dev", "deepmind.google", "cloud.google.com", "blog.google"),
+    ),
+    (
+        frozenset({"cursor"}),
+        "Cursor",
+        ("cursor.com",),
+    ),
+    (
+        frozenset({"ollama"}),
+        "Ollama",
+        ("ollama.com",),
+    ),
+    (
+        frozenset({"deepseek"}),
+        "DeepSeek",
+        ("deepseek.com",),
+    ),
+    (
+        frozenset({"grok", "xai"}),
+        "xAI",
+        ("x.ai",),
+    ),
+    (
+        frozenset({"qwen"}),
+        "Qwen",
+        ("qwenlm.ai", "alibabacloud.com"),
+    ),
+    (
+        frozenset({"kimi", "moonshot"}),
+        "Moonshot AI",
+        ("moonshot.ai", "kimi.com"),
+    ),
+)
+
 
 def assess_freshness(text: str) -> FreshnessDecision:
     """Decide si una respuesta necesita evidencia web reciente."""
@@ -157,17 +243,59 @@ def assess_freshness(text: str) -> FreshnessDecision:
 
 
 def grounding_query(user_text: str, *, language: str, date_iso: str) -> str:
-    """Construye una búsqueda centrada en fuentes actuales y primarias."""
+    """Construye la búsqueda general de respaldo.
 
-    suffix = (
-        f"current official primary sources as of {date_iso}"
-        if language == "en"
-        else f"fuentes oficiales primarias información vigente al {date_iso}"
-    )
-    return f"{user_text.strip()} {suffix}".strip()
+    Reduce palabras interrogativas y signos que algunos buscadores HTML
+    interpretan mal. La fecha conserva el requisito de actualidad sin volver
+    la consulta demasiado larga.
+    """
+
+    terms = _salient_search_terms(user_text)
+    year = date_iso[:4]
+    suffix = f"official current {year}" if language == "en" else f"oficial vigente {year}"
+    return f"{terms} {suffix}".strip()
+
+
+def grounding_queries(user_text: str, *, language: str, date_iso: str) -> tuple[str, ...]:
+    """Devuelve consultas escalonadas, empezando por la fuente propietaria.
+
+    Una consulta de proveedor simple funciona mejor que añadir frases largas
+    como «fuentes oficiales primarias» al texto original. Si no se reconoce el
+    producto, queda la búsqueda general de respaldo.
+    """
+
+    general = grounding_query(user_text, language=language, date_iso=date_iso)
+    profile = _official_source_profile(user_text)
+    if profile is None:
+        return (general,)
+    provider_name, _domains = profile
+    terms = _salient_search_terms(user_text)
+    official = f"{provider_name} {terms} official".strip()
+    return tuple(dict.fromkeys((official, general)))
+
+
+def official_source_domains(user_text: str) -> tuple[str, ...]:
+    """Dominios primarios esperados para el producto mencionado."""
+
+    profile = _official_source_profile(user_text)
+    return profile[1] if profile is not None else ()
 
 
 def _normalize(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text.casefold())
     without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", " ", without_marks).strip()
+
+
+def _official_source_profile(text: str) -> tuple[str, tuple[str, ...]] | None:
+    tokens = set(_normalize(text).split())
+    for signals, provider_name, domains in _OFFICIAL_SOURCE_PROFILES:
+        if tokens & signals:
+            return provider_name, domains
+    return None
+
+
+def _salient_search_terms(text: str) -> str:
+    raw_tokens = re.findall(r"[^\W_][\w.+-]*", text, flags=re.UNICODE)
+    useful = [token for token in raw_tokens if _normalize(token) not in _SEARCH_STOPWORDS]
+    return " ".join(useful[:16]) or text.strip()

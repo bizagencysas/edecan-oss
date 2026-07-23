@@ -215,6 +215,14 @@ async def test_hecho_volatil_se_investiga_antes_de_responder_sin_cards_ni_evento
                 "1. Models | OpenAI API — https://developers.openai.com/api/docs/models\n"
                 "   GPT-5.6 Sol, Terra y Luna son modelos oficiales."
             ),
+            data={
+                "resultados": [
+                    {
+                        "title": "Models | OpenAI API",
+                        "url": "https://developers.openai.com/api/docs/models",
+                    }
+                ]
+            },
             presentation=[
                 {
                     "type": "link_preview",
@@ -238,14 +246,65 @@ async def test_hecho_volatil_se_investiga_antes_de_responder_sin_cards_ni_evento
     )
 
     assert len(web.calls) == 1
-    assert "fuentes oficiales primarias" in web.calls[0]["consulta"]
-    assert web.calls[0]["k"] == 6
+    assert web.calls[0]["consulta"] == "OpenAI Luna Terra Sol ChatGPT official"
+    assert web.calls[0]["k"] == 8
     assert [type(event) for event in events] == [TextDeltaEvent, DoneEvent]
     prompt = provider.received_requests[0].system
     assert "## Evidencia actual automática" in prompt
     assert "https://developers.openai.com/api/docs/models" in prompt
     assert "Modelo activo: gpt-5.6-terra" in prompt
     assert "Fecha actual:" in prompt
+    assert "Dominios primarios esperados: openai.com, chatgpt.com" in prompt
+
+
+@pytest.mark.asyncio
+async def test_grounding_reintenta_si_la_primera_consulta_no_encuentra_fuente_oficial():
+    class SearchSequence(FakeTool):
+        async def run(self, ctx: ToolContext, args: dict) -> ToolResult:
+            self.calls.append(args)
+            if len(self.calls) == 1:
+                return ToolResult(
+                    content="1. Opinión — https://example.com/modelos\n   Sin evidencia primaria.",
+                    data={
+                        "resultados": [
+                            {"title": "Opinión", "url": "https://example.com/modelos"}
+                        ]
+                    },
+                )
+            return ToolResult(
+                content=(
+                    "1. GPT-5.6 | OpenAI — https://openai.com/index/gpt-5-6/\n"
+                    "   Sol, Terra y Luna son la familia GPT-5.6."
+                ),
+                data={
+                    "resultados": [
+                        {
+                            "title": "GPT-5.6 | OpenAI",
+                            "url": "https://openai.com/index/gpt-5-6/",
+                        }
+                    ]
+                },
+            )
+
+    web = SearchSequence(name="buscar_web")
+    registry = ToolRegistry()
+    registry.register(web)
+    provider = FakeProvider([[text_chunk("Respuesta verificada."), usage_chunk()]])
+
+    await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="¿Cuál es la diferencia entre Luna, Terra y Sol de ChatGPT?",
+        flags={},
+    )
+
+    assert [call["consulta"] for call in web.calls] == [
+        "OpenAI Luna Terra Sol ChatGPT official",
+        "Luna Terra Sol ChatGPT oficial vigente 2026",
+    ]
+    assert "https://openai.com/index/gpt-5-6/" in provider.received_requests[0].system
 
 
 @pytest.mark.asyncio

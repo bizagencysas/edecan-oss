@@ -28,7 +28,7 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -866,6 +866,7 @@ async def _stream_and_complete_idempotency(
     request_hash: str,
     owner_token: str,
     ttl_seconds: int,
+    on_disconnected_complete: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[str]:
     """Entrega SSE en vivo y deja un replay completo aunque el cliente se vaya.
 
@@ -900,6 +901,7 @@ async def _stream_and_complete_idempotency(
             await queue.put(("done", None))
 
     producer = asyncio.create_task(produce(), name=f"chat-idempotency:{owner_token}")
+    consumer_finished = False
     try:
         while True:
             kind, payload = await queue.get()
@@ -907,6 +909,7 @@ async def _stream_and_complete_idempotency(
                 assert isinstance(payload, str)
                 yield payload
             elif kind == "done":
+                consumer_finished = True
                 break
             else:
                 assert isinstance(payload, BaseException)
@@ -925,6 +928,20 @@ async def _stream_and_complete_idempotency(
                 break
         if producer.done() and not producer.cancelled():
             producer.exception()  # recupera la excepción y evita warnings de tareas huérfanas
+        if (
+            not consumer_finished
+            and producer.done()
+            and not producer.cancelled()
+            and producer.exception() is None
+            and on_disconnected_complete is not None
+        ):
+            try:
+                await on_disconnected_complete()
+            except Exception:
+                logger.warning(
+                    "No se pudo encolar el aviso de turno terminado tras desconexión.",
+                    exc_info=True,
+                )
 
 
 def _response_for_idempotency_record(
@@ -1796,6 +1813,23 @@ async def post_message(
     assert request_hash is not None
     assert redis_idempotency_key is not None
     assert owner_token is not None
+
+    async def notify_when_mobile_left() -> None:
+        # iOS y Android no pueden mantener un socket arbitrario mientras el
+        # sistema los suspende. Si el transporte desapareció antes del final,
+        # el host termina igual y emite un evento/push opaco e idempotente.
+        await enqueue(
+            settings,
+            "notify_important_event",
+            {
+                "user_id": str(current_user.user_id),
+                "kind": "work_completed",
+                "event_id": str(idempotency_key),
+                "chat_id": str(conversation_id),
+            },
+            tenant.tenant_id,
+        )
+
     live_stream = _stream_and_complete_idempotency(
         stream=stream,
         redis_client=redis_client,
@@ -1803,6 +1837,7 @@ async def post_message(
         request_hash=request_hash,
         owner_token=owner_token,
         ttl_seconds=idempotency_ttl,
+        on_disconnected_complete=notify_when_mobile_left,
     )
     return StreamingResponse(
         live_stream,

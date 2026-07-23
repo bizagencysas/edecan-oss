@@ -571,6 +571,10 @@ async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disc
         ttl_seconds=3600,
     )
     assert owner_token is not None and existing is None
+    notifications: list[str] = []
+
+    async def notify() -> None:
+        notifications.append("ready")
 
     async def source():
         yield "event: message.delta\ndata: first\n\n"
@@ -584,6 +588,7 @@ async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disc
         request_hash=request_hash,
         owner_token=owner_token,
         ttl_seconds=3600,
+        on_disconnected_complete=notify,
     )
     first = await anext(stream)
     assert first == "event: message.delta\ndata: first\n\n"
@@ -605,6 +610,40 @@ async def test_idempotent_stream_is_live_and_finishes_replay_after_consumer_disc
         ],
         "completed_at": completed["completed_at"],
     }
+    assert notifications == ["ready"]
+
+
+async def test_idempotent_stream_does_not_notify_when_client_reads_to_done(fake_redis) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    redis_key = "chat_idempotency:tenant:conversation:connected"
+    owner_token, _ = await conversations_module._claim_message_idempotency(
+        fake_redis,
+        redis_key=redis_key,
+        request_hash="hash",
+        ttl_seconds=3600,
+    )
+    assert owner_token is not None
+    notifications: list[str] = []
+
+    async def source():
+        yield "event: message.done\ndata: done\n\n"
+
+    async def notify() -> None:
+        notifications.append("unexpected")
+
+    stream = conversations_module._stream_and_complete_idempotency(
+        stream=source(),
+        redis_client=fake_redis,
+        redis_key=redis_key,
+        request_hash="hash",
+        owner_token=owner_token,
+        ttl_seconds=3600,
+        on_disconnected_complete=notify,
+    )
+
+    assert [chunk async for chunk in stream] == ["event: message.done\ndata: done\n\n"]
+    assert notifications == []
 
 
 async def test_post_message_idempotency_rejects_same_key_with_different_body(

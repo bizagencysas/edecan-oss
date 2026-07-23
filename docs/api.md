@@ -250,7 +250,10 @@ credencial.
 - `409`: estado almacenado inválido; se falla cerrado.
 
 La consulta siempre envía `Cache-Control: no-store` y queda aislada por usuario,
-tenant, conversación e intento.
+tenant, conversación e intento. Si el socket original desaparece antes de terminar,
+el host completa el turno y encola `work_completed` para actividad y push
+best-effort. No se envía ese aviso cuando el cliente permaneció conectado hasta
+`message.done`.
 
 El loop del agente corre como máximo **8 iteraciones** de tool-use por turno. Si una herramienta marcada `dangerous=True` (p. ej. `enviar_correo`, `publicar_social` o, en la extensión comercial externa `edecan_premium`, `llamar_contacto`, `enviar_sms`, `lanzar_campana`) no está pre-aprobada, el turno se detiene emitiendo `confirmation_required` en vez de ejecutarla.
 

@@ -37,6 +37,7 @@ import contextlib
 import io
 import json
 import logging
+import mimetypes
 import os
 import shlex
 import socket
@@ -53,6 +54,16 @@ from edecan_companion.config import CompanionConfig
 logger = logging.getLogger(__name__)
 
 MAX_READ_FILE_BYTES = 256 * 1024
+# Tope de un archivo transferido entre el teléfono y esta computadora
+# (`transfer_*`). El contenido viaja en base64 dentro del JSON del comando, así
+# que este límite acota tanto el cuerpo HTTP del API como el mensaje del
+# WebSocket del companion. 10 MiB (base64 ≈ 13.3 MiB) se elige a propósito por
+# DEBAJO del `ws_max_size` por defecto de uvicorn (16 MiB) en el servidor, para
+# que el `transfer_pull` (companion → servidor) no supere ese límite del
+# transporte; el companion standalone sube su propio `max_size` de recepción
+# para el `transfer_push` en sentido inverso (ver `edecan_companion.main`).
+MAX_TRANSFER_BYTES = 10 * 1024 * 1024
+MAX_TRANSFER_LIST = 500
 MAX_COMMAND_OUTPUT_BYTES = 10 * 1024
 COMMAND_TIMEOUT_SECONDS = 30
 HELPER_SUBPROCESS_TIMEOUT_SECONDS = 15
@@ -396,6 +407,168 @@ def _clipboard_set(params: dict[str, Any], config: CompanionConfig) -> dict[str,
         raise ActionError(f"no se pudo escribir el portapapeles: {detail}") from exc
 
     return {"written_chars": len(text)}
+
+
+# ---------------------------------------------------------------------------
+# Transferencia de archivos (buzón compartido `config.transfer_dir`)
+# ---------------------------------------------------------------------------
+
+
+def _transfer_dir(config: CompanionConfig) -> Path:
+    """Carpeta buzón, creada al primer uso con permisos `0700`.
+
+    Es una carpeta visible del usuario (`~/Edecán/Compartidos` por defecto),
+    NO el sandbox del IDE: aquí aterrizan los archivos que manda el teléfono y
+    de aquí puede recuperar los que el dueño deje. Se crea perezosamente para
+    no sembrar carpetas vacías en equipos que nunca usan la función.
+    """
+    target = config.transfer_dir
+    target.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(target, 0o700)
+    return target
+
+
+def _safe_transfer_name(raw: Any) -> str:
+    """Reduce `raw` a un nombre de archivo seguro DENTRO de `transfer_dir`.
+
+    Toma solo el *basename* (`os.path.basename`, se queda con lo que sigue al
+    último separador en cualquier plataforma) y rechaza lo que no sea un
+    nombre normal: vacío, `.`/`..`, o con separadores/NUL tras el basename.
+    Así un `name` malicioso como `../../.ssh/authorized_keys` colapsa a
+    `authorized_keys` y jamás escapa del buzón.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ActionError("falta el parámetro 'name' (nombre de archivo)")
+    name = os.path.basename(raw.replace("\\", "/")).strip()
+    if not name or name in {".", ".."} or "/" in name or "\0" in name:
+        raise ActionError(f"nombre de archivo inválido: {raw!r}")
+    if len(name) > 255:
+        raise ActionError("el nombre de archivo es demasiado largo (máx. 255 caracteres)")
+    return name
+
+
+def _resolve_in_transfer(name: str, config: CompanionConfig) -> Path:
+    """Ruta absoluta de `name` dentro de `transfer_dir`, verificada sin fugas.
+
+    `transfer_dir` ya llega "real" (sin symlinks, `config.load_config`); se
+    resuelve el candidato y se confirma que sigue colgando de esa raíz —
+    misma invariante que `_resolve_in_sandbox` para el IDE.
+    """
+    base = _transfer_dir(config)
+    candidate = Path(os.path.realpath(base / name))
+    if candidate != base and base not in candidate.parents:
+        raise ActionError(f"nombre de archivo inválido: {name!r}")
+    return candidate
+
+
+def _unique_transfer_path(name: str, config: CompanionConfig) -> Path:
+    """Ruta destino para `name` que no pise un archivo existente.
+
+    Si `foto.png` ya existe, prueba `foto (2).png`, `foto (3).png`, … — nunca
+    sobrescribe en silencio lo que el dueño ya tenía en el buzón.
+    """
+    base = _transfer_dir(config)
+    stem, suffix = os.path.splitext(name)
+    candidate = base / name
+    counter = 2
+    while candidate.exists():
+        candidate = base / f"{stem} ({counter}){suffix}"
+        counter += 1
+    return candidate
+
+
+def _transfer_push(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Teléfono → computadora: guarda un archivo en el buzón compartido.
+
+    `params`: `{name, content_b64}`. Devuelve `{name, path, bytes}` con el
+    nombre FINAL (puede diferir del pedido si hubo colisión) y la ruta
+    absoluta para que el teléfono muestre "Guardado en …".
+    """
+    name = _safe_transfer_name(params.get("name"))
+    encoded = params.get("content_b64")
+    if not isinstance(encoded, str) or not encoded:
+        raise ActionError("falta el parámetro 'content_b64' (contenido en base64)")
+    # Cota barata ANTES de decodificar: base64 infla ~4/3, así que un cuerpo
+    # de >4/3*MAX ya excede el tope sin gastar memoria decodificándolo.
+    if len(encoded) > (MAX_TRANSFER_BYTES // 3) * 4 + 4:
+        raise ActionError(
+            f"el archivo supera el máximo de {MAX_TRANSFER_BYTES // (1024 * 1024)} MiB"
+        )
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ActionError(f"contenido en base64 inválido: {exc}") from exc
+    if len(content) > MAX_TRANSFER_BYTES:
+        raise ActionError(
+            f"el archivo supera el máximo de {MAX_TRANSFER_BYTES // (1024 * 1024)} MiB"
+        )
+
+    destino = _unique_transfer_path(name, config)
+    try:
+        destino.write_bytes(content)
+        with contextlib.suppress(OSError):
+            destino.chmod(0o600)
+    except OSError as exc:
+        raise ActionError(f"no se pudo guardar el archivo: {exc}") from exc
+    return {"name": destino.name, "path": str(destino), "bytes": len(content)}
+
+
+def _transfer_list(_params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Lista los archivos del buzón compartido (para que el teléfono elija).
+
+    Devuelve `{files: [{name, bytes, modified}]}`, más recientes primero, solo
+    archivos regulares (nunca carpetas ni symlinks a carpetas), acotado a
+    `MAX_TRANSFER_LIST` para no volcar un directorio enorme por el canal.
+    """
+    base = _transfer_dir(config)
+    entradas: list[dict[str, Any]] = []
+    try:
+        for entry in os.scandir(base):
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            entradas.append(
+                {"name": entry.name, "bytes": stat.st_size, "modified": stat.st_mtime}
+            )
+    except OSError as exc:
+        raise ActionError(f"no se pudo leer la carpeta compartida: {exc}") from exc
+    entradas.sort(key=lambda item: item["modified"], reverse=True)
+    return {"files": entradas[:MAX_TRANSFER_LIST], "dir": str(base)}
+
+
+def _transfer_pull(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
+    """Computadora → teléfono: entrega un archivo del buzón por su nombre.
+
+    `params`: `{name}` (un nombre del buzón, NUNCA una ruta arbitraria).
+    Devuelve `{name, content_b64, bytes, mime}`.
+    """
+    name = _safe_transfer_name(params.get("name"))
+    ruta = _resolve_in_transfer(name, config)
+    if not ruta.is_file():
+        raise ActionError(f"no existe ese archivo en la carpeta compartida: {name!r}")
+    try:
+        size = ruta.stat().st_size
+    except OSError as exc:
+        raise ActionError(f"no se pudo leer el archivo: {exc}") from exc
+    if size > MAX_TRANSFER_BYTES:
+        raise ActionError(
+            f"el archivo supera el máximo de {MAX_TRANSFER_BYTES // (1024 * 1024)} MiB"
+        )
+    try:
+        content = ruta.read_bytes()
+    except OSError as exc:
+        raise ActionError(f"no se pudo leer el archivo: {exc}") from exc
+    mime = mimetypes.guess_type(ruta.name)[0] or "application/octet-stream"
+    return {
+        "name": ruta.name,
+        "content_b64": base64.b64encode(content).decode("ascii"),
+        "bytes": len(content),
+        "mime": mime,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -865,12 +1038,17 @@ def _screenshot_via_screencapture(
         # en instalaciones reales el helper puede estar autorizado mientras
         # TCC rechaza al proceso Tauri, y priorizar el bridge provoca un modal
         # infinito aunque el usuario ya concedió el permiso correcto.
+        bridge_error: str | None = None
         try:
             bridge_result = _desktop_bridge_call(
                 "screenshot",
                 {"display": display_index, "include_cursor": include_cursor},
             )
-        except ActionError:
+        except ActionError as exc:
+            # El motivo del puente (p. ej. "no esta autorizada para el proceso
+            # principal") se conserva para el error final: sin él, la única
+            # pista real quedaba en un logger.info que nadie ve.
+            bridge_error = str(exc)
             logger.info(
                 "El proceso principal tampoco puede capturar; no se invocará screencapture.",
                 exc_info=True,
@@ -889,13 +1067,19 @@ def _screenshot_via_screencapture(
             except (binascii.Error, ImportError, OSError, ValueError) as exc:
                 raise ActionError(f"el puente nativo devolvio una captura invalida: {exc}") from exc
             return image_bytes, int(width), int(height), origin_x, origin_y
-        raise ActionError(
+        mensaje = (
             "Grabacion de pantalla esta desactivada para Edecan. Abre "
             "Configuracion del Sistema > Privacidad y seguridad > "
             "Grabacion de audio del sistema y pantalla, activa Edecan en la "
             "lista superior (no en 'Solo grabacion de audio del sistema') y "
-            "vuelve a abrir Edecan."
+            "vuelve a abrir Edecan. Si Edecan ya aparece activado, apaga y "
+            "vuelve a encender su interruptor (una actualizacion de Edecan "
+            "invalida el permiso anterior) y despues sal de Edecan por "
+            "completo y abrelo de nuevo."
         )
+        if bridge_error:
+            mensaje += f" Detalle del puente nativo: {bridge_error[:200]}"
+        raise ActionError(mensaje)
 
     fd, temporary_name = tempfile.mkstemp(prefix="edecan-screen-", suffix=".png")
     os.close(fd)
@@ -925,8 +1109,10 @@ def _screenshot_via_screencapture(
             timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
         )
         if completed.returncode != 0:
+            # 390 y no 500: el mensaje base + este sufijo deben caber en el
+            # tope de 500 caracteres del campo `error` de audit.log_action.
             detail = completed.stderr.decode("utf-8", "replace").strip()
-            suffix = f": {detail[:500]}" if detail else ""
+            suffix = f": {detail[:390]}" if detail else ""
             raise ActionError(
                 "macOS no pudo capturar las ventanas. Verifica Grabación de pantalla "
                 f"para Edecán y vuelve a abrir la app{suffix}"
@@ -1518,6 +1704,9 @@ ACTIONS: dict[str, ActionHandler] = {
     "trash_path": _trash_path,
     "clipboard_get": _clipboard_get,
     "clipboard_set": _clipboard_set,
+    "transfer_push": _transfer_push,
+    "transfer_list": _transfer_list,
+    "transfer_pull": _transfer_pull,
     "run_command": _run_command,
     "list_tree": _list_tree,
     "search_files": _search_files,
@@ -1550,38 +1739,48 @@ async def execute(
 
     if handler is None:
         logger.warning("Acción no soportada solicitada: %r", action)
+        error = f"acción no soportada: {action!r}"
         audit.log_action(
-            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+            action=action,
+            params=params,
+            approved=False,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=error,
         )
-        return {"ok": False, "error": f"acción no soportada: {action!r}"}
+        return {"ok": False, "error": error}
 
     if action in _IDE_ACTIONS and not config.ide_enabled:
         logger.info("Acción de IDE %r rechazada: ide_enabled=false en companion.yaml.", action)
+        error = "el IDE está deshabilitado en este companion (ide_enabled=false en companion.yaml)"
         audit.log_action(
-            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+            action=action,
+            params=params,
+            approved=False,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=error,
         )
-        return {
-            "ok": False,
-            "error": (
-                "el IDE está deshabilitado en este companion (ide_enabled=false en companion.yaml)"
-            ),
-        }
+        return {"ok": False, "error": error}
 
     if action in _INPUT_ACTIONS and not config.remote_input_enabled:
         logger.info(
             "Acción de control remoto %r rechazada: remote_input_enabled=false en companion.yaml.",
             action,
         )
-        audit.log_action(
-            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+        error = (
+            "el control remoto de teclado/mouse está deshabilitado en este companion "
+            "(remote_input_enabled=false en companion.yaml)"
         )
-        return {
-            "ok": False,
-            "error": (
-                "el control remoto de teclado/mouse está deshabilitado en este companion "
-                "(remote_input_enabled=false en companion.yaml)"
-            ),
-        }
+        audit.log_action(
+            action=action,
+            params=params,
+            approved=False,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=error,
+        )
+        return {"ok": False, "error": error}
 
     try:
         approved = bool(await approver(action, params, config))
@@ -1592,24 +1791,41 @@ async def execute(
         approved = False
 
     if not approved:
+        error = "acción rechazada (sin aprobación del usuario)"
         audit.log_action(
-            action=action, params=params, approved=False, ok=False, log_path=config.audit_log_path
+            action=action,
+            params=params,
+            approved=False,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=error,
         )
-        return {"ok": False, "error": "acción rechazada (sin aprobación del usuario)"}
+        return {"ok": False, "error": error}
 
     try:
         result = await asyncio.to_thread(handler, params, config)
     except ActionError as exc:
         audit.log_action(
-            action=action, params=params, approved=True, ok=False, log_path=config.audit_log_path
+            action=action,
+            params=params,
+            approved=True,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=str(exc),
         )
         return {"ok": False, "error": str(exc)}
     except Exception:
         logger.exception("Error inesperado ejecutando la acción %r", action)
+        error = "error interno del companion ejecutando la acción"
         audit.log_action(
-            action=action, params=params, approved=True, ok=False, log_path=config.audit_log_path
+            action=action,
+            params=params,
+            approved=True,
+            ok=False,
+            log_path=config.audit_log_path,
+            error=error,
         )
-        return {"ok": False, "error": "error interno del companion ejecutando la acción"}
+        return {"ok": False, "error": error}
 
     audit.log_action(
         action=action, params=params, approved=True, ok=True, log_path=config.audit_log_path

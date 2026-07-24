@@ -1,6 +1,5 @@
 package cc.edecan.app.ui
 
-import android.graphics.BitmapFactory
 import android.media.MediaDataSource
 import android.media.MediaPlayer
 import android.view.SurfaceView
@@ -36,7 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
@@ -441,21 +439,6 @@ internal class FuenteMediaPrivada(
     private companion object {
         const val MAX_MEDIA_RANGE_BYTES = 512 * 1024
     }
-}
-
-/** Evita decodificar una imagen enorme a resolución completa dentro del chat. */
-private fun decodificarImagenAcotada(bytes: ByteArray): ImageBitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    var sample = 1
-    while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
-    val bitmap = BitmapFactory.decodeByteArray(
-        bytes,
-        0,
-        bytes.size,
-        BitmapFactory.Options().apply { inSampleSize = sample },
-    ) ?: return null
-    return bitmap.asImageBitmap()
 }
 
 @Composable

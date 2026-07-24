@@ -4,7 +4,14 @@ package cc.edecan.app.ui
 
 import android.graphics.BitmapFactory
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -27,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -90,6 +98,7 @@ import cc.edecan.shared.REMOTE_KIND_VIEW
 import cc.edecan.shared.REMOTE_STATUS_DENIED
 import cc.edecan.shared.RemoteFrame
 import cc.edecan.shared.RemoteSession
+import cc.edecan.shared.RemoteSharedFile
 import cc.edecan.shared.boolFlag
 import cc.edecan.shared.haTerminado
 import cc.edecan.shared.isControl
@@ -192,6 +201,20 @@ fun RemotoScreen(
                     onTecla = { tecla, modifiers ->
                         api?.let { remotoViewModel.enviarTecla(it, tecla, modifiers) }
                     },
+                    onTraerPortapapeles = { onTexto ->
+                        api?.let { remotoViewModel.traerPortapapeles(it, onTexto) }
+                    },
+                    onEnviarPortapapeles = { texto ->
+                        api?.let { remotoViewModel.enviarPortapapeles(it, texto) }
+                    },
+                    onListarArchivos = { api?.let { remotoViewModel.listarArchivos(it) } },
+                    onEnviarArchivo = { nombre, datos ->
+                        api?.let { remotoViewModel.enviarArchivo(it, nombre, datos) }
+                    },
+                    onTraerArchivo = { nombre, onArchivo ->
+                        api?.let { remotoViewModel.traerArchivo(it, nombre, onArchivo) }
+                    },
+                    onDescartarInfo = { remotoViewModel.descartarInfo() },
                 )
             }
         }
@@ -385,10 +408,40 @@ private fun SesionActivaInmersiva(
     onPointer: (RemotePointerCommand) -> Unit,
     onTexto: (String) -> Unit,
     onTecla: (String, List<String>) -> Unit,
+    onTraerPortapapeles: (onTexto: (String) -> Unit) -> Unit = {},
+    onEnviarPortapapeles: (String) -> Unit = {},
+    onListarArchivos: () -> Unit = {},
+    onEnviarArchivo: (String, ByteArray) -> Unit = { _, _ -> },
+    onTraerArchivo: (String, (ByteArray, String) -> Unit) -> Unit = { _, _ -> },
+    onDescartarInfo: () -> Unit = {},
 ) {
     val sesion = uiState.sesionActual ?: return
     val frame = uiState.frame
+    val context = LocalContext.current
     var mostrarTeclado by remember(sesion.id) { mutableStateOf(false) }
+    var mostrarCompartir by remember(sesion.id) { mutableStateOf(false) }
+    // Bytes traídos de la Mac que esperan un destino elegido por el usuario
+    // (el launcher de "crear documento" es asíncrono).
+    var archivoPendiente by remember(sesion.id) { mutableStateOf<Pair<ByteArray, String>?>(null) }
+
+    val selectorArchivo = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val (nombre, datos) = leerArchivoSeleccionado(context, uri)
+            ?: return@rememberLauncherForActivityResult
+        onEnviarArchivo(nombre, datos)
+    }
+    val guardarArchivo = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val pendiente = archivoPendiente
+        archivoPendiente = null
+        if (uri == null || pendiente == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(pendiente.first) }
+        }
+    }
     var ultimoPuntoX by remember(sesion.id) { mutableStateOf<Int?>(null) }
     var ultimoPuntoY by remember(sesion.id) { mutableStateOf<Int?>(null) }
 
@@ -498,12 +551,51 @@ private fun SesionActivaInmersiva(
                 )
             }
 
+            uiState.infoMensaje?.let {
+                Text(
+                    it,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 3,
+                    modifier = Modifier
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFF16A34A).copy(alpha = 0.92f))
+                        .clickable { onDescartarInfo() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+
             if (sesion.isControl && mostrarTeclado) {
                 BarraTeclado(
                     enviando = uiState.enviandoInput,
                     compacta = true,
                     onTexto = onTexto,
                     onTecla = onTecla,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            if (sesion.isControl && mostrarCompartir) {
+                CompartirPanel(
+                    uiState = uiState,
+                    onTraerPortapapeles = {
+                        onTraerPortapapeles { texto ->
+                            copiarAlPortapapeles(context, texto)
+                        }
+                    },
+                    onEnviarPortapapeles = {
+                        val texto = leerPortapapeles(context)
+                        if (texto.isNullOrEmpty()) onDescartarInfo() else onEnviarPortapapeles(texto)
+                    },
+                    onEnviarArchivo = { selectorArchivo.launch("*/*") },
+                    onRefrescar = onListarArchivos,
+                    onTraerArchivo = { archivo ->
+                        onTraerArchivo(archivo.name) { bytes, nombre ->
+                            archivoPendiente = bytes to nombre
+                            guardarArchivo.launch(nombre)
+                        }
+                    },
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -518,7 +610,17 @@ private fun SesionActivaInmersiva(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ControlDockButton("⌨", "Teclado", true) { mostrarTeclado = !mostrarTeclado }
+                    ControlDockButton("⌨", "Teclado", true) {
+                        mostrarTeclado = !mostrarTeclado
+                        if (mostrarTeclado) mostrarCompartir = false
+                    }
+                    ControlDockButton("⬆", "Compartir", true) {
+                        mostrarCompartir = !mostrarCompartir
+                        if (mostrarCompartir) {
+                            mostrarTeclado = false
+                            onListarArchivos()
+                        }
+                    }
                     ControlDockButton("◉", "Derecho", !uiState.enviandoInput) {
                         enviarDesdeUltimoPunto("right_click")
                     }
@@ -605,9 +707,12 @@ private fun EsperandoAprobacionCard(cargando: Boolean, error: String?, onReinten
         Column(modifier = Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             if (cargando) {
                 CircularProgressIndicator(modifier = Modifier.padding(bottom = 16.dp))
-                Text("Esperando aprobación en tu Mac…", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+                // Nada de "esperando aprobación": la app instalada auto-aprueba la
+                // sesión (la confirmación real ya se dio en este teléfono). Lo único
+                // que puede aparecer en la Mac es el diálogo de permisos de macOS.
+                Text("Conectando con tu Mac…", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
                 Text(
-                    "Tu companion te va a pedir confirmar esta sesión localmente — puede tardar hasta unos 30 segundos.",
+                    "Si macOS muestra una solicitud de permisos en tu Mac (Grabación de pantalla o Accesibilidad), acéptala ahí. Si ya los concediste y esto no avanza, apágalos y vuelve a encenderlos en Configuración del Sistema, luego sal de Edecán por completo y ábrela de nuevo.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -675,14 +780,27 @@ private fun VisorRemotoInmersivo(
     // ningún ajuste manual por el zoom actual.
     var zoom by remember(sesion.id) { mutableFloatStateOf(1f) }
     var pan by remember(sesion.id) { mutableStateOf(Offset.Zero) }
+    var tamanoElemento by remember { mutableStateOf(IntSize.Zero) }
     // La sobrecarga moderna incluye el centroide como primer argumento. Este
     // visor mantiene su comportamiento previo (zoom centrado por graphicsLayer),
     // por lo que no necesita consumirlo todavía.
+    // El paneo queda ACOTADO al excedente visible (`tamaño * (zoom - 1) / 2`
+    // por lado, con `graphicsLayer` anclado al centro): sin el límite se podía
+    // arrastrar el frame hasta perderlo de vista, y al volver a 1× quedaba
+    // descentrado sin forma de recuperarlo.
     val transformState = rememberTransformableState { _, zoomChange, panChange, _ ->
         zoom = (zoom * zoomChange).coerceIn(1f, 4f)
-        pan += panChange
+        pan = if (zoom <= 1f) {
+            Offset.Zero
+        } else {
+            val limiteX = tamanoElemento.width * (zoom - 1f) / 2f
+            val limiteY = tamanoElemento.height * (zoom - 1f) / 2f
+            Offset(
+                (pan.x + panChange.x).coerceIn(-limiteX, limiteX),
+                (pan.y + panChange.y).coerceIn(-limiteY, limiteY),
+            )
+        }
     }
-    var tamanoElemento by remember { mutableStateOf(IntSize.Zero) }
 
     fun manejarToque(offset: Offset, accion: String) {
         val tam = tamanoElemento
@@ -882,3 +1000,148 @@ private data class RemotePointerCommand(
     val deltaX: Int = 0,
     val deltaY: Int = 0,
 )
+
+// --- Compartir: portapapeles + transferencia de archivos (WP-V7) -----------
+
+/** Panel del dock "Compartir": portapapeles (traer/enviar) y transferencia de
+ * archivos con el buzón compartido de la Mac. */
+@Composable
+private fun CompartirPanel(
+    uiState: RemotoUiState,
+    onTraerPortapapeles: () -> Unit,
+    onEnviarPortapapeles: () -> Unit,
+    onEnviarArchivo: () -> Unit,
+    onRefrescar: () -> Unit,
+    onTraerArchivo: (RemoteSharedFile) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.Black.copy(alpha = 0.82f))
+            .padding(14.dp),
+    ) {
+        Text(
+            "Portapapeles",
+            color = Color.White.copy(alpha = 0.7f),
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onTraerPortapapeles,
+                enabled = !uiState.transfiriendo,
+                modifier = Modifier.weight(1f),
+            ) { Text("Traer de la Mac", style = MaterialTheme.typography.labelSmall) }
+            OutlinedButton(
+                onClick = onEnviarPortapapeles,
+                enabled = !uiState.transfiriendo,
+                modifier = Modifier.weight(1f),
+            ) { Text("Enviar a la Mac", style = MaterialTheme.typography.labelSmall) }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Archivos",
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.weight(1f),
+            )
+            if (uiState.cargandoArchivos) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp
+                )
+            } else {
+                Text(
+                    "↻",
+                    color = Color.White,
+                    modifier = Modifier.clickable { onRefrescar() }.padding(4.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Button(
+            onClick = onEnviarArchivo,
+            enabled = !uiState.transfiriendo,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Enviar un archivo a la Mac…") }
+
+        Spacer(Modifier.height(8.dp))
+        if (uiState.archivosCompartidos.isEmpty()) {
+            Text(
+                "La carpeta «Compartidos» de tu Mac está vacía. Lo que envíes aparece ahí, y lo que dejes ahí en la Mac lo puedes traer aquí.",
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelSmall,
+            )
+        } else {
+            Text(
+                "En «Compartidos» de tu Mac — toca para traer:",
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            Column(
+                modifier = Modifier.heightIn(max = 168.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                uiState.archivosCompartidos.forEach { archivo ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .clickable(enabled = !uiState.transfiriendo) { onTraerArchivo(archivo) }
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                archivo.name,
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                            )
+                            Text(
+                                formatearBytes(archivo.bytes),
+                                color = Color.White.copy(alpha = 0.55f),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Text("⬇", color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Tamaño legible (B/KB/MB) sin depender de `android.text.format` para poder
+ * mantener el helper puro y fácil de leer. */
+private fun formatearBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
+}
+
+/** Lee el archivo elegido en el selector: su nombre visible y sus bytes. */
+private fun leerArchivoSeleccionado(context: Context, uri: Uri): Pair<String, ByteArray>? {
+    val nombre = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+    } ?: uri.lastPathSegment ?: "archivo"
+    val datos = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    }.getOrNull() ?: return null
+    return nombre to datos
+}
+
+private fun copiarAlPortapapeles(context: Context, texto: String) {
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    manager?.setPrimaryClip(ClipData.newPlainText("Edecán", texto))
+}
+
+private fun leerPortapapeles(context: Context): String? {
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    return manager?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+}

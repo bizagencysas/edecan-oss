@@ -84,7 +84,7 @@ apps/mobile/ios/
 │   │   ├── Models.swift            # Codable: TokenPair, Me, Conversation, ChatEvent, JSONValue
 │   │   ├── NegociosModels.swift    # NegocioKPIs, CanalKPI, ActividadKPI, Factura, FacturaItem
 │   │   ├── CredentialsModels.swift # CredentialsOut, LLMCredentialsIn, SetupStatus, DetectLocalProviders
-│   │   ├── IDEModels.swift         # IDEStatusOut, IDEEntry/IDETree, IDEFileOut
+│   │   ├── IDEModels.swift         # workspaces, archivos, sesiones y Git
 │   │   ├── DeviceModels.swift      # DeviceOut (POST /v1/devices, fase v4 en paralelo)
 │   │   ├── VoiceModels.swift       # TranscribeOut, HablarResultado
 │   │   ├── MissionsModels.swift    # MissionOut, MissionStepOut, MissionDetailOut (v5, fase v5)
@@ -97,8 +97,8 @@ apps/mobile/ios/
 │   │   ├── MultipartFormData.swift # helpers `Data.append*` para multipart a mano (voz)
 │   │   ├── SSEClient.swift         # URLSession.bytes(for:) → AsyncThrowingStream<ChatEvent>
 │   │   ├── Keychain.swift          # kSecClassGenericPassword, sin App Group
-│   │   └── PairingStore.swift      # URL del servidor + "emparejado" + deviceId (fase v4)
-│   └── Tests/EdecanKitTests/       # 90 tests, offline, corren con `swift test`
+│   │   └── PairingStore.swift      # URL del servidor + emparejamiento durable
+│   └── Tests/EdecanKitTests/       # suite offline, corre con `swift test`
 ├── EdecanApp/              # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift    # login + registro (POST /v1/auth/register)
@@ -113,7 +113,7 @@ apps/mobile/ios/
 │   │   ├── VozViewModel.swift          # push-to-talk: reutiliza ChatViewModel completo
 │   │   ├── CredencialesViewModel.swift # GET /v1/credentials + /v1/setup/* + PUT LLM
 │   │   ├── ConectarLLMSheet.swift      # formulario "pegar y validar" de Conectar LLM
-│   │   ├── IDEViewModel.swift          # GET /v1/ide/status|tree|file (solo lectura)
+│   │   ├── IDEViewModel.swift          # proyectos + archivos + agente/terminal durables + Git
 │   │   ├── MisionesViewModel.swift         # lista+detalle con *polling* de /v1/missions (v5)
 │   │   ├── AutomatizacionesViewModel.swift # toggle optimista + runs de /v1/automations (v5)
 │   │   ├── RecordatoriosViewModel.swift    # CRUD simple de /v1/reminders (v5)
@@ -136,8 +136,9 @@ reimplementarlo cada uno:
   `refrescar`), `me`/`listarConversaciones`/`crearConversacion`, Negocios
   (`negociosKPIs`/`listarFacturas`), credenciales bring-your-own
   (`credenciales`/`conectarLLM`/`desconectarLLM`), el wizard de arranque
-  (`setupStatus`/`setupDetect`), IDE de solo lectura
-  (`ideStatus`/`ideTree`/`ideFile`), voz (`transcribir`/`hablar`, con
+  (`setupStatus`/`setupDetect`), Estudio de código con proyectos
+  autorizados, archivos, sesiones durables de agente/terminal y Git tipado,
+  voz (`transcribir`/`hablar`, con
   `multipart/form-data` armado a mano) y dispositivos
   (`registrarDispositivo`/`revocarDispositivo`, degradando con gracia a
   `nil`/silencio ante un `404` — ver ``DeviceOut``). Reintento automático de
@@ -193,8 +194,8 @@ botones Aprobar/Rechazar que llaman `POST .../confirm` — nunca se manda al
 usuario al panel web para eso. **``VozViewModel`` reutiliza el mismo
 `ChatViewModel` tal cual** (no reimplementa el turno del agente) para que
 *push-to-talk* corra exactamente la misma lógica de conversación/SSE/
-confirmación que Chat. IDE es de solo lectura (árbol +
-visor monoespaciado); Negocios trae KPIs + dona + facturas reales.
+confirmación que Chat. El Estudio comparte proyectos, archivos y sesiones
+durables con Android; Negocios trae KPIs + dona + facturas reales.
 
 ## Pantallas v5: Misiones, Automatizaciones, Recordatorios
 
@@ -458,19 +459,18 @@ oficial, pero la persona debe completar la instalación firmada.
 | **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — botón de micrófono dentro de Chat; enlaza a Ajustes si falta una voz real |
 | **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
 | **Ajustes: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
-| **IDE embebido de solo lectura** (árbol navegable con `OutlineGroup` + visor monoespaciado) | **Real** — accesible desde Modo avanzado en Ajustes; `GET /v1/ide/status\|tree\|file` |
+| **Estudio de código** (proyectos, editor, agente con progreso, terminal interactiva y Git) | **Real** — las sesiones viven en la computadora, continúan al minimizar iOS y se reanudan por cursor; ver [`ide.md`](./ide.md) |
 | **Emparejamiento QR durable y revocable** (`/v1/devices/pairing/*`) | **Real** — deep link, Keychain y recuperación después de reinicio. |
 | **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
 | **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
-| `EdecanKit` completo con 146 tests offline | **Real** |
+| `EdecanKit` completo con 162 tests offline | **Real** |
 | Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
 | Actividad (`GET /v1/me` + accesos), Ajustes (datos + cerrar sesión) | **Real** |
 | Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |
 | Gestión visual de todos los dispositivos del tenant | Pendiente — el QR y la revocación del dispositivo actual sí son reales; falta la lista administrativa completa en móvil. |
 | Notificaciones push (APNs) | Pendiente — requiere el emparejamiento por dispositivo completo de arriba |
 | Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — el micrófono de Chat solo cubre voz web (*push-to-talk*), no telefonía |
-| IDE con escritura/edición/terminal (`PUT /v1/ide/file`, `POST /v1/ide/edit\|run\|search`) | Pendiente — la app móvil solo lee/navega, el panel web sigue siendo donde se edita |
 | **Visor de control remoto** (`RemotoView`/`RemotoViewModel`, *polling* HTTP) | **Real** — ver ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6); transporte WebRTC de baja latencia sigue pendiente (§5 de [`control-remoto.md`](./control-remoto.md)) |
 | Widget con datos reales (próxima conversación, recordatorio) | Pendiente — hoy es un placeholder estático, sin App Group con `EdecanApp` |
 | Editar persona (tono, formalidad, instrucciones), tema de la app | Pendiente — placeholder en Perfil |
@@ -576,15 +576,9 @@ Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
 
 Por orden aproximado de lo que más desbloquea al resto:
 
-1. **Emparejamiento real por dispositivo, completo** — fase v4 (contrato
-   en paralelo) debe aterrizar `POST /v1/devices`/`GET /v1/devices`/`POST
-   /v1/devices/{id}/revoke` del lado del servidor; esta app ya llama
-   `registrarDispositivo`/`revocarDispositivo` y degrada con gracia
-   mientras tanto (ver ["Emparejamiento en el primer
-   arranque"](#emparejamiento-en-el-primer-arranque)). Una vez aterrice,
-   sumar una pantalla en Perfil para ver/revocar OTROS dispositivos
-   emparejados (hoy solo se gestiona el propio, al cerrar sesión).
-2. **Push APNs** — depende directamente del punto anterior, para poder
+1. **Gestión visual de dispositivos** — el emparejamiento durable ya es
+   real; falta la pantalla para ver y revocar otros teléfonos vinculados.
+2. **Push APNs** — usa el emparejamiento para poder
    dirigir una notificación a un iPhone concreto.
 3. **Voz de telefonía (Twilio, premium)** — el micrófono de Chat hoy es *push-to-talk*
    web (`voice.web`); el historial de llamadas entrantes/salientes de
@@ -597,13 +591,10 @@ Por orden aproximado de lo que más desbloquea al resto:
    pendiente es reemplazar ese *polling* por WebRTC de baja latencia —
    diseño completo (transporte, niveles de permiso, modelo de amenazas) ya
    escrito en [`control-remoto.md`](./control-remoto.md) §5.
-5. **IDE con escritura** — sumar `PUT /v1/ide/file`/`POST
-   /v1/ide/edit\|run\|search` sobre el árbol de solo lectura que ya existe
-   (ver [`ide.md`](./ide.md)).
-6. **Editar persona y tema** — tono/formalidad/instrucciones y claro/oscuro
+5. **Editar persona y tema** — tono/formalidad/instrucciones y claro/oscuro
    manual (hoy sigue el `ColorScheme` del sistema) desde Perfil, sin pasar
    por el panel web.
-7. **Widget con datos reales** — próxima conversación o recordatorio más
+6. **Widget con datos reales** — próxima conversación o recordatorio más
    cercano, lo que exige compartir un App Group entre `EdecanApp` y
    `EdecanWidgets` para que el widget pueda leer el Keychain compartido.
 

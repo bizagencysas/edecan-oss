@@ -27,6 +27,11 @@ DEFAULT_CONFIG_DIR = Path.home() / ".edecan"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "companion.yaml"
 AUDIT_LOG_FILENAME = "companion.log"
 DEFAULT_SANDBOX_DIR = "~/EdecanSandbox"
+# Carpeta visible donde aterrizan los archivos que el teléfono envía y desde
+# donde puede recuperar los que el dueño deja ahí (transferencia de archivos
+# del control remoto). A propósito FUERA del sandbox del IDE: es un buzón
+# compartido de cara al usuario, no el área de trabajo del asistente.
+DEFAULT_TRANSFER_DIR = "~/Edecán/Compartidos"
 
 # Plantilla del archivo que se crea la primera vez que se corre el companion.
 # Se escribe tal cual (no con yaml.dump) para conservar los comentarios en
@@ -71,12 +76,14 @@ auto_approve: []
 # decir que no vuelve a preguntar la próxima vez, sin excepción.
 remember_approvals_minutes: 0
 
-# Activa las acciones del IDE embebido (list_tree, search_files, apply_edit,
-# trash_path, screenshot). true por defecto porque, igual que cualquier otra acción,
-# cada una sigue pidiendo tu aprobación explícita (o pasando por
-# remember_approvals_minutes/auto_approve como cualquier otra) -- ponlo en
-# false solo si quieres bloquearlas del todo en esta máquina sin tener que
-# tocar allowed_apps/allowed_commands una por una.
+# Activa las acciones del IDE embebido (archivos, workspaces, terminal,
+# agentes y Git). En el companion standalone, las acciones mutantes/de alto
+# impacto siguen pidiendo aprobación local (o pasan por
+# remember_approvals_minutes/auto_approve). En la app de escritorio instalada,
+# pulsar el botón/formulario correspondiente desde el teléfono autenticado y
+# emparejado es la aprobación explícita; el bridge mantiene una allowlist
+# cerrada y rechaza cualquier otra acción. Ponlo en false para bloquear toda
+# la superficie IDE en esta máquina.
 ide_enabled: true
 
 # Activa el CONTROL remoto de teclado y mouse (input_pointer, input_key) --
@@ -115,6 +122,13 @@ class CompanionConfig:
     """
 
     sandbox_dir: Path
+    # Buzón de transferencia de archivos del control remoto (ver
+    # `DEFAULT_TRANSFER_DIR`). Como `sandbox_dir`, DEBE llegar ya absoluta y
+    # "real"; las acciones `transfer_*` confían en esa invariante para que un
+    # nombre de archivo nunca escape de esta carpeta.
+    transfer_dir: Path = field(
+        default_factory=lambda: Path(os.path.expanduser(DEFAULT_TRANSFER_DIR))
+    )
     allowed_apps: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
     auto_approve: list[str] = field(default_factory=list)
@@ -214,8 +228,18 @@ def load_config(path: Path | str | None = None) -> CompanionConfig:
     sandbox_dir = Path(os.path.realpath(os.path.expanduser(sandbox_raw)))
     sandbox_dir.mkdir(parents=True, exist_ok=True)
 
+    transfer_raw = data.get("transfer_dir") or DEFAULT_TRANSFER_DIR
+    if not isinstance(transfer_raw, str) or not transfer_raw.strip():
+        logger.warning("companion.yaml: 'transfer_dir' debería ser texto no vacío; se usa default.")
+        transfer_raw = DEFAULT_TRANSFER_DIR
+    # NO se crea acá (a diferencia de `sandbox_dir`): la carpeta se materializa
+    # recién cuando llega el primer archivo (`actions._transfer_dir`), para no
+    # sembrar carpetas vacías en el home de quien nunca usa la función.
+    transfer_dir = Path(os.path.realpath(os.path.expanduser(transfer_raw)))
+
     return CompanionConfig(
         sandbox_dir=sandbox_dir,
+        transfer_dir=transfer_dir,
         allowed_apps=_coerce_str_list(data.get("allowed_apps"), field_name="allowed_apps"),
         allowed_commands=_coerce_str_list(
             data.get("allowed_commands"), field_name="allowed_commands"

@@ -52,6 +52,10 @@ through a hosted intermediary. Edecan follows a different model:
   and graph relationships live in storage you control.
 - **Actions, not just answers.** A typed tool registry connects reminders,
   documents, research, messaging, workflows, an IDE, and multi-agent missions.
+- **A mobile code studio.** Authorize a project on the desktop, then inspect
+  and edit files, follow Codex or Claude work live, use a persistent terminal,
+  and operate typed Git flows from either iOS or Android. Minimizing the phone
+  does not cancel the process running on the computer.
 - **One intent, several actions.** The assistant selects only the capability
   families relevant to each request and can combine them in one turn.
 - **Creation that produces files.** One request can deliver private Word, PDF,
@@ -88,6 +92,7 @@ through a hosted intermediary. Edecan follows a different model:
 | Local desktop runtime | Preview | Tauri shell + packaged Python backend for macOS, Windows and Linux x64 |
 | Native desktop packaging | Preview | DMG, NSIS/MSI, AppImage, Debian and RPM builds; public installers are not signed yet |
 | Native iOS and Android companions | Preview | iOS simulator build and Android debug APK compile from source |
+| Mobile code studio | Implemented | Authorized workspaces, durable agent/terminal sessions, editor and typed Git share one API contract on iOS and Android |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
 | BYO Twilio conversational calls | Implemented | Signed webhook and injected-provider tests; no real calls in CI |
 | Local self-repair | Implemented, opt-in | Isolated Git worktree, exact-command allowlists, approval gates, tests, local commit, integration and rollback |

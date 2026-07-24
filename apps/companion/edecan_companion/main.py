@@ -25,12 +25,19 @@ from websockets.exceptions import WebSocketException
 from edecan_companion import actions
 from edecan_companion.approval import default_approver
 from edecan_companion.config import CompanionConfig, load_config
+from edecan_companion.ide_runtime import IDE_ACTIONS, execute_ide_action
 
 logger = logging.getLogger("edecan_companion")
 
 WS_PATH = "/v1/companion/ws"
 INITIAL_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
+# El default de `websockets` para mensajes ENTRANTES es 1 MiB, muy por debajo
+# de un `transfer_push` (archivo en base64: hasta ~13.3 MiB para el tope de
+# 10 MiB de `actions.MAX_TRANSFER_BYTES`). Sin subirlo, la librería cerraría la
+# conexión con `PayloadTooBig` y tumbaría TODA la sesión del companion (no solo
+# esa transferencia). 16 MiB deja margen sobre ese peor caso.
+WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 _SCHEME_MAP = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}
 
 
@@ -70,7 +77,10 @@ async def _handle_message(
         }
     else:
         logger.info("Comando recibido: %s (request_id=%s)", action, request_id)
-        result = await actions.execute(action, params, config, approver)
+        if action in IDE_ACTIONS:
+            result = await execute_ide_action(action, params, config, approver)
+        else:
+            result = await actions.execute(action, params, config, approver)
         response = {"request_id": request_id, **result}
 
     await ws.send(json.dumps(response, ensure_ascii=False))
@@ -78,7 +88,13 @@ async def _handle_message(
 
 async def _run_session(uri: str, config: CompanionConfig, approver: actions.Approver) -> None:
     logger.info("Conectando a %s ...", uri)
-    async with websockets.connect(uri, open_timeout=15, ping_interval=20, ping_timeout=20) as ws:
+    async with websockets.connect(
+        uri,
+        open_timeout=15,
+        ping_interval=20,
+        ping_timeout=20,
+        max_size=WS_MAX_MESSAGE_BYTES,
+    ) as ws:
         print("Conectado y emparejado. Esperando comandos del asistente (Ctrl+C para salir)...")
         logger.info("Conexión establecida.")
         async for raw_message in ws:

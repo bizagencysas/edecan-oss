@@ -52,6 +52,7 @@ data class AdjuntoComposerUi(
     val filename: String,
     val mime: String,
     val sizeBytes: Long,
+    val previewBytes: ByteArray? = null,
     val estado: EstadoAdjunto = EstadoAdjunto.SUBIENDO,
     val archivo: UploadedFile? = null,
     val error: String? = null,
@@ -63,6 +64,7 @@ internal data class ArchivoSubidaLocal(
     val file: File,
     val filename: String,
     val mime: String,
+    val previewBytes: ByteArray? = null,
 ) {
     val sizeBytes: Long get() = file.length()
 
@@ -605,6 +607,7 @@ class ChatViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel(
                     filename = local.filename,
                     mime = local.mime,
                     sizeBytes = local.sizeBytes,
+                    previewBytes = local.previewBytes,
                 ),
                 errorMensaje = null,
             )

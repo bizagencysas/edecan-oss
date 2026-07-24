@@ -435,8 +435,8 @@ def _attachment_context_line(item: dict[str, Any]) -> str:
     file_id = item.get("file_id")
     mime = str(item.get("mime") or "application/octet-stream")
     instruction = (
-        "la imagen ya está incluida en este turno; respóndela directamente "
-        "sin llamar una herramienta"
+        "si puedes verla en este turno, respóndela directamente sin llamar una herramienta; "
+        f"si no aparece, usa leer_archivo(file_id={file_id})"
         if mime.split(";", 1)[0].lower() in _DIRECT_VISION_MIMES
         else f"usa leer_archivo(file_id={file_id}) para ver su contenido antes de responder"
     )
@@ -469,6 +469,7 @@ async def _resolve_message_attachments(
 
 _DIRECT_VISION_MIMES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 _DIRECT_VISION_MAX_BYTES = 10 * 1024 * 1024
+_DIRECT_VISION_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 _DIRECT_VISION_MAX_IMAGES = 10
 
 
@@ -509,18 +510,32 @@ async def _direct_multimodal_content(
         return user_text
 
     blocks: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    session = aioboto3.Session()
+    total_bytes = 0
     try:
-        session = aioboto3.Session()
         async with session.client(
             "s3",
             region_name=settings.AWS_REGION,
             endpoint_url=settings.AWS_ENDPOINT_URL,
         ) as s3:
             for mime, key in image_rows:
-                response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=key)
-                raw = await response["Body"].read(_DIRECT_VISION_MAX_BYTES + 1)
-                if not raw or len(raw) > _DIRECT_VISION_MAX_BYTES:
+                try:
+                    response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=key)
+                    raw = await response["Body"].read(_DIRECT_VISION_MAX_BYTES + 1)
+                except Exception:  # noqa: BLE001 - una imagen no invalida las demás
+                    logger.warning(
+                        "No se pudo insertar una imagen directamente en el turno",
+                        extra={"s3_key_hash": hashlib.sha256(key.encode()).hexdigest()[:12]},
+                        exc_info=True,
+                    )
                     continue
+                if (
+                    not raw
+                    or len(raw) > _DIRECT_VISION_MAX_BYTES
+                    or total_bytes + len(raw) > _DIRECT_VISION_MAX_TOTAL_BYTES
+                ):
+                    continue
+                total_bytes += len(raw)
                 blocks.append(
                     {
                         "type": "image",
@@ -531,8 +546,8 @@ async def _direct_multimodal_content(
                         },
                     }
                 )
-    except Exception:  # noqa: BLE001 - storage degradable; la tool sigue disponible
-        logger.warning("No se pudieron insertar imágenes directamente en el turno", exc_info=True)
+    except Exception:  # noqa: BLE001 - storage degradable; leer_archivo sigue disponible
+        logger.warning("No se pudo abrir storage para visión directa", exc_info=True)
         return user_text
 
     return blocks if len(blocks) > 1 else user_text

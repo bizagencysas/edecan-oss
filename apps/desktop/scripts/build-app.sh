@@ -33,6 +33,17 @@ case "$PLATFORM" in
     # tiene prioridad.
     if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
       export APPLE_SIGNING_IDENTITY="-"
+      # Una firma ad-hoc no tiene requirement de identidad estable: macOS
+      # ancla los permisos TCC (Grabación de pantalla, Accesibilidad) al
+      # cdhash EXACTO de esta build, así que CADA rebuild los invalida en
+      # silencio — el interruptor sigue encendido en Configuración del
+      # Sistema pero tccd lo ignora ("concesión zombi", ver
+      # docs/control-remoto.md, sección de solución de problemas).
+      echo "aviso: firmando ad-hoc (sin EDECAN_MACOS_CODESIGN_IDENTITY): los permisos de" >&2
+      echo "       Grabación de pantalla/Accesibilidad quedarán anclados a ESTA build y" >&2
+      echo "       cada rebuild los invalida aunque el interruptor se vea encendido." >&2
+      echo "       Para permisos que sobrevivan rebuilds define EDECAN_MACOS_CODESIGN_IDENTITY" >&2
+      echo "       con un certificado real (Developer ID o Apple Development)." >&2
     fi
     ;;
   Linux)

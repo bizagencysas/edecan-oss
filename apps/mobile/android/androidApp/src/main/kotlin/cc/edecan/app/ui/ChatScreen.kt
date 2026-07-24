@@ -6,7 +6,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -63,7 +62,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -677,11 +675,17 @@ private fun BurbujaMensaje(
 @Composable
 private fun ImagenAdjuntaChat(artifact: ArtifactRef, api: EdecanApi?) {
     var image by remember(artifact.fileId) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var cargaFinalizada by remember(artifact.fileId) { mutableStateOf(false) }
     LaunchedEffect(artifact.fileId, api) {
-        if (api == null || image != null) return@LaunchedEffect
-        runCatching { api.downloadArtifact(artifact).bytes }.getOrNull()?.let { bytes ->
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { image = it.asImageBitmap() }
+        if (image != null || cargaFinalizada) return@LaunchedEffect
+        if (api == null) {
+            cargaFinalizada = true
+            return@LaunchedEffect
         }
+        runCatching { api.downloadArtifact(artifact).bytes }.getOrNull()?.let { bytes ->
+            image = withContext(Dispatchers.Default) { decodificarImagenAcotada(bytes) }
+        }
+        cargaFinalizada = true
     }
     Box(
         modifier = Modifier.fillMaxWidth().size(width = 272.dp, height = 190.dp)
@@ -696,7 +700,15 @@ private fun ImagenAdjuntaChat(artifact: ArtifactRef, api: EdecanApi?) {
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-        } ?: CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White)
+        } ?: if (cargaFinalizada) {
+            Text(
+                "Imagen no disponible",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White)
+        }
     }
 }
 
@@ -782,7 +794,38 @@ private fun AdjuntosComposer(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
                 ) {
-                    if (adjunto.estado == EstadoAdjunto.SUBIENDO) {
+                    val preview = remember(adjunto.previewBytes) {
+                        adjunto.previewBytes?.let { decodificarImagenAcotada(it, maxEdge = 420) }
+                    }
+                    if (preview != null) {
+                        Box(
+                            modifier = Modifier.size(52.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Image(
+                                bitmap = preview,
+                                contentDescription = "Vista previa de ${adjunto.filename}",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            if (adjunto.estado == EstadoAdjunto.SUBIENDO) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.24f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(19.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color.White,
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.padding(start = 8.dp))
+                    } else if (adjunto.estado == EstadoAdjunto.SUBIENDO) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.padding(start = 8.dp))
                     } else {
@@ -947,6 +990,7 @@ private val PRESETS_CREACION = listOf(
 
 internal fun prepararArchivoSeleccionado(context: Context, uri: Uri): ArchivoSubidaLocal {
     val resolver = context.contentResolver
+    val mime = resolver.getType(uri) ?: "application/octet-stream"
     var filename = "archivo"
     var declaredSize: Long? = null
     resolver.query(
@@ -996,7 +1040,8 @@ internal fun prepararArchivoSeleccionado(context: Context, uri: Uri): ArchivoSub
         return ArchivoSubidaLocal(
             file = staged,
             filename = filename.take(255).ifBlank { "archivo" },
-            mime = resolver.getType(uri) ?: "application/octet-stream",
+            mime = mime,
+            previewBytes = crearMiniaturaCodificada(staged, mime),
         )
     } catch (error: Throwable) {
         staged.delete()

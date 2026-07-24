@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import EdecanKit
 
 /// "Remoto" — visor de control remoto tipo TeamViewer del Mac/PC companion
@@ -42,7 +43,12 @@ struct RemotoView: View {
     @State private var consentido = false
     @State private var escala: CGFloat = 1
     @State private var escalaBase: CGFloat = 1
+    @State private var desplazamiento: CGSize = .zero
+    @State private var desplazamientoBase: CGSize = .zero
     @State private var mostrarTeclado = false
+    @State private var mostrarCompartir = false
+    @State private var mostrarSelectorArchivo = false
+    @State private var archivoParaCompartir: ArchivoCompartible?
     @State private var ultimoPuntoRemoto: CGPoint?
 
     private var sesionInmersiva: RemoteSession? {
@@ -172,9 +178,23 @@ struct RemotoView: View {
                         .padding(.horizontal)
                 }
 
+                if let info = viewModel.infoMensaje {
+                    Text(info)
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .lineLimit(3)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.green.opacity(0.82), in: Capsule())
+                        .padding(.horizontal)
+                }
+
                 if sesion.esControl {
                     if mostrarTeclado {
                         tecladoFlotante
+                    }
+                    if mostrarCompartir {
+                        compartirFlotante
                     }
                     dockDeControl
                 } else {
@@ -190,6 +210,90 @@ struct RemotoView: View {
             .padding(.vertical, 10)
         }
         .background(Color.black)
+        .fileImporter(
+            isPresented: $mostrarSelectorArchivo,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { resultado in
+            manejarSeleccionDeArchivo(resultado)
+        }
+        .sheet(item: $archivoParaCompartir) { archivo in
+            HojaCompartir(urls: [archivo.url])
+        }
+    }
+
+    /// Panel flotante "Compartir": portapapeles (traer/enviar) y transferencia
+    /// de archivos (enviar desde el teléfono, traer del buzón de la Mac).
+    private var compartirFlotante: some View {
+        CompartirRemotoView(
+            deshabilitado: viewModel.transfiriendo,
+            cargandoArchivos: viewModel.cargandoArchivos,
+            archivos: viewModel.archivosCompartidos,
+            onTraerPortapapeles: {
+                Task {
+                    if let texto = await viewModel.traerPortapapeles(client: session.client) {
+                        UIPasteboard.general.string = texto
+                        viewModel.infoMensaje = texto.isEmpty
+                            ? "El portapapeles de tu Mac estaba vacío."
+                            : "Copiado a este teléfono."
+                    }
+                }
+            },
+            onEnviarPortapapeles: {
+                let texto = UIPasteboard.general.string ?? ""
+                guard !texto.isEmpty else {
+                    viewModel.errorMensaje = "No hay texto en el portapapeles de este teléfono."
+                    return
+                }
+                Task { await viewModel.enviarPortapapeles(texto, client: session.client) }
+            },
+            onEnviarArchivo: { mostrarSelectorArchivo = true },
+            onRefrescar: { Task { await viewModel.listarArchivos(client: session.client) } },
+            onTraerArchivo: { archivo in
+                Task {
+                    if let (datos, nombre) = await viewModel.traerArchivo(
+                        nombre: archivo.name, client: session.client
+                    ) {
+                        prepararParaCompartir(datos: datos, nombre: nombre)
+                    }
+                }
+            }
+        )
+    }
+
+    private func manejarSeleccionDeArchivo(_ resultado: Result<[URL], Error>) {
+        switch resultado {
+        case .failure(let error):
+            viewModel.errorMensaje = error.localizedDescription
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            // El picker entrega una URL con alcance de seguridad: hay que
+            // pedir acceso explícito antes de leerla y soltarlo al terminar.
+            let accedio = url.startAccessingSecurityScopedResource()
+            defer { if accedio { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let datos = try Data(contentsOf: url)
+                Task {
+                    await viewModel.enviarArchivo(
+                        nombre: url.lastPathComponent, datos: datos, client: session.client
+                    )
+                }
+            } catch {
+                viewModel.errorMensaje = "No se pudo leer el archivo: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Escribe los bytes traídos de la Mac a un archivo temporal y lo presenta
+    /// en la hoja de compartir de iOS (Guardar en Archivos, AirDrop, etc.).
+    private func prepararParaCompartir(datos: Data, nombre: String) {
+        let destino = FileManager.default.temporaryDirectory.appendingPathComponent(nombre)
+        do {
+            try datos.write(to: destino, options: .atomic)
+            archivoParaCompartir = ArchivoCompartible(url: destino)
+        } catch {
+            viewModel.errorMensaje = "No se pudo preparar el archivo: \(error.localizedDescription)"
+        }
     }
 
     private func barraSuperiorInmersiva(_ sesion: RemoteSession) -> some View {
@@ -226,7 +330,19 @@ struct RemotoView: View {
     private var dockDeControl: some View {
         HStack(spacing: 8) {
             botonDock("Teclado", icono: mostrarTeclado ? "keyboard.chevron.compact.down" : "keyboard") {
-                withAnimation(.snappy) { mostrarTeclado.toggle() }
+                withAnimation(.snappy) {
+                    mostrarTeclado.toggle()
+                    if mostrarTeclado { mostrarCompartir = false }
+                }
+            }
+            botonDock("Compartir", icono: mostrarCompartir ? "square.and.arrow.up.fill" : "square.and.arrow.up") {
+                withAnimation(.snappy) {
+                    mostrarCompartir.toggle()
+                    if mostrarCompartir { mostrarTeclado = false }
+                }
+                if mostrarCompartir {
+                    Task { await viewModel.listarArchivos(client: session.client) }
+                }
             }
             botonDock("Derecho", icono: "cursorarrow.click.2") { enviarAccionDock(.rightClick) }
             botonDock("Subir", icono: "arrow.up") { enviarAccionDock(.scroll, deltaY: 520) }
@@ -338,8 +454,8 @@ struct RemotoView: View {
             return "Sesión terminada"
         case "pending":
             return sesion.esControl
-                ? "Pidiendo aprobación de control remoto…"
-                : "Pidiendo aprobación de vista remota…"
+                ? "Conectando control remoto con tu Mac…"
+                : "Conectando vista remota con tu Mac…"
         default:
             return sesion.esControl
                 ? "Sesión de control activa: se está controlando tu equipo"
@@ -356,17 +472,39 @@ struct RemotoView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .scaleEffect(escala)
+                        .offset(desplazamiento)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .gesture(
                             MagnificationGesture()
-                                .onChanged { valor in escala = min(max(escalaBase * valor, 1), 4) }
-                                .onEnded { _ in escalaBase = escala }
+                                .onChanged { valor in
+                                    escala = min(max(escalaBase * valor, 1), 4)
+                                    // Re-acotar en vivo: al alejar, el desplazamiento
+                                    // permitido se encoge y el frame vuelve solo al centro.
+                                    desplazamiento = Self.desplazamientoAcotado(
+                                        desplazamiento, escala: escala, tamano: geo.size
+                                    )
+                                }
+                                .onEnded { _ in
+                                    escalaBase = escala
+                                    desplazamientoBase = desplazamiento
+                                    if escala <= 1 {
+                                        withAnimation {
+                                            desplazamiento = .zero
+                                            desplazamientoBase = .zero
+                                        }
+                                    }
+                                }
                         )
                         .simultaneousGesture(gestoDePuntero(sesion: sesion, frame: frame, tamano: geo.size))
                         .simultaneousGesture(gestoDeArrastre(sesion: sesion, frame: frame, tamano: geo.size))
                         .onTapGesture(count: 2) {
                             guard !sesion.esControl else { return } // el doble tap ya es "double_click" en control
-                            withAnimation { escala = 1; escalaBase = 1 }
+                            withAnimation {
+                                escala = 1
+                                escalaBase = 1
+                                desplazamiento = .zero
+                                desplazamientoBase = .zero
+                            }
                         }
                 } else {
                     reservaSinFrame(sesion: sesion)
@@ -383,6 +521,9 @@ struct RemotoView: View {
     /// REALES del frame vía ``RemoteCoordinateMapper`` (no las de la pantalla
     /// del teléfono, que casi nunca coinciden con la resolución del equipo
     /// remoto). Sin efecto en sesiones `kind="view"` o ya terminales.
+    /// El punto pasa antes por ``puntoSinZoom``: los gestos viven FUERA del
+    /// `scaleEffect`/`offset`, así que reportan coordenadas del contenedor y
+    /// hay que des-proyectarlas al espacio sin zoom que espera el mapper.
     private func gestoDePuntero(sesion: RemoteSession, frame: RemoteFrame, tamano: CGSize) -> some Gesture {
         SpatialTapGesture(count: 2)
             .exclusively(before: SpatialTapGesture(count: 1))
@@ -390,20 +531,43 @@ struct RemotoView: View {
                 guard sesion.esControl, !sesion.esTerminal else { return }
                 switch resultado {
                 case .first(let valor):
-                    enviarPointer(local: valor.location, tamanoElemento: tamano, frame: frame, accion: .doubleClick)
+                    enviarPointer(
+                        local: puntoSinZoom(valor.location, tamano: tamano),
+                        tamanoElemento: tamano, frame: frame, accion: .doubleClick
+                    )
                 case .second(let valor):
-                    enviarPointer(local: valor.location, tamanoElemento: tamano, frame: frame, accion: .click)
+                    enviarPointer(
+                        local: puntoSinZoom(valor.location, tamano: tamano),
+                        tamanoElemento: tamano, frame: frame, accion: .click
+                    )
                 }
             }
     }
 
-    /// Arrastrar directamente sobre la pantalla remota mueve ventanas,
-    /// selecciona texto y opera sliders con un único comando acotado.
+    /// Sin zoom (1×), arrastrar sobre la pantalla remota mueve ventanas,
+    /// selecciona texto y opera sliders con un único comando acotado. CON
+    /// zoom, el mismo dedo panea la vista — sin esto el zoom quedaba clavado
+    /// al centro y el resto de la pantalla era inalcanzable (el drag remoto
+    /// sigue disponible: basta volver a 1× con doble tap o pellizcando).
     private func gestoDeArrastre(
         sesion: RemoteSession, frame: RemoteFrame, tamano: CGSize
     ) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { valor in
+                guard escala > 1 else { return }
+                desplazamiento = Self.desplazamientoAcotado(
+                    CGSize(
+                        width: desplazamientoBase.width + valor.translation.width,
+                        height: desplazamientoBase.height + valor.translation.height
+                    ),
+                    escala: escala, tamano: tamano
+                )
+            }
             .onEnded { valor in
+                if escala > 1 {
+                    desplazamientoBase = desplazamiento
+                    return
+                }
                 guard sesion.esControl, !sesion.esTerminal else { return }
                 guard let inicio = RemoteCoordinateMapper.mapear(
                     puntoLocalX: Double(valor.startLocation.x), puntoLocalY: Double(valor.startLocation.y),
@@ -423,6 +587,34 @@ struct RemotoView: View {
                     )
                 }
             }
+    }
+
+    /// Des-proyecta un punto del espacio del contenedor (post `scaleEffect` +
+    /// `offset`, ambos anclados al centro) al espacio sin zoom que espera
+    /// ``RemoteCoordinateMapper``. Con `escala == 1` y desplazamiento cero es
+    /// la identidad, así que el camino sin zoom queda intacto.
+    private func puntoSinZoom(_ punto: CGPoint, tamano: CGSize) -> CGPoint {
+        let centroX = tamano.width / 2
+        let centroY = tamano.height / 2
+        return CGPoint(
+            x: centroX + (punto.x - desplazamiento.width - centroX) / escala,
+            y: centroY + (punto.y - desplazamiento.height - centroY) / escala
+        )
+    }
+
+    /// Acota el paneo para que el frame nunca se salga del todo de la vista:
+    /// con `scaleEffect` anclado al centro, el excedente visible por eje es
+    /// `tamano * (escala - 1)`, mitad hacia cada lado. A 1× el límite es 0 y
+    /// el frame queda perfectamente centrado.
+    private static func desplazamientoAcotado(
+        _ propuesta: CGSize, escala: CGFloat, tamano: CGSize
+    ) -> CGSize {
+        let limiteX = max(0, tamano.width * (escala - 1) / 2)
+        let limiteY = max(0, tamano.height * (escala - 1) / 2)
+        return CGSize(
+            width: min(max(propuesta.width, -limiteX), limiteX),
+            height: min(max(propuesta.height, -limiteY), limiteY)
+        )
     }
 
     private func enviarPointer(
@@ -456,11 +648,24 @@ struct RemotoView: View {
                 .foregroundStyle(.white.opacity(0.7))
             } else {
                 ProgressView().tint(.white)
-                Text("Esperando aprobación en tu Mac. Puede tardar hasta 30 segundos.")
+                // Nada de "esperando aprobación": la app instalada auto-aprueba la
+                // sesión (la confirmación real ya se dio en este teléfono). Lo único
+                // que puede aparecer en la Mac es el diálogo de permisos de macOS.
+                Text("Conectando con tu Mac… Si macOS muestra una solicitud de permisos en la Mac, acéptala ahí.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+                // El motivo real del fallo (p. ej. permisos de macOS) antes
+                // solo se veía fuera de esta reserva — aquí es donde la
+                // persona está mirando mientras "no pasa nada".
+                if let error = viewModel.errorMensaje, !error.isEmpty {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(Color.red.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
             }
         }
     }
@@ -486,7 +691,7 @@ private struct EtiquetaEstadoSesionRemota: View {
 
     private var etiqueta: String {
         switch status {
-        case "pending": return "Esperando aprobación"
+        case "pending": return "Conectando"
         case "active": return "Activa"
         case "ended": return "Terminada"
         case "denied": return "Denegada"
@@ -525,7 +730,7 @@ private struct ControlesPunteroView: View {
             }
             .buttonStyle(.bordered)
             .disabled(deshabilitado)
-            Text("Toca para hacer clic. Toca dos veces para abrir. Arrastra sobre la pantalla para mover o seleccionar.")
+            Text("Toca para hacer clic. Toca dos veces para abrir. Arrastra sobre la pantalla para mover o seleccionar. Pellizca para acercar; con zoom, arrastra para recorrer la pantalla (vuelve a 1× para arrastrar ventanas).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -610,5 +815,127 @@ private struct TecladoTarjetaModifier: ViewModifier {
         } else {
             content.tarjetaVidrio(esquina: 16)
         }
+    }
+}
+
+// MARK: - Compartir (portapapeles + archivos)
+
+/// URL temporal identificable para `.sheet(item:)` — la hoja de compartir de
+/// iOS necesita un `Identifiable` y la `URL` sola no lo es.
+private struct ArchivoCompartible: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// Envoltorio de `UIActivityViewController` para presentar archivos traídos de
+/// la Mac (Guardar en Archivos, AirDrop, Compartir…).
+private struct HojaCompartir: UIViewControllerRepresentable {
+    let urls: [URL]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: urls, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// Panel flotante del dock: portapapeles (traer/enviar) y transferencia de
+/// archivos con el buzón compartido de la Mac.
+private struct CompartirRemotoView: View {
+    let deshabilitado: Bool
+    let cargandoArchivos: Bool
+    let archivos: [RemoteSharedFile]
+    let onTraerPortapapeles: () -> Void
+    let onEnviarPortapapeles: () -> Void
+    let onEnviarArchivo: () -> Void
+    let onRefrescar: () -> Void
+    let onTraerArchivo: (RemoteSharedFile) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Portapapeles").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button {
+                    onTraerPortapapeles()
+                } label: {
+                    Label("Traer de la Mac", systemImage: "arrow.down.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                Button {
+                    onEnviarPortapapeles()
+                } label: {
+                    Label("Enviar a la Mac", systemImage: "arrow.up.doc")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(deshabilitado)
+
+            Divider()
+
+            HStack {
+                Text("Archivos").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if cargandoArchivos {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button {
+                        onRefrescar()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button {
+                onEnviarArchivo()
+            } label: {
+                Label("Enviar un archivo a la Mac…", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(deshabilitado)
+
+            if archivos.isEmpty {
+                Text("La carpeta «Compartidos» de tu Mac está vacía. Los archivos que envíes aparecerán ahí, y lo que dejes ahí en la Mac lo podrás traer aquí.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("En «Compartidos» de tu Mac — toca para traer:")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(archivos) { archivo in
+                            Button {
+                                onTraerArchivo(archivo)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "doc")
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(archivo.name).font(.caption).lineLimit(1)
+                                        Text(ByteCountFormatter.string(
+                                            fromByteCount: Int64(archivo.bytes), countStyle: .file
+                                        ))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.down.circle")
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(deshabilitado)
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }

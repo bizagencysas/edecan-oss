@@ -43,6 +43,130 @@ struct IDEModelsTests {
         #expect(file.content == "print('hola')")
         #expect(file.encoding == "utf-8")
     }
+
+    @Test func decodificaWorkspaceYSesionDurable() throws {
+        let workspace = try APIClient.crearDecoder().decode(
+            IDEWorkspace.self,
+            from: Data("""
+            {
+              "id":"workspace-1",
+              "name":"Mi aplicación",
+              "path":"/proyectos/app",
+              "active":true,
+              "created_at":"2026-07-23T10:30:00Z"
+            }
+            """.utf8)
+        )
+        let session = try APIClient.crearDecoder().decode(
+            IDESession.self,
+            from: Data("""
+            {
+              "id":"terminal-1",
+              "kind":"terminal",
+              "workspace_id":"workspace-1",
+              "workspace_name":"Mi aplicación",
+              "status":"running",
+              "started_at":"2026-07-23T10:31:00Z",
+              "ended_at":null,
+              "exit_code":null,
+              "command":["/bin/zsh","-l"],
+              "provider":null,
+              "title":"Terminal principal"
+            }
+            """.utf8)
+        )
+
+        #expect(workspace.active)
+        #expect(session.command == ["/bin/zsh", "-l"])
+        #expect(session.isActive)
+    }
+
+    @Test func estadosTerminalesFinalesNoParecenActivos() throws {
+        for status in ["completed", "failed", "closed", "cancelled", "interrupted"] {
+            let session = try APIClient.crearDecoder().decode(
+                IDESession.self,
+                from: Data("""
+                {
+                  "id":"\(status)",
+                  "kind":"terminal",
+                  "workspace_id":"workspace-1",
+                  "workspace_name":"App",
+                  "status":"\(status)",
+                  "started_at":"2026-07-23T10:31:00Z",
+                  "ended_at":null,
+                  "exit_code":null,
+                  "command":["/bin/zsh"],
+                  "provider":null,
+                  "title":"Terminal"
+                }
+                """.utf8)
+            )
+            #expect(!session.isActive)
+        }
+    }
+
+    @Test func decodificaEventosYGitEnHeadSeparado() throws {
+        let session = """
+        {
+          "id":"agent-1","kind":"agent","workspace_id":"workspace-1",
+          "workspace_name":"App","status":"running",
+          "started_at":"2026-07-23T10:31:00Z","ended_at":null,
+          "exit_code":null,"command":null,"provider":"codex","title":"Reparar login"
+        }
+        """
+        let read = try APIClient.crearDecoder().decode(
+            IDESessionReadOut.self,
+            from: Data("""
+            {
+              "session":\(session),
+              "events":[{
+                "cursor":8,"type":"output","text":"Analizando archivos",
+                "stream":"stdout","timestamp":"2026-07-23T10:32:00Z"
+              }],
+              "next_cursor":8
+            }
+            """.utf8)
+        )
+        let git = try JSONDecoder().decode(
+            IDEGitStatus.self,
+            from: Data("""
+            {
+              "branch":null,"upstream":null,"ahead":0,"behind":0,
+              "files":[{
+                "path":"Sources/App.swift","index_status":"M",
+                "worktree_status":" ","original_path":null
+              }]
+            }
+            """.utf8)
+        )
+
+        #expect(read.nextCursor == 8)
+        #expect(read.events.first?.text == "Analizando archivos")
+        #expect(git.branch == nil)
+        #expect(git.files.first?.isStaged == true)
+    }
+
+    @Test func estadoLocalIDEGuardaSoloIdsYSePuedeAislar() throws {
+        let suite = "IDEModelsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("no-borrar", forKey: "otra.feature")
+
+        let store = IDELocalStateStore(defaults: defaults)
+        store.selectedWorkspaceId = "workspace-1"
+        store.setSelectedSessionId("terminal-1", kind: "terminal", workspaceId: "workspace-1")
+
+        #expect(store.selectedWorkspaceId == "workspace-1")
+        #expect(
+            store.selectedSessionId(kind: "terminal", workspaceId: "workspace-1")
+                == "terminal-1"
+        )
+
+        store.clearAll()
+
+        #expect(store.selectedWorkspaceId == nil)
+        #expect(defaults.string(forKey: "otra.feature") == "no-borrar")
+    }
 }
 
 /// `DeviceOut` solo exige `id` — el resto queda opcional a propósito porque

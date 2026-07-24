@@ -292,14 +292,15 @@ iteración: auth (login/registro, refresh, tokens cifrados con
 herramientas peligrosas (incluida la advertencia específica de
 `usar_computadora`, fase v6), Negocios (KPIs + dona + facturas, solo
 lectura), Voz push-to-talk (transcribir → turno del agente → hablar la
-respuesta), Perfil (conectar LLM "pegar y validar"), IDE de solo lectura
-(árbol + ver archivo) y, desde fase v6, **Remoto** (visor de `/v1/remote/*`
+respuesta), Perfil (conectar LLM "pegar y validar"), Estudio móvil con
+proyectos autorizados, editor, búsqueda, agentes Codex/Claude, terminal
+persistente y Git tipado y, desde fase v6, **Remoto** (visor de `/v1/remote/*`
 sobre el mismo prototipo *polling* HTTP del panel web — consentimiento +
 aprobación local en el companion, indicador permanente + Terminar siempre
 visible, `kind="control"` con tap→clic/doble clic/clic derecho + barra de
 teclado, *polling* automático una vez aprobada la sesión, cero *polling*
-huérfano al salir de la pantalla) SÍ están construidos; editar/correr/buscar
-en el IDE, telefonía Twilio/voz avanzada, Negocios de escritura, FCM push,
+huérfano al salir de la pantalla) SÍ están construidos; telefonía
+Twilio/voz avanzada, Negocios de escritura, FCM push,
 el transporte WebRTC de extremo a extremo (`docs/control-remoto.md` §5 —
 el *polling* HTTP de hoy sigue siendo el mismo prototipo P1 que ya usaba el
 panel web, no cambia con este WP) y el emparejamiento con QR + verificación

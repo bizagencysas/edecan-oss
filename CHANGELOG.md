@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A native Edecán mobile Studio on iOS and Android with explicitly authorized
+  projects, editable files, text search, resumable Codex/Claude agent runs,
+  persistent terminals and typed Git operations
+- Direct multimodal vision in the first agent turn, plus private image
+  previews before and after sending on both mobile platforms
+- Shared clipboard in remote-control sessions: pull the Mac's clipboard to the
+  phone and push the phone's clipboard to the Mac, from iOS and Android
+- File transfer in remote-control sessions: send a file from the phone to a
+  visible "Compartidos" folder on the Mac, list that folder, and pull any file
+  from it back to the phone (25 MiB cap, filenames confined to the folder,
+  file contents redacted from the audit log)
+
+### Changed
+
+- Agent and terminal work now lives in the desktop runtime and can be resumed
+  by cursor after the phone is backgrounded or its connection changes
+- Mobile IDE errors, unsaved files, active sessions and Git push confirmation
+  are visible instead of hiding long-running work behind a single request
+
+### Fixed
+
+- The macOS remote bridge now triggers the real system permission dialogs
+  (Screen Recording and Accessibility) once per run when a remote session
+  hits a missing or stale TCC grant, instead of failing silently toward the
+  phone while the Mac never shows anything
+- Remote-control permission errors now name the stale-grant case (a
+  reinstalled or re-signed Edecán invalidates a previous grant even though
+  its toggle still looks enabled) with the exact recovery steps
+- The companion audit log records the error message on every failed action,
+  so `ok: false` lines are diagnosable after the fact
+- The mobile remote viewer no longer promises a local approval on the Mac
+  that the installed app auto-approves; it now explains the only thing that
+  can actually appear there (the macOS permission dialog)
+- `build-app.sh` warns that ad-hoc signed macOS builds anchor TCC grants to
+  the exact build hash, which silently invalidates them on every rebuild
+
+### Security
+
+- Every advanced mobile IDE route requires both the signed user session and
+  the durable credential of an active paired device over HTTPS; plain LAN
+  HTTP and spoofed proxy headers fail closed
+- Project roots reject home/system/credential directories and symlink escape,
+  while Git uses typed arguments and agent prompts never appear in process
+  arguments or audit logs
+
 ## [0.7.4] - 2026-07-23
 
 ### Added

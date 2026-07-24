@@ -633,6 +633,291 @@ public actor APIClient {
         }
     }
 
+    // MARK: Proyectos autorizados y sesiones durables del IDE
+
+    public func ideWorkspaces() async throws -> [IDEWorkspace] {
+        let out: IDEWorkspacesOut = try await conAutoRefresh {
+            try await self.obtener("/v1/ide/workspaces")
+        }
+        return out.workspaces
+    }
+
+    public func ideCreateWorkspace(path: String, name: String? = nil) async throws -> IDEWorkspace {
+        struct Body: Encodable { let path: String; let name: String? }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/ide/workspaces",
+                method: "POST",
+                body: Body(path: path, name: name)
+            )
+        }
+    }
+
+    public func ideActivateWorkspace(id: String) async throws -> IDEWorkspace {
+        return try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta(
+                "/v1/ide/workspaces/\(id)/activate",
+                method: "POST"
+            )
+        }
+    }
+
+    public func ideTree(
+        workspaceId: String,
+        path: String? = nil,
+        maxDepth: Int? = nil,
+        maxEntries: Int? = nil
+    ) async throws -> IDETree {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/ide/workspaces/\(workspaceId)/tree",
+                [
+                    ("path", path),
+                    ("max_depth", maxDepth.map(String.init)),
+                    ("max_entries", maxEntries.map(String.init)),
+                ]
+            )
+        }
+    }
+
+    public func ideFile(workspaceId: String, path: String) async throws -> IDEFileOut {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/ide/workspaces/\(workspaceId)/file",
+                [("path", path)]
+            )
+        }
+    }
+
+    public func ideWrite(workspaceId: String, path: String, content: String) async throws {
+        struct Body: Encodable { let path: String; let content: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/file",
+                method: "PUT",
+                body: Body(path: path, content: content)
+            )
+        }
+    }
+
+    public func ideCreateTerminal(
+        workspaceId: String,
+        argv: [String]? = nil,
+        title: String? = nil
+    ) async throws -> IDESession {
+        struct Body: Encodable {
+            let workspaceId: String
+            let argv: [String]?
+            let title: String?
+            enum CodingKeys: String, CodingKey {
+                case workspaceId = "workspace_id"
+                case argv, title
+            }
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/ide/terminals",
+                method: "POST",
+                body: Body(workspaceId: workspaceId, argv: argv, title: title)
+            )
+        }
+    }
+
+    public func ideTerminals() async throws -> [IDESession] {
+        let out: IDESessionsOut = try await conAutoRefresh {
+            try await self.obtener("/v1/ide/terminals")
+        }
+        return out.sessions
+    }
+
+    public func ideReadTerminal(id: String, cursor: Int) async throws -> IDESessionReadOut {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/ide/terminals/\(id)",
+                [("cursor", String(max(0, cursor)))]
+            )
+        }
+    }
+
+    public func ideTerminalInput(id: String, data: String) async throws {
+        struct Body: Encodable { let data: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/terminals/\(id)/input",
+                method: "POST",
+                body: Body(data: data)
+            )
+        }
+    }
+
+    public func ideDeleteTerminal(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/ide/terminals/\(id)", method: "DELETE")
+        }
+    }
+
+    public func ideCreateAgent(
+        workspaceId: String,
+        prompt: String,
+        provider: IDEAgentProvider,
+        title: String? = nil,
+        model: String? = nil
+    ) async throws -> IDESession {
+        struct Body: Encodable {
+            let workspaceId: String
+            let prompt: String
+            let provider: IDEAgentProvider
+            let title: String?
+            let model: String?
+            enum CodingKeys: String, CodingKey {
+                case workspaceId = "workspace_id"
+                case prompt, provider, title, model
+            }
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/ide/agents",
+                method: "POST",
+                body: Body(
+                    workspaceId: workspaceId,
+                    prompt: prompt,
+                    provider: provider,
+                    title: title,
+                    model: model
+                )
+            )
+        }
+    }
+
+    public func ideAgents() async throws -> [IDESession] {
+        let out: IDESessionsOut = try await conAutoRefresh {
+            try await self.obtener("/v1/ide/agents")
+        }
+        return out.sessions
+    }
+
+    public func ideReadAgent(id: String, cursor: Int) async throws -> IDESessionReadOut {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/ide/agents/\(id)",
+                [("cursor", String(max(0, cursor)))]
+            )
+        }
+    }
+
+    public func ideDeleteAgent(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/ide/agents/\(id)", method: "DELETE")
+        }
+    }
+
+    // MARK: Git por proyecto
+
+    public func ideGitStatus(workspaceId: String) async throws -> IDEGitStatus {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/ide/workspaces/\(workspaceId)/git/status")
+        }
+    }
+
+    public func ideGitDiff(workspaceId: String) async throws -> IDEGitDiff {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/ide/workspaces/\(workspaceId)/git/diff")
+        }
+    }
+
+    public func ideGitLog(workspaceId: String) async throws -> IDEGitLog {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/ide/workspaces/\(workspaceId)/git/log")
+        }
+    }
+
+    public func ideGitStage(workspaceId: String, paths: [String]) async throws {
+        struct Body: Encodable { let paths: [String] }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/stage",
+                method: "POST",
+                body: Body(paths: paths)
+            )
+        }
+    }
+
+    public func ideGitUnstage(workspaceId: String, paths: [String]) async throws {
+        struct Body: Encodable { let paths: [String] }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/unstage",
+                method: "POST",
+                body: Body(paths: paths)
+            )
+        }
+    }
+
+    public func ideGitCommit(workspaceId: String, message: String) async throws {
+        struct Body: Encodable { let message: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/commit",
+                method: "POST",
+                body: Body(message: message)
+            )
+        }
+    }
+
+    public func ideGitCreateBranch(
+        workspaceId: String,
+        name: String,
+        checkout: Bool
+    ) async throws {
+        struct Body: Encodable { let name: String; let checkout: Bool }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/branch",
+                method: "POST",
+                body: Body(name: name, checkout: checkout)
+            )
+        }
+    }
+
+    public func ideGitCheckout(
+        workspaceId: String,
+        name: String,
+        create: Bool = false
+    ) async throws {
+        struct Body: Encodable { let name: String; let create: Bool }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/checkout",
+                method: "POST",
+                body: Body(name: name, create: create)
+            )
+        }
+    }
+
+    public func ideGitPush(
+        workspaceId: String,
+        remote: String? = nil,
+        branch: String? = nil,
+        setUpstream: Bool = false
+    ) async throws {
+        struct Body: Encodable {
+            let remote: String?
+            let branch: String?
+            let setUpstream: Bool
+            enum CodingKeys: String, CodingKey {
+                case remote, branch
+                case setUpstream = "set_upstream"
+            }
+        }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/ide/workspaces/\(workspaceId)/git/push",
+                method: "POST",
+                body: Body(remote: remote, branch: branch, setUpstream: setUpstream)
+            )
+        }
+    }
+
     // MARK: - Voz web (`ARCHITECTURE.md` §10.9, `apps/api/edecan_api/routers/voice.py`)
 
     /// `POST /v1/voice/transcribe` — sube `audioData` como `multipart/form-data`
@@ -924,6 +1209,67 @@ public actor APIClient {
         }
     }
 
+    // Portapapeles y transferencia de archivos compartidos (WP-V7). Mismos
+    // candados que el input (`kind="control"` ya `active`): mismos `status`
+    // de error (403/409/429/502/503) con `mensaje` en español listo para
+    // mostrar (`routers/remote.py`).
+
+    /// `GET /v1/remote/sessions/{id}/clipboard` — trae el portapapeles (texto)
+    /// de la computadora al teléfono.
+    public func getRemoteClipboard(sessionId: String) async throws -> String {
+        let respuesta: RemoteClipboard = try await conAutoRefresh {
+            try await self.obtener("/v1/remote/sessions/\(sessionId)/clipboard")
+        }
+        return respuesta.text
+    }
+
+    /// `POST /v1/remote/sessions/{id}/clipboard {text}` — escribe el
+    /// portapapeles de la computadora con el texto del teléfono.
+    public func setRemoteClipboard(sessionId: String, text: String) async throws {
+        struct Body: Encodable { let text: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/remote/sessions/\(sessionId)/clipboard", method: "POST", body: Body(text: text)
+            )
+        }
+    }
+
+    /// `GET /v1/remote/sessions/{id}/files` — lista la carpeta compartida de
+    /// la computadora (para elegir qué traer).
+    public func listRemoteFiles(sessionId: String) async throws -> RemoteSharedFiles {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/remote/sessions/\(sessionId)/files")
+        }
+    }
+
+    /// `POST /v1/remote/sessions/{id}/files {name, content_b64}` — teléfono →
+    /// computadora. Devuelve el nombre FINAL con el que quedó guardado.
+    @discardableResult
+    public func pushRemoteFile(
+        sessionId: String, name: String, contentB64: String
+    ) async throws -> RemotePushedFile {
+        struct Body: Encodable {
+            let name: String
+            let content_b64: String
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/remote/sessions/\(sessionId)/files", method: "POST",
+                body: Body(name: name, content_b64: contentB64)
+            )
+        }
+    }
+
+    /// `GET /v1/remote/sessions/{id}/files/content?name=…` — computadora →
+    /// teléfono. Devuelve el contenido en base64 más nombre y tipo MIME.
+    public func pullRemoteFile(sessionId: String, name: String) async throws -> RemotePulledFile {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/remote/sessions/\(sessionId)/files/content", [("name", name)]
+            )
+        }
+    }
+
     // MARK: - Capacidades (Skills + MCP)
 
     public func listSkills() async throws -> [SkillSummary] {
@@ -1078,6 +1424,18 @@ public actor APIClient {
         guard let accessToken else { throw APIError.sesionExpirada }
         var request = request
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        if Self.esRutaIDEAvanzada(request.url?.path) {
+            guard let deviceId = devicePairingStore.deviceId(),
+                  let deviceToken = devicePairingStore.deviceToken()
+            else {
+                throw APIError.servidor(
+                    status: 403,
+                    mensaje: "Vuelve a conectar este iPhone con el QR de Edecán."
+                )
+            }
+            request.setValue(deviceId, forHTTPHeaderField: "X-Edecan-Device-Id")
+            request.setValue(deviceToken, forHTTPHeaderField: "X-Edecan-Device-Token")
+        }
         let (data, response) = try await realizar(request)
         let http = try httpResponse(response)
         if http.statusCode == 401 {
@@ -1085,6 +1443,19 @@ public actor APIClient {
         }
         try validarStatus(http, data: data)
         return (data, http)
+    }
+
+    /// Las credenciales durables del dispositivo solo salen hacia las rutas
+    /// que pueden iniciar procesos o mutar un workspace. El IDE legacy y el
+    /// resto de la API reciben únicamente el Bearer normal.
+    private static func esRutaIDEAvanzada(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return path == "/v1/ide/workspaces"
+            || path.hasPrefix("/v1/ide/workspaces/")
+            || path == "/v1/ide/terminals"
+            || path.hasPrefix("/v1/ide/terminals/")
+            || path == "/v1/ide/agents"
+            || path.hasPrefix("/v1/ide/agents/")
     }
 
     private func ejecutarAutenticado<Respuesta: Decodable>(_ request: URLRequest) async throws -> Respuesta {

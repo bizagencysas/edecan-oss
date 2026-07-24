@@ -184,6 +184,40 @@ Cada `POST .../input` exitoso deja una fila nueva en `audit_log` (`remote.sessio
 - **Indicador visible permanente en el equipo controlado** y **botón de pánico** (§8): el companion sigue siendo una CLI sin presencia gráfica — cada acción de input queda en la bitácora de consola/log igual que cualquier otra, sin un ícono de bandeja que muestre "te están controlando ahora mismo" de forma imposible de ignorar.
 - **Emparejamiento con verificación de *fingerprint*** (§4): sigue usando el `pair-code` simple de 8 caracteres — control remoto de input no exige todavía el emparejamiento reforzado que este documento diseña en §4.
 
+### Solución de problemas: "ya activé el permiso y sigue sin funcionar" (concesión TCC zombi)
+
+Síntoma: el teléfono conecta pero nunca llegan frames (HTTP 502 con
+"Grabacion de pantalla esta desactivada/no esta autorizada..."), y en la Mac
+el interruptor de Edecán en Configuración del Sistema **se ve encendido**.
+
+Causa: macOS ancla cada concesión de Grabación de pantalla/Accesibilidad al
+*code signing requirement* del binario que la pidió. Con una build firmada
+ad-hoc ese requirement es el `cdhash` exacto de ESA build: reinstalar o
+re-firmar Edecán (otra identidad, otro rebuild) deja la fila de TCC
+"muerta" — el toggle sigue en ON pero `tccd` la ignora y
+`CGPreflightScreenCaptureAccess()`/`AXIsProcessTrusted()` devuelven `false`.
+La bitácora (`companion.log`, campo `error` de las líneas `ok: false`) y el
+propio mensaje 502 lo delatan.
+
+Remediación en la máquina afectada:
+
+1. Salir de Edecán por completo (bandeja → "Salir completamente"; cerrar la
+   ventana solo la oculta).
+2. `tccutil reset ScreenCapture cc.edecan.desktop && tccutil reset Accessibility cc.edecan.desktop`
+3. Abrir Edecán y re-conceder ambos permisos (Grabación en la lista
+   superior, no en "Solo grabación de audio del sistema").
+4. Salir por completo otra vez y reabrir (un proceso vivo no hereda la
+   concesión nueva).
+
+Prevención: firmar releases con una identidad real y estable
+(`EDECAN_MACOS_CODESIGN_IDENTITY` en `build-app.sh`; ideal Developer ID) —
+el requirement pasa a ser identificador+certificado y sobrevive rebuilds.
+Además, desde esta fase el bridge nativo dispara UNA vez por ejecución la
+solicitud real del sistema (`CGRequestScreenCaptureAccess` /
+`AXIsProcessTrustedWithOptions` con prompt, `remote_bridge.rs`) cuando el
+preflight falla, así el permiso sí "llega" a la Mac en el primer intento de
+sesión en vez de fallar en silencio hacia el teléfono.
+
 ### Referencias de código
 
 `apps/api/edecan_api/routers/remote.py` (`SessionCreateIn.kind`, `send_input`, `_require_remote_control`, `_translate_input_companion_error` — ver el docstring del módulo, sección "Fase 2: input remoto", para el detalle línea por línea) · `apps/api/edecan_api/repo.py` (`Repo.mark_remote_session_kind`, método nuevo y aditivo — `remote_sessions.kind` no tiene `CHECK constraint`, así que no hizo falta ninguna migración) · `apps/companion/edecan_companion/actions.py` (`InputBackend`, `_QuartzInputBackend`, `_input_pointer`, `_input_key`) · `apps/companion/edecan_companion/approval.py` (`_approve_input_action`) · `apps/companion/edecan_companion/config.py` (`remote_input_enabled`, `remote_input_remember_minutes`) · `apps/web/src/components/remoto/{RemoteViewer,RemoteControlPanel,coords,ConsentGate,SessionHistory}` · `apps/web/src/lib/api-remoto.ts` · tests: `apps/api/tests/test_remote_router.py`, `apps/companion/tests/{test_actions_input.py,test_approval.py,test_config.py}`.

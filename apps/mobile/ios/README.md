@@ -2,9 +2,9 @@
 
 Esqueleto real y compilable: Swift 6 + SwiftUI puro, diseño Liquid Glass
 (iOS 26.5), sin React Native (mandato permanente — ver `docs/roadmap.md`
-y `ARCHITECTURE.md` §11). Nunca se distribuye por App Store/TestFlight:
-instalación local por USB, cada cliente compila y firma con su propia
-cuenta Apple Developer Program. Guía completa para el cliente final en
+y `ARCHITECTURE.md` §11). Cada distribución OSS se compila y firma con la
+cuenta Apple Developer de su responsable; Edecán no depende de la cuenta del
+mantenedor. Guía completa para el cliente final en
 [`../../../docs/movil-ios.md`](../../../docs/movil-ios.md) — este README es
 solo el arranque rápido para quien va a tocar el código.
 
@@ -18,7 +18,7 @@ apps/mobile/ios/
 │   │                       DeviceModels,VoiceModels,RemoteModels,ConfirmacionFormato,AssistantDestination,
 │   │                       APIClient,MultipartFormData,SSEClient,Keychain,
 │   │                       PairingStore}.swift
-│   └── Tests/EdecanKitTests/     # 90 tests (`swift test`)
+│   └── Tests/EdecanKitTests/     # suite offline (`swift test`)
 ├── EdecanApp/             # target de la app (SwiftUI)
 │   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
 │   ├── Onboarding/OnboardingView.swift        # login + registro
@@ -59,7 +59,7 @@ Mismo patrón que el dueño de Edecán ya usa en sus otros proyectos iOS:
 ## Verificar en local sin Xcode abierto
 
 ```bash
-cd EdecanKit && swift build && swift test    # capa de red/datos, 90 tests
+cd EdecanKit && swift build && swift test    # capa de red/datos
 cd ..
 xcodegen generate
 xcodebuild -project Edecan.xcodeproj -scheme EdecanApp -configuration Debug \
@@ -75,13 +75,15 @@ Ver la tabla completa en
 confirmación de herramientas peligrosas in-app (con advertencia específica
 por herramienta, `ConfirmacionFormato`), voz nativa (*push-to-talk* con
 `AVAudioEngine`), Negocios (KPIs + dona + facturas), Perfil con estado de
-credenciales y "Conectar LLM", IDE de solo lectura, Remoto — visor de
+credenciales y "Conectar LLM", Estudio móvil con proyectos autorizados,
+editor, búsqueda, agentes Codex/Claude, terminal persistente y Git tipado,
+Remoto — visor de
 control remoto tipo TeamViewer sobre `/v1/remote` (*polling* de frames,
 vista y control real de teclado/mouse, doble aprobación, indicador de
 sesión activa e input tipeado; `RemotoView`/`RemotoViewModel`) — y
 `EdecanKit` completo con tests SÍ están construidos; push APNs,
 emparejamiento por dispositivo completo (gestionar/revocar otros
-dispositivos), historial de llamadas de telefonía premium, IDE con
-escritura, el transporte WebRTC de control remoto (el prototipo de hoy sigue
+dispositivos), historial de llamadas de telefonía premium, el transporte
+WebRTC de control remoto (el prototipo de hoy sigue
 siendo *polling* HTTP, ver `docs/control-remoto.md` §1.1) y el widget con
 datos reales quedan documentados como siguiente iteración.

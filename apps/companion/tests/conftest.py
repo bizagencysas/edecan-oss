@@ -20,6 +20,9 @@ def companion_config(tmp_path: Path) -> CompanionConfig:
     sandbox.mkdir()
     return CompanionConfig(
         sandbox_dir=sandbox.resolve(),
+        # Aislado en tmp_path: sin esto, las acciones `transfer_*` caerían al
+        # default `~/Edecán/Compartidos` y tocarían el home real.
+        transfer_dir=(tmp_path / "compartidos").resolve(),
         allowed_apps=[],
         allowed_commands=[],
         auto_approve=[],

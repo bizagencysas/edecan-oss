@@ -364,6 +364,216 @@ struct APISessionRaceTests {
         #expect(tokens.snapshot() == .init(access: nil, refresh: nil))
     }
 
+    @Test func ideCreaWorkspaceDecodificandoObjetoDirecto() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-ide", refresh: "refresh-ide")
+        let durable = LockedDevicePairingStore(
+            deviceId: "device-ide",
+            deviceToken: "device-token-ide"
+        )
+        let session = stubSession { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Id") == "device-ide")
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Token") == "device-token-ide")
+            if request.url?.path == "/v1/ide/workspaces/workspace-1/activate" {
+                return (200, Data("""
+                {
+                  "id":"workspace-1","name":"Aplicación","path":"/proyectos/app",
+                  "active":true,"created_at":"2026-07-23T10:00:00Z"
+                }
+                """.utf8))
+            }
+
+            #expect(request.url?.path == "/v1/ide/workspaces")
+            let json = try #require(
+                JSONSerialization.jsonObject(with: requestBody(request)) as? [String: Any]
+            )
+            #expect(json["path"] as? String == "/proyectos/app")
+            #expect(json["name"] as? String == "Aplicación")
+            return (201, Data("""
+            {
+              "id":"workspace-1","name":"Aplicación","path":"/proyectos/app",
+              "active":true,"created_at":"2026-07-23T10:00:00Z"
+            }
+            """.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        let workspace = try await api.ideCreateWorkspace(
+            path: "/proyectos/app",
+            name: "Aplicación"
+        )
+        let activated = try await api.ideActivateWorkspace(id: workspace.id)
+
+        #expect(workspace.id == "workspace-1")
+        #expect(workspace.active)
+        #expect(activated.id == workspace.id)
+        #expect(activated.active)
+    }
+
+    @Test func ideIniciaTerminalYAgenteComoSesionesDirectas() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-ide", refresh: "refresh-ide")
+        let durable = LockedDevicePairingStore(
+            deviceId: "device-ide",
+            deviceToken: "device-token-ide"
+        )
+        let session = stubSession { request in
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Id") == "device-ide")
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Token") == "device-token-ide")
+            let json = try #require(
+                JSONSerialization.jsonObject(with: requestBody(request)) as? [String: Any]
+            )
+            switch request.url?.path {
+            case "/v1/ide/terminals":
+                #expect(json["workspace_id"] as? String == "workspace-1")
+                #expect(json["argv"] as? [String] == ["/bin/zsh", "-l"])
+                return (201, Data("""
+                {
+                  "id":"terminal-1","kind":"terminal","workspace_id":"workspace-1",
+                  "workspace_name":"Aplicación","status":"running",
+                  "started_at":"2026-07-23T10:01:00Z","ended_at":null,
+                  "exit_code":null,"command":["/bin/zsh","-l"],
+                  "provider":null,"title":"Terminal"
+                }
+                """.utf8))
+            case "/v1/ide/agents":
+                #expect(json["workspace_id"] as? String == "workspace-1")
+                #expect(json["provider"] as? String == "codex")
+                #expect(json["prompt"] as? String == "Corrige las pruebas")
+                return (201, Data("""
+                {
+                  "id":"agent-1","kind":"agent","workspace_id":"workspace-1",
+                  "workspace_name":"Aplicación","status":"running",
+                  "started_at":"2026-07-23T10:02:00Z","ended_at":null,
+                  "exit_code":null,"command":null,"provider":"codex",
+                  "title":"Pruebas"
+                }
+                """.utf8))
+            default:
+                throw URLError(.badURL)
+            }
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        let terminal = try await api.ideCreateTerminal(
+            workspaceId: "workspace-1",
+            argv: ["/bin/zsh", "-l"],
+            title: "Terminal"
+        )
+        let agent = try await api.ideCreateAgent(
+            workspaceId: "workspace-1",
+            prompt: "Corrige las pruebas",
+            provider: .codex,
+            title: "Pruebas"
+        )
+
+        #expect(terminal.command == ["/bin/zsh", "-l"])
+        #expect(agent.provider == "codex")
+    }
+
+    @Test func ideRehidrataTerminalPorCursorYEnviaEntrada() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-ide", refresh: "refresh-ide")
+        let durable = LockedDevicePairingStore(
+            deviceId: "device-ide",
+            deviceToken: "device-token-ide"
+        )
+        let calls = LockedCounter()
+        let session = stubSession { request in
+            defer { calls.increment() }
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Id") == "device-ide")
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Token") == "device-token-ide")
+            if request.httpMethod == "GET" {
+                #expect(request.url?.path == "/v1/ide/terminals/terminal-1")
+                let url = try #require(request.url)
+                let components = try #require(
+                    URLComponents(url: url, resolvingAgainstBaseURL: false)
+                )
+                #expect(components.queryItems?.first(where: { $0.name == "cursor" })?.value == "7")
+                return (200, Data("""
+                {
+                  "session":{
+                    "id":"terminal-1","kind":"terminal","workspace_id":"workspace-1",
+                    "workspace_name":"App","status":"running",
+                    "started_at":"2026-07-23T10:01:00Z","ended_at":null,
+                    "exit_code":null,"command":["/bin/zsh"],"provider":null,
+                    "title":"Terminal"
+                  },
+                  "events":[{
+                    "cursor":8,"type":"output","text":"listo\\n",
+                    "stream":"stdout","timestamp":"2026-07-23T10:02:00Z"
+                  }],
+                  "next_cursor":8
+                }
+                """.utf8))
+            }
+
+            #expect(request.url?.path == "/v1/ide/terminals/terminal-1/input")
+            let json = try #require(
+                JSONSerialization.jsonObject(with: requestBody(request)) as? [String: String]
+            )
+            #expect(json["data"] == "pwd\n")
+            return (204, Data())
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        let read = try await api.ideReadTerminal(id: "terminal-1", cursor: 7)
+        try await api.ideTerminalInput(id: "terminal-1", data: "pwd\n")
+
+        #expect(read.nextCursor == 8)
+        #expect(read.events.first?.text == "listo\n")
+        #expect(calls.value == 2)
+    }
+
+    @Test func credencialDurableSoloSaleEnIDEAvanzado() async throws {
+        let tokens = LockedAuthTokenStore(access: "access-ide", refresh: "refresh-ide")
+        let durable = LockedDevicePairingStore(
+            deviceId: "device-ide",
+            deviceToken: "device-token-super-secreto"
+        )
+        let calls = LockedCounter()
+        let session = stubSession { request in
+            defer { calls.increment() }
+            if request.url?.path == "/v1/ide/status" {
+                #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Id") == nil)
+                #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Token") == nil)
+                return (200, Data(#"{"connected":true}"#.utf8))
+            }
+            #expect(request.url?.path == "/v1/ide/workspaces")
+            #expect(request.value(forHTTPHeaderField: "X-Edecan-Device-Id") == "device-ide")
+            #expect(
+                request.value(forHTTPHeaderField: "X-Edecan-Device-Token")
+                    == "device-token-super-secreto"
+            )
+            return (200, Data(#"{"workspaces":[]}"#.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens,
+            devicePairingStore: durable
+        )
+
+        _ = try await api.ideStatus()
+        let workspaces = try await api.ideWorkspaces()
+
+        #expect(workspaces.isEmpty)
+        #expect(calls.value == 2)
+    }
+
     private func stubSession(
         handler: @escaping @Sendable (URLRequest) async throws -> (Int, Data)
     ) -> URLSession {

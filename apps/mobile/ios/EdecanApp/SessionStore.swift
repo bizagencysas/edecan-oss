@@ -26,6 +26,7 @@ public final class SessionStore {
     private var baseURLActual: URL?
     private let chatLocalState = ChatLocalStateStore()
     private let pendingChatAttemptStore = PendingChatAttemptStore()
+    private let ideLocalState = IDELocalStateStore()
 
     public init() {}
 
@@ -142,6 +143,7 @@ public final class SessionStore {
     private func limpiarEstadoLocalDelChat() {
         chatLocalState.clearAll()
         pendingChatAttemptStore.clear()
+        ideLocalState.clearAll()
     }
 
     // MARK: - Emparejamiento por dispositivo (WP-V4-01, contrato en paralelo)

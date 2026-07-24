@@ -28,6 +28,15 @@ final class RemotoViewModel {
     private(set) var terminando = false
     private(set) var enviandoInput = false
     var errorMensaje: String?
+    /// Mensaje positivo efímero (portapapeles/archivos): "Guardado en tu Mac",
+    /// etc. Separado de ``errorMensaje`` para no pintarlo como fallo.
+    var infoMensaje: String?
+
+    // Portapapeles y transferencia de archivos (WP-V7) — solo sesiones
+    // `kind="control"` ya `active`, igual que el input.
+    private(set) var archivosCompartidos: [RemoteSharedFile] = []
+    private(set) var cargandoArchivos = false
+    private(set) var transfiriendo = false
 
     /// Toggle de "actualizar automático" — ``RemotoView`` lo enlaza a un
     /// `Toggle` y llama ``iniciarPollingFrame(client:)``/``detenerPollingFrame()``
@@ -63,6 +72,7 @@ final class RemotoViewModel {
         } catch APIClient.APIError.servidor(_, let mensaje) {
             errorMensaje = mensaje
         } catch {
+            guard !Self.esCancelacion(error) else { return }
             errorMensaje = error.localizedDescription
         }
     }
@@ -99,6 +109,10 @@ final class RemotoViewModel {
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
             }
         } catch {
+            // Una petición cancelada (Terminar, apagar el toggle, salir de la
+            // pantalla) NO es un error: mostrarla pintaba
+            // "Swift.CancellationError error 1" justo al terminar la sesión.
+            guard !Self.esCancelacion(error) else { return }
             errorMensaje = error.localizedDescription
         }
     }
@@ -144,6 +158,11 @@ final class RemotoViewModel {
         do {
             _ = try await client.endRemoteSession(id: sesionActual.id)
         } catch {
+            guard !Self.esCancelacion(error) else {
+                sesion = nil
+                frame = nil
+                return
+            }
             errorMensaje = error.localizedDescription
         }
         sesion = nil
@@ -200,8 +219,124 @@ final class RemotoViewModel {
                 sesion = sesionActual.conEstado(status == 403 ? "denied" : "ended")
             }
         } catch {
+            guard !Self.esCancelacion(error) else { return }
             errorMensaje = error.localizedDescription
         }
+    }
+
+    // MARK: - Portapapeles
+
+    /// Trae el portapapeles (texto) de la Mac. Devuelve el texto para que la
+    /// vista lo copie al `UIPasteboard` del teléfono (UIKit no vive acá).
+    func traerPortapapeles(client: APIClient?) async -> String? {
+        guard let client, let sesionActual = sesion, sesionActual.esControl else { return nil }
+        transfiriendo = true
+        errorMensaje = nil
+        infoMensaje = nil
+        defer { transfiriendo = false }
+        do {
+            return try await client.getRemoteClipboard(sessionId: sesionActual.id)
+        } catch APIClient.APIError.servidor(_, let mensaje) {
+            errorMensaje = mensaje
+            return nil
+        } catch {
+            guard !Self.esCancelacion(error) else { return nil }
+            errorMensaje = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Envía `texto` (el portapapeles del teléfono) al portapapeles de la Mac.
+    func enviarPortapapeles(_ texto: String, client: APIClient?) async {
+        guard let client, let sesionActual = sesion, sesionActual.esControl else { return }
+        transfiriendo = true
+        errorMensaje = nil
+        infoMensaje = nil
+        defer { transfiriendo = false }
+        do {
+            try await client.setRemoteClipboard(sessionId: sesionActual.id, text: texto)
+            infoMensaje = "Pegado en el portapapeles de tu Mac."
+        } catch APIClient.APIError.servidor(_, let mensaje) {
+            errorMensaje = mensaje
+        } catch {
+            guard !Self.esCancelacion(error) else { return }
+            errorMensaje = error.localizedDescription
+        }
+    }
+
+    // MARK: - Transferencia de archivos
+
+    /// Refresca la lista de la carpeta compartida de la Mac.
+    func listarArchivos(client: APIClient?) async {
+        guard let client, let sesionActual = sesion, sesionActual.esControl else { return }
+        cargandoArchivos = true
+        errorMensaje = nil
+        defer { cargandoArchivos = false }
+        do {
+            archivosCompartidos = try await client.listRemoteFiles(sessionId: sesionActual.id).files
+        } catch APIClient.APIError.servidor(_, let mensaje) {
+            errorMensaje = mensaje
+        } catch {
+            guard !Self.esCancelacion(error) else { return }
+            errorMensaje = error.localizedDescription
+        }
+    }
+
+    /// Teléfono → Mac: sube `datos` con nombre `nombre` a la carpeta
+    /// compartida. Refresca la lista al terminar.
+    func enviarArchivo(nombre: String, datos: Data, client: APIClient?) async {
+        guard let client, let sesionActual = sesion, sesionActual.esControl else { return }
+        transfiriendo = true
+        errorMensaje = nil
+        infoMensaje = nil
+        defer { transfiriendo = false }
+        do {
+            let guardado = try await client.pushRemoteFile(
+                sessionId: sesionActual.id, name: nombre, contentB64: datos.base64EncodedString()
+            )
+            infoMensaje = "Guardado en tu Mac como «\(guardado.name)»."
+            await listarArchivos(client: client)
+        } catch APIClient.APIError.servidor(_, let mensaje) {
+            errorMensaje = mensaje
+        } catch {
+            guard !Self.esCancelacion(error) else { return }
+            errorMensaje = error.localizedDescription
+        }
+    }
+
+    /// Mac → teléfono: descarga `nombre` de la carpeta compartida. Devuelve
+    /// `(datos, nombre)` para que la vista los guarde/comparta.
+    func traerArchivo(nombre: String, client: APIClient?) async -> (Data, String)? {
+        guard let client, let sesionActual = sesion, sesionActual.esControl else { return nil }
+        transfiriendo = true
+        errorMensaje = nil
+        infoMensaje = nil
+        defer { transfiriendo = false }
+        do {
+            let archivo = try await client.pullRemoteFile(sessionId: sesionActual.id, name: nombre)
+            guard let datos = Data(base64Encoded: archivo.contentB64) else {
+                errorMensaje = "El archivo llegó con un formato inválido."
+                return nil
+            }
+            return (datos, archivo.name)
+        } catch APIClient.APIError.servidor(_, let mensaje) {
+            errorMensaje = mensaje
+            return nil
+        } catch {
+            guard !Self.esCancelacion(error) else { return nil }
+            errorMensaje = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// `true` para las dos formas en que una petición cancelada aflora aquí:
+    /// `Swift.CancellationError` (cancelación cooperativa de la `Task`) y
+    /// `URLError.cancelled` (URLSession canceló el request en vuelo). Ninguna
+    /// de las dos debe llegar a `errorMensaje`: cancelar es siempre resultado
+    /// de una acción deliberada del usuario, no un fallo.
+    private static func esCancelacion(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
     }
 
     // MARK: - Limpieza

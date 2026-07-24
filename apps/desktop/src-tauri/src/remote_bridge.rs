@@ -10,6 +10,26 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
 
+// Debounce por proceso de los diálogos de permiso de macOS: el teléfono
+// pide frames/input en bucle y sin este candado cada intento re-abriría el
+// modal del sistema. Una sola solicitud por ejecución basta para que el
+// permiso "llegue" a la Mac; los intentos siguientes vuelven al preflight
+// silencioso hasta que la persona conceda y (para Grabación de pantalla)
+// reinicie Edecán.
+#[cfg(target_os = "macos")]
+static SCREEN_CAPTURE_PROMPT_SHOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+// `CGPreflightScreenCaptureAccess` puede seguir devolviendo false dentro del
+// MISMO proceso aunque la persona haya concedido en el diálogo recién
+// mostrado — este flag recuerda esa concesión "en caliente" para no negar
+// las capturas siguientes hasta el próximo arranque.
+#[cfg(target_os = "macos")]
+static SCREEN_CAPTURE_GRANTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static ACCESSIBILITY_PROMPT_SHOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Clone, Debug)]
 pub struct RemoteBridgeCredentials {
     pub socket_path: String,
@@ -144,12 +164,56 @@ fn write_response(
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
+    static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
 }
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFDictionaryCreate(
+        allocator: *const std::ffi::c_void,
+        keys: *const *const std::ffi::c_void,
+        values: *const *const std::ffi::c_void,
+        num_values: isize,
+        key_call_backs: *const std::ffi::c_void,
+        value_call_backs: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
+    fn CFRelease(cf: *const std::ffi::c_void);
+    static kCFBooleanTrue: *const std::ffi::c_void;
+}
+
+/// `AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true})`: la
+/// única API de Accesibilidad que hace aparecer el diálogo del sistema.
+/// Callbacks NULL a propósito: la clave es el MISMO puntero constante del
+/// framework que AX consulta por identidad, así que no hace falta retain ni
+/// CFEqual, y `CFRelease` del diccionario no toca las constantes.
+#[cfg(target_os = "macos")]
+fn request_accessibility_with_prompt() -> bool {
+    unsafe {
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let options = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+        let trusted = AXIsProcessTrustedWithOptions(options);
+        if !options.is_null() {
+            CFRelease(options);
+        }
+        trusted
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -158,14 +222,35 @@ fn capture_screen(
 ) -> Result<serde_json::Value, String> {
     use base64::Engine as _;
 
-    // Esta consulta no abre ningún diálogo. El teléfono pide frames de forma
-    // continua: lanzar `screencapture` sin autorización haría que macOS
-    // mostrara el mismo modal una y otra vez. El helper autorizado es el
-    // capturador primario; este bridge solo es un fallback seguro.
+    // El preflight no abre ningún diálogo. Antes, ningún camino iniciado
+    // desde el teléfono disparaba la solicitud del sistema: el usuario
+    // esperaba en la Mac un permiso que jamás llegaba. Ahora, la PRIMERA vez
+    // por ejecución que el preflight falla, se pide el permiso de verdad
+    // (`CGRequestScreenCaptureAccess`): macOS muestra su diálogo y/o
+    // re-registra a Edecán con la firma actual — clave cuando una concesión
+    // vieja quedó anclada al cdhash de otra build y el interruptor se ve
+    // encendido pero tccd lo ignora. El debounce evita el modal en bucle con
+    // el polling continuo de frames.
     if !unsafe { CGPreflightScreenCaptureAccess() } {
-        return Err(
-            "Grabacion de pantalla no esta autorizada para el proceso principal de Edecan".into(),
-        );
+        use std::sync::atomic::Ordering;
+        let granted_now = if !SCREEN_CAPTURE_PROMPT_SHOWN.swap(true, Ordering::SeqCst) {
+            let granted = unsafe { CGRequestScreenCaptureAccess() };
+            SCREEN_CAPTURE_GRANTED.store(granted, Ordering::SeqCst);
+            granted
+        } else {
+            SCREEN_CAPTURE_GRANTED.load(Ordering::SeqCst)
+        };
+        if !granted_now {
+            return Err(
+                "Grabacion de pantalla no esta autorizada para el proceso principal de Edecan. \
+                 Acepta la solicitud que macOS muestra en la Mac o activa Edecan en Configuracion \
+                 del Sistema > Privacidad y seguridad > Grabacion de audio del sistema y pantalla; \
+                 si ya estaba activado, apaga y vuelve a encender su interruptor (una \
+                 actualizacion de Edecan invalida el permiso anterior) y despues sal de Edecan \
+                 por completo y abrelo de nuevo."
+                    .into(),
+            );
+        }
     }
 
     let display = params
@@ -241,8 +326,24 @@ fn execute_input(
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use core_graphics::geometry::CGPoint;
 
+    // Mismo criterio que `capture_screen`: la primera vez por ejecución que
+    // falta Accesibilidad se dispara el diálogo real del sistema (la única
+    // vía es `AXIsProcessTrustedWithOptions` con prompt; Accesibilidad no
+    // tiene equivalente de `CGRequestScreenCaptureAccess`). Así el permiso
+    // sí "llega" a la Mac en vez de fallar en silencio hacia el teléfono.
     if !unsafe { AXIsProcessTrusted() } {
-        return Err("Accesibilidad no esta autorizada para la app principal de Edecan".into());
+        let granted_now = !ACCESSIBILITY_PROMPT_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst)
+            && request_accessibility_with_prompt();
+        if !granted_now {
+            return Err(
+                "Accesibilidad no esta autorizada para la app principal de Edecan. Acepta la \
+                 solicitud que macOS muestra en la Mac o activa Edecan en Configuracion del \
+                 Sistema > Privacidad y seguridad > Accesibilidad; si ya estaba activado, apaga \
+                 y vuelve a encender su interruptor (una actualizacion de Edecan invalida el \
+                 permiso anterior)."
+                    .into(),
+            );
+        }
     }
     let source = || {
         CGEventSource::new(CGEventSourceStateID::HIDSystemState)

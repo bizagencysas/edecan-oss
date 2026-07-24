@@ -56,6 +56,28 @@ def test_sanitize_params_handles_none():
     assert audit.sanitize_params(None) == {}
 
 
+def test_sanitize_params_recursively_redacts_execution_and_secret_fields():
+    secret = "device-token-that-must-never-be-written"
+    sanitized = audit.sanitize_params(
+        {
+            "workspace_id": "workspace-1",
+            "argv": ["python", "-c", secret],
+            "prompt": secret,
+            "input": secret,
+            "nested": {
+                "client_secret": secret,
+                "api_key": secret,
+                "safe": "visible",
+            },
+        }
+    )
+
+    assert secret not in json.dumps(sanitized)
+    assert sanitized["workspace_id"] == "workspace-1"
+    assert sanitized["nested"]["safe"] == "visible"
+    assert "elementos" in sanitized["argv"]
+
+
 def test_log_action_output_never_contains_raw_sensitive_content(tmp_path):
     log_path = tmp_path / "companion.log"
     secret = "informacion-muy-secreta-que-no-deberia-quedar-en-el-log"

@@ -211,7 +211,8 @@ avanzadas** para self-hosting y recuperación, no como onboarding principal.
   registro, `POST`/`DELETE /v1/devices`), `ChatViewModel` (chat SSE +
   confirmaciones), `NegociosViewModel` (KPIs + facturas), `VozViewModel`
   (push-to-talk), `PerfilViewModel` (credenciales LLM), `IdeViewModel`
-  (árbol/archivo de solo lectura), `MisionesViewModel` (misiones + *polling*),
+  (proyectos autorizados, editor, búsqueda, agente/terminal persistentes y
+  Git tipado), `MisionesViewModel` (misiones + *polling*),
   `AutomatizacionesViewModel` (Switch optimista + corridas),
   `RecordatoriosViewModel` (pendientes/completados) y `RemotoViewModel`
   (visor + input remoto, *polling*). `ui/components/
@@ -297,11 +298,11 @@ UI ni renunciar a APIs nativas cuando hagan falta.
   `DELETE /v1/devices` en login/logout (contrato de fase v4, "mejor
   esfuerzo" — nunca bloquea el flujo si el endpoint no está listo del lado
   del servidor todavía).
-- **IDE de solo lectura**: Modo avanzado en Ajustes — árbol del sandbox del companion de
-  escritorio emparejado (`GET /v1/ide/tree`, aplanado con sangría por
-  profundidad) y contenido de un archivo (`GET /v1/ide/file`, con aviso si
-  es binario). `EmptyState` si no hay companion conectado (`GET
-  /v1/ide/status`).
+- **Estudio de código completo**: selector de proyectos autorizados, árbol,
+  editor, agente Codex/Claude con progreso incremental, terminal interactiva
+  persistente y Git tipado. Las sesiones se reconstruyen desde la computadora
+  al volver a la app; un corte temporal no reenvía ni cancela el trabajo. Ver
+  [`ide.md`](./ide.md).
 
 ### Pantallas v5 (fase v5): Misiones, Automatizaciones, Recordatorios
 
@@ -405,11 +406,6 @@ experiencia nativa de iOS.
   futuro, ver "Roadmap" justo abajo.
 
 ### Roadmap (siguiente iteración, no en esta app todavía)
-
-- **Editar/correr/buscar en el IDE**: el resto de `/v1/ide` (`PUT
-  /v1/ide/file`, `POST /v1/ide/edit`, `POST /v1/ide/run`, `POST
-  /v1/ide/search`) — hoy `IdeScreen` es solo lectura (árbol + ver un
-  archivo).
 - **Telefonía real / voz avanzada**: el micrófono de Chat hoy es push-to-talk
   simple (una grabación, una respuesta) contra el mismo asistente — la
   telefonía Twilio bring-your-own (`docs/voz-telefonia.md`) y un modo

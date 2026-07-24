@@ -31,6 +31,7 @@ import pytest
 from conftest import auth_headers
 
 from edecan_api.companion_manager import CompanionError
+from edecan_api.ide_security import PairedIDEDevice
 from edecan_api.routers import ide
 
 
@@ -67,6 +68,21 @@ def _set_fake_manager(app, fake_manager: _FakeCompanionManager) -> None:
 
 def _headers() -> dict[str, str]:
     return auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+
+
+@pytest.fixture(autouse=True)
+def _paired_device_for_router_contract_tests(app):
+    """Estos tests cubren mapeo router→companion, no criptografía del pairing.
+
+    La frontera real tiene su suite dedicada en ``test_ide_security.py``.
+    """
+
+    async def paired() -> PairedIDEDevice:
+        return PairedIDEDevice(device_id=uuid.uuid4())
+
+    app.dependency_overrides[ide.require_paired_ide_device] = paired
+    yield
+    app.dependency_overrides.pop(ide.require_paired_ide_device, None)
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +413,221 @@ async def test_companion_ide_flag_is_true_for_every_real_plan(app, client, plan_
     response = await client.get("/v1/ide/status", headers=headers)
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Workspaces, sesiones durables y Git tipado
+# ---------------------------------------------------------------------------
+
+
+async def test_workspace_create_maps_to_companion_and_returns_direct_workspace(
+    app, client
+):
+    workspace = {
+        "id": str(uuid.uuid4()),
+        "name": "Edecán",
+        "path": "/tmp/edecan",
+        "active": True,
+        "created_at": "2026-07-23T12:00:00+00:00",
+    }
+    fake_manager = _FakeCompanionManager(
+        response={"ok": True, "result": {"workspace": workspace}}
+    )
+    _set_fake_manager(app, fake_manager)
+
+    response = await client.post(
+        "/v1/ide/workspaces",
+        headers=_headers(),
+        json={"path": "/tmp/edecan", "name": "Edecán"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == workspace
+    _, action, params = fake_manager.calls[0]
+    assert action == "ide_workspace_authorize"
+    assert params == {"path": "/tmp/edecan", "name": "Edecán"}
+
+
+async def test_workspace_scoped_file_never_sends_an_absolute_root(app, client):
+    fake_manager = _FakeCompanionManager(
+        response={"ok": True, "result": {"path": "src/a.py", "content": "x"}}
+    )
+    _set_fake_manager(app, fake_manager)
+    workspace_id = str(uuid.uuid4())
+
+    response = await client.get(
+        f"/v1/ide/workspaces/{workspace_id}/file?path=src/a.py",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    _, action, params = fake_manager.calls[0]
+    assert action == "ide_read_file"
+    assert params == {"workspace_id": workspace_id, "path": "src/a.py"}
+
+
+async def test_terminal_start_returns_direct_session_and_uses_long_approval_timeout(
+    app, client
+):
+    session = {
+        "id": str(uuid.uuid4()),
+        "kind": "terminal",
+        "workspace_id": str(uuid.uuid4()),
+        "workspace_name": "Proyecto",
+        "title": "Terminal",
+        "status": "running",
+        "started_at": "2026-07-23T12:00:00+00:00",
+        "ended_at": None,
+        "exit_code": None,
+        "command": ["/bin/zsh"],
+    }
+    seen_timeouts: list[float] = []
+
+    class _TimeoutSpy(_FakeCompanionManager):
+        async def send_command(self, tenant_id, action, params, timeout=30):
+            seen_timeouts.append(timeout)
+            return await super().send_command(tenant_id, action, params, timeout=timeout)
+
+    fake_manager = _TimeoutSpy(
+        response={"ok": True, "result": {"session": session}}
+    )
+    _set_fake_manager(app, fake_manager)
+
+    response = await client.post(
+        "/v1/ide/terminals",
+        headers=_headers(),
+        json={"workspace_id": session["workspace_id"], "argv": ["/bin/zsh"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == session
+    assert seen_timeouts == [ide.IDE_APPROVAL_TIMEOUT_SECONDS]
+    _, action, params = fake_manager.calls[0]
+    assert action == "ide_terminal_start"
+    assert params == {
+        "workspace_id": session["workspace_id"],
+        "argv": ["/bin/zsh"],
+    }
+
+
+async def test_terminal_list_filter_and_cursor_are_forwarded(app, client):
+    fake_manager = _FakeCompanionManager(
+        response={"ok": True, "result": {"sessions": []}}
+    )
+    _set_fake_manager(app, fake_manager)
+    workspace_id = str(uuid.uuid4())
+
+    response = await client.get(
+        f"/v1/ide/terminals?workspace_id={workspace_id}", headers=_headers()
+    )
+    assert response.status_code == 200
+    assert fake_manager.calls[-1][1:] == (
+        "ide_terminal_list",
+        {"workspace_id": workspace_id},
+    )
+
+    fake_manager.response = {
+        "ok": True,
+        "result": {"session": {}, "events": [], "next_cursor": 7},
+    }
+    response = await client.get("/v1/ide/terminals/session-1?cursor=7", headers=_headers())
+    assert response.status_code == 200
+    assert fake_manager.calls[-1][1:] == (
+        "ide_terminal_read",
+        {"session_id": "session-1", "cursor": 7},
+    )
+
+
+async def test_agent_provider_is_validated_and_start_is_forwarded(app, client):
+    fake_manager = _FakeCompanionManager(
+        response={
+            "ok": True,
+            "result": {
+                "session": {
+                    "id": "agent-1",
+                    "kind": "agent",
+                    "workspace_id": "workspace-1",
+                    "workspace_name": "Proyecto",
+                    "title": "Agente",
+                    "status": "running",
+                    "started_at": "2026-07-23T12:00:00+00:00",
+                    "ended_at": None,
+                    "exit_code": None,
+                    "provider": "codex",
+                }
+            },
+        }
+    )
+    _set_fake_manager(app, fake_manager)
+
+    invalid = await client.post(
+        "/v1/ide/agents",
+        headers=_headers(),
+        json={"workspace_id": "workspace-1", "prompt": "Hazlo", "provider": "otro"},
+    )
+    assert invalid.status_code == 422
+
+    response = await client.post(
+        "/v1/ide/agents",
+        headers=_headers(),
+        json={
+            "workspace_id": "workspace-1",
+            "prompt": "Hazlo",
+            "provider": "auto",
+            "model": "gpt-test",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == "agent-1"
+    assert fake_manager.calls[-1][1:] == (
+        "ide_agent_start",
+        {
+            "workspace_id": "workspace-1",
+            "prompt": "Hazlo",
+            "provider": "auto",
+            "model": "gpt-test",
+        },
+    )
+
+
+async def test_git_diff_is_typed_and_push_gets_extended_timeout(app, client):
+    fake_manager = _FakeCompanionManager(
+        response={"ok": True, "result": {"text": "", "truncated": False}}
+    )
+    seen_timeouts: list[float] = []
+
+    class _TimeoutSpy(_FakeCompanionManager):
+        async def send_command(self, tenant_id, action, params, timeout=30):
+            seen_timeouts.append(timeout)
+            return await super().send_command(tenant_id, action, params, timeout=timeout)
+
+    spy = _TimeoutSpy(response=fake_manager.response)
+    _set_fake_manager(app, spy)
+
+    response = await client.get(
+        "/v1/ide/workspaces/workspace-1/git/diff?staged=true&path=src/a.py",
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    assert spy.calls[-1][1:] == (
+        "ide_git_diff",
+        {"workspace_id": "workspace-1", "staged": True, "paths": ["src/a.py"]},
+    )
+
+    spy.response = {"ok": True, "result": {"ok": True}}
+    response = await client.post(
+        "/v1/ide/workspaces/workspace-1/git/push",
+        headers=_headers(),
+        json={"remote": None, "branch": "main", "set_upstream": True},
+    )
+    assert response.status_code == 200
+    assert spy.calls[-1][1:] == (
+        "ide_git_push",
+        {
+            "workspace_id": "workspace-1",
+            "branch": "main",
+            "set_upstream": True,
+            "remote": "origin",
+        },
+    )
+    assert seen_timeouts[-1] == ide.IDE_GIT_PUSH_TIMEOUT_SECONDS

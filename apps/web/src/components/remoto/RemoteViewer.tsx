@@ -22,7 +22,7 @@ import { Badge, Button, Card, CardBody, CardHeader } from "@/components/ui";
 import type { KeyInputPayload, PointerInputPayload, RemoteFrame, RemoteSession } from "@/lib/api-remoto";
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Esperando aprobación del companion…",
+  pending: "Conectando con tu computadora…",
   active: "Activa",
   ended: "Terminada",
   denied: "Denegada en el companion",

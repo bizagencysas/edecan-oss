@@ -8,8 +8,10 @@ import cc.edecan.shared.REMOTE_KIND_VIEW
 import cc.edecan.shared.REMOTE_STATUS_ACTIVE
 import cc.edecan.shared.REMOTE_STATUS_DENIED
 import cc.edecan.shared.REMOTE_STATUS_ENDED
+import android.util.Base64
 import cc.edecan.shared.RemoteFrame
 import cc.edecan.shared.RemoteSession
+import cc.edecan.shared.RemoteSharedFile
 import cc.edecan.shared.haTerminado
 import cc.edecan.shared.remoteFramePollDelayMillis
 import kotlinx.coroutines.Job
@@ -74,6 +76,13 @@ data class RemotoUiState(
     val errorFrame: String? = null,
     val enviandoInput: Boolean = false,
     val terminando: Boolean = false,
+    // Portapapeles y transferencia de archivos (WP-V7).
+    /** Mensaje positivo efímero ("Guardado en tu Mac…"), separado de
+     * [errorFrame] para no pintarlo como fallo. */
+    val infoMensaje: String? = null,
+    val archivosCompartidos: List<RemoteSharedFile> = emptyList(),
+    val cargandoArchivos: Boolean = false,
+    val transfiriendo: Boolean = false,
 )
 
 /**
@@ -326,6 +335,106 @@ class RemotoViewModel : ViewModel() {
             pausarPolling()
             val nuevoEstado = if (status == 403) REMOTE_STATUS_DENIED else REMOTE_STATUS_ENDED
             _uiState.update { estado -> estado.copy(sesionActual = estado.sesionActual?.copy(status = nuevoEstado)) }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Portapapeles y transferencia de archivos (`kind = "control"` activo).
+    // El clipboard/archivos de Android (ClipboardManager, ContentResolver)
+    // viven en la UI: este ViewModel solo hace red y codifica/decodifica
+    // base64 con `android.util.Base64`.
+    // -------------------------------------------------------------------
+
+    /** Descarta el mensaje positivo actual (lo llama `RemotoScreen` tras
+     * mostrarlo, o al abrir/cerrar el panel). */
+    fun descartarInfo() {
+        _uiState.update { it.copy(infoMensaje = null) }
+    }
+
+    /** Trae el portapapeles (texto) de la Mac; [onTexto] lo recibe para
+     * copiarlo al portapapeles de este teléfono (UI). */
+    fun traerPortapapeles(api: EdecanApi, onTexto: (String) -> Unit) {
+        val sesionId = _uiState.value.sesionActual?.id ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(transfiriendo = true, errorFrame = null, infoMensaje = null) }
+            try {
+                onTexto(api.getRemoteClipboard(sesionId))
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(errorFrame = e.message) }
+            } finally {
+                _uiState.update { it.copy(transfiriendo = false) }
+            }
+        }
+    }
+
+    /** Envía [texto] (el portapapeles de este teléfono) al de la Mac. */
+    fun enviarPortapapeles(api: EdecanApi, texto: String) {
+        val sesionId = _uiState.value.sesionActual?.id ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(transfiriendo = true, errorFrame = null, infoMensaje = null) }
+            try {
+                api.setRemoteClipboard(sesionId, texto)
+                _uiState.update { it.copy(infoMensaje = "Pegado en el portapapeles de tu Mac.") }
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(errorFrame = e.message) }
+            } finally {
+                _uiState.update { it.copy(transfiriendo = false) }
+            }
+        }
+    }
+
+    /** Refresca la lista de la carpeta compartida de la Mac. */
+    fun listarArchivos(api: EdecanApi) {
+        val sesionId = _uiState.value.sesionActual?.id ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(cargandoArchivos = true, errorFrame = null) }
+            try {
+                val lista = api.listRemoteFiles(sesionId).files
+                _uiState.update { it.copy(archivosCompartidos = lista) }
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(errorFrame = e.message) }
+            } finally {
+                _uiState.update { it.copy(cargandoArchivos = false) }
+            }
+        }
+    }
+
+    /** Teléfono → Mac: sube [datos] con nombre [nombre]. Refresca la lista. */
+    fun enviarArchivo(api: EdecanApi, nombre: String, datos: ByteArray) {
+        val sesionId = _uiState.value.sesionActual?.id ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(transfiriendo = true, errorFrame = null, infoMensaje = null) }
+            try {
+                val b64 = Base64.encodeToString(datos, Base64.NO_WRAP)
+                val guardado = api.pushRemoteFile(sesionId, nombre, b64)
+                _uiState.update { it.copy(infoMensaje = "Guardado en tu Mac como «${guardado.name}».") }
+                val lista = api.listRemoteFiles(sesionId).files
+                _uiState.update { it.copy(archivosCompartidos = lista) }
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(errorFrame = e.message) }
+            } finally {
+                _uiState.update { it.copy(transfiriendo = false) }
+            }
+        }
+    }
+
+    /** Mac → teléfono: descarga [nombre] y entrega `(bytes, nombre)` a
+     * [onArchivo] para que la UI lo guarde/comparta. */
+    fun traerArchivo(api: EdecanApi, nombre: String, onArchivo: (ByteArray, String) -> Unit) {
+        val sesionId = _uiState.value.sesionActual?.id ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(transfiriendo = true, errorFrame = null, infoMensaje = null) }
+            try {
+                val archivo = api.pullRemoteFile(sesionId, nombre)
+                val datos = Base64.decode(archivo.contentB64, Base64.DEFAULT)
+                onArchivo(datos, archivo.name)
+            } catch (e: ApiException) {
+                _uiState.update { it.copy(errorFrame = e.message) }
+            } catch (e: IllegalArgumentException) {
+                _uiState.update { it.copy(errorFrame = "El archivo llegó con un formato inválido.") }
+            } finally {
+                _uiState.update { it.copy(transfiriendo = false) }
+            }
         }
     }
 

@@ -438,13 +438,21 @@ struct ChatView: View {
 
     private func fichaAdjunto(_ adjunto: AdjuntoPendiente) -> some View {
         HStack(spacing: 7) {
-            switch adjunto.estado {
-            case .subiendo:
-                ProgressView().controlSize(.small)
-            case .listo:
-                Image(systemName: "doc.fill").foregroundStyle(EdecanTheme.azul)
-            case .fallido:
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            if adjunto.mimeType.lowercased().hasPrefix("image/") {
+                MiniaturaAdjuntoLocal(
+                    url: adjunto.localURL,
+                    filename: adjunto.filename,
+                    estado: adjunto.estado
+                )
+            } else {
+                switch adjunto.estado {
+                case .subiendo:
+                    ProgressView().controlSize(.small)
+                case .listo:
+                    Image(systemName: "doc.fill").foregroundStyle(EdecanTheme.azul)
+                case .fallido:
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
             }
             Text(adjunto.filename)
                 .font(.caption)
@@ -1093,6 +1101,56 @@ private struct AdjuntoPendiente: Identifiable, Equatable {
     var estaListo: Bool {
         if case .listo = estado { return true }
         return false
+    }
+}
+
+private struct MiniaturaAdjuntoLocal: View {
+    let url: URL
+    let filename: String
+    let estado: AdjuntoPendiente.Estado
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Color.secondary.opacity(0.10)
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+            }
+
+            switch estado {
+            case .subiendo:
+                Color.black.opacity(0.22)
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+            case .fallido:
+                Color.black.opacity(0.18)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.white, .red)
+            case .listo:
+                EmptyView()
+            }
+        }
+        .frame(width: 48, height: 48)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: url) {
+            guard image == nil else { return }
+            let tieneAcceso = url.startAccessingSecurityScopedResource()
+            defer {
+                if tieneAcceso { url.stopAccessingSecurityScopedResource() }
+            }
+            let thumbnail = await Task.detached(priority: .userInitiated) {
+                cgImagePreviaAcotada(url: url, maxPixelSize: 360)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = thumbnail.map(UIImage.init(cgImage:))
+        }
+        .accessibilityLabel("Vista previa de \(filename)")
     }
 }
 

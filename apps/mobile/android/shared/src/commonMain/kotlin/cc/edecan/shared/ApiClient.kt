@@ -3,6 +3,7 @@ package cc.edecan.shared
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.delete
 import io.ktor.client.request.forms.formData
@@ -10,6 +11,7 @@ import io.ktor.client.request.forms.InputProvider
 import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -53,6 +55,12 @@ sealed class ApiException(message: String) : Exception(message) {
 
     class RespuestaInvalida :
         ApiException("El servidor envió una respuesta que no se pudo interpretar.")
+
+    class DispositivoNoEmparejado :
+        ApiException(
+            "Este estudio requiere un dispositivo emparejado por QR. " +
+                "Vuelve a emparejarlo desde Edecán en tu computadora.",
+        )
 }
 
 @Serializable
@@ -80,6 +88,50 @@ private data class RenombrarConversacionBody(val title: String)
 private data class IdeRunBody(val command: String)
 @Serializable
 private data class IdeWriteBody(val path: String, val content: String)
+@Serializable
+private data class IdeWorkspaceCreateBody(val path: String, val name: String? = null)
+@Serializable
+private data class IdeTerminalCreateBody(
+    @SerialName("workspace_id") val workspaceId: String,
+    val argv: List<String>? = null,
+    val title: String? = null,
+)
+@Serializable
+private data class IdeTerminalInputBody(val data: String)
+@Serializable
+private data class IdeAgentCreateBody(
+    @SerialName("workspace_id") val workspaceId: String,
+    val prompt: String,
+    val provider: String = "auto",
+    val title: String? = null,
+    val model: String? = null,
+)
+@Serializable
+private data class IdeGitPathsBody(val paths: List<String>)
+@Serializable
+private data class IdeGitCommitBody(val message: String)
+@Serializable
+private data class IdeGitBranchBody(val name: String, val checkout: Boolean = false)
+@Serializable
+private data class IdeGitCheckoutBody(val name: String, val create: Boolean = false)
+@Serializable
+private data class IdeGitPushBody(
+    val remote: String = "origin",
+    val branch: String? = null,
+    @SerialName("set_upstream") val setUpstream: Boolean = false,
+)
+
+private data class IdeDeviceIdentity(val id: String, val token: String)
+
+// Deben superar los timeouts del router (`ide.py`) para que sea el servidor
+// quien devuelva el error preciso. El timeout REST global de 30 s no alcanza
+// para aprobaciones humanas ni para un push remoto.
+private const val IDE_RUN_REQUEST_TIMEOUT_MILLIS = 105_000L
+private const val IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS = 80_000L
+private const val IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS = 135_000L
+private const val IDE_GIT_PUSH_REQUEST_TIMEOUT_MILLIS = 260_000L
+private const val IDE_DEVICE_ID_HEADER = "X-Edecan-Device-Id"
+private const val IDE_DEVICE_TOKEN_HEADER = "X-Edecan-Device-Token"
 
 @Serializable
 private data class ErrorBody(val detail: String? = null)
@@ -241,6 +293,15 @@ private data class RemoteKeyInputBody(
     val modifiers: List<String> = emptyList(),
 )
 
+@Serializable
+private data class RemoteClipboardSetBody(val text: String)
+
+@Serializable
+private data class RemoteFilePushBody(
+    val name: String,
+    @SerialName("content_b64") val contentB64: String,
+)
+
 /** `commonMain` es compartido con los targets iOS declarados (ver
  * `shared/build.gradle.kts`) — nada de `java.net.*` aquí, que solo existe en
  * el target JVM/Android. `io.ktor.http.encodeURLParameter` (`CodecsKt`, del
@@ -329,6 +390,7 @@ class EdecanApi private constructor(
     private val refreshMutex = Mutex()
     private val sessionStateMutex = Mutex()
     private var sessionEpoch = 0L
+    private var ideDeviceIdentityInMemory: IdeDeviceIdentity? = null
 
     internal companion object {
         /** Fábrica visible al módulo de pruebas para verificar el contrato
@@ -405,6 +467,10 @@ class EdecanApi private constructor(
             tokenStore.saveDevicePairing(result.deviceId, result.deviceToken)
             tokenStore.saveTokens(result.accessToken, result.refreshToken)
             accessTokenEnMemoria = result.accessToken
+            ideDeviceIdentityInMemory = IdeDeviceIdentity(
+                id = result.deviceId,
+                token = result.deviceToken,
+            )
         }
     }
 
@@ -475,6 +541,7 @@ class EdecanApi private constructor(
             )
             sessionEpoch += 1
             accessTokenEnMemoria = null
+            ideDeviceIdentityInMemory = null
             tokenStore.clearTokens()
             captured
         }
@@ -800,10 +867,254 @@ class EdecanApi private constructor(
         conAutoRefresh { obtener("/v1/ide/file?path=${urlEncode(path)}") }
 
     suspend fun ideRun(command: String): IdeRunOut =
-        conAutoRefresh { enviar("/v1/ide/run", IdeRunBody(command)) }
+        conAutoRefresh {
+            enviar(
+                "/v1/ide/run",
+                IdeRunBody(command),
+                timeoutMillis = IDE_RUN_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
 
     suspend fun ideWrite(path: String, content: String) {
-        conAutoRefresh { actualizarSinCuerpo("/v1/ide/file", IdeWriteBody(path, content)) }
+        conAutoRefresh {
+            actualizarSinCuerpo(
+                "/v1/ide/file",
+                IdeWriteBody(path, content),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    /** Proyectos que esta instalación de escritorio autorizó explícitamente. */
+    suspend fun ideWorkspaces(): IdeWorkspacesOut =
+        conAutoRefresh { obtenerIde("/v1/ide/workspaces") }
+
+    suspend fun ideAddWorkspace(path: String, name: String? = null): IdeWorkspace =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/workspaces",
+                IdeWorkspaceCreateBody(path = path, name = name?.trim()?.ifBlank { null }),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideActivateWorkspace(workspaceId: String): IdeWorkspace =
+        conAutoRefresh {
+            enviarIdeSinCuerpo("/v1/ide/workspaces/${urlEncode(workspaceId)}/activate")
+        }
+
+    suspend fun ideWorkspaceTree(workspaceId: String, path: String? = null): IdeTreeOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/tree" +
+                    (path?.let { "?path=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideWorkspaceFile(workspaceId: String, path: String): IdeFileOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/file?path=${urlEncode(path)}",
+            )
+        }
+
+    suspend fun ideWorkspaceWrite(workspaceId: String, path: String, content: String) {
+        conAutoRefresh {
+            actualizarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/file",
+                IdeWriteBody(path, content),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideTerminalSessions(workspaceId: String? = null): IdeSessionsOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/terminals" +
+                    (workspaceId?.let { "?workspace_id=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideStartTerminal(
+        workspaceId: String,
+        argv: List<String>? = null,
+        title: String? = null,
+    ): IdeSession =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/terminals",
+                IdeTerminalCreateBody(
+                    workspaceId = workspaceId,
+                    argv = argv?.takeIf { it.isNotEmpty() },
+                    title = title?.trim()?.ifBlank { null },
+                ),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideReadTerminal(sessionId: String, cursor: Int = 0): IdeSessionReadOut =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/terminals/${urlEncode(sessionId)}?cursor=$cursor")
+        }
+
+    suspend fun ideTerminalInput(sessionId: String, data: String) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/terminals/${urlEncode(sessionId)}/input",
+                IdeTerminalInputBody(data),
+            )
+        }
+    }
+
+    suspend fun ideCloseTerminal(sessionId: String): IdeSession =
+        conAutoRefresh {
+            eliminarIde<IdeSessionActionOut>(
+                "/v1/ide/terminals/${urlEncode(sessionId)}",
+            ).session
+        }
+
+    suspend fun ideAgentSessions(workspaceId: String? = null): IdeSessionsOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/agents" +
+                    (workspaceId?.let { "?workspace_id=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideStartAgent(
+        workspaceId: String,
+        prompt: String,
+        provider: String = "auto",
+        title: String? = null,
+        model: String? = null,
+    ): IdeSession =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/agents",
+                IdeAgentCreateBody(
+                    workspaceId = workspaceId,
+                    prompt = prompt,
+                    provider = provider,
+                    title = title?.trim()?.ifBlank { null },
+                    model = model?.trim()?.ifBlank { null },
+                ),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideReadAgent(sessionId: String, cursor: Int = 0): IdeSessionReadOut =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/agents/${urlEncode(sessionId)}?cursor=$cursor")
+        }
+
+    suspend fun ideCancelAgent(sessionId: String): IdeSession =
+        conAutoRefresh {
+            eliminarIde<IdeSessionActionOut>(
+                "/v1/ide/agents/${urlEncode(sessionId)}",
+            ).session
+        }
+
+    suspend fun ideGitStatus(workspaceId: String): IdeGitStatus =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/workspaces/${urlEncode(workspaceId)}/git/status")
+        }
+
+    suspend fun ideGitDiff(
+        workspaceId: String,
+        staged: Boolean = false,
+        path: String? = null,
+    ): IdeGitDiff =
+        conAutoRefresh {
+            val query = buildList {
+                add("staged=$staged")
+                path?.let { add("path=${urlEncode(it)}") }
+            }.joinToString("&")
+            obtenerIde("/v1/ide/workspaces/${urlEncode(workspaceId)}/git/diff?$query")
+        }
+
+    suspend fun ideGitLog(workspaceId: String, limit: Int = 30): IdeGitLog =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/log?limit=${limit.coerceIn(1, 100)}",
+            )
+        }
+
+    suspend fun ideGitStage(workspaceId: String, paths: List<String>) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/stage",
+                IdeGitPathsBody(paths),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitUnstage(workspaceId: String, paths: List<String>) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/unstage",
+                IdeGitPathsBody(paths),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCommit(workspaceId: String, message: String) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/commit",
+                IdeGitCommitBody(message),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCreateBranch(
+        workspaceId: String,
+        name: String,
+        checkout: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/branch",
+                IdeGitBranchBody(name, checkout),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCheckout(
+        workspaceId: String,
+        name: String,
+        create: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/checkout",
+                IdeGitCheckoutBody(name, create),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitPush(
+        workspaceId: String,
+        remote: String = "origin",
+        branch: String? = null,
+        setUpstream: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/push",
+                IdeGitPushBody(
+                    remote = remote,
+                    branch = branch,
+                    setUpstream = setUpstream,
+                ),
+                timeoutMillis = IDE_GIT_PUSH_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1039,11 +1350,71 @@ class EdecanApi private constructor(
             )
         }
 
+    // Portapapeles y transferencia de archivos compartidos (WP-V7). Mismos
+    // candados que el input (`kind` = [REMOTE_KIND_CONTROL] ya `active`) y los
+    // mismos códigos de error (`ApiException.Servidor` con su `status`).
+
+    /** `GET .../clipboard` — trae el portapapeles (texto) de la computadora. */
+    suspend fun getRemoteClipboard(sessionId: String): String =
+        conAutoRefresh { obtener<RemoteClipboard>("/v1/remote/sessions/$sessionId/clipboard").text }
+
+    /** `POST .../clipboard {text}` — escribe el portapapeles de la computadora. */
+    suspend fun setRemoteClipboard(sessionId: String, text: String) =
+        conAutoRefresh {
+            enviarSinRespuesta(
+                "/v1/remote/sessions/$sessionId/clipboard", RemoteClipboardSetBody(text = text)
+            )
+        }
+
+    /** `GET .../files` — lista la carpeta compartida de la computadora. */
+    suspend fun listRemoteFiles(sessionId: String): RemoteSharedFiles =
+        conAutoRefresh { obtener("/v1/remote/sessions/$sessionId/files") }
+
+    /** `POST .../files {name, content_b64}` — teléfono → computadora. Devuelve
+     * el nombre FINAL con el que quedó guardado. */
+    suspend fun pushRemoteFile(
+        sessionId: String, name: String, contentB64: String
+    ): RemotePushedFile =
+        conAutoRefresh {
+            enviar(
+                "/v1/remote/sessions/$sessionId/files",
+                RemoteFilePushBody(name = name, contentB64 = contentB64),
+            )
+        }
+
+    /** `GET .../files/content?name=…` — computadora → teléfono. */
+    suspend fun pullRemoteFile(sessionId: String, name: String): RemotePulledFile =
+        conAutoRefresh {
+            obtener("/v1/remote/sessions/$sessionId/files/content?name=${urlEncode(name)}")
+        }
+
     // -------------------------------------------------------------------
     // Internals: HTTP
     // -------------------------------------------------------------------
 
     private fun String?.aNuloSiVacio(): String? = this?.trim()?.ifEmpty { null }
+
+    /** Identidad durable del pairing, cargada una sola vez desde el almacén
+     * cifrado. Los pollers IDE no deben abrir Android Keystore cada 900 ms. */
+    private suspend fun ideDeviceIdentity(): IdeDeviceIdentity =
+        sessionStateMutex.withLock {
+            ideDeviceIdentityInMemory ?: run {
+                val id = tokenStore.getDeviceId()?.trim().orEmpty()
+                val token = tokenStore.getDeviceToken()?.trim().orEmpty()
+                if (id.isEmpty() || token.isEmpty()) {
+                    throw ApiException.DispositivoNoEmparejado()
+                }
+                IdeDeviceIdentity(id = id, token = token).also {
+                    ideDeviceIdentityInMemory = it
+                }
+            }
+        }
+
+    private fun HttpRequestBuilder.agregarIdentidadIde(identity: IdeDeviceIdentity?) {
+        if (identity == null) return
+        header(IDE_DEVICE_ID_HEADER, identity.id)
+        header(IDE_DEVICE_TOKEN_HEADER, identity.token)
+    }
 
     private suspend fun accessTokenVigente(): String? = sessionStateMutex.withLock { accessTokenSinLock() }
 
@@ -1059,6 +1430,7 @@ class EdecanApi private constructor(
     private suspend fun comenzarNuevaSesion(): Long = sessionStateMutex.withLock {
         sessionEpoch += 1
         accessTokenEnMemoria = null
+        ideDeviceIdentityInMemory = null
         tokenStore.clearTokens()
         tokenStore.clearDevicePairing()
         sessionEpoch
@@ -1080,6 +1452,7 @@ class EdecanApi private constructor(
             if (sessionEpoch != expectedEpoch) return@withLock false
             sessionEpoch += 1
             accessTokenEnMemoria = null
+            if (clearDevicePairing) ideDeviceIdentityInMemory = null
             tokenStore.clearTokens()
             if (clearDevicePairing) tokenStore.clearDevicePairing()
             true
@@ -1121,10 +1494,63 @@ class EdecanApi private constructor(
         }
     }
 
-    private suspend inline fun <reified R> obtener(path: String): R {
+    private suspend inline fun <reified R> obtenerIde(path: String): R =
+        obtener(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified B, reified R> enviarIde(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ): R =
+        enviar(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+
+    private suspend inline fun <reified B> enviarIdeSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ) {
+        enviarSinRespuesta(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+    }
+
+    private suspend inline fun <reified R> enviarIdeSinCuerpo(path: String): R =
+        enviarSinCuerpo(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified B> actualizarIdeSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ) {
+        actualizarSinCuerpo(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+    }
+
+    private suspend inline fun <reified R> eliminarIde(path: String): R =
+        eliminar(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified R> obtener(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
-            http.get(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
+            http.get(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
         }
         return manejarRespuestaAutenticada(response)
     }
@@ -1155,11 +1581,20 @@ class EdecanApi private constructor(
         return buffer.copyOf(total)
     }
 
-    private suspend inline fun <reified B, reified R> enviar(path: String, body: B): R {
+    private suspend inline fun <reified B, reified R> enviar(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
             http.post(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
                 header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -1168,43 +1603,71 @@ class EdecanApi private constructor(
     }
 
     /** `POST` con JSON cuya respuesta correcta es `204 No Content`. */
-    private suspend inline fun <reified B> enviarSinRespuesta(path: String, body: B) {
+    private suspend inline fun <reified B> enviarSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ) {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
             http.post(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
                 header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
         }
         if (response.status.value == 401) throw ApiException.SesionExpirada()
         validarStatus(response)
+        // Algunas rutas IDE devuelven un JSON de confirmación con 200 en vez
+        // de 204. Consumirlo libera la conexión para el siguiente polling.
+        response.bodyAsText()
     }
 
     /** `POST` sin cuerpo que SÍ decodifica una respuesta (`POST
      * /v1/remote/sessions/{id}/end`, [endRemoteSession]) — a diferencia de
      * [enviar], no manda `Content-Type` ni cuerpo alguno. */
-    private suspend inline fun <reified R> enviarSinCuerpo(path: String): R {
+    private suspend inline fun <reified R> enviarSinCuerpo(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
-            http.post(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
+            http.post(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
         }
         return manejarRespuestaAutenticada(response)
     }
 
     /** `PUT` cuya respuesta exitosa es `204 No Content` (`conectarLlm`): a
      * diferencia de [enviar], no intenta decodificar ningún cuerpo. */
-    private suspend inline fun <reified B> actualizarSinCuerpo(path: String, body: B) {
+    private suspend inline fun <reified B> actualizarSinCuerpo(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ) {
         val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
         val response = ejecutar {
             http.put(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
                 header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
         }
         if (response.status.value == 401) throw ApiException.SesionExpirada()
         validarStatus(response)
+        response.bodyAsText()
     }
 
     /** `PUT` que SÍ decodifica un cuerpo de respuesta — a diferencia de
@@ -1263,6 +1726,22 @@ class EdecanApi private constructor(
         if (response.status.value == 401) throw ApiException.SesionExpirada()
         if (response.status.value == 404) return
         validarStatus(response)
+        response.bodyAsText()
+    }
+
+    /** `DELETE` que conserva y decodifica el cuerpo exitoso (sesiones IDE). */
+    private suspend inline fun <reified R> eliminar(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.delete(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
     }
 
     /** Variante para `/login` y `/refresh`: no llevan `Authorization`, y un

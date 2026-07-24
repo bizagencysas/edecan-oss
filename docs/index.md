@@ -71,7 +71,7 @@ de montaje defensivo para capacidades opcionales.
 | [`mensajeria.md`](./mensajeria.md) | Telegram, Slack y Discord oficiales por tenant; por qué WhatsApp/Signal quedan fuera por ahora. | fase v2 |
 | [`agentes.md`](./agentes.md) | Orchestrator + misiones: los 3 sub-agentes reales y los 13 perfiles declarados del ecosistema. | fase v2 |
 | [`automatizaciones.md`](./automatizaciones.md) | Reglas disparador→acción (agenda/webhook → instrucción de agente). | fase v2 |
-| [`ide.md`](./ide.md) | IDE embebido sobre el companion: árbol, editor, ediciones quirúrgicas, terminal allowlisted. | fase v2 |
+| [`ide.md`](./ide.md) | Estudio de código móvil: proyectos autorizados, editor, agentes con progreso, terminal persistente y Git tipado. | actual |
 | [`control-remoto.md`](./control-remoto.md) | Arquitectura completa de control remoto (nivel TeamViewer) + qué entrega hoy el prototipo solo-vista. | fase v2 |
 | [`dinero-real.md`](./dinero-real.md) | Presupuestos, cotizaciones y órdenes: por qué toda orden nace borrador y nunca se auto-ejecuta. | fase v2 |
 | [`asesores.md`](./asesores.md) | Legal, salud y educación: siempre informativo, disclaimers obligatorios. | fase v2 |

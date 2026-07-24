@@ -656,6 +656,10 @@ data class IdeStatusOut(val connected: Boolean = false)
 @Serializable
 data class IdeTreeNode(
     val name: String,
+    /** Ruta canónica relativa al workspace. Los companions antiguos no la
+     * enviaban, por eso sigue siendo opcional y el cliente conserva un
+     * fallback construido desde [name]. */
+    val path: String? = null,
     @SerialName("is_dir") val isDir: Boolean = false,
     val children: List<IdeTreeNode>? = null,
     @SerialName("size_bytes") val sizeBytes: Long? = null,
@@ -678,7 +682,7 @@ data class IdeFileOut(
     @SerialName("size_bytes") val sizeBytes: Long = 0,
 )
 
-val IdeFileOut.esBinario: Boolean get() = encoding == "base64"
+val IdeFileOut.esBinario: Boolean get() = encoding != "utf-8"
 
 @Serializable
 data class IdeRunOut(
@@ -687,3 +691,106 @@ data class IdeRunOut(
     @SerialName("exit_code") val exitCode: Int = -1,
     val truncated: Boolean = false,
 )
+
+/** Proyecto que la persona autorizó explícitamente en su computadora.
+ *
+ * El teléfono conserva únicamente [id]. La ruta real y todo el contenido
+ * siguen viviendo en el companion de escritorio. */
+@Serializable
+data class IdeWorkspace(
+    val id: String,
+    val name: String,
+    val path: String,
+    val active: Boolean = false,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
+@Serializable
+data class IdeWorkspacesOut(val workspaces: List<IdeWorkspace> = emptyList())
+
+/** Sesión durable de terminal o agente que continúa en la computadora
+ * aunque la app móvil se minimice o pierda momentáneamente la red. */
+@Serializable
+data class IdeSession(
+    val id: String,
+    val kind: String,
+    @SerialName("workspace_id") val workspaceId: String,
+    @SerialName("workspace_name") val workspaceName: String = "",
+    val status: String = "starting",
+    @SerialName("started_at") val startedAt: String = "",
+    @SerialName("ended_at") val endedAt: String? = null,
+    @SerialName("exit_code") val exitCode: Int? = null,
+    val command: List<String>? = null,
+    val provider: String? = null,
+    val title: String = "",
+) {
+    val activa: Boolean
+        get() = endedAt == null && status.lowercase() !in setOf(
+            "completed", "failed", "closed", "cancelled", "interrupted",
+        )
+}
+
+@Serializable
+data class IdeSessionsOut(val sessions: List<IdeSession> = emptyList())
+
+@Serializable
+data class IdeSessionEvent(
+    val cursor: Int,
+    val type: String,
+    val text: String = "",
+    val stream: String? = null,
+    val timestamp: String = "",
+)
+
+@Serializable
+data class IdeSessionReadOut(
+    val session: IdeSession,
+    val events: List<IdeSessionEvent> = emptyList(),
+    @SerialName("next_cursor") val nextCursor: Int = 0,
+)
+
+/** Respuesta de cerrar una terminal o cancelar un agente. A diferencia de
+ * los endpoints de creación, estas rutas conservan el wrapper `session`. */
+@Serializable
+data class IdeSessionActionOut(val session: IdeSession)
+
+// Git se expone como acciones tipadas; nunca como una shell construida con
+// texto recibido desde el teléfono.
+
+@Serializable
+data class IdeGitFile(
+    val path: String,
+    @SerialName("index_status") val indexStatus: String = " ",
+    @SerialName("worktree_status") val worktreeStatus: String = " ",
+    @SerialName("original_path") val originalPath: String? = null,
+) {
+    val staged: Boolean get() = indexStatus != " " && indexStatus != "?"
+}
+
+@Serializable
+data class IdeGitStatus(
+    val branch: String? = null,
+    val upstream: String? = null,
+    val ahead: Int = 0,
+    val behind: Int = 0,
+    val files: List<IdeGitFile> = emptyList(),
+)
+
+@Serializable
+data class IdeGitDiff(
+    val text: String = "",
+    val truncated: Boolean = false,
+)
+
+@Serializable
+data class IdeGitCommit(
+    val hash: String,
+    @SerialName("short_hash") val shortHash: String = "",
+    val author: String = "",
+    val email: String = "",
+    val timestamp: String = "",
+    val subject: String = "",
+)
+
+@Serializable
+data class IdeGitLog(val commits: List<IdeGitCommit> = emptyList())

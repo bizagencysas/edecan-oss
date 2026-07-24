@@ -9,9 +9,9 @@ El QR continúa siendo la credencial del teléfono. Una sesión remota exige la
 confirmación explícita en el teléfono y el backend valida tenant, sesión y
 flags antes de llegar aquí. Las acciones del IDE ya llegan desde rutas
 autenticadas y gateadas del API; el puente las aprueba dentro del proceso local
-porque la app instalada no tiene una segunda terminal donde preguntar. Aun así
-siguen encerradas por ``sandbox_dir``, ``ide_enabled``, ``allowed_commands`` y
-la auditoría de :mod:`edecan_companion.actions`.
+porque la app instalada no tiene una segunda terminal donde preguntar. Las
+acciones históricas conservan ``sandbox_dir``/``allowed_commands``; el runtime
+nuevo exige ``ide_enabled``, un workspace autorizado y auditoría local.
 """
 
 from __future__ import annotations
@@ -23,14 +23,30 @@ from typing import Any
 
 from edecan_companion import actions
 from edecan_companion.config import CompanionConfig, load_config
+from edecan_companion.ide_runtime import IDE_ACTIONS, execute_ide_action
 
 logger = logging.getLogger(__name__)
 
-_REMOTE_ACTIONS = frozenset({"screenshot", "input_pointer", "input_key"})
+_REMOTE_ACTIONS = frozenset(
+    {
+        "screenshot",
+        "input_pointer",
+        "input_key",
+        # Portapapeles y transferencia de archivos compartidos entre el
+        # teléfono y esta computadora dentro de una sesión de control remoto
+        # (mismo requisito de `session_id` que el resto — ver `approve`).
+        # No tocan TCC ni el bridge nativo: corren en el sidecar.
+        "clipboard_get",
+        "clipboard_set",
+        "transfer_push",
+        "transfer_list",
+        "transfer_pull",
+    }
+)
 # Superficie exacta de `routers/ide.py`. No incluye `open_app`, portapapeles,
 # input remoto ni acciones futuras: añadir un handler al companion nunca lo
 # expone automáticamente desde el runtime instalado.
-_LOCAL_IDE_ACTIONS = frozenset(
+_LEGACY_LOCAL_IDE_ACTIONS = frozenset(
     {
         "list_tree",
         "search_files",
@@ -40,6 +56,7 @@ _LOCAL_IDE_ACTIONS = frozenset(
         "run_command",
     }
 )
+_LOCAL_IDE_ACTIONS = _LEGACY_LOCAL_IDE_ACTIONS | IDE_ACTIONS
 _LOCAL_ACTIONS = _REMOTE_ACTIONS | _LOCAL_IDE_ACTIONS
 
 
@@ -76,4 +93,6 @@ class LocalCompanionBridge:
         if action not in _LOCAL_ACTIONS:
             logger.warning("El puente local rechazó una acción no expuesta: %s", action)
             return {"ok": False, "error": f"acción no disponible en el puente local: {action!r}"}
+        if action in IDE_ACTIONS:
+            return await execute_ide_action(action, params, self._config, approve)
         return await actions.execute(action, params, self._config, approve)

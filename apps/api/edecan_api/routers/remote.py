@@ -503,6 +503,39 @@ class KeyInputIn(BaseModel):
 SessionInputIn = Annotated[PointerInputIn | KeyInputIn, Field(discriminator="tipo")]
 
 
+# Portapapeles y transferencia de archivos compartidos (mismo nivel de sesión
+# que el input: `kind="control"` ya `active`). Las acciones del companion son
+# `clipboard_get`/`clipboard_set`/`transfer_push`/`transfer_list`/`transfer_pull`
+# (`edecan_companion.actions`), expuestas al flujo remoto por
+# `edecan_local.companion_bridge._REMOTE_ACTIONS`.
+_CLIPBOARD_GET_ACTION = "clipboard_get"
+_CLIPBOARD_SET_ACTION = "clipboard_set"
+_TRANSFER_PUSH_ACTION = "transfer_push"
+_TRANSFER_LIST_ACTION = "transfer_list"
+_TRANSFER_PULL_ACTION = "transfer_pull"
+
+# Espejo del tope del companion (`edecan_companion.actions.MAX_TRANSFER_BYTES`,
+# 10 MiB) para rechazar en el borde del API, antes de reenviar al companion,
+# un archivo demasiado grande. El límite del cuerpo base64 infla ~4/3. El valor
+# se mantiene bajo el `ws_max_size` por defecto del transporte (ver el
+# comentario en `edecan_companion.actions.MAX_TRANSFER_BYTES`).
+MAX_TRANSFER_BYTES = 10 * 1024 * 1024
+MAX_CLIPBOARD_CHARS = 1_000_000
+
+
+class ClipboardSetIn(BaseModel):
+    """`POST .../clipboard {text}` — escribe el portapapeles de la computadora."""
+
+    text: str = Field(max_length=MAX_CLIPBOARD_CHARS)
+
+
+class FilePushIn(BaseModel):
+    """`POST .../files {name, content_b64}` — teléfono → computadora."""
+
+    name: str = Field(min_length=1, max_length=255)
+    content_b64: str = Field(min_length=1, max_length=(MAX_TRANSFER_BYTES // 3) * 4 + 4)
+
+
 # ---------------------------------------------------------------------------
 # Rutas
 # ---------------------------------------------------------------------------
@@ -996,3 +1029,287 @@ async def send_input(
 
     result_data = resultado.get("result") if isinstance(resultado, dict) else None
     return {"ok": True, "result": result_data if isinstance(result_data, dict) else None}
+
+
+# ---------------------------------------------------------------------------
+# Portapapeles y transferencia de archivos (WP-V7 — extensión del control
+# remoto). Comparten los MISMOS candados que `send_input`: `kind="control"`,
+# sesión `active` (al menos un frame exitoso) y el flag de plan
+# `companion.remote_input` (`_require_remote_control`). El companion las
+# ejecuta en su sidecar (no tocan TCC ni el bridge nativo).
+# ---------------------------------------------------------------------------
+
+
+async def _load_active_control_session(
+    session_id: uuid.UUID, current_user: CurrentUser, repo: Repo
+) -> dict[str, Any]:
+    """Precondición común de las rutas de control extra (portapapeles/archivos).
+
+    Reproduce EXACTAMENTE los mismos códigos que `send_input`: 404 sesión
+    inexistente/de otro tenant, 403 no es `kind="control"`, 403 `denied`,
+    409 `ended`, 409 todavía no `active` (hace falta un frame primero)."""
+    session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de control remoto no encontrada."
+        )
+    if session["kind"] != "control":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Esta sesión no es de control remoto: créala con "
+                'POST /v1/remote/sessions {"kind": "control"} para usar el portapapeles o '
+                "la transferencia de archivos."
+            ),
+        )
+    if session["status"] == "denied":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta sesión de control remoto fue denegada.",
+        )
+    if session["status"] == "ended":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Esta sesión ya terminó. Inicia una nueva con POST /v1/remote/sessions.",
+        )
+    if session["status"] != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Esta sesión todavía no está activa: pide un frame primero con "
+                "GET /v1/remote/sessions/{id}/frame."
+            ),
+        )
+    return session
+
+
+async def _dispatch_control_command(
+    *,
+    request: Request,
+    action: str,
+    params: dict[str, Any],
+    session_id: uuid.UUID,
+    current_user: CurrentUser,
+    repo: Repo,
+    db_session: AsyncSession,
+    audit_action: str,
+    audit_meta: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Reenvía un comando de control (portapapeles/archivos) al companion y
+    normaliza el resultado — mismo patrón que `send_input` (503 desconectado/
+    timeout, 403 denegado con *commit de evidencia antes del raise*, 502
+    cualquier otra falla, auditoría del éxito). Devuelve el dict `result` del
+    companion (o `None`)."""
+    manager = _get_companion_manager(request)
+    if manager is None or not manager.is_connected(current_user.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La computadora se desconectó. Abre Edecán en ella y vuelve a intentarlo.",
+        )
+    try:
+        resultado = await manager.send_command(current_user.tenant_id, action, params)
+    except CompanionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"El companion no respondió a tiempo: {exc}",
+        ) from exc
+
+    ok = isinstance(resultado, dict) and bool(resultado.get("ok"))
+    if not ok:
+        error = str(resultado.get("error") or "") if isinstance(resultado, dict) else ""
+        if error.startswith(_ERROR_PREFIX_DENIED):
+            await repo.mark_remote_session_denied(
+                tenant_id=current_user.tenant_id, session_id=session_id
+            )
+            await repo.add_audit_log(
+                tenant_id=current_user.tenant_id,
+                actor_user_id=current_user.user_id,
+                action=f"{audit_action}_denied",
+                target=str(session_id),
+                meta={**audit_meta, "error": error},
+            )
+            # Mismo "commit de evidencia ANTES del raise" que `get_frame`/
+            # `send_input` (HOTFIXES_PENDIENTES.md punto 8).
+            await db_session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El usuario denegó esta acción de control remoto en su companion.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"El companion no pudo completar la acción: {error or 'error desconocido'}.",
+        )
+
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action=audit_action,
+        target=str(session_id),
+        meta=audit_meta,
+    )
+    result_data = resultado.get("result") if isinstance(resultado, dict) else None
+    return result_data if isinstance(result_data, dict) else None
+
+
+@router.get("/sessions/{session_id}/clipboard", dependencies=[Depends(rate_limit)])
+async def get_clipboard(
+    session_id: uuid.UUID,
+    request: Request,
+    current_user: CurrentUser = Depends(_require_remote_control),
+    repo: Repo = Depends(get_repo),
+    db_session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Trae el portapapeles (texto) de la computadora al teléfono."""
+    await _load_active_control_session(session_id, current_user, repo)
+    result = await _dispatch_control_command(
+        request=request,
+        action=_CLIPBOARD_GET_ACTION,
+        params={"session_id": str(session_id)},
+        session_id=session_id,
+        current_user=current_user,
+        repo=repo,
+        db_session=db_session,
+        audit_action="remote.session.clipboard_get",
+        audit_meta={"tipo": "clipboard", "dir": "pull"},
+    )
+    text = result.get("text") if isinstance(result, dict) else None
+    if not isinstance(text, str):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El companion devolvió un portapapeles con formato inválido.",
+        )
+    return {"text": text}
+
+
+@router.post("/sessions/{session_id}/clipboard", dependencies=[Depends(rate_limit)])
+async def set_clipboard(
+    session_id: uuid.UUID,
+    body: ClipboardSetIn,
+    request: Request,
+    current_user: CurrentUser = Depends(_require_remote_control),
+    repo: Repo = Depends(get_repo),
+    db_session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Escribe el portapapeles de la computadora con el texto del teléfono."""
+    await _load_active_control_session(session_id, current_user, repo)
+    result = await _dispatch_control_command(
+        request=request,
+        action=_CLIPBOARD_SET_ACTION,
+        params={"session_id": str(session_id), "text": body.text},
+        session_id=session_id,
+        current_user=current_user,
+        repo=repo,
+        db_session=db_session,
+        audit_action="remote.session.clipboard_set",
+        # NUNCA el texto en claro en el audit_log (mismo principio que
+        # `send_input` con `texto`): solo su longitud.
+        audit_meta={"tipo": "clipboard", "dir": "push", "length": len(body.text)},
+    )
+    written = result.get("written_chars") if isinstance(result, dict) else None
+    return {"ok": True, "written_chars": written if isinstance(written, int) else len(body.text)}
+
+
+@router.get("/sessions/{session_id}/files", dependencies=[Depends(rate_limit)])
+async def list_files(
+    session_id: uuid.UUID,
+    request: Request,
+    current_user: CurrentUser = Depends(_require_remote_control),
+    repo: Repo = Depends(get_repo),
+    db_session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Lista la carpeta compartida de la computadora (para elegir qué traer)."""
+    await _load_active_control_session(session_id, current_user, repo)
+    result = await _dispatch_control_command(
+        request=request,
+        action=_TRANSFER_LIST_ACTION,
+        params={"session_id": str(session_id)},
+        session_id=session_id,
+        current_user=current_user,
+        repo=repo,
+        db_session=db_session,
+        audit_action="remote.session.transfer_list",
+        audit_meta={"tipo": "transfer", "dir": "list"},
+    )
+    files = result.get("files") if isinstance(result, dict) else None
+    shared_dir = result.get("dir") if isinstance(result, dict) else None
+    return {
+        "files": files if isinstance(files, list) else [],
+        "dir": shared_dir if isinstance(shared_dir, str) else None,
+    }
+
+
+@router.post("/sessions/{session_id}/files", dependencies=[Depends(rate_limit)])
+async def push_file(
+    session_id: uuid.UUID,
+    body: FilePushIn,
+    request: Request,
+    current_user: CurrentUser = Depends(_require_remote_control),
+    repo: Repo = Depends(get_repo),
+    db_session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Teléfono → computadora: guarda un archivo en la carpeta compartida."""
+    await _load_active_control_session(session_id, current_user, repo)
+    result = await _dispatch_control_command(
+        request=request,
+        action=_TRANSFER_PUSH_ACTION,
+        params={
+            "session_id": str(session_id),
+            "name": body.name,
+            "content_b64": body.content_b64,
+        },
+        session_id=session_id,
+        current_user=current_user,
+        repo=repo,
+        db_session=db_session,
+        audit_action="remote.session.transfer_push",
+        # El nombre sí se audita (no es contenido sensible); el content_b64
+        # nunca llega al meta.
+        audit_meta={"tipo": "transfer", "dir": "push", "name": body.name},
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("name"), str):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El companion devolvió una respuesta de transferencia inválida.",
+        )
+    return {
+        "name": result["name"],
+        "path": result.get("path") if isinstance(result.get("path"), str) else None,
+        "bytes": result.get("bytes") if isinstance(result.get("bytes"), int) else None,
+    }
+
+
+@router.get("/sessions/{session_id}/files/content", dependencies=[Depends(rate_limit)])
+async def pull_file(
+    session_id: uuid.UUID,
+    request: Request,
+    name: Annotated[str, Query(min_length=1, max_length=255)],
+    current_user: CurrentUser = Depends(_require_remote_control),
+    repo: Repo = Depends(get_repo),
+    db_session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Computadora → teléfono: entrega un archivo de la carpeta compartida."""
+    await _load_active_control_session(session_id, current_user, repo)
+    result = await _dispatch_control_command(
+        request=request,
+        action=_TRANSFER_PULL_ACTION,
+        params={"session_id": str(session_id), "name": name},
+        session_id=session_id,
+        current_user=current_user,
+        repo=repo,
+        db_session=db_session,
+        audit_action="remote.session.transfer_pull",
+        audit_meta={"tipo": "transfer", "dir": "pull", "name": name},
+    )
+    content = result.get("content_b64") if isinstance(result, dict) else None
+    if not isinstance(result, dict) or not isinstance(content, str):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="El companion devolvió un archivo con formato inválido.",
+        )
+    mime = result.get("mime")
+    return {
+        "name": result.get("name") if isinstance(result.get("name"), str) else name,
+        "content_b64": content,
+        "bytes": result.get("bytes") if isinstance(result.get("bytes"), int) else None,
+        "mime": mime if isinstance(mime, str) else "application/octet-stream",
+    }

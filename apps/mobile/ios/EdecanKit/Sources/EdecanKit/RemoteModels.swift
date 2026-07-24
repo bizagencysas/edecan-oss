@@ -418,3 +418,49 @@ public enum RemoteCoordinateMapper {
         )
     }
 }
+
+// MARK: - Portapapeles y transferencia de archivos (WP-V7)
+
+/// `GET/POST /v1/remote/sessions/{id}/clipboard` — el portapapeles (texto) de
+/// la computadora. `GET` devuelve `{text}`; `POST` recibe `{text}`.
+public struct RemoteClipboard: Decodable, Sendable, Equatable {
+    public let text: String
+}
+
+/// Un archivo del buzón compartido de la computadora
+/// (`GET .../files → {files: [...]}`). `modified` es epoch en segundos.
+public struct RemoteSharedFile: Decodable, Sendable, Equatable, Identifiable {
+    public let name: String
+    public let bytes: Int
+    public let modified: Double
+
+    public var id: String { name }
+}
+
+/// Respuesta de `GET .../files` — lista del buzón + su ruta en la computadora.
+public struct RemoteSharedFiles: Decodable, Sendable, Equatable {
+    public let files: [RemoteSharedFile]
+    public let dir: String?
+}
+
+/// Respuesta de `POST .../files` (teléfono → computadora): el nombre FINAL con
+/// el que quedó guardado (puede diferir del pedido si hubo colisión).
+public struct RemotePushedFile: Decodable, Sendable, Equatable {
+    public let name: String
+    public let path: String?
+    public let bytes: Int?
+}
+
+/// Respuesta de `GET .../files/content` (computadora → teléfono): el contenido
+/// en base64 más su nombre y tipo MIME.
+public struct RemotePulledFile: Decodable, Sendable, Equatable {
+    public let name: String
+    public let contentB64: String
+    public let bytes: Int?
+    public let mime: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, bytes, mime
+        case contentB64 = "content_b64"
+    }
+}

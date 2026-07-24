@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import SwiftUI
 import EdecanKit
 import UIKit
@@ -139,6 +140,7 @@ private struct VistaPreviaImagenAdjunta: View {
     let attachment: ChatAttachment
     let client: APIClient?
     @State private var image: UIImage?
+    @State private var cargaFinalizada = false
 
     var body: some View {
         Group {
@@ -146,6 +148,13 @@ private struct VistaPreviaImagenAdjunta: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if cargaFinalizada {
+                ZStack {
+                    Color.white.opacity(0.10)
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 ZStack {
                     Color.white.opacity(0.10)
@@ -165,17 +174,48 @@ private struct VistaPreviaImagenAdjunta: View {
                 .padding(8)
         }
         .task(id: attachment.fileId) {
-            guard image == nil, let client else { return }
+            guard image == nil, !cargaFinalizada, let client else { return }
             let artifact = ArtifactRef(
                 fileId: attachment.fileId,
                 filename: attachment.filename,
                 mime: attachment.mime
             )
-            guard let downloaded = try? await client.descargarArtefacto(artifact) else { return }
-            image = UIImage(data: downloaded.data)
+            guard let downloaded = try? await client.descargarArtefacto(artifact) else {
+                cargaFinalizada = true
+                return
+            }
+            let thumbnail = await Task.detached(priority: .userInitiated) {
+                cgImagePreviaAcotada(data: downloaded.data, maxPixelSize: 1_280)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = thumbnail.map(UIImage.init(cgImage:))
+            cargaFinalizada = true
         }
         .accessibilityLabel("Imagen adjunta: \(attachment.filename)")
     }
+}
+
+/// ImageIO evita expandir una foto de cámara de decenas de megapíxeles antes
+/// de mostrarla. Se devuelve `CGImage`, que puede cruzar el trabajo en
+/// background; `UIImage` se crea de nuevo dentro del actor principal.
+func cgImagePreviaAcotada(data: Data, maxPixelSize: CGFloat) -> CGImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    return cgImagePreviaAcotada(source: source, maxPixelSize: maxPixelSize)
+}
+
+func cgImagePreviaAcotada(url: URL, maxPixelSize: CGFloat) -> CGImage? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    return cgImagePreviaAcotada(source: source, maxPixelSize: maxPixelSize)
+}
+
+private func cgImagePreviaAcotada(source: CGImageSource, maxPixelSize: CGFloat) -> CGImage? {
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        kCGImageSourceShouldCacheImmediately: true,
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 }
 
 /// Progreso verificable de una ejecución larga. Solo muestra eventos

@@ -4,12 +4,48 @@ y cuota diaria de mensajes -> 429 (ARCHITECTURE.md §10.12, §10.7, §10.13)."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import uuid
 from datetime import UTC, datetime
 
 from conftest import auth_headers
 from edecan_schemas import ArtifactRef, ToolEndEvent
+
+
+class _VisionBody:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    async def read(self, size: int) -> bytes:
+        return self.payload[:size]
+
+
+class _VisionS3Client:
+    def __init__(self, objects: dict[str, bytes | Exception]) -> None:
+        self.objects = objects
+
+    async def __aenter__(self) -> _VisionS3Client:
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def get_object(self, *, Bucket: str, Key: str) -> dict:  # noqa: N803
+        assert Bucket == "edecan-files"
+        payload = self.objects[Key]
+        if isinstance(payload, Exception):
+            raise payload
+        return {"Body": _VisionBody(payload)}
+
+
+class _VisionS3Session:
+    def __init__(self, objects: dict[str, bytes | Exception]) -> None:
+        self.objects = objects
+
+    def client(self, service_name: str, **kwargs) -> _VisionS3Client:
+        assert service_name == "s3"
+        return _VisionS3Client(self.objects)
 
 
 def test_automatic_title_summarizes_api_setup_without_copying_the_message() -> None:
@@ -165,6 +201,168 @@ async def _create_conversation(client, headers: dict[str, str]) -> str:
     response = await client.post("/v1/conversations", json={"channel": "web"}, headers=headers)
     assert response.status_code == 201
     return response.json()["id"]
+
+
+async def test_image_attachment_reaches_same_agent_turn_as_private_multimodal_block(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    image_bytes = b"\x89PNG\r\n\x1a\nprivate-image"
+    s3_key = f"tenants/{tenant_id}/files/{file_id}/captura.png"
+    await fake_repo.create_file(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        file_id=file_id,
+        s3_key=s3_key,
+        filename="captura.png",
+        mime="image/png",
+        size_bytes=len(image_bytes),
+        status="uploaded",
+    )
+    monkeypatch.setattr(
+        conversations_module.aioboto3,
+        "Session",
+        lambda: _VisionS3Session({s3_key: image_bytes}),
+    )
+
+    class VisionInspectingAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, *, ctx, user_text, **kwargs):
+            content = ctx.extras["direct_user_content"]
+            assert isinstance(content, list)
+            assert content[0] == {"type": "text", "text": user_text}
+            assert content[1]["type"] == "image"
+            assert content[1]["source"]["media_type"] == "image/png"
+            assert base64.b64decode(content[1]["source"]["data"]) == image_bytes
+            assert "respóndela directamente sin llamar una herramienta" in user_text
+            yield {"type": "text_delta", "text": "Veo la captura directamente."}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", VisionInspectingAgent)
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "¿Qué ves aquí?", "attachments": [str(file_id)]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert "Veo la captura directamente." in response.text
+    stored = fake_repo.messages[uuid.UUID(conversation_id)][0]["content"]
+    assert stored["text"] == "¿Qué ves aquí?"
+    assert stored["attachments"] == [
+        {"file_id": str(file_id), "filename": "captura.png", "mime": "image/png"}
+    ]
+    assert "private-image" not in json.dumps(stored)
+    assert s3_key not in json.dumps(stored)
+
+
+async def test_direct_vision_keeps_healthy_images_when_one_private_object_fails(
+    fake_repo, test_settings, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    good_id = uuid.uuid4()
+    broken_id = uuid.uuid4()
+    good_key = f"tenants/{tenant_id}/files/{good_id}/buena.jpg"
+    broken_key = f"tenants/{tenant_id}/files/{broken_id}/rota.jpg"
+    for file_id, key in ((good_id, good_key), (broken_id, broken_key)):
+        await fake_repo.create_file(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            file_id=file_id,
+            s3_key=key,
+            filename=key.rsplit("/", 1)[-1],
+            mime="image/jpeg",
+            size_bytes=32,
+            status="uploaded",
+        )
+    monkeypatch.setattr(
+        conversations_module.aioboto3,
+        "Session",
+        lambda: _VisionS3Session(
+            {
+                broken_key: RuntimeError("objeto temporalmente no disponible"),
+                good_key: b"healthy-private-image",
+            }
+        ),
+    )
+
+    content = await conversations_module._direct_multimodal_content(
+        settings=test_settings,
+        user_text="Analiza las dos imágenes.",
+        attachments=[
+            {"file_id": str(broken_id), "filename": "rota.jpg", "mime": "image/jpeg"},
+            {"file_id": str(good_id), "filename": "buena.jpg", "mime": "image/jpeg"},
+        ],
+        repo=fake_repo,
+        tenant_id=tenant_id,
+    )
+
+    assert isinstance(content, list)
+    assert [block["type"] for block in content] == ["text", "image"]
+    assert base64.b64decode(content[1]["source"]["data"]) == b"healthy-private-image"
+
+
+async def test_direct_vision_caps_total_private_payload(
+    fake_repo, test_settings, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    attachments = []
+    objects: dict[str, bytes | Exception] = {}
+    for index, payload in enumerate((b"12345678", b"abcdefgh", b"z")):
+        file_id = uuid.uuid4()
+        key = f"tenants/{tenant_id}/files/{file_id}/imagen-{index}.png"
+        await fake_repo.create_file(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            file_id=file_id,
+            s3_key=key,
+            filename=f"imagen-{index}.png",
+            mime="image/png",
+            size_bytes=len(payload),
+            status="uploaded",
+        )
+        attachments.append(
+            {"file_id": str(file_id), "filename": f"imagen-{index}.png", "mime": "image/png"}
+        )
+        objects[key] = payload
+
+    monkeypatch.setattr(conversations_module, "_DIRECT_VISION_MAX_TOTAL_BYTES", 16)
+    monkeypatch.setattr(
+        conversations_module.aioboto3,
+        "Session",
+        lambda: _VisionS3Session(objects),
+    )
+
+    content = await conversations_module._direct_multimodal_content(
+        settings=test_settings,
+        user_text="Analiza estas imágenes.",
+        attachments=attachments,
+        repo=fake_repo,
+        tenant_id=tenant_id,
+    )
+
+    assert isinstance(content, list)
+    assert [block["type"] for block in content] == ["text", "image", "image"]
+    assert sum(
+        len(base64.b64decode(block["source"]["data"]))
+        for block in content
+        if block["type"] == "image"
+    ) == 16
 
 
 async def test_post_message_streams_sse_and_persists_assistant_turn(

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from edecan_api.companion_manager import ConnectionManager
+from edecan_companion.ide_runtime import IDE_ACTIONS
+from edecan_local import companion_bridge as companion_bridge_module
 from edecan_local.companion_bridge import LocalCompanionBridge
 
 
@@ -48,6 +50,87 @@ async def test_bridge_rejects_actions_outside_ide_and_remote_surfaces(tmp_path: 
 
     assert result["ok"] is False
     assert "no disponible" in result["error"]
+
+
+async def test_every_new_ide_action_is_dispatched_by_the_ide_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = ConnectionManager()
+    app = SimpleNamespace(state=SimpleNamespace(companion_manager=manager))
+    LocalCompanionBridge(app=app, data_dir=tmp_path)
+    tenant_id = uuid.uuid4()
+    received: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_execute_ide_action(action, params, config, approver):
+        assert await approver(action, params, config) is True
+        received.append((action, dict(params)))
+        return {"ok": True, "result": {"action": action}}
+
+    async def fail_if_legacy_dispatch_is_used(action, params, config, approver):
+        raise AssertionError(f"{action} no debe caer en actions.execute")
+
+    monkeypatch.setattr(companion_bridge_module, "execute_ide_action", fake_execute_ide_action)
+    monkeypatch.setattr(companion_bridge_module.actions, "execute", fail_if_legacy_dispatch_is_used)
+
+    for action in sorted(IDE_ACTIONS):
+        result = await manager.send_command(tenant_id, action, {"marker": action})
+        assert result == {"ok": True, "result": {"action": action}}
+
+    assert received == [(action, {"marker": action}) for action in sorted(IDE_ACTIONS)]
+
+
+async def test_real_local_protocol_authorizes_workspace_and_roundtrips_a_file(
+    tmp_path: Path,
+) -> None:
+    """Ejercita manager -> bridge -> ide_runtime real, sin handlers stub."""
+    data_dir = tmp_path / "data"
+    workspace = tmp_path / "Proyecto IDE"
+    workspace.mkdir()
+    manager = ConnectionManager()
+    app = SimpleNamespace(state=SimpleNamespace(companion_manager=manager))
+    LocalCompanionBridge(app=app, data_dir=data_dir)
+    tenant_id = uuid.uuid4()
+
+    authorized = await manager.send_command(
+        tenant_id,
+        "ide_workspace_authorize",
+        {"path": str(workspace), "name": "Proyecto real"},
+    )
+    assert authorized["ok"] is True
+    workspace_out = authorized["result"]["workspace"]
+    workspace_id = workspace_out["id"]
+    assert workspace_out["name"] == "Proyecto real"
+    assert workspace_out["path"] == str(workspace.resolve())
+
+    written = await manager.send_command(
+        tenant_id,
+        "ide_write_file",
+        {
+            "workspace_id": workspace_id,
+            "path": "src/main.py",
+            "content": "print('hola desde IDE')\n",
+        },
+    )
+    assert written == {
+        "ok": True,
+        "result": {"path": "src/main.py", "bytes_written": 24},
+    }
+
+    opened = await manager.send_command(
+        tenant_id,
+        "ide_read_file",
+        {"workspace_id": workspace_id, "path": "src/main.py"},
+    )
+    assert opened["ok"] is True
+    assert opened["result"] == {
+        "path": "src/main.py",
+        "content": "print('hola desde IDE')\n",
+        "encoding": "utf-8",
+        "size_bytes": 24,
+    }
+
+    listed = await manager.send_command(tenant_id, "ide_workspace_list", {})
+    assert listed["result"]["workspaces"] == [workspace_out]
 
 
 async def test_real_local_protocol_supports_tree_editor_files_search_and_terminal(

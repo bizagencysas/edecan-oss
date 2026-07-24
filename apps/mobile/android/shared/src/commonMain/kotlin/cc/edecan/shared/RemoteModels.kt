@@ -135,6 +135,47 @@ data class RemoteFrame(
 @Serializable
 data class RemoteInputResult(val ok: Boolean = true, val result: JsonElement? = null)
 
+// --- Portapapeles y transferencia de archivos (WP-V7) ----------------------
+
+/** `GET /v1/remote/sessions/{id}/clipboard` — el portapapeles (texto) de la
+ * computadora. */
+@Serializable
+data class RemoteClipboard(val text: String = "")
+
+/** Un archivo del buzón compartido de la computadora. `modified` es epoch en
+ * segundos. */
+@Serializable
+data class RemoteSharedFile(
+    val name: String,
+    val bytes: Long = 0,
+    val modified: Double = 0.0,
+)
+
+/** `GET /v1/remote/sessions/{id}/files` — lista del buzón + su ruta. */
+@Serializable
+data class RemoteSharedFiles(
+    val files: List<RemoteSharedFile> = emptyList(),
+    val dir: String? = null,
+)
+
+/** `POST /v1/remote/sessions/{id}/files` (teléfono → computadora): el nombre
+ * FINAL con el que quedó guardado (puede diferir si hubo colisión). */
+@Serializable
+data class RemotePushedFile(
+    val name: String,
+    val path: String? = null,
+    val bytes: Long? = null,
+)
+
+/** `GET /v1/remote/sessions/{id}/files/content` (computadora → teléfono). */
+@Serializable
+data class RemotePulledFile(
+    val name: String,
+    @SerialName("content_b64") val contentB64: String,
+    val bytes: Long? = null,
+    val mime: String? = null,
+)
+
 // ---------------------------------------------------------------------------
 // Intervalo de *polling* del visor — función PURA (sin coroutines/Android),
 // testeada en `RemoteModelsTest.kt`.

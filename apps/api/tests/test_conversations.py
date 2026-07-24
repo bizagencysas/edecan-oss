@@ -420,6 +420,41 @@ async def test_post_message_streams_sse_and_persists_assistant_turn(
     assert llm_events[0]["quantity"] == 19  # 12 + 7
 
 
+async def test_bare_fix_runs_bounded_preflight_and_always_finishes(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    class AgentMustNotRun:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            raise AssertionError("/fix desnudo no debe esperar al LLM")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(conversations_module, "Agent", AgentMustNotRun)
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic"
+    )
+    conversation_id = await _create_conversation(client, headers)
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": " /FIX "},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert "event: tool.start" in response.text
+    assert "event: tool.end" in response.text
+    assert "event: message.done" in response.text
+    assert "escribe el fallo junto al comando" in response.text
+    messages = fake_repo.messages[uuid.UUID(conversation_id)]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+
+
 async def test_first_message_names_conversation_without_waiting_for_second_llm(
     client, fake_repo, monkeypatch
 ) -> None:

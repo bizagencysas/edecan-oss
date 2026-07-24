@@ -1373,6 +1373,134 @@ async def _stream_declined_confirmation(
     yield _format_sse("message.done", {"type": "done", "usage": {}})
 
 
+def _is_bare_fix_command(text: str) -> bool:
+    """``/fix`` sin contexto no debe abrir un turno LLM potencialmente largo.
+
+    El comando desnudo aparece mucho después de que algo falló. En ese caso el
+    servidor puede hacer el preflight local determinista usando el intercambio
+    anterior; pedirle primero al modelo que decida qué herramienta invocar
+    añade hasta varias rondas de CLI sin producir un solo evento SSE visible.
+    """
+
+    return re.fullmatch(r"\s*/fix\s*", text, flags=re.IGNORECASE) is not None
+
+
+async def _stream_bare_fix_diagnosis(
+    *,
+    tool: Tool | None,
+    ctx: ToolContext,
+    history: list[ChatMessage],
+    repo: Repo,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> AsyncIterator[str]:
+    """Diagnóstico terminal y visible para ``/fix``.
+
+    Nunca modifica código. Si existe el diagnóstico local lo ejecuta con un
+    límite corto; cualquier configuración ausente o excepción se convierte en
+    una respuesta persistida y en ``message.done``. Así ningún cliente queda
+    indefinidamente en estado "Edecán está pensando".
+    """
+
+    previous_user = next(
+        (
+            str(message.content)
+            for message in reversed(history)
+            if message.role == "user" and str(message.content).strip()
+        ),
+        "La acción anterior",
+    )
+    previous_assistant = next(
+        (
+            str(message.content)
+            for message in reversed(history)
+            if message.role == "assistant" and str(message.content).strip()
+        ),
+        "No se recibió un detalle del fallo.",
+    )
+    tool_call_id = f"fix-preflight-{uuid.uuid4().hex[:12]}"
+    tool_name = "diagnosticar_autorreparacion_local"
+    args = {
+        "intencion_original": previous_user[:2000],
+        "fallo_reportado": previous_assistant[:4000],
+        "categoria": "incierta",
+    }
+    yield _format_sse(
+        "tool.start",
+        {
+            "type": "tool_start",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "args": {"categoria": "incierta"},
+        },
+    )
+
+    if tool is None:
+        detail = (
+            "El diagnóstico local no está disponible en esta instalación. "
+            "No cambié ningún archivo."
+        )
+        data: dict[str, Any] = {}
+    else:
+        try:
+            result = await asyncio.wait_for(tool.run(ctx, args), timeout=20.0)
+            detail = result.content.strip() or "El diagnóstico terminó sin observaciones."
+            data = result.data or {}
+        except TimeoutError:
+            detail = (
+                "El diagnóstico local tardó más de 20 segundos y fue detenido. "
+                "No cambié ningún archivo."
+            )
+            data = {}
+        except Exception as exc:  # noqa: BLE001 - cierre visible y seguro del comando
+            logger.warning("Falló el preflight determinista de /fix", exc_info=True)
+            detail = f"No pude completar el diagnóstico local: {public_error_message(exc)}"
+            data = {}
+
+    yield _format_sse(
+        "tool.end",
+        {
+            "type": "tool_end",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "result_preview": detail[:_RESULT_PREVIEW_LEN],
+        },
+    )
+    if data.get("source_repair_ready"):
+        response_text = (
+            f"{detail}\n\nEl código local está listo para una reparación aislada. "
+            "Escribe qué comportamiento falló después de `/fix`, por ejemplo: "
+            "`/fix al adjuntar una foto no se abre el selector`."
+        )
+    else:
+        response_text = (
+            f"{detail}\n\nPara continuar sin adivinar, escribe el fallo junto al comando, "
+            "por ejemplo: `/fix al adjuntar una foto no se abre el selector`."
+        )
+    await repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content={"text": response_text},
+        tool_calls=[
+            {
+                "type": "tool_end",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "result_preview": detail[:_RESULT_PREVIEW_LEN],
+            }
+        ],
+    )
+    await repo.add_usage_event(
+        tenant_id=tenant_id,
+        kind="messages",
+        quantity=1.0,
+        meta={"conversation_id": str(conversation_id)},
+    )
+    yield _format_sse("message.delta", {"type": "text_delta", "text": response_text})
+    yield _format_sse("message.done", {"type": "done", "usage": {}})
+
+
 async def _stream_inline_credential_configuration(
     *,
     intent: InlineCredentialIntent,
@@ -1903,6 +2031,15 @@ async def post_message(
             repo=repo,
             tenant_id=tenant.tenant_id,
             user_id=current_user.user_id,
+            conversation_id=conversation_id,
+        )
+    elif _is_bare_fix_command(body.text):
+        stream = _stream_bare_fix_diagnosis(
+            tool=registry.get("diagnosticar_autorreparacion_local"),
+            ctx=ctx,
+            history=history,
+            repo=repo,
+            tenant_id=tenant.tenant_id,
             conversation_id=conversation_id,
         )
     else:

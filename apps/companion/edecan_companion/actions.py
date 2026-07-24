@@ -462,20 +462,35 @@ def _resolve_in_transfer(name: str, config: CompanionConfig) -> Path:
     return candidate
 
 
-def _unique_transfer_path(name: str, config: CompanionConfig) -> Path:
-    """Ruta destino para `name` que no pise un archivo existente.
+def _create_unique_transfer_file(name: str, content: bytes, config: CompanionConfig) -> Path:
+    """Escribe `content` en un archivo NUEVO del buzón sin pisar ninguno existente.
 
-    Si `foto.png` ya existe, prueba `foto (2).png`, `foto (3).png`, … — nunca
-    sobrescribe en silencio lo que el dueño ya tenía en el buzón.
+    Si `foto.png` ya existe, prueba `foto (2).png`, `foto (3).png`, … Usa
+    `O_CREAT|O_EXCL` (creación atómica) en vez de un `exists()` seguido de
+    `write`, así dos `transfer_push` concurrentes del mismo nombre (posible en
+    la app de escritorio, donde el bridge corre en paralelo por request) nunca
+    calculan el mismo "nombre libre" y se pisan — quien pierde la carrera
+    simplemente prueba el siguiente número.
     """
     base = _transfer_dir(config)
     stem, suffix = os.path.splitext(name)
-    candidate = base / name
-    counter = 2
-    while candidate.exists():
-        candidate = base / f"{stem} ({counter}){suffix}"
-        counter += 1
-    return candidate
+    counter = 1
+    while True:
+        nombre = name if counter == 1 else f"{stem} ({counter}){suffix}"
+        destino = base / nombre
+        try:
+            fd = os.open(destino, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            counter += 1
+            continue
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+        except OSError:
+            with contextlib.suppress(OSError):
+                destino.unlink()
+            raise
+        return destino
 
 
 def _transfer_push(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
@@ -504,11 +519,8 @@ def _transfer_push(params: dict[str, Any], config: CompanionConfig) -> dict[str,
             f"el archivo supera el máximo de {MAX_TRANSFER_BYTES // (1024 * 1024)} MiB"
         )
 
-    destino = _unique_transfer_path(name, config)
     try:
-        destino.write_bytes(content)
-        with contextlib.suppress(OSError):
-            destino.chmod(0o600)
+        destino = _create_unique_transfer_file(name, content, config)
     except OSError as exc:
         raise ActionError(f"no se pudo guardar el archivo: {exc}") from exc
     return {"name": destino.name, "path": str(destino), "bytes": len(content)}

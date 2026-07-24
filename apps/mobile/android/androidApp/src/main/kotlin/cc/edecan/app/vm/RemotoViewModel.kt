@@ -351,6 +351,15 @@ class RemotoViewModel : ViewModel() {
         _uiState.update { it.copy(infoMensaje = null) }
     }
 
+    /** Aviso disparado desde la UI (portapapeles vacío, fallo al leer/guardar
+     * un archivo): la UI no toca el estado directo, pasa por acá igual que las
+     * llamadas de red — así el error/confirmación se ve donde el resto. */
+    fun avisar(mensaje: String, esError: Boolean) {
+        _uiState.update {
+            if (esError) it.copy(errorFrame = mensaje) else it.copy(infoMensaje = mensaje)
+        }
+    }
+
     /** Trae el portapapeles (texto) de la Mac; [onTexto] lo recibe para
      * copiarlo al portapapeles de este teléfono (UI). */
     fun traerPortapapeles(api: EdecanApi, onTexto: (String) -> Unit) {
@@ -358,7 +367,17 @@ class RemotoViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.update { it.copy(transfiriendo = true, errorFrame = null, infoMensaje = null) }
             try {
-                onTexto(api.getRemoteClipboard(sesionId))
+                val texto = api.getRemoteClipboard(sesionId)
+                onTexto(texto)
+                _uiState.update {
+                    it.copy(
+                        infoMensaje = if (texto.isEmpty()) {
+                            "El portapapeles de tu Mac estaba vacío."
+                        } else {
+                            "Copiado a este teléfono."
+                        }
+                    )
+                }
             } catch (e: ApiException) {
                 _uiState.update { it.copy(errorFrame = e.message) }
             } finally {

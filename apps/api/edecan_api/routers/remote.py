@@ -522,6 +522,13 @@ _TRANSFER_PULL_ACTION = "transfer_pull"
 MAX_TRANSFER_BYTES = 10 * 1024 * 1024
 MAX_CLIPBOARD_CHARS = 1_000_000
 
+# Un archivo de varios MB por el WebSocket del companion puede tardar más que
+# el timeout de 30s pensado para input/portapapeles (comandos livianos). Estas
+# dos acciones usan un timeout más holgado, mismo criterio que el cliente
+# Android ya aplica al `git push` del IDE.
+_TRANSFER_ACTIONS = frozenset({_TRANSFER_PUSH_ACTION, _TRANSFER_PULL_ACTION})
+TRANSFER_COMMAND_TIMEOUT_SECONDS = 120.0
+
 
 class ClipboardSetIn(BaseModel):
     """`POST .../clipboard {text}` — escribe el portapapeles de la computadora."""
@@ -1106,8 +1113,13 @@ async def _dispatch_control_command(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="La computadora se desconectó. Abre Edecán en ella y vuelve a intentarlo.",
         )
+    send_kwargs: dict[str, Any] = {}
+    if action in _TRANSFER_ACTIONS:
+        send_kwargs["timeout"] = TRANSFER_COMMAND_TIMEOUT_SECONDS
     try:
-        resultado = await manager.send_command(current_user.tenant_id, action, params)
+        resultado = await manager.send_command(
+            current_user.tenant_id, action, params, **send_kwargs
+        )
     except CompanionError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

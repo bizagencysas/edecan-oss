@@ -215,6 +215,7 @@ fun RemotoScreen(
                         api?.let { remotoViewModel.traerArchivo(it, nombre, onArchivo) }
                     },
                     onDescartarInfo = { remotoViewModel.descartarInfo() },
+                    onAviso = { mensaje, esError -> remotoViewModel.avisar(mensaje, esError) },
                 )
             }
         }
@@ -414,6 +415,7 @@ private fun SesionActivaInmersiva(
     onEnviarArchivo: (String, ByteArray) -> Unit = { _, _ -> },
     onTraerArchivo: (String, (ByteArray, String) -> Unit) -> Unit = { _, _ -> },
     onDescartarInfo: () -> Unit = {},
+    onAviso: (mensaje: String, esError: Boolean) -> Unit = { _, _ -> },
 ) {
     val sesion = uiState.sesionActual ?: return
     val frame = uiState.frame
@@ -428,9 +430,12 @@ private fun SesionActivaInmersiva(
         ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val (nombre, datos) = leerArchivoSeleccionado(context, uri)
-            ?: return@rememberLauncherForActivityResult
-        onEnviarArchivo(nombre, datos)
+        val leido = leerArchivoSeleccionado(context, uri)
+        if (leido == null) {
+            onAviso("No se pudo leer el archivo elegido.", true)
+            return@rememberLauncherForActivityResult
+        }
+        onEnviarArchivo(leido.first, leido.second)
     }
     val guardarArchivo = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -438,9 +443,13 @@ private fun SesionActivaInmersiva(
         val pendiente = archivoPendiente
         archivoPendiente = null
         if (uri == null || pendiente == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openOutputStream(uri)?.use { it.write(pendiente.first) }
-        }
+        val guardado = runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(pendiente.first) } != null
+        }.getOrDefault(false)
+        onAviso(
+            if (guardado) "Guardado en este teléfono." else "No se pudo guardar el archivo.",
+            !guardado,
+        )
     }
     var ultimoPuntoX by remember(sesion.id) { mutableStateOf<Int?>(null) }
     var ultimoPuntoY by remember(sesion.id) { mutableStateOf<Int?>(null) }
@@ -586,7 +595,11 @@ private fun SesionActivaInmersiva(
                     },
                     onEnviarPortapapeles = {
                         val texto = leerPortapapeles(context)
-                        if (texto.isNullOrEmpty()) onDescartarInfo() else onEnviarPortapapeles(texto)
+                        if (texto.isNullOrEmpty()) {
+                            onAviso("No hay texto en el portapapeles de este teléfono.", true)
+                        } else {
+                            onEnviarPortapapeles(texto)
+                        }
                     },
                     onEnviarArchivo = { selectorArchivo.launch("*/*") },
                     onRefrescar = onListarArchivos,

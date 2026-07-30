@@ -12,7 +12,7 @@ dependencies = [
     "edecan-core",
     "edecan-schemas",
     "edecan-companion[remote-control]",
-    "uvicorn>=0.30",
+    "uvicorn>=0.51.0",
     "fakeredis>=2.23",
     "alembic>=1.13",
     "asyncpg>=0.29",

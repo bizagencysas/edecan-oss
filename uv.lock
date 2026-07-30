@@ -1774,7 +1774,7 @@ requires-dist = [
     { name = "edecan-toolkit", editable = "packages/toolkit" },
     { name = "edecan-travel", editable = "packages/travel" },
     { name = "edecan-voice", editable = "packages/voice" },
-    { name = "httpx", extras = ["http2"], specifier = ">=0.27" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyjwt", specifier = ">=2.9" },

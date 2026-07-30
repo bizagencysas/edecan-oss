@@ -1,0 +1,23 @@
+{
+  "_comentario": "FIXTURE DORADA -- contrato congelado. Fuente única de verdad para el MVP de Server-Driven UI del chat (ver /private/tmp/sdui_plan_mvp.json). packages/schemas/tests/test_chat_card.py la valida contra Pydantic; EdecanKitTests/CardGenericaTests.swift (iOS), y los tests de web/Android, decodifican ESTOS MISMOS BYTES -- si una plataforma se desvía de este contrato, su test dorado truena. No editar sin actualizar las 4 plataformas a la vez.",
+  "_descripcion": "Nivel 3 de forward-compat: un bloque con schema_version futuro (99) y campos extra en varios niveles (bloque, nodo raíz, nodo de texto). El backend actual (edecan_schemas.chat, que es el ÚNICO emisor real) fija schema_version en Literal[1] a propósito -- nunca emite otra cosa -- así que este payload representa lo que un SERVIDOR MÁS NUEVO enviaría a un CLIENTE MÁS VIEJO. El gate correspondiente vive en cada cliente (p.ej. iOS: `schemaVersion > versionMaximaSoportada -> unsupported`), NO en este paquete de esquemas; por eso `fallback_text` es obligatorio y debe ser útil por sí solo.",
+  "type": "card",
+  "schema_version": 99,
+  "card_id": "card-version-futura-1",
+  "fallback_text": "Esta tarjeta usa una versión más nueva del contrato; tu app no puede mostrarla todavía.",
+  "capacidad_nueva_del_futuro": "algo_que_este_paquete_no_conoce",
+  "raiz": {
+    "nodo": "stack",
+    "eje": "vertical",
+    "espaciado": "m",
+    "efecto_futuro": "particulas_3d",
+    "hijos": [
+      {
+        "nodo": "texto",
+        "contenido": "Texto compatible con el futuro",
+        "rol": "cuerpo",
+        "brillo_futuro": "neon"
+      }
+    ]
+  }
+}

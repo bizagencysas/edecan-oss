@@ -1,0 +1,7 @@
+# Solo nombres y valores de desarrollo falsos para generar tipos.
+# `.dev.vars` real está ignorado y nunca se versiona.
+LOCAL_ORIGIN_URL="http://127.0.0.1:8000"
+LOCAL_ORIGIN_KEY="development-only-not-a-secret"
+AWS_ORIGIN_URL="http://127.0.0.1:9000"
+AWS_ORIGIN_KEY="development-only-not-a-secret"
+JWT_VERIFICATION_SECRET="development-only-jwt-secret-at-least-32-bytes"

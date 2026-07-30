@@ -1,0 +1,65 @@
+# Suite: perfil_vivo.
+#
+# Mismo patrón multi-turno que `memoria.yaml`: el primer turno le "enseña" un
+# dato de perfil (una preferencia, un dato de empresa, una meta...) y el
+# segundo pregunta por él. `edecan_evals.runner.ejecutar_caso` acumula el
+# historial entre turnos y evalúa `esperado` contra el texto final del ÚLTIMO
+# turno — así se valida que, si el asistente conociera ese dato de perfil (en
+# producción se lo inyecta el espejo en `memory_items` que arma
+# `memory_consolidate` — ver `docs/perfil-vivo.md`), su respuesta lo refleja.
+# Este runner no ejercita `MemoryStore`/`user_profiles` de verdad (no tiene
+# Postgres ni LLM real en modo offline): el "guion" hace de esa memoria ya
+# inyectada — igual que `memoria.yaml` no ejercita `PgMemoryStore.search`.
+nombre: perfil_vivo
+descripcion: >
+  Verifica, en casos de 2 turnos, que un dato de perfil (preferencia,
+  proyecto, empresa, meta) mencionado en el primer turno se refleje en la
+  respuesta del segundo — el mismo comportamiento que produce en producción
+  el espejo `source="perfil_vivo"` de `memory_consolidate`.
+
+guion:
+  "respuestas (sean\\W+)?breves y directas":
+    texto: "Anotado: prefieres respuestas breves y directas. Así te voy a responder de ahora en adelante."
+  "c[oó]mo prefieres que (te|me) respond":
+    texto: "Prefieres respuestas breves y directas, así que voy directo al grano."
+  "empresa se llama Acme":
+    texto: "Perfecto, quedó anotado: tu empresa se llama Acme."
+  "c[oó]mo se llama mi empresa":
+    texto: "Tu empresa se llama Acme."
+  "meta.{0,20}correr.{0,20}marat[oó]n":
+    texto: "Anotado: tu meta es correr una maratón este año. Te puedo ayudar a hacer seguimiento."
+  "cu[aá]l es mi meta":
+    texto: "Tu meta es correr una maratón este año."
+  "Marta.{0,20}mi socia":
+    texto: "Anotado: Marta es tu socia en el estudio."
+  "qui[eé]n es Marta":
+    texto: "Marta es tu socia en el estudio."
+
+casos:
+  - id: perfil01_preferencia_respuestas_breves
+    mensajes:
+      - "Prefiero que tus respuestas sean breves y directas, apúntalo en mi perfil."
+      - "¿Cómo prefieres que me respondas?"
+    esperado:
+      contiene: ["breve", "directa"]
+
+  - id: perfil02_empresa
+    mensajes:
+      - "Mi empresa se llama Acme, agrégalo a mi perfil."
+      - "¿Cómo se llama mi empresa?"
+    esperado:
+      contiene: ["Acme"]
+
+  - id: perfil03_meta
+    mensajes:
+      - "Mi meta este año es correr una maratón, quiero que lo recuerdes."
+      - "¿Cuál es mi meta?"
+    esperado:
+      contiene: ["maratón"]
+
+  - id: perfil04_relacion
+    mensajes:
+      - "Marta es mi socia en el estudio, no lo olvides."
+      - "¿Quién es Marta?"
+    esperado:
+      contiene: ["socia"]

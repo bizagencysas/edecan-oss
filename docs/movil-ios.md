@@ -1,0 +1,627 @@
+# App iOS nativa
+
+Guía completa para compilar, firmar e instalar la app iOS de Edecán —
+Swift 6 + SwiftUI puro, diseño Liquid Glass, **nunca React Native**. El código
+vive en [`../apps/mobile/ios/`](../apps/mobile/ios/); este documento es la
+referencia para el CLIENTE que va a compilar su propia app, y el
+`README.md` de ese directorio es el arranque rápido para quien va a tocar
+el código.
+
+**Léelo antes de empezar:** cada distribución elige su mecanismo oficial.
+Puede ser App Store, TestFlight, AltStore/SideStore o una instalación firmada
+por el propio cliente. Edecán avisa cuando el manifiesto HTTPS del canal
+publica una versión superior y abre ese mecanismo; iOS sigue siendo quien
+autoriza e instala la actualización. Ver
+["Actualizaciones sin volver a clonar"](#actualizaciones-sin-volver-a-clonar).
+
+## Resumen — el modelo en 4 ideas
+
+1. **Distribución configurable.** Se puede compilar con Xcode/fastlane e
+   instalar por USB, publicar en App Store/TestFlight o usar una fuente
+   AltStore/SideStore propia. El código móvil es el mismo; cambia la firma y
+   la URL oficial de instalación.
+2. **Tu propia cuenta Apple Developer Program.** Cada cliente firma con SU
+   cuenta de pago ($99/año), nunca con la del dueño de Edecán — ver
+   ["Requisitos"](#requisitos) para el porqué.
+3. **El servidor lo traes tú.** No hay un servidor Edecán "de fábrica": la
+   app pide la URL de tu propia instalación (self-host, o tu app de
+   escritorio Tauri) en el primer arranque. Mismo principio bring-your-own
+   que el resto del producto (`docs/roadmap.md`).
+4. **Escanear el QR crea el emparejamiento durable**. Ver
+   ["Emparejamiento en el primer arranque"](#emparejamiento-en-el-primer-arranque).
+
+## Requisitos
+
+- **Un Mac** con Xcode 26 o más nuevo (este esqueleto se generó y compiló
+  con Xcode 26.6 / SDK iOS 26.5 — ver ["Verificado en esta iteración"](#verificado-en-esta-iteración-fase-v3)).
+- **[xcodegen](https://github.com/yonaskolb/XcodeGen)**: `brew install xcodegen`.
+  `Edecan.xcodeproj` no existe en el repo — se genera desde `project.yml`,
+  la única fuente de verdad del proyecto (nunca se edita el `.xcodeproj` a
+  mano ni se versiona).
+- **[fastlane](https://fastlane.tools)** (opcional para desarrollo, obligatorio
+  para instalar en un iPhone real): `brew install fastlane`.
+- **Tu propia cuenta Apple Developer Program de pago** ($99/año) — ver el
+  porqué justo abajo.
+- **Un servidor Edecán** accesible desde tu iPhone (misma red Wi-Fi, VPN, o
+  un dominio público si tu self-host/escritorio lo expone así).
+
+### Por qué cada cliente necesita su propia cuenta Apple Developer
+
+Decisión de negocio explícita, documentada en `docs/roadmap.md`
+("Decisión de negocio: instalación con cuenta Apple Developer del propio
+cliente") y confirmada en `docs/roadmap.md`. El resumen técnico:
+
+- Firmar con un Apple ID gratis (sin cuenta de pago) funciona por USB, pero
+  el build **expira a los 7 días** — inviable para uso real.
+- Firma **ad-hoc** con una cuenta Developer Program de pago da un build
+  válido ~1 año, sin pasar por revisión de Apple ni por la App Store — pero
+  exige **registrar el UDID de cada dispositivo** en la cuenta antes de
+  firmar, con un **tope de ~100 dispositivos por cuenta por año**.
+- La alternativa (Apple Developer *Enterprise* Program, sin tope de
+  dispositivos) tiene términos de licencia que **prohíben explícitamente**
+  distribuir a clientes externos — solo sirve para apps internas de una
+  organización a sus propios empleados. Usarlo así arriesga que Apple
+  revoque el certificado de golpe, tumbando la app para todos los clientes
+  a la vez. **Edecán no usa este camino.**
+
+Si fuera la cuenta del dueño de Edecán la que registrara el UDID de cada
+cliente, el tope de 100 dispositivos/año se agotaría rapidísimo repartido
+entre todos los clientes del producto. Exigiendo que **cada cliente use su
+propia cuenta**, cada uno tiene su propio tope de 100 — de sobra para sus
+propios dispositivos — y el problema desaparece. El perfil de cliente de
+este producto (alguien con IDE completo, control de computador,
+git/Docker/Kubernetes/AWS/GCP/Azure en la misma app) ya es alguien que
+probablemente crea software: pedirle una cuenta Developer no es una
+barrera real para ese público (`docs/roadmap.md`).
+
+## Arquitectura del proyecto
+
+```
+apps/mobile/ios/
+├── project.yml            # fuente de verdad del proyecto Xcode (xcodegen)
+├── EdecanKit/              # Swift Package: red/datos, SIN UI (SPM local)
+│   ├── Sources/EdecanKit/
+│   │   ├── Models.swift            # Codable: TokenPair, Me, Conversation, ChatEvent, JSONValue
+│   │   ├── NegociosModels.swift    # NegocioKPIs, CanalKPI, ActividadKPI, Factura, FacturaItem
+│   │   ├── CredentialsModels.swift # CredentialsOut, LLMCredentialsIn, SetupStatus, DetectLocalProviders
+│   │   ├── IDEModels.swift         # workspaces, archivos, sesiones y Git
+│   │   ├── DeviceModels.swift      # DeviceOut (POST /v1/devices, fase v4 en paralelo)
+│   │   ├── VoiceModels.swift       # TranscribeOut, HablarResultado
+│   │   ├── MissionsModels.swift    # MissionOut, MissionStepOut, MissionDetailOut (v5, fase v5)
+│   │   ├── AutomationsModels.swift # AutomationOut/Trigger/Accion, AutomationRunOut (v5, fase v5)
+│   │   ├── RemindersModels.swift   # ReminderOut (v5, fase v5)
+│   │   ├── RemoteModels.swift      # RemoteSession/RemoteFrame/RemoteInput + mapeo de coordenadas (fase v6)
+│   │   ├── APIClient.swift         # actor: auth/register/me/conversaciones/negocios/credenciales/
+│   │   │                           # setup/ide/voz/dispositivos/misiones/automatizaciones/
+│   │   │                           # recordatorios/remoto, auto-refresh en 401
+│   │   ├── MultipartFormData.swift # helpers `Data.append*` para multipart a mano (voz)
+│   │   ├── SSEClient.swift         # URLSession.bytes(for:) → AsyncThrowingStream<ChatEvent>
+│   │   ├── Keychain.swift          # kSecClassGenericPassword, sin App Group
+│   │   └── PairingStore.swift      # URL del servidor + emparejamiento durable
+│   └── Tests/EdecanKitTests/       # suite offline, corre con `swift test`
+├── EdecanApp/              # target de la app (SwiftUI)
+│   ├── EdecanApp.swift, RootTabView.swift, Theme.swift, SessionStore.swift
+│   ├── Onboarding/OnboardingView.swift    # login + registro (POST /v1/auth/register)
+│   ├── Screens/{Inicio,Chat,IDE,Negocios,Voz,Perfil}View.swift
+│   ├── Screens/{Misiones,Automatizaciones,Recordatorios}View.swift  # alcanzables desde Actividad
+│   ├── Screens/RemotoView.swift             # alcanzable desde Actividad (*polling*, no WebRTC)
+│   ├── Componentes/
+│   │   ├── ChatViewModel.swift         # turno SSE + confirmación de herramientas peligrosas
+│   │   ├── TarjetaConfirmacion.swift   # tarjeta Aprobar/Rechazar, compartida Chat ↔ Voz ↔ Misiones
+│   │   ├── NegociosViewModel.swift     # GET /v1/negocios/kpis + /facturas en paralelo
+│   │   ├── VozRecorder.swift           # AVAudioEngine — graba a WAV, @unchecked Sendable
+│   │   ├── VozViewModel.swift          # push-to-talk: reutiliza ChatViewModel completo
+│   │   ├── CredencialesViewModel.swift # GET /v1/credentials + /v1/setup/* + PUT LLM
+│   │   ├── ConectarLLMSheet.swift      # formulario "pegar y validar" de Conectar LLM
+│   │   ├── IDEViewModel.swift          # proyectos + archivos + agente/terminal durables + Git
+│   │   ├── MisionesViewModel.swift         # lista+detalle con *polling* de /v1/missions (v5)
+│   │   ├── AutomatizacionesViewModel.swift # toggle optimista + runs de /v1/automations (v5)
+│   │   ├── RecordatoriosViewModel.swift    # CRUD simple de /v1/reminders (v5)
+│   │   ├── RemotoViewModel.swift           # visor + input de /v1/remote, *polling* (fase v6)
+│   │   ├── BurbujaMensaje.swift, EmptyStateView.swift
+│   └── Resources/Assets.xcassets/
+├── EdecanWidgets/           # extensión de widgets (placeholder mínimo)
+└── fastlane/                # lanes generate/bump/adhoc
+```
+
+### `EdecanKit` — la capa de red, sin UI
+
+Todo lo que habla con `/v1/*` (ver [`api.md`](./api.md) y
+`ARCHITECTURE.md` §10.12/§12) vive en este Swift Package local, para que
+`EdecanApp` y `EdecanWidgets` compartan un solo cliente en vez de
+reimplementarlo cada uno:
+
+- **`APIClient`** es un `actor` (estado mutable — los tokens en memoria —
+  tocado desde varias tareas a la vez). Cubre auth (`login`/`registrar`/
+  `refrescar`), `me`/`listarConversaciones`/`crearConversacion`, Negocios
+  (`negociosKPIs`/`listarFacturas`), credenciales bring-your-own
+  (`credenciales`/`conectarLLM`/`desconectarLLM`), el wizard de arranque
+  (`setupStatus`/`setupDetect`), Estudio de código con proyectos
+  autorizados, archivos, sesiones durables de agente/terminal y Git tipado,
+  voz (`transcribir`/`hablar`, con
+  `multipart/form-data` armado a mano) y dispositivos
+  (`registrarDispositivo`/`revocarDispositivo`, degradando con gracia a
+  `nil`/silencio ante un `404` — ver ``DeviceOut``). Reintento automático de
+  **una vez** por endpoint si el access token expiró (401 → `refrescar()` →
+  reintenta). Errores tipados en español (`APIError`), listos para mostrar
+  tal cual en la UI.
+- **`SSEClient`** abre el stream de
+  `POST /v1/conversations/{id}/messages` **y** `POST .../confirm` con
+  `URLSession.bytes(for:)` y lo parsea línea por línea (`event:`/`data:`/
+  línea en blanco = fin de bloque), emitiendo un `ChatEvent` por cada bloque
+  completo vía `AsyncThrowingStream`. Solo entiende el framing SSE — la
+  autenticación y la URL las arma quien llama, con
+  `APIClient.tokenDeAccesoValido()` / `APIClient.urlCompleta(_:)`.
+- **`Keychain`** es un envoltorio mínimo sobre `Security.framework`:
+  `kSecClassGenericPassword` con `kSecAttrAccessibleAfterFirstUnlock`, sin
+  `kSecAttrAccessGroup` (no comparte datos con `EdecanWidgets` todavía —
+  ver ["Qué es real hoy vs. qué falta"](#qué-es-real-hoy-vs-qué-falta)).
+- **`PairingStore`** (`@MainActor @Observable`) guarda la URL del servidor,
+  expone `isPaired` y ahora también `deviceId` (el `id` de `devices` que
+  devolvió `POST /v1/devices`, si ese endpoint ya existe del lado del
+  servidor — fase v4, contrato en paralelo). **Sin ningún valor por
+  defecto de servidor** — si nunca se configuró nada, `serverURL` es `nil`
+  y el onboarding lo pide.
+
+### `EdecanApp` — la app SwiftUI
+
+`EdecanApp.swift` decide entre `OnboardingView` (sin emparejar) y
+`RootTabView` (emparejado). `RootTabView` monta solo tres superficies:
+**Edecan** (Chat, la entrada inicial), **Actividad** (trabajo delegado,
+recordatorios, rutinas y remoto) y **Ajustes**. Voz se abre con el micrófono
+dentro de Chat; IDE y Negocios permanecen accesibles en el disclosure
+"Modo avanzado" de Ajustes. `TabRouter` (`@Observable`, vía
+`.environment(...)`) permite volver a Ajustes cuando una capacidad necesita
+configurar una conexión.
+
+**Liquid Glass:** un `TabView` estándar en iOS 26 ya adopta automáticamente
+la barra flotante translúcida del sistema, sin modifiers extra. El material
+`glassEffect(_:in:)` real (con `if #available(iOS 26, *)` y fallback a
+`.ultraThinMaterial`) se aplica a mano en `Theme.swift`
+(`TarjetaVidrio`/`.tarjetaVidrio(esquina:)`) — es lo que usan las tarjetas
+de `OnboardingView`, las burbujas de `ChatView`/`VozView`, la tarjeta de
+confirmación y los estados vacíos.
+
+**Chat es funcional de verdad**, no una maqueta: `ChatViewModel` crea la
+conversación la primera vez, arma la petición SSE a mano
+(`APIClient.urlCompleta` + `APIClient.tokenDeAccesoValido()` +
+`SSEClient.stream(_:)`) y va apendeando cada `text_delta` al mensaje del
+asistente en pantalla, con un indicador mientras el agente usa una
+herramienta (`tool_start` sin su `tool_end` todavía). Si el agente pide
+confirmar una herramienta peligrosa (`confirmation_required`), expone
+`confirmacionPendiente` y `ChatView` muestra ``TarjetaConfirmacion`` con
+botones Aprobar/Rechazar que llaman `POST .../confirm` — nunca se manda al
+usuario al panel web para eso. **``VozViewModel`` reutiliza el mismo
+`ChatViewModel` tal cual** (no reimplementa el turno del agente) para que
+*push-to-talk* corra exactamente la misma lógica de conversación/SSE/
+confirmación que Chat. El Estudio comparte proyectos, archivos y sesiones
+durables con Android; Negocios trae KPIs + dona + facturas reales.
+
+## Pantallas v5: Misiones, Automatizaciones, Recordatorios
+
+Tres pantallas, **alcanzables desde Actividad** (`InicioView`) sin sumar
+pestañas primarias, conectadas de verdad a la API real, no maquetas:
+
+- **Misiones** (`Screens/MisionesView.swift`, `Componentes/MisionesViewModel.swift`)
+  — el Orchestrator multi-agente. Consume `GET/POST /v1/missions`,
+  `GET /v1/missions/{id}`, `POST /v1/missions/{id}/confirm`,
+  `POST /v1/missions/{id}/cancel` (`ARCHITECTURE.md` §11 `docs/roadmap.md`). Lista con badge de estado (`planning|running|
+  waiting_confirmation|done|error|cancelled`) y alta con un campo
+  `objetivo`; detalle con la línea de tiempo de `agent_steps` (agente, status,
+  resultado) y, si un paso queda `waiting_confirmation`, la MISMA
+  `TarjetaConfirmacion` que usan Chat/Voz con sus botones Aprobar/Rechazar,
+  cableados al endpoint real. **Sin SSE**: `missions.py` es deliberadamente
+  delgado (solo inserta/lee filas y encola `run_mission` — la
+  planificación/ejecución corre asíncrona en el worker), así que la lista y
+  el detalle hacen *polling* cada 2s (`Task` + `Task.sleep`, el mismo
+  intervalo que ya usa `apps/web/.../misiones/page.tsx`) mientras algo siga
+  activo, y se detienen solos al salir de la pantalla.
+- **Automatizaciones** (`Screens/AutomatizacionesView.swift`,
+  `Componentes/AutomatizacionesViewModel.swift`) — reglas de agenda o
+  webhook (`ARCHITECTURE.md` §11 `docs/roadmap.md`). Consume
+  `GET /v1/automations`, `PATCH /v1/automations/{id}` (toggle),
+  `POST /v1/automations` (alta) y `GET /v1/automations/{id}/runs`. Lista con
+  `Toggle` de activar/desactivar **optimista** (refleja el cambio al instante
+  y revierte solo si el servidor lo rechaza, p. ej. por el tope de
+  automatizaciones activas del plan); alta con presets de `rrule` (diario/
+  semanal/mensual, mismo criterio que
+  `apps/web/src/components/automatizaciones/AutomationForm.tsx`) + una
+  opción personalizada — **esta app móvil solo crea disparadores de tipo
+  agenda (`kind="schedule"`)**, dar de alta un webhook sigue siendo terreno
+  del panel web (aunque sí puede listar/ver el detalle de automatizaciones
+  webhook ya existentes); detalle con sus últimas `automation_runs`.
+- **Recordatorios** (`Screens/RecordatoriosView.swift`,
+  `Componentes/RecordatoriosViewModel.swift`) — `ARCHITECTURE.md` §10.3/
+  §10.12. Consume `GET/POST /v1/reminders` y `PUT /v1/reminders/{id}`. Lista
+  separada en Pendientes/Completados, alta con texto + `DatePicker`, y
+  completar con *swipe* sobre una fila pendiente.
+
+### Límites conocidos de estas 3 pantallas
+
+- **Push y fallback local.** `APIClient.createReminder` usa `channel: "mobile"`;
+  la app registra/rota el token APNs y lo revoca al desvincular. Cada
+  recordatorio conserva además un aviso local. La configuración exacta y el
+  modo OSS sin credenciales están en [`notificaciones-push.md`](./notificaciones-push.md).
+- **`APIClient.completeReminder` reutiliza el status `"sent"`.** El backend
+  no tiene un status "completado" propio (solo `pending|sent|cancelled`,
+  `ARCHITECTURE.md` §10.3) — completar a mano desde el *swipe* pone el mismo
+  status que ya usa `send_reminder_scan` cuando el recordatorio vence solo;
+  ambos casos se muestran igual (tachado, en "Completados").
+- **Crear una automatización desde el teléfono siempre es tipo agenda.**
+  Ver arriba — sin formulario de webhook en esta app.
+- **Sin `getAutomation` propio**: el detalle de una automatización reutiliza
+  la fila que ya está en memoria de la lista (`AutomatizacionesViewModel.automatizaciones`)
+  en vez de pedirla de nuevo — si esa fila cambiara del lado del servidor
+  mientras el detalle está abierto (p. ej. otra sesión la desactivó), esta
+  pantalla no se entera hasta volver a la lista.
+
+## Compilar por primera vez (desarrollo, sin firmar)
+
+### Vistas previas dentro de la app
+
+Los artefactos del chat se descargan con Bearer desde `/v1/files/{id}/download`
+y se muestran en un sheet propio: imagen, PDF mediante PDFKit y texto con un
+límite visual de 2 MB. Otros tipos conservan la acción explícita de compartir.
+Los enlaces HTTP(S) públicos se abren en un `WKWebView` efímero, sin JavaScript,
+y cada redirección vuelve a pasar por el bloqueo de hosts locales/privados. No
+se usa Quick Look externo.
+
+Para trabajar en el código o simplemente confirmar que compila en tu
+máquina, sin necesidad todavía de cuenta Developer ni de un iPhone físico:
+
+```bash
+brew install xcodegen
+cd apps/mobile/ios
+
+# 1. Capa de red/datos, aislada — 38 tests, corre en segundos
+cd EdecanKit && swift build && swift test
+cd ..
+
+# 2. Proyecto completo, contra el simulador (no necesita firma)
+xcodegen generate
+xcodebuild -project Edecan.xcodeproj -scheme EdecanApp \
+  -destination 'generic/platform=iOS Simulator' build
+```
+
+O simplemente `open Edecan.xcodeproj` tras el `xcodegen generate` y correr
+con ▶︎ en Xcode contra un simulador.
+
+## Antes de compilar para tu iPhone: bundle id y equipo
+
+`project.yml` trae dos valores que **cada cliente debe cambiar antes de
+firmar**, no antes de compilar para el simulador:
+
+- **`PRODUCT_BUNDLE_IDENTIFIER: cc.edecan.app`** es un placeholder de
+  desarrollo. Un bundle id no se puede repetir entre cuentas Apple
+  Developer distintas, así que cámbialo por uno propio (p. ej.
+  `com.tuempresa.edecan`) en `project.yml` (busca `cc.edecan.app`, aparece
+  en el target `EdecanApp` y en `EdecanWidgetsExtension` como
+  `cc.edecan.app.widgets`) antes de firmar con tu cuenta.
+- **`DEVELOPMENT_TEAM: ""`** queda deliberadamente vacío — este repo
+  **nunca** trae un Team ID real (`ARCHITECTURE.md` §0, cero secretos).
+  Dos formas de completarlo con el tuyo (reemplaza el valor vacío por
+  `TU_TEAM_ID_AQUI`, tu Team ID de 10 caracteres de
+  `developer.apple.com/account`):
+  1. En Xcode: target `EdecanApp` → *Signing & Capabilities* → elige tu
+     equipo del desplegable (tras iniciar sesión con tu Apple ID en
+     Xcode → *Settings* → *Accounts*). `CODE_SIGN_STYLE: Automatic` deja
+     que Xcode resuelva perfil y certificado solo a partir de ahí — esta
+     es la vía recomendada.
+  2. O escribiéndolo directamente en `project.yml` y corriendo
+     `xcodegen generate` de nuevo.
+
+La configuración `Debug` usa `EdecanApp.local.entitlements`, sin APNs, para
+que también pueda firmarse con un equipo personal gratuito. Esto no elimina
+los avisos locales ni las notificaciones dentro de Edecán. La configuración
+`Release` usa `EdecanApp.entitlements` y conserva Push Notifications para
+quien conecte una cuenta Apple Developer de pago con esa capacidad activa.
+
+## Compilar e instalar en tu iPhone (build ad-hoc)
+
+Con bundle id y equipo ya configurados:
+
+### 1. Registra el UDID de cada dispositivo
+
+En tu cuenta de [developer.apple.com](https://developer.apple.com/account/resources/devices) →
+*Devices* → *+*. Para obtener el UDID de un iPhone: conéctalo por USB,
+ábrelo en Xcode → *Window* → *Devices and Simulators*, y copia el
+*Identifier* que aparece ahí (o en el iPhone: *Ajustes* → *General* →
+*Información* → desplázate hasta *UDID identifica el dispositivo*... en
+iOS moderno se obtiene más fácil desde la ventana de Xcode). Tope: ~100
+dispositivos por cuenta por año — es tuyo, no compartido con otros
+clientes de Edecán.
+
+### 2. El perfil de aprovisionamiento ad-hoc
+
+Con `CODE_SIGN_STYLE: Automatic` (ya configurado en `project.yml`), Xcode
+genera y renueva el perfil "Ad Hoc" solo, en cuanto tu dispositivo está
+registrado y conectado. Si prefieres el camino manual: *Certificates,
+Identifiers & Profiles* → *Profiles* → *+* → *Ad Hoc* → tu bundle id → los
+dispositivos que quieras incluir.
+
+### 3. `fastlane adhoc`
+
+```bash
+cd apps/mobile/ios
+brew install fastlane   # si no lo tienes
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 fastlane bump    # opcional: sube el build number
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 fastlane adhoc
+```
+
+`adhoc` corre `xcodegen generate` y compila un Release firmado `ad-hoc`
+(`gym`), y deja el resultado en `apps/mobile/ios/build/Edecan-adhoc.ipa`.
+
+**El prefijo `LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8` es obligatorio en
+algunas máquinas**: sin un locale UTF-8 explícito, `fastlane`/`gym` pueden
+fallar con un error de codificación de Ruby al leer el proyecto — mismo
+pipeline que el dueño de Edecán ya usa en sus otros proyectos iOS (bump de
+versión → `xcodegen generate` → fastlane con `LC_ALL=en_US.UTF-8`).
+
+### 4. Instala el `.ipa` por USB
+
+Dos caminos, sin pasar por ninguna tienda:
+
+- **Xcode**: *Window* → *Devices and Simulators* → selecciona tu iPhone
+  conectado por USB → arrastra `Edecan-adhoc.ipa` a la lista de apps.
+- **[Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344)**
+  (gratis, Mac App Store): arrastra el `.ipa` sobre el dispositivo
+  conectado.
+
+La primera vez que la abras, iOS puede pedir confiar en el desarrollador:
+*Ajustes* → *General* → *VPN y gestión de dispositivos* → tu perfil →
+*Confiar*.
+
+## Emparejamiento en el primer arranque
+
+El flujo principal es **Configuración → Conectar mi teléfono** en el
+computador y escanear el QR. El esquema `edecan://pair` abre iOS, canjea un
+secreto de un solo uso (10 minutos) y entra directamente al chat. No hay URL
+aleatoria que copiar.
+
+Después del canje, servidor, `device_id`, `device_token` y JWTs quedan en
+Keychain. Si Redis o el backend local se reinician, `APIClient` usa una sola
+vez la identidad durable para recuperar tokens nuevos; un dispositivo
+revocado no puede hacerlo. URL/login/registro manual siguen disponibles como
+recuperación avanzada para self-hosting.
+
+## Actualizaciones sin volver a clonar
+
+La app consulta al volver a primer plano un manifiesto público HTTPS. El
+canal estable oficial usa por defecto:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-stable.json
+```
+
+Los builds preliminares usan el puntero análogo:
+
+```text
+https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-preview.json
+```
+
+El manifiesto no contiene secretos:
+
+```json
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.7.4",
+  "build_number": 19,
+  "published_at": "2026-07-23T12:00:00Z",
+  "release_notes": "Chat más resistente y mejoras de estabilidad.",
+  "install_url": "https://testflight.apple.com/join/TU_CODIGO"
+}
+```
+
+`install_url` puede abrir App Store, TestFlight, AltStore, SideStore o una
+página HTTPS oficial con instrucciones/artefactos firmados. Edecán compara
+SemVer, nunca ofrece un downgrade, no mezcla `stable` y `preview`, conserva
+la última respuesta válida para uso offline y no repite el aviso para la
+misma versión. Si no hay una actualización válida, no aparece ninguna fila
+ni advertencia.
+
+Un fork configura su propia distribución al compilar:
+
+```bash
+xcodebuild \
+  EDECAN_IOS_UPDATE_CHANNEL=preview \
+  EDECAN_IOS_UPDATE_MANIFEST_URL=https://raw.githubusercontent.com/bizagencysas/edecan-oss/update-channels/ios-preview.json \
+  ...
+```
+
+Para el productor oficial, configura primero la variable de repositorio
+`EDECAN_IOS_INSTALL_URL`. Si no existe, `release-ios.yml` termina como
+*no-op* seguro y no publica un enlace de ejemplo. Al crear un tag final mueve
+`ios-stable.json`; un tag SemVer preliminar mueve `ios-preview.json`. El
+publicador reintenta carreras contra Android/escritorio y modifica solo el
+puntero iOS, conservando los demás manifiestos de `update-channels`.
+
+Los valores también pueden cambiarse en `project.yml`; son configuración
+pública, no credenciales. El canal estable rechaza versiones preliminares.
+El canal preview permite avanzar a otra preview o a una versión final
+publicada dentro del mismo manifiesto preview.
+
+**Límite de la plataforma:** iOS no permite que una app normal reemplace su
+propio ejecutable silenciosamente. App Store, TestFlight y los instaladores
+alternativos autorizados controlan la instalación. Para builds ad-hoc
+instalados por USB, el manifiesto puede avisar y abrir la descarga o guía
+oficial, pero la persona debe completar la instalación firmada.
+
+## Qué es real hoy vs. qué falta
+
+| Área | Estado |
+|---|---|
+| Autenticación (login, **registro**, refresh automático, Keychain) | **Real** |
+| Chat con streaming SSE (`text_delta`, indicador de herramienta) | **Real** |
+| Reanudación del chat tras minimizar, cambiar de red o recrear el proceso | **Real** — el host conserva el turno; iOS persiste solo conversación + UUID, consulta `GET .../message-attempts/{uuid}` al volver y reemplaza cualquier fragmento con el replay canónico. No intenta sostener un socket contra las restricciones de batería de iOS. |
+| Actualizaciones por manifiesto HTTPS (`stable`/`preview`, SemVer, ETag y caché offline) | **Real** — avisa solo cuando existe una versión superior y abre App Store, TestFlight, AltStore/SideStore o la URL oficial configurada; iOS realiza la instalación. |
+| **Confirmar/rechazar una herramienta peligrosa desde el chat** (`POST .../confirm`, tarjeta inline Aprobar/Rechazar) | **Real** — `ChatViewModel.confirmacionPendiente` + `TarjetaConfirmacion`, compartida con Voz |
+| **Voz nativa** (*push-to-talk* con `AVAudioEngine` → `POST /v1/voice/transcribe` → turno de chat completo → `POST /v1/voice/speak` → `AVAudioPlayer`) | **Real** — botón de micrófono dentro de Chat; enlaza a Ajustes si falta una voz real |
+| **Negocios** (KPIs del mes con tarjetas + dona de canales con Swift Charts + lista de facturas) | **Real** — `GET /v1/negocios/kpis` + `/facturas` |
+| **Ajustes: estado de conexión de LLM/voz/imágenes/búsqueda** (`GET /v1/credentials`) + selector **"Conectar LLM"** ("pegar y validar", `PUT /v1/credentials/llm`) | **Real** — incluye atajos de un clic para CLI/Ollama detectados (`GET /v1/setup/detect`) cuando el servidor corre en modo local |
+| **Estudio de código** (proyectos, editor, agente con progreso, terminal interactiva y Git) | **Real** — las sesiones viven en la computadora, continúan al minimizar iOS y se reanudan por cursor; ver [`ide.md`](./ide.md) |
+| **Emparejamiento QR durable y revocable** (`/v1/devices/pairing/*`) | **Real** — deep link, Keychain y recuperación después de reinicio. |
+| **Misiones** (crear por objetivo, lista con *polling*, detalle con pasos y confirmación) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
+| **Automatizaciones** (lista con toggle optimista, alta de agenda, detalle con corridas) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
+| **Recordatorios** (lista pendientes/completados, alta, completar con *swipe*) | **Real** — ver ["Pantallas v5"](#pantallas-v5-misiones-automatizaciones-recordatorios) |
+| `EdecanKit` completo con 162 tests offline | **Real** |
+| Liquid Glass (`glassEffect` + fallback) en tarjetas/burbujas/onboarding/confirmación | **Real** |
+| Actividad (`GET /v1/me` + accesos), Ajustes (datos + cerrar sesión) | **Real** |
+| Proyecto Xcode compilable (xcodegen) + lanes de fastlane (`generate`/`bump`/`adhoc`) | **Real** |
+| Gestión visual de todos los dispositivos del tenant | Pendiente — el QR y la revocación del dispositivo actual sí son reales; falta la lista administrativa completa en móvil. |
+| Notificaciones push (APNs) | Pendiente — requiere el emparejamiento por dispositivo completo de arriba |
+| Historial de llamadas de telefonía premium (Twilio, por tenant) | Pendiente — el micrófono de Chat solo cubre voz web (*push-to-talk*), no telefonía |
+| **Visor de control remoto** (`RemotoView`/`RemotoViewModel`, *polling* HTTP) | **Real** — ver ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6); transporte WebRTC de baja latencia sigue pendiente (§5 de [`control-remoto.md`](./control-remoto.md)) |
+| Widget con datos reales (próxima conversación, recordatorio) | Pendiente — hoy es un placeholder estático, sin App Group con `EdecanApp` |
+| Editar persona (tono, formalidad, instrucciones), tema de la app | Pendiente — placeholder en Perfil |
+
+## Verificado en esta iteración (fase v3)
+
+Con Xcode 26.6 (SDK iPhoneSimulator 26.5) y Swift 6.3.3 instalados:
+
+- `xcodegen generate` → genera `Edecan.xcodeproj` sin errores.
+- `cd EdecanKit && swift build` (limpio, sin caché) → compila sin
+  advertencias.
+- `swift test` → **20/20 tests pasan**.
+- `xcodebuild -project Edecan.xcodeproj -scheme EdecanApp -destination
+  'generic/platform=iOS Simulator' build` → **`BUILD SUCCEEDED`**, cero
+  advertencias del compilador Swift (con `SWIFT_STRICT_CONCURRENCY:
+  complete`, Swift 6 en modo estricto), incluyendo la compilación y el
+  empaquetado de `EdecanWidgets.appex` dentro de `Edecan.app/PlugIns/`. El
+  nombre técnico del bundle usa ASCII para que la firma sea estable; en el
+  iPhone se muestra como **Edecán** mediante `CFBundleDisplayName`.
+
+## Verificado en esta iteración (fase v4)
+
+Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
+2.45.4), re-verificado tras CADA feature de este paquete de trabajo
+(Negocios → confirmación → Voz → IDE → Perfil/Onboarding), no solo al
+final:
+
+- `cd EdecanKit && swift build && swift test` → compila limpio, **38/38
+  tests pasan** (18 nuevos: `NegociosModelsTests`, `CredentialsModelsTests`,
+  `IDEModelsTests`, `DeviceModelsTests`, `VoiceModelsTests`).
+- `xcodegen generate && xcodebuild -project Edecan.xcodeproj -scheme
+  EdecanApp -configuration Debug -destination 'generic/platform=iOS
+  Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO clean build`
+  → **`BUILD SUCCEEDED`**, cero advertencias del compilador Swift (mismo
+  `SWIFT_STRICT_CONCURRENCY: complete` estricto de siempre — incluyendo
+  `VozRecorder`, que captura `self` dentro del tap block de tiempo real de
+  `AVAudioEngine` con una conformidad `@unchecked Sendable` deliberada y
+  documentada, ver su docstring).
+- `IPHONEOS_DEPLOYMENT_TARGET`/SDK: sin fricción — el proyecto ya fijaba
+  `26.0` contra el SDK `26.5` instalado, ningún ajuste hizo falta en
+  `project.yml` para este paquete.
+- Sin dependencias externas nuevas: todo lo agregado (voz, gráfico de dona,
+  multipart a mano) usa únicamente frameworks del SDK de Apple (`AVFoundation`,
+  `Charts`, `UIKit` para `UIDevice`) — cero paquetes SPM de terceros.
+
+## Verificado en esta iteración (fase v5)
+
+Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
+2.45.4):
+
+- `cd EdecanKit && swift build && swift test` → compila limpio, **58/58
+  tests pasan** (20 nuevos: `MissionsModelsTests`, `AutomationsModelsTests`,
+  `RemindersModelsTests`).
+- `xcodegen generate && xcodebuild -project Edecan.xcodeproj -scheme
+  EdecanApp -configuration Debug -destination 'generic/platform=iOS
+  Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO clean build`
+  → **`BUILD SUCCEEDED`**, cero advertencias del compilador Swift (mismo
+  `SWIFT_STRICT_CONCURRENCY: complete` estricto de siempre — incluyendo el
+  *polling* con `Task`/`Task.sleep` de `MisionesViewModel`, que captura
+  `self` dentro del closure del `Task` almacenado sin necesitar ninguna
+  conformidad `@unchecked Sendable`: un `Task {}` creado dentro de un método
+  de una clase `@MainActor` hereda esa misma isolación para su closure).
+  Único ajuste real durante el desarrollo: un `Binding(get:set:)` construido
+  a partir de un closure GUARDADO como propiedad (`let onToggle: (Bool) ->
+  Void`) de `AutomatizacionesView` sí generaba una advertencia real de
+  Sendable (`Binding` exige `@Sendable` en sus dos closures) — se resolvió
+  armando el `Binding` con un closure LITERAL directo en su sitio de uso
+  (`AutomatizacionesView.lista`, dentro del `ForEach`) en vez de reenviar un
+  valor de closure ya construido; ver el comentario en el código.
+- Sin dependencias externas nuevas ni cambios en `project.yml`/`Package.swift`:
+  los targets ya usan globs por carpeta, así que los 3 archivos nuevos de
+  `EdecanKit/Sources/EdecanKit/`, los 3 de `EdecanKit/Tests/EdecanKitTests/`,
+  las 3 pantallas de `EdecanApp/Screens/` y los 3 ViewModels de
+  `EdecanApp/Componentes/` entraron solos al compilar.
+
+## Verificado en esta iteración (fase v6)
+
+Mismo entorno (Xcode 26.6, SDK iPhoneSimulator 26.5, Swift 6.3.3, xcodegen
+2.45.4):
+
+- `cd EdecanKit && swift build && swift test` → compila limpio, **85/85
+  tests pasan** en 16 suites (suites nuevas de esta iteración:
+  `RemoteCoordinateMapperTests`, `RemoteFrameModelsTests`,
+  `RemoteInputModelsTests`, `RemoteSessionModelsTests`, todas sobre
+  `EdecanKit/Sources/EdecanKit/RemoteModels.swift`).
+- `xcodegen generate && xcodebuild -project Edecan.xcodeproj -scheme
+  EdecanApp -configuration Debug -destination 'generic/platform=iOS
+  Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO clean build`
+  → **`BUILD SUCCEEDED`**, cero advertencias del compilador Swift (mismo
+  `SWIFT_STRICT_CONCURRENCY: complete` estricto de siempre).
+- Pantalla nueva "Remoto" (`EdecanApp/Screens/RemotoView.swift` +
+  `Componentes/RemotoViewModel.swift`), alcanzable **solo** desde el acceso
+  directo "Remoto" de `InicioView` — mismo criterio de pantalla secundaria
+  que Misiones/Automatizaciones/Recordatorios (`RootTabView` sin cambios).
+  Visor con *polling* HTTP, no WebRTC — decisión deliberada del prototipo P1
+  (`docs/control-remoto.md` §1.1), no un *stub* a medio terminar — más input
+  de teclado/mouse cuando el plan trae `companion.remote_input`.
+- Sin dependencias externas nuevas: todo lo agregado usa `URLSession` (ya en
+  uso por el resto de `EdecanKit`) y frameworks del SDK de Apple — cero
+  paquetes SPM de terceros, mismo criterio de siempre.
+
+## Roadmap corto
+
+Por orden aproximado de lo que más desbloquea al resto:
+
+1. **Gestión visual de dispositivos** — el emparejamiento durable ya es
+   real; falta la pantalla para ver y revocar otros teléfonos vinculados.
+2. **Push APNs** — usa el emparejamiento para poder
+   dirigir una notificación a un iPhone concreto.
+3. **Voz de telefonía (Twilio, premium)** — el micrófono de Chat hoy es *push-to-talk*
+   web (`voice.web`); el historial de llamadas entrantes/salientes de
+   telefonía por tenant (`voice.telephony`, ver
+   [`voz-telefonia.md`](./voz-telefonia.md)) sigue sin vivir en la app.
+4. **Visor de control remoto — transporte WebRTC** — la pantalla "Remoto" ya
+   es real hoy con *polling* HTTP (fase v6, ver
+   ["Verificado en esta iteración (fase v6)"](#verificado-en-esta-iteración-fase-v6)
+   arriba), nunca controlando sin sesión aprobada en el Mac. Lo que sigue
+   pendiente es reemplazar ese *polling* por WebRTC de baja latencia —
+   diseño completo (transporte, niveles de permiso, modelo de amenazas) ya
+   escrito en [`control-remoto.md`](./control-remoto.md) §5.
+5. **Editar persona y tema** — tono/formalidad/instrucciones y claro/oscuro
+   manual (hoy sigue el `ColorScheme` del sistema) desde Perfil, sin pasar
+   por el panel web.
+6. **Widget con datos reales** — próxima conversación o recordatorio más
+   cercano, lo que exige compartir un App Group entre `EdecanApp` y
+   `EdecanWidgets` para que el widget pueda leer el Keychain compartido.
+
+Ver también [`movil-android.md`](./movil-android.md) para el equivalente en
+Android (Kotlin + Compose Multiplatform, mismo criterio de nunca subir a
+tienda).
+
+## Solución de problemas
+
+- **`fastlane`/`gym` falla con un error de codificación (`invalid byte
+  sequence`, `ArgumentError`, etc.)** — te faltó el prefijo
+  `LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8` antes del comando.
+- **Xcode no encuentra un perfil de aprovisionamiento válido** — el UDID
+  del dispositivo que conectaste no está registrado todavía en tu cuenta
+  (paso 1 de ["Compilar e instalar en tu iPhone"](#compilar-e-instalar-en-tu-iphone-build-ad-hoc)),
+  o iniciaste sesión con un Apple ID sin cuenta Developer Program de pago
+  activa en Xcode → *Settings* → *Accounts*.
+- **"Bundle identifier is not available" al firmar** — el bundle id
+  `cc.edecan.app` (o el que hayas puesto) ya lo usa otra app en tu cuenta,
+  o lo intentó firmar otro cliente con la misma cuenta. Cámbialo por uno
+  único (`com.tuempresa.edecan`) en `project.yml` y corre
+  `xcodegen generate` de nuevo.
+- **La app no puede conectar con el servidor** — confirma que el iPhone y
+  el servidor están en la misma red (o que la URL es accesible desde
+  Internet si tu servidor está expuesto así), y que la URL en el onboarding
+  incluye `http://` o `https://`.
+- **"No se pudo conectar" o sesión que expira todo el tiempo** — revisa que
+  el reloj del iPhone esté en hora automática; un JWT con `exp` mal
+  comparado por *skew* de reloj se ve igual que una sesión expirada de
+  verdad.

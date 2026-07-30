@@ -1,0 +1,23 @@
+{
+  "name": "@edecan/cloudflare-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cf:types": "./scripts/generate-types.sh",
+    "check": "tsc --noEmit",
+    "config:staging": "node scripts/generate-private-config.mjs staging",
+    "config:production": "node scripts/generate-private-config.mjs production",
+    "deploy:staging": "npm run config:staging && wrangler deploy --config wrangler.private.staging.jsonc --env staging",
+    "deploy:production": "npm run config:production && wrangler deploy --config wrangler.private.production.jsonc --env production",
+    "dry-run": "wrangler deploy --env=\"\" --dry-run",
+    "test": "vitest run && node --test scripts/generate-private-config.node.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  }
+}

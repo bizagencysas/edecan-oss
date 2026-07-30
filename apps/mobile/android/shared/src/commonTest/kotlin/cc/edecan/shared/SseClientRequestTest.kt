@@ -1,0 +1,174 @@
+package cc.edecan.shared
+
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+
+class SseClientRequestTest {
+    @Test
+    fun mensajeIncluyeLaClaveIdempotenteSinAlterarElCuerpo() = runTest {
+        val body = """{"text":"Organiza mis pendientes","attachments":[]}"""
+        val client = HttpClient(MockEngine { request ->
+            assertEquals("Bearer access-chat", request.headers[HttpHeaders.Authorization])
+            assertEquals("018f7f4c-07f4-7ed0-93c8-cf0525d1092b", request.headers["Idempotency-Key"])
+            respond(
+                "data: {\"type\":\"done\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val events = SseClient().stream(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/messages",
+            accessToken = "access-chat",
+            bodyJson = body,
+            idempotencyKey = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+        ).toList()
+
+        assertEquals(listOf(ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun cierreDeConexionSinDoneEsUnaRespuestaTruncada() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                "data: {\"type\":\"text_delta\",\"text\":\"incompleto\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val error = assertFailsWith<SseClient.SseException.Conexion> {
+            SseClient().stream(
+                client = client,
+                url = "https://edecan.test/v1/conversations/c1/messages",
+                accessToken = "access-chat",
+                bodyJson = "{}",
+            ).toList()
+        }
+
+        assertEquals(
+            "Se perdió la conexión con Edecán: la respuesta terminó sin confirmación final",
+            error.message,
+        )
+    }
+
+    @Test
+    fun ignoraCualquierEventoDespuesDelPrimerDone() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                "data: {\"type\":\"done\"}\n\n" +
+                    "data: {\"type\":\"text_delta\",\"text\":\"duplicado\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val events = SseClient().stream(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/messages",
+            accessToken = "access-chat",
+            bodyJson = "{}",
+        ).toList()
+
+        assertEquals(listOf(ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun reanudaPorGetSinReenviarElMensaje() = runTest {
+        val client = HttpClient(MockEngine { request ->
+            assertEquals(HttpMethod.Get, request.method)
+            assertEquals("Bearer access-chat", request.headers[HttpHeaders.Authorization])
+            assertEquals(null, request.headers["Idempotency-Key"])
+            respond(
+                "data: {\"type\":\"text_delta\",\"text\":\"Terminé.\"}\n\n" +
+                    "data: {\"type\":\"done\"}\n\n",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+
+        val events = SseClient().resume(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+            accessToken = "access-chat",
+        ).toList()
+
+        assertEquals(listOf(ChatEvent.TextDelta("Terminé."), ChatEvent.Done()), events)
+    }
+
+    @Test
+    fun reanudarExponeElRetryAfterMientrasElTurnoSigueEnCurso() = runTest {
+        val client = HttpClient(MockEngine {
+            respond(
+                """{"status":"in_flight"}""",
+                HttpStatusCode.Accepted,
+                headersOf(HttpHeaders.RetryAfter, "3"),
+            )
+        })
+
+        val error = assertFailsWith<SseClient.SseException.IntentoEnCurso> {
+            SseClient().resume(
+                client = client,
+                url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+                accessToken = "access-chat",
+            ).toList()
+        }
+
+        assertEquals(3, error.retryAfterSeconds)
+        assertEquals("Edecán sigue trabajando.", error.message)
+    }
+
+    @Test
+    fun confirmacionRequeridaCierraNormalmenteElStreamInicial() = runTest {
+        val client = clienteConConfirmacion()
+
+        val events = SseClient().stream(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/messages",
+            accessToken = "access-chat",
+            bodyJson = "{}",
+            idempotencyKey = "018f7f4c-07f4-7ed0-93c8-cf0525d1092b",
+        ).toList()
+
+        val confirmation = assertIs<ChatEvent.ConfirmationRequired>(events.single())
+        assertEquals("call-1", confirmation.toolCallId)
+        assertEquals("enviar_correo", confirmation.name)
+    }
+
+    @Test
+    fun replayConConfirmacionRequeridaNoEntraEnBucleDeReconexion() = runTest {
+        val client = clienteConConfirmacion()
+
+        val events = SseClient().resume(
+            client = client,
+            url = "https://edecan.test/v1/conversations/c1/message-attempts/attempt-1",
+            accessToken = "access-chat",
+        ).toList()
+
+        val confirmation = assertIs<ChatEvent.ConfirmationRequired>(events.single())
+        assertEquals("call-1", confirmation.toolCallId)
+        assertEquals("enviar_correo", confirmation.name)
+    }
+
+    private fun clienteConConfirmacion() = HttpClient(MockEngine {
+        respond(
+            "event: confirmation.required\n" +
+                "data: {\"type\":\"confirmation_required\",\"tool_call_id\":\"call-1\"," +
+                "\"name\":\"enviar_correo\",\"args\":{\"to\":\"ana@example.com\"}}\n\n",
+            HttpStatusCode.OK,
+            headersOf(HttpHeaders.ContentType, "text/event-stream"),
+        )
+    })
+}

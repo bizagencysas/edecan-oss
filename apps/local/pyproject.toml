@@ -1,0 +1,66 @@
+[project]
+name = "edecan-local"
+version = "0.7.4"
+description = "Local Edecan runtime bundling the API, worker, and data services for desktop use"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "edecan-api",
+    "edecan-worker",
+    "edecan-db",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-companion[remote-control]",
+    "uvicorn>=0.30",
+    "fakeredis>=2.23",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    # Recupera de forma segura un Postgres embebido que haya sobrevivido a
+    # un cierre forzado del runtime temporal de PyInstaller.
+    "psutil>=5.9",
+    # `python -m edecan_local` promete una base embebida sin configuración.
+    # Mantener pgserver como extra hacía que el comando documentado fallara
+    # inmediatamente en un clon limpio salvo que la persona conociera la
+    # estructura del workspace y agregara `--extra embedded` a mano.
+    # pgserver 0.1.4 no publica sdist ni wheels para Linux/Windows ARM64.
+    # El marker mantiene instalable el workspace en esas arquitecturas; allí
+    # el runtime local exige EDECAN_DATABASE_URL a un Postgres administrado
+    # por el operador. macOS sí tiene wheels x86_64 y arm64.
+    "pgserver==0.1.4; sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
+]
+
+[project.scripts]
+edecan = "edecan_local.runtime:main"
+edecan-import-private = "edecan_local.private_assistant_import:main"
+
+# Compatibilidad con instalaciones existentes que todavía usan
+# `edecan-local[embedded]`; pgserver ya forma parte del runtime base.
+[project.optional-dependencies]
+embedded = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-api = { workspace = true }
+edecan-worker = { workspace = true }
+edecan-db = { workspace = true }
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-companion = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_local"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

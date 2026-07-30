@@ -1,0 +1,84 @@
+[project]
+name = "edecan-workspace"
+version = "0.7.4"
+description = "Edecan local-first AI operator monorepo"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+
+# The repository root coordinates the uv workspace and shared tooling. It is
+# not a distributable package; every member owns its package metadata.
+
+[tool.uv.workspace]
+members = [
+    "packages/schemas",
+    "packages/db",
+    "packages/llm",
+    "packages/core",
+    "packages/toolkit",
+    "packages/connectors",
+    "packages/voice",
+    "packages/evals",
+    "packages/docanalysis",
+    "packages/browser",
+    "packages/creative",
+    "packages/design-studio",
+    "packages/messaging",
+    "packages/agents",
+    "packages/automations",
+    "packages/commerce",
+    "packages/advisory",
+    "packages/business",
+    "apps/api",
+    "apps/worker",
+    "apps/companion",
+    "packages/skills",
+    "packages/smarthome",
+    "apps/local",
+    "packages/ads",
+    "packages/vehicles",
+    "packages/travel",
+    "packages/meetings",
+    "packages/mcp",
+    "packages/forge-probe",
+    "packages/forge-kernel",
+]
+# apps/web is an independent Next.js project and intentionally remains outside
+# the Python workspace. Keep this member list explicit: uv only installs the
+# packages declared here, including when tests are run from the repository root.
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "httpx2>=2.7,<3",
+]
+release = [
+    # Herramienta de empaquetado del sidecar desktop. Fijada y resuelta en
+    # uv.lock para que un tag produzca el mismo cierre de dependencias.
+    "pyinstaller==6.21.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages", "apps"]
+markers = [
+    "integration: integration tests that still run offline against local fakes or databases",
+]
+# importlib prevents basename collisions between package-local test modules.
+addopts = "--import-mode=importlib"
+# Estas suites importan a propósito sus dobles compartidos como módulos de primer nivel.
+# `packages/core/tests` está aquí porque sus dobles del agente y el catálogo real de tools
+# viven en `test_agent.py`/`test_capability_routing.py`: sin esta entrada, importarlos desde
+# otro test del mismo directorio solo funciona si pytest ya los coleccionó antes (orden
+# alfabético), y correr un subconjunto de archivos rompe la colección.
+pythonpath = ["apps/api/tests", "apps/worker/tests", "packages/core/tests"]

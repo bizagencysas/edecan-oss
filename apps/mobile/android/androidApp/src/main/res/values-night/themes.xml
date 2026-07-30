@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Contraparte oscura de ../values/themes.xml — mismo criterio, ver
+         ese archivo para el porqué del parent. -->
+    <style name="Theme.Edecan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/edecan_fondo_dark</item>
+        <item name="android:statusBarColor">@color/edecan_fondo_dark</item>
+        <item name="android:navigationBarColor">@color/edecan_fondo_dark</item>
+    </style>
+</resources>

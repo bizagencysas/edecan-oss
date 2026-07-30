@@ -1,0 +1,49 @@
+[project]
+name = "edecan-browser"
+version = "0.7.4"
+description = "Safe headless research and readable-content extraction tools for Edecan"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-toolkit",
+    # Research tools use the shared router for structured extraction.
+    "edecan-llm",
+]
+
+# Playwright is optional and imported lazily. Install this extra plus the
+# Chromium runtime only when BROWSER_FETCH_PROVIDER=playwright is selected.
+[project.optional-dependencies]
+playwright = ["playwright>=1.40"]
+
+# Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
+[project.entry-points."edecan.tools"]
+browser = "edecan_browser:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-toolkit = { workspace = true }
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_browser"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android no admite rangos CIDR/IP en domain-config. Release permite
+    cleartext a nivel de transporte para alcanzar la IP LAN entregada por el
+    QR; PairingDeepLink.validarUrlServidor es el gate obligatorio que limita
+    HTTP a loopback, link-local, RFC1918, IPv6 local, .local o hostname LAN de
+    una sola etiqueta. HTTPS sí puede ser público. Ninguna URL llega a
+    EdecanApi sin pasar ese gate.
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration" />
+</network-security-config>

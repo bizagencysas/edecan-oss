@@ -1,0 +1,1062 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+import { AlwaysListenMode } from "@/components/chat/AlwaysListenMode";
+import { ChatComposer } from "@/components/chat/ChatComposer";
+import { ConfirmationCard } from "@/components/chat/ConfirmationCard";
+import { ConversationList } from "@/components/chat/ConversationList";
+import { MessageBubble } from "@/components/chat/MessageBubble";
+import {
+  ModelSelector,
+  etiquetaSeleccion,
+  modeloConVisionPorDefecto,
+} from "@/components/chat/ModelSelector";
+import { ToolTimeline, type ToolEvent } from "@/components/chat/ToolTimeline";
+import { messageText } from "@/components/chat/utils";
+import { ChatIcon, MenuIcon, MicIcon, PlusIcon } from "@/components/icons";
+import { Alert, Button, EmptyState, Spinner } from "@/components/ui";
+import {
+  confirmToolCallStream,
+  createConversation,
+  deleteConversation,
+  getChatModels,
+  getConversation,
+  getPersona,
+  listConversations,
+  renameConversation,
+  sendMessageStream,
+  setConversationModel,
+  speakText,
+  transcribeAudio,
+  uploadFile,
+} from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { canSubmitChat, MAX_CHAT_ATTACHMENTS, turnoTraeImagen } from "@/lib/chat-attachments";
+import { reduceToolTimeline } from "@/lib/chat-blocks";
+import { redactChatSecrets } from "@/lib/chat-secret-redaction";
+import {
+  ASSISTANT_INTENT_EVENT,
+  assistantPromptForIntent,
+  assistantPromptFromSearch,
+} from "@/lib/assistant-intents";
+import { splitIntoSentences } from "@/lib/speech";
+import { isTauriApp, tauriListenEvent } from "@/lib/tauriListen";
+import {
+  FLAG_VOICE_WEB,
+  type AgentEvent,
+  type ChatAttachmentDraft,
+  type ChatModelCatalog,
+  type ConversationOut,
+  type MessageOut,
+  type PendingConfirmationOut,
+} from "@/lib/types";
+
+type SpeakState = "loading" | "playing" | null;
+
+const STARTER_REQUESTS = [
+  "Organiza mis pendientes para hoy",
+  "Crea un PDF, un Word y una presentación desde esta idea",
+  "Revisa este documento y dime lo importante",
+  "Recuérdame pagar mañana",
+];
+
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 90_000;
+const CONVERSATION_PANEL_KEY = "edecan:conversation-panel-collapsed";
+
+/** Payload de `edecan://wake-detected` (evento nativo, Tauri): el listener
+ * en segundo plano ya detectó la wake word entrenada Y ya grabó -- con corte
+ * por silencio -- el comando de voz que siguió, ver
+ * `AlwaysListenMode.pendingNativeAudio`. */
+interface WakeDetectedPayload {
+  audio_base64: string;
+  mime: string;
+}
+
+function base64ToBlob(base64: string, mime: string): Blob {
+  const binario = atob(base64);
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+  return new Blob([bytes], { type: mime || "audio/wav" });
+}
+
+function attachmentLocalId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `attachment-${crypto.randomUUID()}`;
+  return `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+/** Chat principal (ARCHITECTURE.md §9, §10.7): conversaciones + streaming SSE + voz. */
+export default function ChatPage() {
+  const { me } = useAuth();
+  const canVoice = Boolean(me?.flags?.[FLAG_VOICE_WEB]);
+  const canRecordAudio =
+    canVoice &&
+    typeof navigator !== "undefined" &&
+    typeof window !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia) &&
+    "MediaRecorder" in window;
+
+  const [conversations, setConversations] = useState<ConversationOut[]>([]);
+  const [convLoading, setConvLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [mobileListOpen, setMobileListOpen] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+
+  const [messages, setMessages] = useState<MessageOut[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+
+  // Selector de modelos: el catálogo se pide UNA vez (es configuración de la
+  // instalación, igual para todos), y la selección es de la conversación
+  // activa — `null` en las dos = automático.
+  const [modelCatalog, setModelCatalog] = useState<ChatModelCatalog | null>(null);
+  const [chatModel, setChatModel] = useState<string | null>(null);
+  const [chatEffort, setChatEffort] = useState<string | null>(null);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [savingModel, setSavingModel] = useState(false);
+
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
+  const uploadFilesRef = useRef(new Map<string, File>());
+  const [sending, setSending] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmationOut | null>(null);
+  const retryTurnRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [alwaysListenOpen, setAlwaysListenOpen] = useState(false);
+  // Audio de un comando ya capturado por el wake word nativo (Tauri), en
+  // espera de que `AlwaysListenMode` lo consuma -- ver el `useEffect` de
+  // `edecan://wake-detected` más abajo.
+  const [pendingNativeAudio, setPendingNativeAudio] = useState<Blob | null>(null);
+  // Copia en ref de `activeId`: el handler del evento nativo se suscribe una
+  // sola vez al montar y necesita el valor MÁS RECIENTE en el momento en que
+  // llega el evento (no el que tenía cuando se suscribió).
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [speakingState, setSpeakingState] = useState<SpeakState>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Incrementado cada vez que arranca/para una reproducción -- los callbacks
+  // async de `playSentencesSequentially` lo comparan contra su propia copia
+  // para saber si los superó una reproducción más nueva (o un stop) y deben
+  // abandonar en silencio, sin pisar el estado de la reproducción vigente.
+  const speakSessionRef = useRef(0);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const initializedRef = useRef(false);
+
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    const assistantPrompt = assistantPromptFromSearch(window.location.search);
+    if (assistantPrompt) {
+      setInput(assistantPrompt);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("intent");
+      window.history.replaceState(window.history.state, "", cleanUrl);
+    }
+    // La primera vez Edecan queda listo para recibir una frase sin obligar a
+    // entender ni crear manualmente el concepto de "conversación".
+    void loadConversations(undefined, false, true);
+    getPersona()
+      .then((p) => setVoiceId(p.voice_id))
+      .catch(() => undefined);
+    // Best-effort: si el catálogo no carga, la pastilla no se pinta y el chat
+    // sigue funcionando en automático. Nunca un error de aquí tapa el chat.
+    getChatModels()
+      .then(setModelCatalog)
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    function prefillAssistantIntent(event: Event) {
+      const prompt = assistantPromptForIntent((event as CustomEvent<unknown>).detail);
+      if (prompt) setInput(prompt);
+    }
+
+    window.addEventListener(ASSISTANT_INTENT_EVENT, prefillAssistantIntent);
+    return () => window.removeEventListener(ASSISTANT_INTENT_EVENT, prefillAssistantIntent);
+  }, []);
+
+  useEffect(() => {
+    try {
+      setHistoryCollapsed(window.localStorage.getItem(CONVERSATION_PANEL_KEY) === "true");
+    } catch {
+      // El panel sigue siendo plegable durante la sesión aunque storage esté bloqueado.
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const controller of uploadControllersRef.current.values()) controller.abort();
+      uploadControllersRef.current.clear();
+      uploadFilesRef.current.clear();
+    },
+    [],
+  );
+
+  // Enganche del wake word NATIVO (app de escritorio, Tauri): se suscribe de
+  // forma INCONDICIONAL -- no solo cuando el usuario ya abrió el overlay a
+  // mano con el botón "Escuchar siempre" -- porque el punto de esto es
+  // justamente no depender de ese click. Rust ya trajo la ventana al frente
+  // y ya grabó (con corte por silencio) el comando que siguió a la wake
+  // word antes de emitir el evento, así que acá solo hace falta abrir (o
+  // reusar) el overlay y entregarle ese audio ya listo para
+  // transcribir+enviar -- sin pedirle permiso de micrófono al navegador de
+  // nuevo ni hacerlo esperar la palabra clave otra vez.
+  useEffect(() => {
+    if (!isTauriApp()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    tauriListenEvent<WakeDetectedPayload>("edecan://wake-detected", (payload) => {
+      const blob = base64ToBlob(payload.audio_base64, payload.mime);
+      void (async () => {
+        if (!activeIdRef.current) {
+          // Sin conversación activa (p. ej. recién instalado) no hay a dónde
+          // mandar el comando -- se crea una, igual que hace el botón
+          // "Nueva conversación", para no perder el turno que el usuario ya
+          // dijo en voz alta.
+          try {
+            const conv = await createConversation();
+            setConversations((prev) => [conv, ...prev]);
+            setActiveId(conv.id);
+          } catch (err) {
+            setError(
+              err instanceof Error ? err.message : "No se pudo crear una conversación para el comando de voz.",
+            );
+            return;
+          }
+        }
+        setPendingNativeAudio(blob);
+        setAlwaysListenOpen(true);
+      })();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeId) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    setMessagesLoading(true);
+    getConversation(activeId)
+      .then((conv) => {
+        if (!cancelled) {
+          setMessages(conv.messages ?? []);
+          setPendingConfirmation(conv.pending_confirmation ?? null);
+          // El backend es la autoridad de la selección: al abrir una
+          // conversación se adopta la suya, nunca la de la anterior.
+          setChatModel(conv.model ?? null);
+          setChatEffort(conv.effort ?? null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "No se pudo cargar la conversación.");
+      })
+      .finally(() => {
+        if (!cancelled) setMessagesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages, streamingText, toolEvents, pendingConfirmation]);
+
+  async function loadConversations(preferId?: string, silent = false, createIfEmpty = false) {
+    if (!silent) setConvLoading(true);
+    try {
+      let list = await listConversations();
+      if (createIfEmpty && list.length === 0) {
+        const firstConversation = await createConversation();
+        list = [firstConversation];
+      }
+      setConversations(list);
+      setActiveId((current) => preferId ?? current ?? list[0]?.id ?? null);
+    } catch (err) {
+      // Un refresh silencioso (tras un turno) que falle no debe tapar el chat con un error.
+      if (!silent) setError(err instanceof Error ? err.message : "No se pudieron cargar las conversaciones.");
+    } finally {
+      if (!silent) setConvLoading(false);
+    }
+  }
+
+  function handleSelect(id: string) {
+    if (id === activeId) {
+      setMobileListOpen(false);
+      return;
+    }
+    // Evita mezclar el stream SSE en curso (atado a la conversación anterior)
+    // con la vista de la conversación recién seleccionada.
+    if (sending) return;
+    setActiveId(id);
+    setStreamingText("");
+    setToolEvents([]);
+    setPendingConfirmation(null);
+    setMobileListOpen(false);
+    // Adelanto de la selección con lo que ya trae la lista, para que la
+    // pastilla no muestre el modelo de la conversación anterior durante el
+    // viaje del GET (que después manda la palabra final).
+    const elegida = conversations.find((conversation) => conversation.id === id);
+    setChatModel(elegida?.model ?? null);
+    setChatEffort(elegida?.effort ?? null);
+  }
+
+  async function handleCreate() {
+    if (sending) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const conv = await createConversation();
+      setConversations((prev) => [conv, ...prev]);
+      setActiveId(conv.id);
+      setChatModel(conv.model ?? null);
+      setChatEffort(conv.effort ?? null);
+      setMobileListOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo crear la conversación.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await deleteConversation(id);
+      const remaining = conversations.filter((c) => c.id !== id);
+      setConversations(remaining);
+      if (activeId === id) {
+        setActiveId(remaining[0]?.id ?? null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo borrar la conversación.");
+    }
+  }
+
+  async function handleRename(id: string, title: string) {
+    try {
+      const updated = await renameConversation(id, title);
+      setConversations((current) =>
+        current.map((conversation) => (conversation.id === id ? updated : conversation)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo renombrar la conversación.");
+      throw err;
+    }
+  }
+
+  /**
+   * Persiste modelo + esfuerzo de la conversación activa. Optimista para que
+   * la pastilla cambie al instante, con rollback si el `PUT` falla: mentirle al
+   * dueño sobre qué modelo está corriendo es peor que no dejarlo cambiarlo.
+   * La respuesta del backend gana sobre el optimista (puede normalizar valores).
+   */
+  async function handleSelectModel(model: string | null, effort: string | null) {
+    const conversationId = activeId;
+    if (!conversationId) return;
+    const modeloPrevio = chatModel;
+    const esfuerzoPrevio = chatEffort;
+    setChatModel(model);
+    setChatEffort(effort);
+    setSavingModel(true);
+    try {
+      const guardado = await setConversationModel(conversationId, model, effort);
+      // Si mientras viajaba el PUT se cambió de conversación, esta respuesta ya
+      // no habla de lo que está en pantalla.
+      if (activeIdRef.current !== conversationId) return;
+      setChatModel(guardado.model);
+      setChatEffort(guardado.effort);
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, model: guardado.model, effort: guardado.effort }
+            : conversation,
+        ),
+      );
+    } catch (err) {
+      if (activeIdRef.current !== conversationId) return;
+      setChatModel(modeloPrevio);
+      setChatEffort(esfuerzoPrevio);
+      setError(err instanceof Error ? err.message : "No se pudo cambiar el modelo.");
+    } finally {
+      setSavingModel(false);
+    }
+  }
+
+  async function runStream(action: () => Promise<void>): Promise<boolean> {
+    setError(null);
+    setSending(true);
+    setStreamingText("");
+    setToolEvents([]);
+    try {
+      await action();
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error de conexión con el asistente.");
+      setStreamingText("");
+      setToolEvents([]);
+      return false;
+    } finally {
+      setSending(false);
+      // Refresco silencioso: solo para reordenar/actualizar título en la lista,
+      // sin tapar la conversación activa con el spinner de carga.
+      void loadConversations(activeId ?? undefined, true);
+    }
+  }
+
+  function makeEventHandler(assistantMessageId?: string) {
+    let text = "";
+    let events: ToolEvent[] = [];
+    const toolLog: AgentEvent[] = [];
+    return (event: AgentEvent) => {
+      switch (event.type) {
+        case "text_delta":
+          text += event.text;
+          setStreamingText(text);
+          break;
+        case "tool_start": {
+          toolLog.push(event);
+          events = reduceToolTimeline(events, event);
+          setToolEvents([...events]);
+          break;
+        }
+        case "tool_progress": {
+          events = reduceToolTimeline(events, event);
+          setToolEvents([...events]);
+          break;
+        }
+        case "tool_end": {
+          toolLog.push(event);
+          events = reduceToolTimeline(events, event);
+          setToolEvents([...events]);
+          break;
+        }
+        case "confirmation_required":
+          setPendingConfirmation({ tool_call_id: event.tool_call_id, name: event.name, args: event.args });
+          break;
+        case "done":
+          if (text || toolLog.length > 0) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: assistantMessageId ?? `local-${Date.now()}`,
+                role: "assistant",
+                content: { text },
+                tool_calls: toolLog.length > 0 ? toolLog : null,
+                tokens_in: event.usage.input_tokens ?? 0,
+                tokens_out: event.usage.output_tokens ?? 0,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
+          setStreamingText("");
+          setToolEvents([]);
+          break;
+        case "error":
+          setError(event.message);
+          break;
+      }
+    };
+  }
+
+  /** Compartida entre el composer normal (`handleSend`, lee `input`) y el
+   * modo "Escuchar siempre" (`AlwaysListenMode`, manda el texto ya
+   * transcrito directo) -- mismo turno, misma validación, dos orígenes de
+   * texto distintos. */
+  async function sendText(
+    text: string,
+    outgoingAttachments: ChatAttachmentDraft[] = [],
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<boolean> {
+    if ((!text.trim() && outgoingAttachments.length === 0) || !activeId || sending) return false;
+    const localId = `local-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: localId,
+        role: "user",
+        content: {
+          text: redactChatSecrets(text),
+          attachments: outgoingAttachments.flatMap((attachment) =>
+            attachment.fileId
+              ? [{ file_id: attachment.fileId, filename: attachment.filename, mime: attachment.mime }]
+              : [],
+          ),
+        },
+        tool_calls: null,
+        tokens_in: 0,
+        tokens_out: 0,
+        created_at: new Date().toISOString(),
+      },
+    ]);
+    const assistantMessageId = `local-assistant-${localId}`;
+    const succeeded = await runStream(() =>
+      sendMessageStream(
+        activeId,
+        text,
+        makeEventHandler(assistantMessageId),
+        undefined,
+        outgoingAttachments.flatMap((attachment) => (attachment.fileId ? [attachment.fileId] : [])),
+        idempotencyKey,
+      ),
+    );
+    if (!succeeded) {
+      setMessages((prev) =>
+        prev.filter((message) => message.id !== localId && message.id !== assistantMessageId),
+      );
+    }
+    return succeeded;
+  }
+
+  async function handleSend() {
+    if (!canSubmitChat(input, attachments, sending)) return;
+    const text = input;
+    const outgoingAttachments = attachments.filter(
+      (attachment) => attachment.status === "ready" && attachment.fileId,
+    );
+    const fingerprint = JSON.stringify({
+      conversationId: activeId,
+      text,
+      attachments: outgoingAttachments.map((attachment) => attachment.fileId),
+    });
+    const idempotencyKey =
+      retryTurnRef.current?.fingerprint === fingerprint
+        ? retryTurnRef.current.idempotencyKey
+        : crypto.randomUUID();
+    const sentLocalIds = new Set(outgoingAttachments.map((attachment) => attachment.localId));
+    setInput("");
+    setAttachments((current) => current.filter((attachment) => !sentLocalIds.has(attachment.localId)));
+    setAttachmentError(null);
+    const succeeded = await sendText(text, outgoingAttachments, idempotencyKey);
+    if (succeeded) {
+      retryTurnRef.current = null;
+      return;
+    }
+    retryTurnRef.current = { fingerprint, idempotencyKey };
+    // El mensaje o la subida nunca deben desaparecer ante un fallo de red.
+    setInput(text);
+    setAttachments((current) => [...outgoingAttachments, ...current].slice(0, MAX_CHAT_ATTACHMENTS));
+  }
+
+  function handleSelectFiles(files: File[]) {
+    const availableSlots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
+    const selected = files.slice(0, availableSlots);
+    setAttachmentError(
+      files.length > availableSlots
+        ? `Puedes adjuntar como máximo ${MAX_CHAT_ATTACHMENTS} archivos por mensaje.`
+        : null,
+    );
+    if (selected.length === 0) return;
+
+    const drafts = selected.map<ChatAttachmentDraft>((file) => ({
+      localId: attachmentLocalId(),
+      filename: file.name || "archivo",
+      sizeBytes: file.size,
+      status: "uploading",
+      fileId: null,
+      mime: file.type || null,
+      error: null,
+    }));
+    setAttachments((current) => [...current, ...drafts].slice(0, MAX_CHAT_ATTACHMENTS));
+
+    selected.forEach((file, index) => {
+      const draft = drafts[index];
+      uploadFilesRef.current.set(draft.localId, file);
+      startAttachmentUpload(draft.localId, file);
+    });
+  }
+
+  function startAttachmentUpload(localId: string, file: File) {
+    uploadControllersRef.current.get(localId)?.abort();
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, ATTACHMENT_UPLOAD_TIMEOUT_MS);
+    uploadControllersRef.current.set(localId, controller);
+    uploadFile(file, controller.signal)
+        .then((uploaded) => {
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.localId === localId
+                ? {
+                    ...attachment,
+                    status: "ready",
+                    fileId: uploaded.id,
+                    filename: uploaded.filename,
+                    mime: uploaded.mime,
+                    error: null,
+                  }
+                : attachment,
+            ),
+          );
+          uploadFilesRef.current.delete(localId);
+        })
+        .catch((reason: unknown) => {
+          if (controller.signal.aborted && !timedOut) return;
+          const message = timedOut
+            ? "La carga tardó demasiado. Reintenta; el archivo no se perdió."
+            : reason instanceof Error
+              ? reason.message
+              : "No se pudo subir el archivo.";
+          setAttachments((current) =>
+            current.map((attachment) =>
+              attachment.localId === localId
+                ? { ...attachment, status: "error", error: message }
+                : attachment,
+            ),
+          );
+        })
+        .finally(() => {
+          window.clearTimeout(timeoutId);
+          if (uploadControllersRef.current.get(localId) === controller) {
+            uploadControllersRef.current.delete(localId);
+          }
+        });
+  }
+
+  function handleRetryAttachment(localId: string) {
+    const file = uploadFilesRef.current.get(localId);
+    if (!file) {
+      setAttachmentError("Vuelve a elegir el archivo para reintentar la carga.");
+      return;
+    }
+    setAttachmentError(null);
+    setAttachments((current) =>
+      current.map((attachment) =>
+        attachment.localId === localId
+          ? { ...attachment, status: "uploading", error: null }
+          : attachment,
+      ),
+    );
+    startAttachmentUpload(localId, file);
+  }
+
+  function handleRemoveAttachment(localId: string) {
+    uploadControllersRef.current.get(localId)?.abort();
+    uploadControllersRef.current.delete(localId);
+    uploadFilesRef.current.delete(localId);
+    setAttachments((current) => current.filter((attachment) => attachment.localId !== localId));
+    setAttachmentError(null);
+  }
+
+  async function handleConfirm(approved: boolean) {
+    if (!pendingConfirmation || !activeId) return;
+    const { tool_call_id } = pendingConfirmation;
+    const conversationId = activeId;
+    const succeeded = await runStream(() =>
+      confirmToolCallStream(conversationId, tool_call_id, approved, makeEventHandler()),
+    );
+    if (succeeded) {
+      setPendingConfirmation(null);
+      return;
+    }
+    // La confirmación puede haberse consumido justo antes de un corte. El
+    // servidor es la fuente de verdad y solo expone el resumen público seguro.
+    try {
+      const conversation = await getConversation(conversationId);
+      setMessages(conversation.messages ?? []);
+      setPendingConfirmation(conversation.pending_confirmation ?? null);
+    } catch {
+      // Conserva la tarjeta actual: es más seguro volver a preguntar que
+      // esconder una acción cuya resolución todavía es ambigua.
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        transcribeAudio(blob)
+          .then(({ text }) => setInput((prev) => (prev ? `${prev} ${text}` : text)))
+          .catch((err) => setError(err instanceof Error ? err.message : "No se pudo transcribir el audio."))
+          .finally(() => setTranscribing(false));
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setError("No se pudo acceder al micrófono. Revisa los permisos del navegador.");
+    }
+  }
+
+  function stopSpeaking() {
+    speakSessionRef.current += 1; // invalida cualquier callback en vuelo
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setSpeakingId(null);
+    setSpeakingState(null);
+  }
+
+  async function toggleSpeak(message: MessageOut) {
+    const text = messageText(message.content);
+    if (!text) return;
+    if (speakingId === message.id && speakingState !== null) {
+      stopSpeaking();
+      return;
+    }
+    stopSpeaking();
+    const sentences = splitIntoSentences(text);
+    if (sentences.length === 0) return;
+
+    speakSessionRef.current += 1;
+    const session = speakSessionRef.current;
+    setSpeakingId(message.id);
+    setSpeakingState("loading");
+    setError(null);
+    await playSentencesSequentially(sentences, session, message.id);
+  }
+
+  /** Sintetiza y reproduce oración por oración en vez de esperar el audio
+   * completo antes de empezar: la síntesis de la SIGUIENTE oración arranca
+   * en paralelo mientras suena la actual, así que después del primer
+   * fragmento (normalmente corto) ya no hay más espera perceptible entre
+   * oraciones -- esto es lo que hace que "empiece a hablar de una vez" en
+   * vez de esperar el audio del mensaje completo. */
+  async function playSentencesSequentially(
+    sentences: string[],
+    session: number,
+    messageId: string,
+  ) {
+    let nextFetch: Promise<Blob> | null = speakText(sentences[0], voiceId);
+    for (let i = 0; i < sentences.length; i++) {
+      if (nextFetch === null) return; // no debería pasar: solo es null tras la última oración
+      let blob: Blob;
+      try {
+        blob = await nextFetch;
+      } catch (err) {
+        if (speakSessionRef.current === session) {
+          setError(err instanceof Error ? err.message : "No se pudo generar el audio.");
+          setSpeakingId(null);
+          setSpeakingState(null);
+        }
+        return;
+      }
+      if (speakSessionRef.current !== session) return; // otra reproducción/stop nos superó
+
+      nextFetch = i + 1 < sentences.length ? speakText(sentences[i + 1], voiceId) : null;
+
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      setSpeakingState("playing");
+      await new Promise<void>((resolve) => {
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        audio.play().catch(() => resolve());
+      });
+      if (speakSessionRef.current !== session) return;
+    }
+    if (speakSessionRef.current === session) {
+      setSpeakingId((current) => (current === messageId ? null : current));
+      setSpeakingState((current) => (current === "playing" ? null : current));
+    }
+  }
+
+  const turnBlocked = sending || pendingConfirmation !== null;
+  const modelLabel = modelCatalog ? etiquetaSeleccion(modelCatalog, chatModel, chatEffort) : null;
+  // Aviso de degradación: el backend atiende ESE turno con el modelo con visión
+  // por defecto y deja la selección intacta, así que se anuncia antes de enviar
+  // en vez de sorprender después.
+  const modeloActivoInfo = modelCatalog?.modelos.find((modelo) => modelo.id === chatModel) ?? null;
+  const visionDegradationNote =
+    modelCatalog && modeloActivoInfo && !modeloActivoInfo.ve_imagenes && turnoTraeImagen(attachments)
+      ? `Este turno usará ${modeloConVisionPorDefecto(modelCatalog)?.nombre ?? "otro modelo"}: ${
+          modeloActivoInfo.nombre
+        } no ve imágenes.`
+      : null;
+  const showStreamingBubble = sending && (streamingText.length > 0 || toolEvents.length === 0);
+  const activeConversationTitle =
+    conversations.find((conversation) => conversation.id === activeId)?.title || "Conversación nueva";
+
+  function toggleHistoryCollapsed() {
+    setHistoryCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(CONVERSATION_PANEL_KEY, String(next));
+      } catch {
+        // La interacción actual no depende de que pueda persistirse.
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div className="flex h-full min-h-0 gap-3">
+      <aside
+        className={`${
+          historyCollapsed ? "w-16" : "w-72"
+        } hidden min-h-0 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-[width] duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex lg:flex-col`}
+        data-testid="desktop-conversation-panel"
+      >
+        <ConversationList
+          conversations={conversations}
+          activeId={activeId}
+          loading={convLoading}
+          creating={creating}
+          collapsed={historyCollapsed}
+          onSelect={handleSelect}
+          onCreate={handleCreate}
+          onDelete={handleDelete}
+          onRename={handleRename}
+          onToggleCollapsed={toggleHistoryCollapsed}
+        />
+      </aside>
+
+      {mobileListOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <button
+            aria-label="Cerrar"
+            className="absolute inset-0 bg-slate-900/50"
+            onClick={() => setMobileListOpen(false)}
+          />
+          <div className="absolute inset-y-0 left-0 w-[min(20rem,88vw)] bg-white shadow-xl dark:bg-slate-900">
+            <ConversationList
+              conversations={conversations}
+              activeId={activeId}
+              loading={convLoading}
+              creating={creating}
+              onSelect={handleSelect}
+              onCreate={handleCreate}
+              onDelete={handleDelete}
+              onRename={handleRename}
+            />
+          </div>
+        </div>
+      )}
+
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-100 px-3 sm:px-4 dark:border-slate-800">
+          <button
+            onClick={() => setMobileListOpen(true)}
+            className="rounded-xl p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 lg:hidden"
+            aria-label="Abrir historial"
+          >
+            <MenuIcon className="h-4 w-4" />
+          </button>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
+            <ChatIcon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+              {activeConversationTitle}
+            </h1>
+            <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Edecan está listo
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {canRecordAudio && activeId && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setAlwaysListenOpen(true)}
+                className="rounded-xl"
+                title="Abrir conversación por voz"
+              >
+                <MicIcon className="h-4 w-4" />
+                <span className="hidden xl:inline">Escuchar</span>
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={handleCreate}
+              loading={creating}
+              className="h-9 w-9 rounded-xl px-0"
+              aria-label="Nueva conversación"
+              title="Nueva conversación"
+            >
+              <PlusIcon className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="px-4 pt-3">
+            <Alert variant="error">{error}</Alert>
+          </div>
+        )}
+
+        {!activeId && !convLoading ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <EmptyState
+              title="Aún no tienes conversaciones"
+              description='Pulsa "Nueva conversación" para empezar a hablar con tu asistente.'
+              action={
+                <Button onClick={handleCreate} loading={creating}>
+                  Nueva conversación
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <>
+            <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain thin-scrollbar">
+              <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+                {messagesLoading ? (
+                  <div className="flex flex-1 justify-center py-8">
+                    <Spinner className="h-5 w-5 text-slate-400" />
+                  </div>
+                ) : (
+                  <>
+                    {messages.length === 0 && !sending && (
+                      <div className="m-auto flex max-w-xl flex-col items-center px-4 py-10 text-center">
+                        <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
+                          <ChatIcon className="h-5 w-5" />
+                        </span>
+                        <p className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                          ¿Qué hacemos?
+                        </p>
+                        <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                          Escríbelo como se lo dirías a una persona. Edecan organizará el resto.
+                        </p>
+                        <div className="mt-6 flex flex-wrap justify-center gap-2">
+                          {STARTER_REQUESTS.map((request) => (
+                            <button
+                              key={request}
+                              type="button"
+                              onClick={() => setInput(request)}
+                              className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-600 shadow-sm transition-all hover:-translate-y-0.5 hover:border-brand-300 hover:text-brand-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                            >
+                              {request}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {messages.map((message) => (
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        canSpeak={canVoice}
+                        speaking={speakingId === message.id ? speakingState : null}
+                        onToggleSpeak={() => toggleSpeak(message)}
+                        onPrefillMessage={setInput}
+                      />
+                    ))}
+                    {showStreamingBubble && (
+                      <MessageBubble
+                        message={{
+                          id: "streaming",
+                          role: "assistant",
+                          content: { text: streamingText },
+                          tool_calls: null,
+                          tokens_in: 0,
+                          tokens_out: 0,
+                          created_at: new Date().toISOString(),
+                        }}
+                      />
+                    )}
+                    {toolEvents.length > 0 && <ToolTimeline events={toolEvents} />}
+                    {pendingConfirmation && (
+                      <ConfirmationCard
+                        name={pendingConfirmation.name}
+                        args={pendingConfirmation.args}
+                        onApprove={() => handleConfirm(true)}
+                        onDeny={() => handleConfirm(false)}
+                        loading={sending}
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <ChatComposer
+              value={input}
+              onChange={setInput}
+              onSend={handleSend}
+              sending={turnBlocked}
+              canVoice={canRecordAudio}
+              voiceFlagEnabled={canVoice}
+              recording={recording}
+              transcribing={transcribing}
+              onToggleRecording={toggleRecording}
+              attachments={attachments}
+              attachmentError={attachmentError}
+              onSelectFiles={handleSelectFiles}
+              onRetryAttachment={handleRetryAttachment}
+              onRemoveAttachment={handleRemoveAttachment}
+              modelLabel={modelLabel}
+              onOpenModelSelector={() => setModelSheetOpen(true)}
+              modelSelectorDisabled={savingModel}
+              visionDegradationNote={visionDegradationNote}
+            />
+          </>
+        )}
+      </section>
+      {modelSheetOpen && modelCatalog && activeId && (
+        <ModelSelector
+          catalogo={modelCatalog}
+          model={chatModel}
+          effort={chatEffort}
+          onSelect={(model, effort) => void handleSelectModel(model, effort)}
+          onClose={() => setModelSheetOpen(false)}
+        />
+      )}
+      {alwaysListenOpen && activeId && (
+        <AlwaysListenMode
+          onClose={() => {
+            setAlwaysListenOpen(false);
+            setPendingNativeAudio(null);
+          }}
+          onSendText={sendText}
+          messages={messages}
+          sending={sending}
+          pendingConfirmation={pendingConfirmation}
+          onConfirm={handleConfirm}
+          voiceId={voiceId}
+          pendingNativeAudio={pendingNativeAudio}
+          onNativeAudioConsumed={() => setPendingNativeAudio(null)}
+        />
+      )}
+    </div>
+  );
+}

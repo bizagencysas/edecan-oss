@@ -1,0 +1,219 @@
+import Foundation
+import Observation
+import UIKit
+import EdecanKit
+
+/// Punto único de acceso a la sesión activa de la app. `APIClient` (en
+/// EdecanKit) es un `actor` sin URL fija hasta que se construye — este
+/// store lo crea/recrea cuando cambia la URL del servidor
+/// (`PairingStore.serverURL`, paso 1 del onboarding) y cachea el último
+/// `Me` cargado para que Inicio/Perfil no tengan que volver a pedirlo cada
+/// vez que se muestra la pestaña.
+///
+/// Vive en `EdecanApp` (no en `EdecanKit`) a propósito: es estado de
+/// PANTALLA (qué mostrar mientras carga, el último error legible), no un
+/// contrato de red — `EdecanWidgets` no lo necesita.
+@MainActor
+@Observable
+public final class SessionStore {
+    public private(set) var client: APIClient?
+    public private(set) var me: Me?
+    public private(set) var mobileConfig: MobileServerConfig = .fallback
+    public var errorMensaje: String?
+    public private(set) var cargandoMe = false
+    public private(set) var sesionValida = true
+    private var clientGeneration = 0
+    private var contentEpoch = 0
+    private var baseURLActual: URL?
+    private let chatLocalState = ChatLocalStateStore()
+    private let pendingChatAttemptStore = PendingChatAttemptStore()
+    private let ideLocalState = IDELocalStateStore()
+    private let mobileConfigCacheKey = "cc.edecan.mobile.serverConfig.v1"
+
+    public init() {}
+
+    /// Se llama al arrancar la app y cada vez que el onboarding guarda o
+    /// cambia la URL del servidor. `nil` (sin servidor todavía) deja
+    /// `client` en `nil` — las pantallas que lo necesiten deben tratarlo
+    /// como "sin sesión utilizable".
+    public func actualizarBaseURL(_ url: URL?) {
+        if let url, url == baseURLActual, client != nil { return }
+        // Al abandonar o cambiar de servidor, un hilo del tenant anterior no
+        // puede reaparecer bajo la siguiente cuenta. En el primer arranque
+        // con la URL persistida `client` aún es nil y sí se permite restaurar.
+        if client != nil || url == nil {
+            limpiarEstadoLocalDelChat()
+        }
+        clientGeneration += 1
+        baseURLActual = url
+        contentEpoch += 1
+        me = nil
+        cargarMobileConfigCacheada()
+        guard let url else {
+            client = nil
+            return
+        }
+        let generation = clientGeneration
+        client = APIClient(
+            baseURL: url,
+            onSessionExpired: { [weak self] in
+                await self?.manejarExpiracionGlobal(clientGeneration: generation)
+            }
+        )
+    }
+
+    public func cargarMobileConfig() async {
+        cargarMobileConfigCacheada()
+        guard let client else { return }
+        do {
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+            let config = try await client.mobileConfig(platform: "ios", build: Int(build ?? "1") ?? 1)
+            mobileConfig = config
+            if let data = try? JSONEncoder.edecanMobileConfigEncoder.encode(config) {
+                UserDefaults.standard.set(data, forKey: mobileConfigCacheKey)
+            }
+        } catch {
+            // La navegación móvil nunca depende exclusivamente del backend.
+            // Si falla la config, el último cache o el fallback local siguen vivos.
+        }
+    }
+
+    private func cargarMobileConfigCacheada() {
+        guard let data = UserDefaults.standard.data(forKey: mobileConfigCacheKey),
+              let config = try? JSONDecoder.edecanMobileConfigDecoder.decode(MobileServerConfig.self, from: data)
+        else {
+            mobileConfig = .fallback
+            return
+        }
+        mobileConfig = config
+    }
+
+    /// `GET /v1/me` — se llama justo tras el login y cada vez que Inicio o
+    /// Perfil aparecen en pantalla (`ChatView`/`RootTabView` no lo
+    /// necesitan). Silencioso ante error de red: deja `errorMensaje` para
+    /// que la pantalla decida cómo mostrarlo, nunca lanza.
+    @discardableResult
+    public func cargarMe() async -> Me? {
+        guard let client else { return nil }
+        let generation = clientGeneration
+        let requestEpoch = contentEpoch
+        cargandoMe = true
+        defer { cargandoMe = false }
+        do {
+            let me = try await client.me()
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
+            self.me = me
+            sesionValida = true
+            errorMensaje = nil
+            return me
+        } catch is CancellationError {
+            // Una navegación o reconstrucción de SwiftUI puede cancelar el
+            // request anterior. Conservamos el último estado sin presentar
+            // esa cancelación interna como un error de conexión.
+            return nil
+        } catch APIClient.APIError.sesionExpirada {
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
+            manejarExpiracionGlobal(clientGeneration: generation)
+            return nil
+        } catch {
+            guard clientGeneration == generation, contentEpoch == requestEpoch, self.client === client else {
+                return nil
+            }
+            errorMensaje = error.localizedDescription
+            return nil
+        }
+    }
+
+    public func marcarSesionValida() {
+        // Login/registro comienza siempre con estado local limpio. Evita que
+        // un cierre abrupto anterior exponga borradores a otra identidad.
+        limpiarEstadoLocalDelChat()
+        contentEpoch += 1
+        me = nil
+        sesionValida = true
+    }
+
+    private func manejarExpiracionGlobal(clientGeneration generation: Int) {
+        guard generation == clientGeneration else { return }
+        limpiarEstadoLocalDelChat()
+        contentEpoch += 1
+        me = nil
+        mobileConfig = .fallback
+        sesionValida = false
+        errorMensaje = APIClient.APIError.sesionExpirada.localizedDescription
+    }
+
+    /// Cierra la sesión en memoria y en el Keychain (vía `APIClient`). NO
+    /// toca `PairingStore` — quien llama (`PerfilView`) es responsable de
+    /// también llamar a `PairingStore.olvidarEmparejamiento()` para volver
+    /// a mostrar el onboarding; se mantienen separados porque
+    /// `PairingStore` vive en `EdecanKit` (lo comparte `EdecanWidgets`) y
+    /// este store es específico de `EdecanApp`.
+    ///
+    /// `deviceId`, si no es `nil`, dispara además `POST /v1/devices/{id}/revoke`
+    /// en segundo plano — best-effort (nunca bloquea ni falla el cierre de
+    /// sesión: WP-V4-01 puede no haber aterrizado, o puede fallar por red).
+    public func cerrarSesion(deviceId: String? = nil) async {
+        limpiarEstadoLocalDelChat()
+        contentEpoch += 1
+        me = nil
+        errorMensaje = nil
+        sesionValida = false
+        guard let client else { return }
+        await client.cerrarSesion(deviceId: deviceId)
+    }
+
+    /// Borradores e intentos pendientes siempre pertenecen a una identidad y
+    /// un servidor concretos. Se eliminan juntos al cambiar cualquiera de los
+    /// dos para impedir recuperación cruzada entre tenants.
+    private func limpiarEstadoLocalDelChat() {
+        chatLocalState.clearAll()
+        pendingChatAttemptStore.clear()
+        ideLocalState.clearAll()
+    }
+
+    // MARK: - Emparejamiento por dispositivo (WP-V4-01, contrato en paralelo)
+
+    /// Se llama justo tras un login/registro exitoso — registra ESTE
+    /// teléfono en `devices` (`POST /v1/devices`) y guarda el `id` devuelto
+    /// en `PairingStore` para poder revocarlo luego sin cambiar la
+    /// contraseña. Íntegramente best-effort: CUALQUIER falla (endpoint
+    /// todavía no existe, sin red, lo que sea) se ignora en silencio — el
+    /// emparejamiento v1 (sesión = emparejamiento) ya quedó completo antes
+    /// de llegar aquí y nunca debe bloquearse por esto.
+    public func emparejarDispositivo(pairingStore: PairingStore) async {
+        guard let client else { return }
+        do {
+            let dispositivo = UIDevice.current
+            let nombre = dispositivo.name
+            let fingerprint = dispositivo.identifierForVendor?.uuidString
+            if let registrado = try await client.registrarDispositivo(
+                nombre: nombre, plataforma: "ios", kind: "mobile", fingerprint: fingerprint
+            ) {
+                pairingStore.guardarDeviceId(registrado.id)
+            }
+        } catch {
+            // Best-effort a propósito — ver el docstring de este método.
+        }
+    }
+}
+
+private extension JSONDecoder {
+    static let edecanMobileConfigDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+}
+
+private extension JSONEncoder {
+    static let edecanMobileConfigEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+}

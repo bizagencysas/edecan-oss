@@ -1,0 +1,85 @@
+{
+  "_comentario": "FIXTURE DORADA -- contrato congelado. Fuente única de verdad para el MVP de Server-Driven UI del chat (ver /private/tmp/sdui_plan_mvp.json). packages/schemas/tests/test_chat_card.py la valida contra Pydantic; EdecanKitTests/CardGenericaTests.swift (iOS), y los tests de web/Android, decodifican ESTOS MISMOS BYTES -- si una plataforma se desvía de este contrato, su test dorado truena. No editar sin actualizar las 4 plataformas a la vez.",
+  "_descripcion": "La card real de LinkedIn (kicker con badge en vivo + imagen + copy + botones Copiar/Aprobar) expresada por completo con las 6 primitivas del vocabulario -- la prueba de que una card real cabe en el vocabulario mínimo.",
+  "type": "card",
+  "schema_version": 1,
+  "card_id": "linkedin-draft-1",
+  "fallback_text": "Post de LinkedIn listo para revisar. Aprobar o copiar el texto.",
+  "raiz": {
+    "nodo": "stack",
+    "eje": "vertical",
+    "espaciado": "m",
+    "relleno": "tarjeta",
+    "fondo": "acento_suave",
+    "alineacion": "inicio",
+    "hijos": [
+      {
+        "nodo": "stack",
+        "eje": "horizontal",
+        "espaciado": "m",
+        "relleno": "ninguno",
+        "fondo": "ninguno",
+        "alineacion": "centro",
+        "hijos": [
+          {
+            "nodo": "texto",
+            "contenido": "Post de LinkedIn listo para revisar",
+            "rol": "titulo",
+            "color": "primario",
+            "enfasis": "fuerte",
+            "max_lineas": 2
+          },
+          {
+            "nodo": "badge",
+            "contenido": "En vivo",
+            "tono": "exito"
+          }
+        ]
+      },
+      {
+        "nodo": "imagen",
+        "artifact": {
+          "file_id": "6f6b7f9a-6b0e-4b1e-9f7f-8f9a6b7f9a6b",
+          "filename": "post_acme.png",
+          "mime": "image/png"
+        },
+        "alt": "Gráfico sobre finanzas",
+        "aspecto": "panoramica",
+        "esquinas": "m"
+      },
+      {
+        "nodo": "divisor"
+      },
+      {
+        "nodo": "stack",
+        "eje": "horizontal",
+        "espaciado": "s",
+        "relleno": "ninguno",
+        "fondo": "ninguno",
+        "alineacion": "inicio",
+        "hijos": [
+          {
+            "nodo": "boton",
+            "estilo": "secundario",
+            "accion": {
+              "id": "post.copiar",
+              "label": "Copiar",
+              "action": "copy_text",
+              "text": "Un post real sobre finanzas."
+            }
+          },
+          {
+            "nodo": "boton",
+            "estilo": "primario",
+            "accion": {
+              "id": "post.aprobar",
+              "label": "Aprobar",
+              "action": "approve_draft",
+              "draft_id": "draft-123"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

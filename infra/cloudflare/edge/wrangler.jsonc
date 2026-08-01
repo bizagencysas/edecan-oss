@@ -1,0 +1,64 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "edecan-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ENVIRONMENT": "local"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IDE_SESSION_CONTINUITY",
+        "class_name": "IdeSessionContinuity"
+      }
+    ]
+  },
+  "exports": {
+    "IdeSessionContinuity": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "env": {
+    "staging": {
+      "name": "edecan-edge-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "ENVIRONMENT": "staging"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "IDE_SESSION_CONTINUITY",
+            "class_name": "IdeSessionContinuity"
+          }
+        ]
+      }
+    },
+    "production": {
+      "name": "edecan-edge-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "ENVIRONMENT": "production"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "IDE_SESSION_CONTINUITY",
+            "class_name": "IdeSessionContinuity"
+          }
+        ]
+      }
+    }
+  }
+}

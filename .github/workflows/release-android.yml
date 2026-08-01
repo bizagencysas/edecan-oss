@@ -1,0 +1,244 @@
+name: Android OSS release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  # Las publicaciones Android se serializan entre sí. Los publicadores de las
+  # otras plataformas pueden avanzar en paralelo y cada push reintenta carreras.
+  group: release-android-updates
+  cancel-in-progress: false
+
+jobs:
+  android:
+    name: Signed APK and public update manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+      EDECAN_ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+      EDECAN_ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+      EDECAN_ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve and verify signed tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          test "${TAG#v}" != "$TAG" || {
+            echo "::error::El tag debe comenzar por v"
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag, version and signing secrets
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release.outputs.tag }}"
+          TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+          test -n "$TAG_COMMIT"
+          git fetch origin main
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main || {
+            echo "::error::El tag de Android no pertenece a main"
+            exit 1
+          }
+          VERSION="${TAG#v}"
+          BUILD_FILE="apps/mobile/android/androidApp/build.gradle.kts"
+          VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' "$BUILD_FILE" | head -1)"
+          VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\)/\1/p' "$BUILD_FILE" | head -1)"
+          test "$VERSION" = "$VERSION_NAME" || {
+            echo "::error::El tag $TAG no coincide con Android $VERSION_NAME"
+            exit 1
+          }
+          test -n "$VERSION_CODE"
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            EDECAN_ANDROID_RELEASE_KEYSTORE_PASSWORD \
+            EDECAN_ANDROID_RELEASE_KEY_ALIAS \
+            EDECAN_ANDROID_RELEASE_KEY_PASSWORD
+          do
+            test -n "${!name:-}" || {
+              echo "::error::Falta el secret $name"
+              exit 1
+            }
+          done
+          if [[ "$VERSION" == *-* ]]; then
+            CHANNEL="preview"
+          else
+            CHANNEL="stable"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Decode private keystore outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          EDECAN_ANDROID_RELEASE_KEYSTORE="$RUNNER_TEMP/edecan-android-release.jks"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" \
+            | base64 --decode > "$EDECAN_ANDROID_RELEASE_KEYSTORE"
+          test -s "$EDECAN_ANDROID_RELEASE_KEYSTORE"
+          echo "EDECAN_ANDROID_RELEASE_KEYSTORE=$EDECAN_ANDROID_RELEASE_KEYSTORE" >> "$GITHUB_ENV"
+
+      - name: Test and build signed APK
+        working-directory: apps/mobile/android
+        run: >-
+          ./gradlew --no-daemon
+          :shared:testAndroidHostTest
+          :androidApp:testDebugUnitTest
+          :androidApp:assembleRelease
+
+      - name: Verify APK signature and identity
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="apps/mobile/android/androidApp/build/outputs/apk/release/androidApp-release.apk"
+          test -f "$SOURCE"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          SIGNATURE_OUTPUT="$("$APKSIGNER" verify --verbose --print-certs "$SOURCE")"
+          printf '%s\n' "$SIGNATURE_OUTPUT"
+          mapfile -t SIGNER_DIGESTS < <(
+            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p' \
+              <<< "$SIGNATURE_OUTPUT" \
+              | tr '[:upper:]' '[:lower:]' \
+              | tr -d '[:space:]:'
+          )
+          test "${#SIGNER_DIGESTS[@]}" -eq 1 || {
+            echo "::error::El APK debe tener exactamente un firmante"
+            exit 1
+          }
+          EXPECTED_SIGNER="$(
+            tr '[:upper:]' '[:lower:]' \
+              < apps/mobile/android/release-signing-cert.sha256 \
+              | tr -d '[:space:]:'
+          )"
+          [[ "$EXPECTED_SIGNER" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::La huella Android fijada en el repo no es válida"
+            exit 1
+          }
+          test "${SIGNER_DIGESTS[0]}" = "$EXPECTED_SIGNER" || {
+            echo "::error::El APK no pertenece a la clave pública Android fijada"
+            exit 1
+          }
+          BADGING="$("$AAPT" dump badging "$SOURCE" | head -1)"
+          [[ "$BADGING" == *"name='cc.edecan.app'"* ]] || {
+            echo "::error::El APK no pertenece a cc.edecan.app"
+            exit 1
+          }
+          [[ "$BADGING" == *"versionCode='${{ steps.metadata.outputs.version_code }}'"* ]] || {
+            echo "::error::El versionCode del APK no coincide con Gradle"
+            exit 1
+          }
+          [[ "$BADGING" == *"versionName='${{ steps.metadata.outputs.version }}'"* ]] || {
+            echo "::error::El versionName del APK no coincide con el tag"
+            exit 1
+          }
+          mkdir -p release-artifacts
+          ASSET="Edecan-Android-${{ steps.metadata.outputs.version }}.apk"
+          cp "$SOURCE" "release-artifacts/$ASSET"
+          sha256sum "release-artifacts/$ASSET" > "release-artifacts/$ASSET.sha256"
+          echo "path=release-artifacts/$ASSET" >> "$GITHUB_OUTPUT"
+          echo "name=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reuse GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release.outputs.tag }}"
+          scripts/release/ensure-github-release.sh \
+            "$TAG" \
+            "${{ steps.metadata.outputs.version }}" \
+            "${{ steps.metadata.outputs.channel }}"
+          gh release view "$TAG" --json body --jq .body > release-notes.md
+          RELEASE_CREATED_AT="$(
+            gh release view "$TAG" --json createdAt --jq .createdAt
+          )"
+          test -n "$RELEASE_CREATED_AT"
+          test "$RELEASE_CREATED_AT" != "null"
+          echo "RELEASE_CREATED_AT=$RELEASE_CREATED_AT" >> "$GITHUB_ENV"
+
+      - name: Generate fail-closed Android channel manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 apps/mobile/android/scripts/generate_android_update_manifest.py \
+            --apk "${{ steps.apk.outputs.path }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "${{ steps.release.outputs.tag }}" \
+            --channel "${{ steps.metadata.outputs.channel }}" \
+            --version-code "${{ steps.metadata.outputs.version_code }}" \
+            --version-name "${{ steps.metadata.outputs.version }}" \
+            --published-at "$RELEASE_CREATED_AT" \
+            --notes-file release-notes.md \
+            --output "release-artifacts/android-${{ steps.metadata.outputs.channel }}.json"
+
+      - name: Publish APK, hash and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/release/upload-github-release-asset.sh \
+            "${{ steps.release.outputs.tag }}" \
+            release-artifacts/*
+
+      - name: Publish only when every configured platform is complete
+        shell: bash
+        env:
+          EDECAN_IOS_INSTALL_URL: ${{ vars.EDECAN_IOS_INSTALL_URL }}
+        run: |
+          set -euo pipefail
+          IOS_REQUIRED=false
+          if test -n "$EDECAN_IOS_INSTALL_URL"; then
+            IOS_REQUIRED=true
+          fi
+          scripts/release/finalize-github-release.sh \
+            "${{ steps.release.outputs.tag }}" \
+            "${{ steps.metadata.outputs.version }}" \
+            "${{ steps.metadata.outputs.channel }}" \
+            "$IOS_REQUIRED" \
+            origin
+
+      - name: Remove keystore
+        if: always()
+        shell: bash
+        run: |
+          if test -n "${EDECAN_ANDROID_RELEASE_KEYSTORE:-}" &&
+             test -f "$EDECAN_ANDROID_RELEASE_KEYSTORE"
+          then
+            shred -u "$EDECAN_ANDROID_RELEASE_KEYSTORE" 2>/dev/null ||
+              rm -f "$EDECAN_ANDROID_RELEASE_KEYSTORE"
+          fi

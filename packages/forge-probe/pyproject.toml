@@ -1,0 +1,48 @@
+[project]
+name = "edecan-forge-probe"
+version = "0.7.4"
+description = "Forge fase 0 — sonda de capacidades de modelo y banco de tareas ejecutable"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "edecan-llm",
+]
+
+[dependency-groups]
+dev = [
+    "respx>=0.21",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# `bench` va aquí a propósito: `runner.cargar_banco` lo busca como módulo
+# importable, así que dejarlo fuera del wheel haría que el banco existiera en el
+# árbol de fuentes y desapareciera en cuanto el paquete se instalara.
+packages = ["edecan_forge_probe", "bench"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Los criterios del banco son guiones y oráculos que se ejecutan como archivos,
+# no se importan: sin esto el wheel llevaría las BenchTask pero no su examen.
+"bench/checks" = "bench/checks"
+"bench/oraculos" = "bench/oraculos"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Cuando la suite se lanza apuntando a este paquete, pytest toma ESTE archivo
+# como inifile y no ve los marcadores declarados en la raíz. Sin este registro,
+# `-m "not integration"` no filtraría nada y un test que sale a la red (y gasta
+# dinero) podría colarse por un simple typo en el nombre del marcador.
+markers = [
+    "integration: sale a la red de verdad; solo corre con FORGE_PROBE_INTEGRACION=1",
+]

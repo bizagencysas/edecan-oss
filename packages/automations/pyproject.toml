@@ -1,0 +1,49 @@
+[project]
+name = "edecan-automations"
+version = "0.7.4"
+description = "Edecán — automatizaciones: reglas agenda/webhook → instrucción de agente en modo headless (edecan_automations)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.30",
+    "python-dateutil>=2.9",
+    # Base de husos horarios para `zoneinfo` (`engine._zona_horaria`). macOS y
+    # Linux la traen en el sistema; Windows NO tiene ninguna, así que sin este
+    # paquete `ZoneInfo("America/Bogota")` levanta `ZoneInfoNotFoundError` y el
+    # motor cae a UTC -- en silencio para el dueño, que solo vería sus
+    # automatizaciones disparando cinco horas antes otra vez. Mismo criterio de
+    # marcador que `pywinpty` en `apps/companion/pyproject.toml`.
+    "tzdata; sys_platform == 'win32'",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+automations = "edecan_automations:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_automations"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

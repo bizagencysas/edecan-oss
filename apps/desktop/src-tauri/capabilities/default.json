@@ -1,0 +1,39 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisos mínimos de las ventanas de Edecán. El spawn/kill del sidecar del backend local ocurre siempre en Rust nativo (src/backend.rs), NUNCA vía invoke() desde JS. No se expone acceso general a filesystem, red arbitraria ni shell genérico. El único diálogo nativo permitido selecciona una carpeta y la autorización final sigue ocurriendo en el backend del IDE.",
+  "windows": ["main", "splash"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/edecan-local",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-kill",
+    "shell:allow-stdin-write",
+    "allow-retry-backend",
+    "allow-quit-app",
+    "allow-open-external-url",
+    "allow-always-listen-get-state",
+    "allow-always-listen-record-sample",
+    "allow-always-listen-train",
+    "allow-always-listen-set-enabled",
+    "allow-always-listen-reset-training",
+    "allow-desktop-permissions-get-state",
+    "allow-desktop-permission-request",
+    "allow-startup-get-state",
+    "allow-startup-set-enabled",
+    "allow-desktop-update-check",
+    "allow-desktop-update-install",
+    "allow-pick-workspace-folder"
+  ]
+}

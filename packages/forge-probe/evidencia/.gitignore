@@ -1,0 +1,5 @@
+# La evidencia cruda de las sondas es local y pesada: a 256 k tokens un solo
+# prompt son ~900 KB. Se conserva en disco para poder auditar cualquier número
+# del informe hasta la petición real, pero NO se versiona.
+*
+!.gitignore

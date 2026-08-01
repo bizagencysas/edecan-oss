@@ -1,0 +1,264 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Edecan Edge - continuidad serverless para instalaciones personales
+
+Parameters:
+  DeploymentBucket:
+    Type: String
+  DeploymentKey:
+    Type: String
+  InstallationName:
+    Type: String
+    Default: edecan-personal
+    AllowedPattern: "[a-z0-9-]+"
+  OfflineModelId:
+    Type: String
+    Default: amazon.nova-2-lite-v1:0
+  HeartbeatTtlSeconds:
+    Type: Number
+    Default: 90
+    MinValue: 30
+    MaxValue: 600
+  AllowedOrigin:
+    Type: String
+    Description: Origen HTTPS exacto de la puerta privada de esta instalación
+    AllowedPattern: "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$"
+    ConstraintDescription: Debe ser un origen HTTPS sin ruta, query ni fragmento
+
+Resources:
+  EdgeState:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: app
+          Value: edecan
+        - Key: layer
+          Value: edge
+
+  JobsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      DeduplicationScope: messageGroup
+      FifoThroughputLimit: perMessageGroupId
+      VisibilityTimeout: 330
+      ReceiveMessageWaitTimeSeconds: 20
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  EdgeFiles:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: remove-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: expire-temporary-edge-files
+            Status: Enabled
+            Prefix: temporary/
+            ExpirationInDays: 7
+
+  SharedSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Token compartido entre el companion local y Edecan Edge
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - Key: app
+          Value: edecan
+
+  EdgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EdecanEdgeRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !GetAtt EdgeState.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt JobsQueue.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "${EdgeFiles.Arn}/*"
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SharedSecret
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+
+  EdgeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: handler.lambda_handler
+      Role: !GetAtt EdgeRole.Arn
+      MemorySize: 512
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref DeploymentBucket
+        S3Key: !Ref DeploymentKey
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref EdgeState
+          JOBS_QUEUE_URL: !Ref JobsQueue
+          FILES_BUCKET: !Ref EdgeFiles
+          SHARED_SECRET_ARN: !Ref SharedSecret
+          INSTALLATION_NAME: !Ref InstallationName
+          OFFLINE_MODEL_ID: !Ref OfflineModelId
+          HEARTBEAT_TTL_SECONDS: !Ref HeartbeatTtlSeconds
+      Tags:
+        - Key: app
+          Value: edecan
+        - Key: layer
+          Value: edge
+
+  EdgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${EdgeFunction}"
+      RetentionInDays: 7
+
+  EdgeApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${InstallationName}-edge"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders:
+          - authorization
+          - content-type
+          - x-edecan-installation
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        MaxAge: 3600
+
+  EdgeIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref EdgeApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt EdgeFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 30000
+
+  EdgeDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref EdgeApi
+      RouteKey: "$default"
+      Target: !Sub "integrations/${EdgeIntegration}"
+
+  EdgeStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref EdgeApi
+      StageName: "$default"
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  EdgeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref EdgeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${EdgeApi}/*"
+
+Outputs:
+  ApiUrl:
+    Value: !GetAtt EdgeApi.ApiEndpoint
+  StateTable:
+    Value: !Ref EdgeState
+  JobsQueueUrl:
+    Value: !Ref JobsQueue
+  FilesBucket:
+    Value: !Ref EdgeFiles
+  SharedSecretArn:
+    Value: !Ref SharedSecret
+  EdgeFunctionName:
+    Value: !Ref EdgeFunction

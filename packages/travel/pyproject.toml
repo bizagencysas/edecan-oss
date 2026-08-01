@@ -1,0 +1,39 @@
+[project]
+name = "edecan-travel"
+version = "0.7.4"
+description = "Bring-your-own travel search and package tracking tools with human-approved booking drafts"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "edecan-core",
+    "edecan-mcp",
+]
+
+# Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
+[project.entry-points."edecan.tools"]
+travel = "edecan_travel:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-mcp = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_travel"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

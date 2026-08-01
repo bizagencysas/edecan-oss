@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a focused improvement to Edecan.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before describing a solution. Focused proposals with clear trade-offs are easier to evaluate.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I searched existing issues and roadmap discussions for a similar proposal.
+          required: true
+        - label: I read and agree to follow the Code of Conduct.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, what are they trying to do, and why is the current behavior insufficient?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior and, where relevant, the public interface.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other designs and their trade-offs.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Primary scope
+      options:
+        - API or worker
+        - Web application
+        - Desktop application
+        - iOS application
+        - Android application
+        - Companion runtime
+        - Installation or packaging
+        - Documentation
+        - Cross-platform
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility, security, and operational impact
+      description: Note migrations, breaking changes, privacy implications, resource costs, or deployment risks. Write "None identified" when applicable.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - I can open a pull request
+        - I can help test or review
+        - I am proposing the idea only
+    validations:
+      required: true

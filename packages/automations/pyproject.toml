@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "sqlalchemy[asyncio]>=2.0.30",
+    "sqlalchemy[asyncio]>=2.0.51",
     "python-dateutil>=2.9",
     # Base de husos horarios para `zoneinfo` (`engine._zona_horaria`). macOS y
     # Linux la traen en el sistema; Windows NO tiene ninguna, así que sin este

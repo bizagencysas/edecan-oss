@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser-render = ["playwright>=1.40"]
+browser-render = ["playwright>=1.62.0"]
 
 [project.entry-points."edecan.tools"]
 design-studio = "edecan_design_studio:get_all_tools"

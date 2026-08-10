@@ -38,7 +38,7 @@ remote-control = [
 # controle un navegador real:
 #   uv pip install 'edecan-companion[playwright]'
 #   uv run playwright install chromium   (el binario de Chromium es aparte)
-playwright = ["playwright>=1.47"]
+playwright = ["playwright>=1.62.0"]
 
 [project.scripts]
 edecan-companion = "edecan_companion.main:main"

@@ -18,7 +18,7 @@ dependencies = [
 # Playwright is optional and imported lazily. Install this extra plus the
 # Chromium runtime only when BROWSER_FETCH_PROVIDER=playwright is selected.
 [project.optional-dependencies]
-playwright = ["playwright>=1.40"]
+playwright = ["playwright>=1.62.0"]
 
 # Entry point consumed by `edecan_core.ToolRegistry.load_entry_points`.
 [project.entry-points."edecan.tools"]

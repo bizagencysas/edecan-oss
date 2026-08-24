@@ -72,6 +72,7 @@ router = APIRouter(prefix="/v1/setup", tags=["setup"], dependencies=[Depends(rat
 # aterrizó): SIEMPRE las tres claves, nunca se omite ninguna.
 _EMPTY_DETECT_SHAPE: dict[str, Any] = {
     "claude_cli": {"installed": False, "path": None, "version": None},
+    "codex_cli": {"installed": False, "path": None, "version": None},
     "ollama": {"running": False, "base_url": "", "models": []},
 }
 
@@ -83,8 +84,20 @@ async def get_setup_status(
     vault: Any = Depends(get_vault),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    del vault
-    llm_configured = bool(settings.CLOUDFLARE_ACCOUNT_ID and settings.CLOUDFLARE_API_TOKEN)
+    accounts = await repo.list_connector_accounts(tenant_id=current_user.tenant_id)
+    llm_account = next((row for row in accounts if row.get("connector_key") == "llm"), None)
+    llm_configured = False
+    if llm_account is not None and vault is not None:
+        try:
+            llm_configured = (
+                await vault.get(current_user.tenant_id, llm_account["id"])
+            ) is not None
+        except Exception:
+            logger.warning(
+                "No se pudo comprobar la configuración LLM del tenant_id=%s.",
+                current_user.tenant_id,
+                exc_info=True,
+            )
     tenant = await repo.get_tenant(current_user.tenant_id)
     onboarding_completed = bool(tenant and tenant.get("onboarding_completed_at") is not None)
     lifetime_updates = bool(tenant and tenant.get("lifetime_updates_purchased_at") is not None)

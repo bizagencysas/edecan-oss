@@ -15,6 +15,7 @@ usa para `edecan_premium`).
 
 from __future__ import annotations
 
+import sys
 import uuid
 from typing import Any
 
@@ -62,8 +63,21 @@ def _use_local_mode(app: Any) -> None:
         WEB_BASE_URL="http://localhost:3000",
         PUBLIC_BASE_URL="http://localhost:8000",
         EDECAN_LOCAL_MODE=True,
-        CLOUDFLARE_ACCOUNT_ID="test-cloudflare-account",
-        CLOUDFLARE_API_TOKEN="test-cloudflare-token",
+    )
+
+
+async def _conectar_llm(fake_repo: Any, fake_vault: FakeVault, tenant_id: uuid.UUID) -> None:
+    account = await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="llm",
+        external_account_id="llm",
+        display_name="Proveedor LLM",
+        scopes=["anthropic"],
+    )
+    await fake_vault.put(
+        tenant_id,
+        account["id"],
+        TokenBundle(access_token='{"kind": "anthropic"}', token_type="config"),
     )
 
 
@@ -77,13 +91,13 @@ async def test_get_status_requires_authentication(client) -> None:
     assert response.status_code == 401
 
 
-async def test_get_status_por_defecto_workers_ai_configurado(client, app) -> None:
+async def test_get_status_por_defecto_no_local_ni_llm_configurado(client, app) -> None:
     _install_vault(app)
     response = await client.get("/v1/setup/status", headers=_headers())
     assert response.status_code == 200
     assert response.json() == {
         "local_mode": False,
-        "llm_configured": True,
+        "llm_configured": False,
         "onboarding_completed": False,
         "lifetime_updates": False,
         "version": __version__,
@@ -152,11 +166,13 @@ async def test_put_setup_complete_no_mezcla_tenants(client, app, fake_repo) -> N
     assert resp_b.json()["onboarding_completed"] is False
 
 
-async def test_get_status_no_depende_del_vault_de_tenant(client) -> None:
-    """Workers AI pertenece al host; no depende del vault del usuario."""
+async def test_get_status_sin_vault_instalado_no_revienta(client) -> None:
+    """`app` (fixture de `conftest.py`) deja `get_vault` -> `None` por
+    defecto -- `get_setup_status` debe tratarlo como "sin LLM configurado",
+    nunca reventar con un `AttributeError`."""
     response = await client.get("/v1/setup/status", headers=_headers())
     assert response.status_code == 200
-    assert response.json()["llm_configured"] is True
+    assert response.json()["llm_configured"] is False
 
 
 async def test_get_status_local_mode_true(client, app) -> None:
@@ -167,15 +183,52 @@ async def test_get_status_local_mode_true(client, app) -> None:
     assert response.json()["local_mode"] is True
 
 
-async def test_get_status_sin_config_workers_ai_devuelve_false(client, app) -> None:
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        JWT_SECRET=TEST_JWT_SECRET,
-        CLOUDFLARE_ACCOUNT_ID=None,
-        CLOUDFLARE_API_TOKEN=None,
+async def test_get_status_llm_configurado_true_tras_conectar(client, app, fake_repo) -> None:
+    fake_vault = _install_vault(app)
+    tenant_id = uuid.uuid4()
+    await _conectar_llm(fake_repo, fake_vault, tenant_id)
+
+    response = await client.get(
+        "/v1/setup/status", headers=_headers(user_id=uuid.uuid4(), tenant_id=tenant_id)
     )
-    response = await client.get("/v1/setup/status", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["llm_configured"] is True
+
+
+async def test_get_status_cuenta_sin_bundle_en_el_vault_sigue_false(client, app, fake_repo) -> None:
+    """`connector_account` creada pero sin `vault.put` (p. ej. una carrera o
+    un estado inconsistente) -- se trata igual que "no configurado"."""
+    _install_vault(app)
+    tenant_id = uuid.uuid4()
+    await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="llm",
+        external_account_id="llm",
+        display_name="Proveedor LLM",
+        scopes=[],
+    )
+
+    response = await client.get(
+        "/v1/setup/status", headers=_headers(user_id=uuid.uuid4(), tenant_id=tenant_id)
+    )
     assert response.status_code == 200
     assert response.json()["llm_configured"] is False
+
+
+async def test_get_status_no_mezcla_tenants(client, app, fake_repo) -> None:
+    fake_vault = _install_vault(app)
+    tenant_con_llm = uuid.uuid4()
+    tenant_sin_llm = uuid.uuid4()
+    await _conectar_llm(fake_repo, fake_vault, tenant_con_llm)
+
+    con = await client.get(
+        "/v1/setup/status", headers=_headers(user_id=uuid.uuid4(), tenant_id=tenant_con_llm)
+    )
+    sin = await client.get(
+        "/v1/setup/status", headers=_headers(user_id=uuid.uuid4(), tenant_id=tenant_sin_llm)
+    )
+    assert con.json()["llm_configured"] is True
+    assert sin.json()["llm_configured"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +237,7 @@ async def test_get_status_sin_config_workers_ai_devuelve_false(client, app) -> N
 
 _EMPTY_SHAPE = {
     "claude_cli": {"installed": False, "path": None, "version": None},
+    "codex_cli": {"installed": False, "path": None, "version": None},
     "ollama": {"running": False, "base_url": "", "models": []},
 }
 
@@ -218,6 +272,7 @@ async def test_get_detect_local_mode_delega_en_detect_local_providers(
     _use_local_mode(app)
     detectado = {
         "claude_cli": {"installed": True, "path": "/usr/local/bin/claude", "version": "1.2.3"},
+        "codex_cli": {"installed": False, "path": None, "version": None},
         "ollama": {"running": True, "base_url": "http://localhost:11434", "models": ["llama3.1"]},
     }
     monkeypatch.setattr("edecan_llm.detect.detect_local_providers", lambda settings=None: detectado)
@@ -225,3 +280,17 @@ async def test_get_detect_local_mode_delega_en_detect_local_providers(
     response = await client.get("/v1/setup/detect", headers=_headers())
     assert response.status_code == 200
     assert response.json() == {"local_mode": True, **detectado}
+
+
+async def test_get_detect_local_mode_sin_edecan_llm_detect_no_revienta(
+    client, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simula que WP-V3-03 todavía no aterrizó `edecan_llm.detect` (mismo
+    truco que `test_run_campaign_step.py` usa para `edecan_premium`:
+    `sys.modules[...] = None` fuerza `ImportError` determinista)."""
+    _use_local_mode(app)
+    monkeypatch.setitem(sys.modules, "edecan_llm.detect", None)
+
+    response = await client.get("/v1/setup/detect", headers=_headers())
+    assert response.status_code == 200
+    assert response.json() == {"local_mode": True, **_EMPTY_SHAPE}

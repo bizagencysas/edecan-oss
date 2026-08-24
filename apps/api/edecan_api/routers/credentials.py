@@ -1,23 +1,143 @@
-"""Credenciales de capacidades conectables por tenant.
+"""`/v1/credentials/*` — bring-your-own de LLM y voz (STT/TTS) por tenant
+(ARCHITECTURE.md §10.4, §10.6, §10.9; `DIRECCION_ACTUAL.md` "Modelo de
+credenciales: TODO lo trae el cliente, siempre"; `docs/credenciales.md`).
 
-La inferencia LLM ya no es una credencial del usuario: Edecán la administra
-con Workers AI y el ``TaskRouter`` decide automáticamente. Los endpoints LLM
-de escritura se conservan solo para devolver un error explícito a clientes
-antiguos; nunca guardan ni cambian proveedor o modelo.
+Este router NO se monta a sí mismo: `edecan_api.main` (WP-V3-01) lo monta de
+forma defensiva, igual que el resto de routers v2/v3 (`importlib.util.find_spec`
+o un `try/except ImportError` alrededor del `include_router`) — este módulo
+solo declara `router`.
 
-Voz, imágenes y búsqueda continúan siendo capacidades BYO cifradas en
-``TokenVault``. ``GET /v1/credentials`` jamás expone secretos completos.
+## Qué resuelve
+
+Antes de este WP, `apps/api/edecan_api/deps.py::get_llm_router` y
+`apps/api/edecan_api/routers/voice.py` construían el proveedor LLM/voz con
+`ANTHROPIC_API_KEY`/`DEEPGRAM_API_KEY`/`ELEVENLABS_API_KEY` de `Settings` — un
+único `.env` de PLATAFORMA compartido por todos los tenants. Igual que Twilio
+(`PUT /v1/connectors/twilio/credentials`, ya bring-your-own desde v1), este
+router deja que CADA tenant conecte su propia credencial, cifrada en el
+`TokenVault` (ARCHITECTURE.md §10.4) bajo una `connector_account` propia:
+
+| Recurso     | `connector_key`  | Guardado por                    |
+|-------------|-------------------|----------------------------------|
+| LLM         | `"llm"`           | `PUT /v1/credentials/llm`        |
+| Voz (STT)   | `"voice_stt"`     | `PUT /v1/credentials/voice/stt`  |
+| Voz (TTS)   | `"voice_tts"`     | `PUT /v1/credentials/voice/tts`  |
+| Imágenes    | `"images"`        | `PUT /v1/credentials/images`     |
+| Búsqueda web| `"search"`        | `PUT /v1/credentials/search`     |
+
+`"images"`/`"search"` (auditoría "riesgo-legal-tos": antes de esto,
+`edecan_creative.providers.get_image_provider`/`edecan_toolkit.research.
+get_search_provider` SOLO leían `IMAGES_API_KEY`/`BRAVE_API_KEY`/
+`TAVILY_API_KEY` de la config de PLATAFORMA — sin excepción ni mecanismo
+alguno para que un tenant trajera la propia, a diferencia de LLM/voz/Twilio/
+conectores OAuth) siguen el mismo criterio "tenant → capacidad propia, SIN paso de
+plataforma" que ya sigue voz (`apps/api/edecan_api/routers/voice.py::
+_stt_para_tenant`/`_tts_para_tenant`): `edecan_creative.providers.
+get_tenant_image_provider(ctx)` y `edecan_toolkit.research.
+get_tenant_search_provider(ctx)` leen el `TokenVault` directo desde la propia
+`Tool` (`ctx.session`/`ctx.vault`/`ctx.tenant_id`, ya presentes en
+`ToolContext`) en vez de por un `load_tenant_*_config` centralizado acá — no
+hay una "resolución por request" equivalente a `get_llm_router` para tools
+individuales, así que se resuelve perezosamente en el momento en que la tool
+corre; si el tenant no conectó nada (o falla cualquier paso), esas dos
+funciones caen DIRECTO a `StubImageProvider`/`DuckDuckGoSearch`, nunca a
+`IMAGES_API_KEY`/`BRAVE_API_KEY`/`TAVILY_API_KEY` de plataforma — ver
+`docs/credenciales.md`. Imágenes conservan un generador local de demostración;
+búsqueda web sí usa internet real sin API key. Body de cada uno:
+
+Cada una de estas tres claves es SINGLETON por tenant (a diferencia de un
+conector OAuth, donde un tenant puede tener varias cuentas del mismo
+proveedor): `_find_or_create_account` busca la `connector_account` existente
+para `(tenant_id, connector_key)` y la reutiliza si ya existe, en vez de crear
+una nueva cada vez que el tenant actualiza su credencial (mismo espíritu que
+`connect_twilio` en `routers/connectors.py`, adaptado: estas cinco claves no
+tienen un `external_account_id` natural como el número E.164 de Twilio, así
+que se usa el propio `connector_key` como `external_account_id` fijo).
+`create_connector_account` (`edecan_api.repo.Repo`, compartido con el resto
+de conectores) siempre guarda `status="active"` — no se introduce un valor de
+`status` nuevo solo para estas cinco filas, por consistencia con Twilio/Google/
+Telegram/Discord/Slack, que usan la misma columna con el mismo valor.
+
+`TokenBundle.access_token` guarda el JSON de la config (`token_type="config"`,
+NO es un token OAuth real) — `edecan_db.vault.TokenVault` lo cifra igual que
+cualquier otro secreto de tenant, sin cambios en ese paquete:
+
+- LLM: `{"kind", "api_key", "base_url", "model_principal", "model_rapido", "extra"}`
+  — mismos campos que `edecan_llm.config.LLMProviderConfig` (WP-V3-03, ver
+  `edecan_api.deps.load_tenant_llm_config`).
+- Voz STT: `{"provider": "deepgram", "api_key"}`.
+- Voz TTS: `{"provider": "elevenlabs", "api_key", "voice_id"}` o
+  `{"provider": "polly", "voice"}` (Polly no guarda API key: usa la cadena de
+  credenciales AWS estándar del propio cliente, ver `edecan_voice.polly` —
+  por eso, a diferencia de los demás proveedores de esta lista, SOLO se
+  acepta con `EDECAN_LOCAL_MODE=True`, ver más abajo).
+- Imágenes: `{"base_url", "api_key", "model"}` — mismos campos que
+  `edecan_creative.providers.OpenAICompatImagesProvider` (único proveedor
+  real hoy, ver `IMAGES_PROVIDER=openai_compat` en `configuracion.md`).
+- Búsqueda web: `{"provider": "brave"|"tavily", "api_key"}`.
+
+## "Pegar y validar" (`DIRECCION_ACTUAL.md` "Principio de UX no negociable")
+
+Cada `PUT` acepta `validate: bool = true`: si `true` (default), antes de
+guardar nada se hace UNA llamada liviana real al proveedor (`_ping_*`,
+`GET` de bajo costo, o `claude --version`/`codex --version` como subproceso
+para los CLIs) para confirmar que la credencial sirve — igual que pedirle a
+alguien "prueba tu llave antes de guardarla". Si el proveedor rechaza (o no
+responde), se devuelve `400` con el detalle EXACTO que dio el proveedor
+(status + fragmento del cuerpo) para que la UI lo muestre tal cual — nunca se
+guarda nada si la validación falla. `validate: false` es la escotilla de
+escape para guardar sin pegarle a la red (tests, migraciones, kinds que el
+propio dueño del proyecto sabe que están bien).
+
+`claude_cli`/`codex_cli`/`ollama` SOLO se aceptan si
+`getattr(settings, "EDECAN_LOCAL_MODE", False)` es verdadero: los tres asumen
+que el backend corre LOCAL en la máquina del cliente (`DIRECCION_ACTUAL.md`
+"Nuevo requisito: conectar el LLM vía CLI local") — apuntar un servidor
+hospedado a `claude`/`codex`/`http://localhost:11434` no tiene sentido (esos
+binarios/puertos son de la máquina del SERVIDOR, no la del cliente). En
+hosted, devuelven `400` con un detalle claro de que requieren la app de
+escritorio. `getattr` con default `False` (nunca `settings.EDECAN_LOCAL_MODE`
+directo): `Settings` puede no declarar ese campo todavía si WP-V3-01 no ha
+aterrizado esa pieza — no debe romper el import de este router.
+
+`PUT /v1/credentials/voice/tts` con `provider="polly"` exige el MISMO
+`EDECAN_LOCAL_MODE=True`, por el mismo motivo: Polly no tiene un campo de
+credencial propia del tenant (a diferencia de `elevenlabs`) — se autentica
+SIEMPRE con la cadena de credenciales AWS del PROCESO que corre el backend
+(`edecan_voice.polly.PollyTTS`, `aioboto3.Session()` por defecto). Esa
+identidad de proceso solo es de verdad "la del tenant" cuando el backend
+corre `EDECAN_LOCAL_MODE=True` (single-user, la máquina ES la del cliente);
+en cualquier despliegue que sirva a más de un tenant desde el mismo proceso
+(hosted compartido, o un self-host que dé acceso a varios clientes/equipos),
+dos tenants que elijan `polly` compartirían la MISMA identidad AWS — el
+mismo patrón "llave compartida de plataforma" que este documento prohíbe
+para los demás proveedores. Fuera de `EDECAN_LOCAL_MODE`, se rechaza con
+`400` (mismo mensaje "instala la app de escritorio"); una fila `polly` ya
+guardada de ANTES de este gate (o migrada desde una instalación local a un
+servidor hospedado) se vuelve a comprobar en `_tts_para_tenant`
+(`apps/api/edecan_api/routers/voice.py`) y `resolver_tts_del_tenant`
+(`packages/voice/edecan_voice/tenant.py`) — misma doble capa de defensa que
+`_build_provider_from_config` en `packages/llm/edecan_llm/router.py`.
+
+`GET /v1/credentials` JAMÁS devuelve la credencial completa: `masked` es
+siempre `"…" + últimos 4 caracteres` (o `None` si no hay credencial guardada
+o el proveedor no usa API key, como Polly).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import shutil
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
 from edecan_db.vault import TokenVault
+from edecan_llm import choose_discovered_models, discovered_model_ids
 from edecan_schemas import TokenBundle
 from edecan_toolkit.research import BraveSearch, TavilySearch
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,6 +145,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import (
+    LLM_CONNECTOR_KEY,
     VOICE_STT_CONNECTOR_KEY,
     VOICE_TTS_CONNECTOR_KEY,
     CurrentUser,
@@ -42,14 +163,33 @@ router = APIRouter(
 )
 
 # ---------------------------------------------------------------------------
-# Providers soportados por capacidades BYO
+# Kinds/providers soportados
 # ---------------------------------------------------------------------------
+
+_LLM_KINDS = frozenset(
+    {
+        "workers_ai",
+        "anthropic",
+        "openai_compat",
+        "vertex",
+        "claude_cli",
+        "codex_cli",
+        "ollama",
+    }
+)
+# Ver docstring del módulo: estos tres solo tienen sentido con el backend
+# corriendo en la máquina del propio cliente.
+_LOCAL_ONLY_LLM_KINDS = frozenset({"claude_cli", "codex_cli", "ollama"})
+_LLM_KINDS_REQUIEREN_API_KEY = frozenset({"workers_ai", "anthropic", "vertex"})
+_OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+_CLI_BINARIES = {"claude_cli": "claude", "codex_cli": "codex"}
 
 _TTS_PROVIDERS = frozenset({"elevenlabs", "polly"})
 _POLLY_DEFAULT_VOICE = "Lupe"
 
 _SEARCH_PROVIDERS = frozenset({"brave", "tavily"})
 
+_LLM_DISPLAY_NAME = "Proveedor LLM"
 _VOICE_STT_DISPLAY_NAME = "Voz — transcripción (STT)"
 _VOICE_TTS_DISPLAY_NAME = "Voz — síntesis (TTS)"
 _IMAGES_DISPLAY_NAME = "Generación de imágenes"
@@ -64,11 +204,9 @@ _SEARCH_DISPLAY_NAME = "Búsqueda web"
 # estos dos, a diferencia de `LLM_CONNECTOR_KEY` que también lee `deps.py`).
 IMAGES_CONNECTOR_KEY = "images"
 SEARCH_CONNECTOR_KEY = "search"
-# Solo permite limpiar una credencial LLM guardada por versiones antiguas.
-# No participa en la inferencia actual.
-LEGACY_LLM_CONNECTOR_KEY = "llm"
 
 _VALIDATE_TIMEOUT_SECONDS = 15.0
+_CLI_VERSION_TIMEOUT_SECONDS = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +379,25 @@ async def _get_with_error_handling(
     return response
 
 
+async def _ping_anthropic(api_key: str) -> dict[str, Any]:
+    response = await _get_with_error_handling(
+        "https://api.anthropic.com/v1/models",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        proveedor="Anthropic",
+    )
+    return _json_object(response, "Anthropic")
+
+
+async def _ping_workers_ai(account_id: str, api_token: str) -> dict[str, Any]:
+    response = await _get_with_error_handling(
+        f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+        headers={"Authorization": f"Bearer {api_token}"},
+        params={"per_page": "1"},
+        proveedor="Cloudflare Workers AI",
+    )
+    return _json_object(response, "Cloudflare Workers AI")
+
+
 async def _ping_openai_compat(base_url: str, api_key: str | None) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     url = f"{base_url.rstrip('/')}/models"
@@ -248,6 +405,15 @@ async def _ping_openai_compat(base_url: str, api_key: str | None) -> dict[str, A
         url, headers=headers, proveedor="el endpoint OpenAI-compatible"
     )
     return _json_object(response, "el endpoint OpenAI-compatible")
+
+
+async def _ping_vertex_api_key(api_key: str) -> dict[str, Any]:
+    response = await _get_with_error_handling(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        params={"key": api_key},
+        proveedor="Google AI (Gemini/Vertex)",
+    )
+    return _json_object(response, "Google AI (Gemini/Vertex)")
 
 
 def _json_object(response: httpx.Response, proveedor: str) -> dict[str, Any]:
@@ -272,6 +438,107 @@ def _json_object(response: httpx.Response, proveedor: str) -> dict[str, Any]:
             detail=f"{proveedor} respondió con un catálogo de modelos inválido.",
         )
     return payload
+
+
+async def _ping_vertex_service_account(service_account_json: str) -> None:
+    """Valida la FORMA de la clave de cuenta de servicio de GCP — JSON
+    parseable + las claves mínimas que exige un service account
+    (`client_email`, `private_key`). A diferencia del resto de `_ping_*`,
+    NO hace una llamada de red real a Google: autenticar de verdad requiere
+    `google-auth`, extra OPCIONAL de `edecan-llm`
+    (`packages/llm/pyproject.toml`, `[project.optional-dependencies] vertex`,
+    ver también `docs/proveedores-llm.md`) que `apps/api` no instala por
+    defecto. Exigirlo aquí bloquearía guardar la credencial en cualquier
+    despliegue sin ese extra — el mismo bug ("imposible de guardar") que este
+    ping existe para evitar. `VertexAIProvider`
+    (`packages/llm/edecan_llm/vertex.py`) hace la validación real (obtiene un
+    token OAuth2 de verdad) la primera vez que el tenant manda un mensaje,
+    con el mismo `LLMError` claro si la clave no sirve.
+    """
+    try:
+        info = json.loads(service_account_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"El JSON de la cuenta de servicio no es válido: {exc}",
+        ) from exc
+    if not isinstance(info, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El JSON de la cuenta de servicio debe ser un objeto.",
+        )
+    faltantes = [campo for campo in ("client_email", "private_key") if not info.get(campo)]
+    if faltantes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "El JSON de la cuenta de servicio no tiene los campos esperados "
+                f"({', '.join(faltantes)}): ¿es la clave completa que descargaste de GCP?"
+            ),
+        )
+
+
+async def _ping_ollama(base_url: str) -> None:
+    url = f"{base_url.rstrip('/')}/api/tags"
+    await _get_with_error_handling(url, proveedor="Ollama")
+
+
+def _modelos_codex_cache() -> list[str]:
+    """Lee el catálogo local que mantiene Codex CLI sin ejecutar ni autenticar nada.
+
+    Codex CLI no expone hoy un comando estable ``models list``. Su cache sí
+    contiene el catálogo que la propia instalación ya obtuvo, incluyendo la
+    visibilidad de cada modelo. Si el formato cambia o el archivo todavía no
+    existe, Ajustes conserva el flujo manual en lugar de fallar.
+    """
+
+    codex_root = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+    cache_path = codex_root / "models_cache.json"
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return []
+
+    models: list[str] = []
+    for item in raw_models:
+        if not isinstance(item, dict) or item.get("visibility") == "hide":
+            continue
+        slug = str(item.get("slug") or "").strip()
+        if slug and slug not in models:
+            models.append(slug)
+    return models
+
+
+async def _modelos_disponibles(cfg: dict[str, Any]) -> list[str]:
+    """Catálogo actual del proveedor conectado, sin exponer su credencial."""
+
+    kind = str(cfg.get("kind") or "")
+    payload: dict[str, Any] | None = None
+    if kind == "anthropic" and cfg.get("api_key"):
+        payload = await _ping_anthropic(str(cfg["api_key"]))
+    elif kind == "openai_compat" and cfg.get("base_url"):
+        payload = await _ping_openai_compat(str(cfg["base_url"]), cfg.get("api_key"))
+    elif kind == "vertex" and cfg.get("api_key"):
+        payload = await _ping_vertex_api_key(str(cfg["api_key"]))
+    elif kind == "ollama":
+        base_url = str(cfg.get("base_url") or _OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+        response = await _get_with_error_handling(f"{base_url}/api/tags", proveedor="Ollama")
+        data = _json_object(response, "Ollama")
+        raw_models = data.get("models") or []
+        return [
+            str(item.get("name")).strip()
+            for item in raw_models
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+    elif kind == "codex_cli":
+        return _modelos_codex_cache()
+    if payload is None or kind not in {"anthropic", "openai_compat", "vertex"}:
+        return []
+    return discovered_model_ids(kind, payload)
 
 
 async def _ping_deepgram(api_key: str) -> None:
@@ -332,9 +599,73 @@ async def _ping_tavily(api_key: str) -> None:
         ) from exc
 
 
+async def _ping_cli_binary(binary: str) -> None:
+    """Verifica que `binary` (`"claude"`/`"codex"`) esté instalado y responda,
+    corriendo `binary --version` como subproceso con timeout de
+    `_CLI_VERSION_TIMEOUT_SECONDS` — nunca cuelga la request esperando un
+    binario que no existe o no responde."""
+    resolved = shutil.which(binary) or binary
+    argv = [resolved, "--version"]
+    if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
+        argv = [os.environ.get("ComSpec", "cmd.exe"), "/d", "/s", "/c", *argv]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"No encontramos el binario '{binary}' instalado en esta máquina. "
+                "Instálalo y vuelve a intentar (la app de escritorio lo detecta "
+                "automáticamente si ya está instalado)."
+            ),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No pudimos ejecutar '{binary} --version': {exc}",
+        ) from exc
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=_CLI_VERSION_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{binary} --version' no respondió en {_CLI_VERSION_TIMEOUT_SECONDS:.0f}s.",
+        ) from exc
+
+    if process.returncode != 0:
+        detail = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()[:300]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{binary} --version' falló (código {process.returncode}): {detail}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # GET /v1/credentials
 # ---------------------------------------------------------------------------
+
+
+def _llm_out(cfg: dict[str, Any] | None) -> dict[str, Any] | None:
+    if cfg is None:
+        return None
+    return {
+        "kind": cfg.get("kind"),
+        "model_principal": cfg.get("model_principal"),
+        "model_rapido": cfg.get("model_rapido"),
+        "model_profundo": cfg.get("model_profundo"),
+        "reasoning_effort_profundo": cfg.get("reasoning_effort_profundo"),
+        "base_url": cfg.get("base_url"),
+        "masked": _masked(cfg.get("api_key")),
+    }
 
 
 def _voice_stt_out(cfg: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -374,29 +705,14 @@ async def get_credentials(
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
     vault: TokenVault = Depends(get_vault),
-    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    llm_cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
     stt_cfg = await _read_config(repo, vault, current_user.tenant_id, VOICE_STT_CONNECTOR_KEY)
     tts_cfg = await _read_config(repo, vault, current_user.tenant_id, VOICE_TTS_CONNECTOR_KEY)
     images_cfg = await _read_config(repo, vault, current_user.tenant_id, IMAGES_CONNECTOR_KEY)
     search_cfg = await _read_config(repo, vault, current_user.tenant_id, SEARCH_CONNECTOR_KEY)
-    workers_ai_ready = bool(
-        settings.CLOUDFLARE_ACCOUNT_ID and settings.CLOUDFLARE_API_TOKEN
-    )
     return {
-        "llm": (
-            {
-                "kind": "workers_ai",
-                "model_principal": settings.WORKERS_AI_CHAT_MODEL,
-                "model_rapido": settings.WORKERS_AI_CHAT_MODEL,
-                "model_profundo": settings.WORKERS_AI_CHAT_MODEL,
-                "reasoning_effort_profundo": None,
-                "base_url": None,
-                "masked": "Administrado por Edecan",
-            }
-            if workers_ai_ready
-            else None
-        ),
+        "llm": _llm_out(llm_cfg),
         "voice_stt": _voice_stt_out(stt_cfg),
         "voice_tts": _voice_tts_out(tts_cfg),
         "images": _images_out(images_cfg),
@@ -411,21 +727,50 @@ async def get_credentials(
 
 @router.get("/llm/models")
 async def get_llm_models(
-    settings: Settings = Depends(get_settings),
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
 ) -> dict[str, Any]:
-    """Estado de inferencia administrada; no expone selección al usuario."""
+    """Modelos detectados y selección actual, sin devolver la API key.
 
-    model = settings.WORKERS_AI_CHAT_MODEL
+    Los CLI que no publican un catálogo estable siguen admitiendo un ID
+    manual. Si el proveedor está temporalmente caído, Ajustes continúa siendo
+    utilizable y devuelve la selección guardada junto con ``discovery_error``.
+    """
+
+    cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conecta primero un proveedor de inteligencia.",
+        )
+    error: str | None = None
+    try:
+        discovered = await _modelos_disponibles(cfg)
+    except HTTPException as exc:
+        discovered = []
+        error = str(exc.detail)
+
+    actuales = [
+        cfg.get("model_principal"),
+        cfg.get("model_rapido"),
+        cfg.get("model_profundo"),
+    ]
+    modelos: list[str] = []
+    for modelo in [*actuales, *discovered]:
+        limpio = str(modelo or "").strip()
+        if limpio and limpio not in modelos:
+            modelos.append(limpio)
     return {
-        "kind": "workers_ai",
-        "model_principal": model,
-        "model_rapido": model,
-        "model_profundo": model,
-        "reasoning_effort_profundo": None,
-        "models": [model],
-        "manual_allowed": False,
+        "kind": cfg.get("kind"),
+        "model_principal": cfg.get("model_principal"),
+        "model_rapido": cfg.get("model_rapido"),
+        "model_profundo": cfg.get("model_profundo"),
+        "reasoning_effort_profundo": cfg.get("reasoning_effort_profundo") or "xhigh",
+        "models": modelos,
+        "manual_allowed": True,
         "capabilities_managed_by_edecan": True,
-        "discovery_error": None,
+        "discovery_error": error,
     }
 
 
@@ -436,12 +781,46 @@ async def update_llm_models(
     repo: Repo = Depends(get_repo),
     vault: TokenVault = Depends(get_vault),
 ) -> None:
-    """La selección manual desapareció; el Task Router es la única autoridad."""
+    """Cambia el modelo activo sin pedir de nuevo la credencial guardada."""
 
-    del payload, current_user, repo, vault
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail="Edecan elige el modelo automáticamente según la tarea.",
+    account = await _find_account(repo, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
+    if account is None or cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conecta primero un proveedor de inteligencia.",
+        )
+
+    principal = payload.model_principal.strip()
+    rapido = (payload.model_rapido or "").strip() or principal
+    profundo = (payload.model_profundo or "").strip() or principal
+    effort = (payload.reasoning_effort_profundo or "xhigh").strip().lower()
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El esfuerzo de razonamiento no es válido.",
+        )
+    if not principal or any(ord(char) < 32 for char in principal + rapido + profundo):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El nombre del modelo no es válido.",
+        )
+
+    cfg["model_principal"] = principal
+    cfg["model_rapido"] = rapido
+    cfg["model_profundo"] = profundo
+    cfg["reasoning_effort_profundo"] = effort
+    kind = str(cfg.get("kind") or "unknown")
+    await vault.put(
+        current_user.tenant_id,
+        account["id"],
+        TokenBundle(access_token=json.dumps(cfg), token_type="config", scopes=[kind]),
+    )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="credentials.llm.models_updated",
+        target=f"{kind}:{principal}",
     )
 
 
@@ -453,13 +832,147 @@ async def put_llm_credentials(
     vault: TokenVault = Depends(get_vault),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    del payload, current_user, repo, vault, settings
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            "La inferencia está administrada por Edecan con Workers AI. "
-            "No se conecta ni se selecciona un proveedor desde esta cuenta."
-        ),
+    kind = payload.kind.strip().lower()
+    if kind not in _LLM_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kind desconocido: {payload.kind!r}. Debe ser uno de {sorted(_LLM_KINDS)}.",
+        )
+
+    if kind in _LOCAL_ONLY_LLM_KINDS and not getattr(settings, "EDECAN_LOCAL_MODE", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"'{kind}' requiere la app de escritorio (modo local): un servidor "
+                "hospedado no puede usar un binario/puerto de TU máquina. Usa una "
+                "API key normal, o instala la app de escritorio de Edecán."
+            ),
+        )
+
+    api_key = (payload.api_key or "").strip() or None
+    base_url = (payload.base_url or "").strip() or None
+    model_principal = (payload.model_principal or "").strip() or None
+    model_rapido = (payload.model_rapido or "").strip() or None
+    model_profundo = (payload.model_profundo or "").strip() or None
+    reasoning_effort_profundo = (payload.reasoning_effort_profundo or "xhigh").strip().lower()
+    if reasoning_effort_profundo not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El esfuerzo de razonamiento no es válido.",
+        )
+    # `vertex` tiene dos modos (ver `VertexAIProvider`/docs/proveedores-llm.md):
+    # "api_key" (default, requiere `api_key`) y "service_account" (avanzado,
+    # bring-your-own proyecto GCP — requiere `extra.project_id` +
+    # `extra.service_account_json` en su lugar, NUNCA `api_key`).
+    vertex_service_account = kind == "vertex" and payload.extra.get("mode") == "service_account"
+    workers_account_id = str(payload.extra.get("account_id") or "").strip()
+
+    if kind in _LLM_KINDS_REQUIEREN_API_KEY and not vertex_service_account and not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{kind}' requiere api_key."
+        )
+    if kind == "workers_ai":
+        if not workers_account_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'workers_ai' requiere extra.account_id.",
+            )
+        if not model_principal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'workers_ai' requiere model_principal (ID @cf/...).",
+            )
+    if vertex_service_account:
+        project_id = (payload.extra.get("project_id") or "").strip()
+        service_account_json = (payload.extra.get("service_account_json") or "").strip()
+        if not project_id or not service_account_json:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "'vertex' en modo 'service_account' requiere extra.project_id y "
+                    "extra.service_account_json (el JSON completo de la clave de la "
+                    "cuenta de servicio)."
+                ),
+            )
+    if kind == "openai_compat" and not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="'openai_compat' requiere base_url."
+        )
+    if kind == "ollama":
+        base_url = base_url or _OLLAMA_DEFAULT_BASE_URL
+        if not model_principal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "'ollama' requiere model_principal: el nombre de un modelo ya "
+                    "descargado en tu Ollama local (p. ej. 'llama3.1')."
+                ),
+            )
+
+    discovered_payload: dict[str, Any] | None = None
+    if payload.validate_:
+        if kind == "workers_ai":
+            discovered_payload = await _ping_workers_ai(workers_account_id, api_key)
+        elif kind == "anthropic":
+            discovered_payload = await _ping_anthropic(api_key)
+        elif vertex_service_account:
+            await _ping_vertex_service_account(payload.extra.get("service_account_json") or "")
+        elif kind == "vertex":
+            discovered_payload = await _ping_vertex_api_key(api_key)
+        elif kind == "openai_compat":
+            discovered_payload = await _ping_openai_compat(base_url, api_key)
+        elif kind == "ollama":
+            await _ping_ollama(base_url)
+        elif kind in _CLI_BINARIES:
+            path_setting = "CLAUDE_CLI_PATH" if kind == "claude_cli" else "CODEX_CLI_PATH"
+            await _ping_cli_binary(
+                str(getattr(settings, path_setting, None) or _CLI_BINARIES[kind])
+            )
+
+    # Si la persona no eligió IDs técnicos, fijamos una pareja exacta a partir
+    # de los modelos que SU credencial puede usar. Esto ocurre solo al conectar:
+    # no se introduce una llamada de red, ni un alias mutable, en cada turno.
+    if discovered_payload is not None and kind in {"anthropic", "openai_compat", "vertex"}:
+        choice = choose_discovered_models(kind, discovered_payload)
+        if choice is not None:
+            model_principal = model_principal or choice.principal
+            model_rapido = model_rapido or choice.rapido
+
+    if kind == "openai_compat" and not model_principal:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "El endpoint no anunció un modelo de conversación utilizable. "
+                "Indica el nombre exacto en model_principal (y, opcionalmente, "
+                "model_rapido)."
+            ),
+        )
+    model_rapido = model_rapido or model_principal
+    model_profundo = model_profundo or model_principal
+
+    config_dict = {
+        "kind": kind,
+        "api_key": api_key,
+        "base_url": base_url,
+        "model_principal": model_principal,
+        "model_rapido": model_rapido,
+        "model_profundo": model_profundo,
+        "reasoning_effort_profundo": reasoning_effort_profundo,
+        "extra": payload.extra or {},
+    }
+    account = await _find_or_create_account(
+        repo, current_user.tenant_id, LLM_CONNECTOR_KEY, _LLM_DISPLAY_NAME
+    )
+    await vault.put(
+        current_user.tenant_id,
+        account["id"],
+        TokenBundle(access_token=json.dumps(config_dict), token_type="config", scopes=[kind]),
+    )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="credentials.llm.connected",
+        target=kind,
     )
 
 
@@ -468,7 +981,7 @@ async def delete_llm_credentials(
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
-    account = await _find_account(repo, current_user.tenant_id, LEGACY_LLM_CONNECTOR_KEY)
+    account = await _find_account(repo, current_user.tenant_id, LLM_CONNECTOR_KEY)
     if account is None:
         return  # idempotente: nada que borrar ya es un estado válido de "desconectado".
     await repo.delete_connector_account(tenant_id=current_user.tenant_id, account_id=account["id"])
@@ -476,7 +989,7 @@ async def delete_llm_credentials(
         tenant_id=current_user.tenant_id,
         actor_user_id=current_user.user_id,
         action="credentials.llm.disconnected",
-        target=LEGACY_LLM_CONNECTOR_KEY,
+        target=LLM_CONNECTOR_KEY,
     )
 
 
@@ -543,7 +1056,7 @@ async def put_voice_tts_credentials(
     # Polly no tiene credencial propia del tenant, usa la identidad AWS del
     # PROCESO — fuera de modo local esa identidad se compartiría entre
     # tenants, así que se rechaza aquí antes de guardar nada (mismo criterio
-    # que los proveedores locales heredados en `PUT /v1/credentials/llm`).
+    # que `claude_cli`/`codex_cli`/`ollama` en `PUT /v1/credentials/llm`).
     if provider == "polly" and not getattr(settings, "EDECAN_LOCAL_MODE", False):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

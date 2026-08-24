@@ -19,13 +19,14 @@
  * saltaba entero. Ver HOTFIXES_PENDIENTES.md.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { PasoWizard } from "@/components/configuracion/PasoWizard";
+import { SelectorLLM } from "@/components/configuracion/SelectorLLM";
 import { CheckIcon } from "@/components/icons";
-import { Alert, Button } from "@/components/ui";
-import { putSetupComplete } from "@/lib/api-configuracion";
+import { Button } from "@/components/ui";
+import { getSetupDetect, putSetupComplete, type SetupDetect } from "@/lib/api-configuracion";
 
 async function marcarOnboardingCompletado(): Promise<void> {
   try {
@@ -39,6 +40,29 @@ async function marcarOnboardingCompletado(): Promise<void> {
 export default function BienvenidaPage() {
   const router = useRouter();
   const [paso, setPaso] = useState<1 | 2>(1);
+  const [detect, setDetect] = useState<SetupDetect | null>(null);
+  const [detectLoading, setDetectLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      try {
+        const det = await getSetupDetect();
+        if (!cancelado) setDetect(det);
+      } catch {
+        // Una detección local es conveniencia, no un gate del producto. Si
+        // la red cambia durante el primer arranque se conserva el selector
+        // manual sin lanzar una promesa rechazada ni romper el onboarding.
+        if (!cancelado) setDetect(null);
+      } finally {
+        if (!cancelado) setDetectLoading(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
   const irAlChat = useCallback(() => {
     void marcarOnboardingCompletado();
     router.push("/app");
@@ -50,16 +74,21 @@ export default function BienvenidaPage() {
         <PasoWizard
           paso={1}
           totalPasos={2}
-          titulo="Edecan está preparado"
-          descripcion="La inteligencia se administra automáticamente. No tienes que elegir proveedor ni modelo."
+          titulo="Activa Edecan"
+          descripcion="Conéctalo una sola vez. Después solo tendrás que escribirle o hablarle para pedir lo que necesites."
         >
-          <Alert variant="success">
-            Chat, voz y herramientas ligeras ya están conectados a Workers AI.
-          </Alert>
-          <div className="mt-5">
-            <Button className="w-full justify-center" onClick={() => setPaso(2)}>
-              Continuar
-            </Button>
+          <SelectorLLM simplified detect={detect} detectLoading={detectLoading} onConnected={() => setPaso(2)} />
+          <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => setPaso(2)}
+              className="text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+            >
+              Ahora no, entrar a Edecan
+            </button>
+            <p className="mt-1 text-xs text-slate-400">
+              Podrás activarlo cuando quieras desde Ajustes. Sin una conexión de IA podrá abrirse, pero todavía no responderá.
+            </p>
           </div>
         </PasoWizard>
       )}

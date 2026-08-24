@@ -20,6 +20,7 @@ from .base import (
 )
 from .bedrock import BedrockProvider
 from .claude_cli import ClaudeCLIProvider
+from .codex_cli import CodexCLIProvider
 from .config import LLMProviderConfig
 from .detect import detect_local_providers
 from .errors import (
@@ -45,6 +46,7 @@ __all__ = [
     "CLINotInstalledError",
     "ChatMessage",
     "ClaudeCLIProvider",
+    "CodexCLIProvider",
     "CompletionRequest",
     "CompletionResponse",
     "LLMError",

@@ -26,6 +26,7 @@ Contiene (ARCHITECTURE.md §10.12, §2, §10.4, §10.6):
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -37,6 +38,7 @@ from typing import Any
 import redis.asyncio as redis_asyncio
 from edecan_db.session import get_session
 from edecan_db.vault import KmsKeyProvider, LocalKeyProvider, TokenVault
+from edecan_llm.config import LLMProviderConfig
 from edecan_llm.router import LLMRouter
 from edecan_schemas.plans import PLANES
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -61,6 +63,7 @@ DELETED_USER_KEY_TTL_SECONDS = ACCESS_TOKEN_TTL_SECONDS + 24 * 60 * 60
 # mágico entre los tres archivos.
 VOICE_STT_CONNECTOR_KEY = "voice_stt"
 VOICE_TTS_CONNECTOR_KEY = "voice_tts"
+LLM_CONNECTOR_KEY = "llm"
 
 
 # ---------------------------------------------------------------------------
@@ -275,10 +278,7 @@ async def _enforce_tenant_rate_limit(
     if count > limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"Demasiadas solicitudes: límite de {limit} "
-                "por minuto por tenant."
-            ),
+            detail=(f"Demasiadas solicitudes: límite de {limit} por minuto por tenant."),
         )
 
 
@@ -313,25 +313,51 @@ async def ide_rate_limit(
 # tokens ocurre al recibir el evento `done` del turno (ver `routers/conversations.py`)
 # para no contar dos veces.
 #
-# Workers AI es infraestructura del host y el Task Router decide el modelo.
-# No se consulta el vault del tenant ni se acepta selección de modelos.
+# Workers AI sigue siendo el default del host. Si el tenant conectó un
+# proveedor propio, su config cifrada gana para ese request.
 # ---------------------------------------------------------------------------
 
 
+async def load_tenant_llm_config(
+    session: AsyncSession, settings: Settings, tenant_id: uuid.UUID
+) -> LLMProviderConfig | None:
+    """Lee la configuración LLM cifrada del tenant, si existe."""
+    try:
+        repo = SqlRepo(session)
+        accounts = await repo.list_connector_accounts(tenant_id=tenant_id)
+        account = next((row for row in accounts if row["connector_key"] == LLM_CONNECTOR_KEY), None)
+        if account is None:
+            return None
+        vault = TokenVault(session, build_key_provider(settings))
+        bundle = await vault.get(tenant_id, account["id"])
+        if bundle is None:
+            return None
+        return LLMProviderConfig.from_dict(json.loads(bundle.access_token))
+    except Exception:
+        logger.warning(
+            "No se pudo cargar la configuración LLM del tenant_id=%s; se trata como no conectado.",
+            tenant_id,
+            exc_info=True,
+        )
+        return None
+
+
 async def get_llm_router(
-    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session, scope="request"),
+    settings: Settings = Depends(get_settings),
 ) -> LLMRouter:
-    """Router automático global para chat, voz y herramientas ligeras.
-
-    ``current_user`` y ``session`` permanecen en la firma para conservar el
-    contrato de dependencias de FastAPI, pero la elección de modelo ya no
-    depende de una preferencia del usuario ni de credenciales por tenant.
-    La instancia vive durante todo el proceso para reutilizar conexiones HTTP.
-    """
-    del current_user, session
-    return request.app.state.llm_router
+    """Router del tenant; exige una selección explícita en Configuración."""
+    provider_config = await load_tenant_llm_config(session, settings, current_user.tenant_id)
+    if provider_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No hay un proveedor de inteligencia conectado. "
+                "Elige uno en Configuración antes de conversar."
+            ),
+        )
+    return LLMRouter(settings, on_usage=None, provider_config=provider_config)
 
 
 # ---------------------------------------------------------------------------

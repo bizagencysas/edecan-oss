@@ -293,6 +293,7 @@ class Settings(BaseSettings):
     # estos campos.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     CLAUDE_CLI_PATH: str | None = None
+    CODEX_CLI_PATH: str | None = None
     LLM_CLI_TIMEOUT_SECONDS: int = 300
 
     # Vertex AI real (bring-your-own proyecto GCP/service account o ADC).

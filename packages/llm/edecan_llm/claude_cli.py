@@ -90,7 +90,7 @@ class ClaudeCLIProvider(LLMProvider):
             if req.model:
                 args += ["--model", req.model]
             stdout, _stderr = await self._run(
-                args, _render_cli_prompt(req, image_paths=image_paths)
+                args, _render_cli_prompt(req, image_paths=image_paths), cwd=image_dir
             )
         return _parse_response(stdout, req)
 
@@ -111,11 +111,11 @@ class ClaudeCLIProvider(LLMProvider):
             if req.model:
                 args += ["--model", req.model]
             prompt = _render_cli_prompt(req, image_paths=image_paths)
-            async for chunk in self._stream_process(args, prompt, req):
+            async for chunk in self._stream_process(args, prompt, req, cwd=image_dir):
                 yield chunk
 
     async def _stream_process(
-        self, args: list[str], prompt: str, req: CompletionRequest
+        self, args: list[str], prompt: str, req: CompletionRequest, *, cwd: str
     ) -> AsyncIterator[StreamChunk]:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -123,6 +123,7 @@ class ClaudeCLIProvider(LLMProvider):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
             )
         except FileNotFoundError as exc:
             raise CLINotInstalledError(
@@ -217,9 +218,7 @@ class ClaudeCLIProvider(LLMProvider):
             self._raise_process_error(process.returncode or 1, stdout, stderr)
 
         if not recognized:
-            logger.info(
-                "Claude CLI: stream-json no reconocido; usando la salida completa."
-            )
+            logger.info("Claude CLI: stream-json no reconocido; usando la salida completa.")
             for chunk in _response_to_chunks(_parse_response(stdout, req)):
                 yield chunk
             return
@@ -239,7 +238,14 @@ class ClaudeCLIProvider(LLMProvider):
     def _base_args(
         self, output_format: str, *, verbose: bool = False, image_dir: str | None = None
     ) -> list[str]:
-        args = [self._binary_path, "-p", "--output-format", output_format]
+        args = [
+            self._binary_path,
+            "-p",
+            "--output-format",
+            output_format,
+            "--safe-mode",
+            "--no-session-persistence",
+        ]
         if verbose:
             args.append("--verbose")
         if image_dir:
@@ -255,15 +261,18 @@ class ClaudeCLIProvider(LLMProvider):
                 "--add-dir",
                 image_dir,
             ]
+        else:
+            args += ["--tools", ""]
         return args
 
-    async def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
+    async def _run(self, args: list[str], prompt: str, *, cwd: str) -> tuple[str, str]:
         try:
             process = await asyncio.create_subprocess_exec(
                 *_windows_shim_argv(args),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
             )
         except FileNotFoundError as exc:
             raise CLINotInstalledError(
@@ -302,8 +311,7 @@ class ClaudeCLIProvider(LLMProvider):
                 provider=self.name,
             )
         raise LLMError(
-            f"Claude CLI terminó con código {returncode}: "
-            f"{stderr.strip() or stdout.strip()}",
+            f"Claude CLI terminó con código {returncode}: {stderr.strip() or stdout.strip()}",
             provider=self.name,
         )
 

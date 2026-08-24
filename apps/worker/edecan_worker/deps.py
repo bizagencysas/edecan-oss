@@ -45,10 +45,11 @@ fakes (ver `tests/fakes.py::make_deps`), tal como exige ARCHITECTURE.md §10.1.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -62,6 +63,7 @@ from edecan_worker.config import Settings
 # MISMO valor que `edecan_api.routers.mcp.MCP_CONNECTOR_KEY`/`edecan_api.
 # deps.MCP_CONNECTOR_KEY`, duplicado por el mismo motivo de arriba.
 MCP_CONNECTOR_KEY = "mcp"
+LLM_CONNECTOR_KEY = "llm"
 _MCP_TOOLS_FLAG = "tools.mcp"
 
 if TYPE_CHECKING:
@@ -77,6 +79,15 @@ SessionFactory = Callable[[UUID | None], AbstractAsyncContextManager[AsyncSessio
 VaultFactory = Callable[[AsyncSession], Any]
 
 
+class TenantLLMNotConnectedError(RuntimeError):
+    def __init__(self, tenant_id: UUID) -> None:
+        self.tenant_id = tenant_id
+        super().__init__(
+            "Este tenant no tiene un proveedor de inteligencia conectado. "
+            "Elige uno en Configuración antes de ejecutar trabajos en segundo plano."
+        )
+
+
 @dataclass
 class Deps:
     """Recursos compartidos que recibe cada `Handler(env, deps)`."""
@@ -89,15 +100,61 @@ class Deps:
     llm_router: Any
     vault: VaultFactory
     provider_health: ProviderHealth | None = None
+    _tenant_llm_routers: dict[UUID, tuple[str, Any]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     async def llm_router_for(self, tenant_id: UUID | None) -> Any:
-        """Devuelve el router global administrado para cualquier tenant.
+        """Resuelve el proveedor cifrado del tenant o usa el default del host."""
+        if tenant_id is None:
+            return self.llm_router
+        try:
+            from edecan_llm.config import LLMProviderConfig
+            from edecan_llm.router import LLMRouter
 
-        El argumento se conserva por compatibilidad con los handlers. No se
-        consulta el vault ni existe una selección de proveedor por usuario.
-        """
-        del tenant_id
-        return self.llm_router
+            async with self.session_factory(None) as session:
+                row = (
+                    (
+                        await session.execute(
+                            sql_text(
+                                "SELECT id FROM connector_accounts "
+                                "WHERE tenant_id = :tenant_id AND connector_key = :connector_key "
+                                "ORDER BY created_at ASC LIMIT 1"
+                            ),
+                            {"tenant_id": tenant_id, "connector_key": LLM_CONNECTOR_KEY},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    raise TenantLLMNotConnectedError(tenant_id)
+                bundle = await self.vault(session).get(
+                    tenant_id=tenant_id,
+                    connector_account_id=row["id"],
+                )
+                if bundle is None:
+                    raise TenantLLMNotConnectedError(tenant_id)
+                raw_config = bundle.access_token
+                cached = self._tenant_llm_routers.get(tenant_id)
+                if cached is not None and cached[0] == raw_config:
+                    return cached[1]
+                config = LLMProviderConfig.from_dict(json.loads(raw_config))
+            router = LLMRouter(self.settings, on_usage=None, provider_config=config)
+            if cached is not None:
+                await cached[1].aclose()
+            self._tenant_llm_routers[tenant_id] = (raw_config, router)
+            return router
+        except TenantLLMNotConnectedError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "No se pudo resolver el proveedor LLM del tenant_id=%s; "
+                "se trata como no conectado.",
+                tenant_id,
+                exc_info=True,
+            )
+            raise TenantLLMNotConnectedError(tenant_id) from exc
 
     async def mcp_tools_para(
         self, tenant_id: UUID | None, session: AsyncSession, flags: dict[str, Any]
@@ -137,6 +194,13 @@ class Deps:
                 exc_info=True,
             )
             return []
+
+    async def aclose(self) -> None:
+        """Cierra clientes de proveedores tenant creados durante este proceso."""
+        routers = {id(router): router for _raw, router in self._tenant_llm_routers.values()}
+        self._tenant_llm_routers.clear()
+        for router in routers.values():
+            await router.aclose()
 
     async def _build_mcp_tools(self, tenant_id: UUID, session: AsyncSession) -> list[Any]:
         # Import perezoso CON GUARDIA, mismo criterio que `edecan_llm.config.
@@ -303,7 +367,7 @@ async def build_deps(settings: Settings) -> AsyncIterator[Deps]:
             await health_store.start()
             stack.push_async_callback(health_store.stop)
         logger.info("clientes aioboto3 (s3, sqs) listos endpoint_url=%s", settings.AWS_ENDPOINT_URL)
-        yield Deps(
+        deps = Deps(
             settings=settings,
             session_factory=get_session,
             s3=s3,
@@ -315,3 +379,5 @@ async def build_deps(settings: Settings) -> AsyncIterator[Deps]:
                 event_sink=health_store.enqueue if health_store is not None else None
             ),
         )
+        stack.push_async_callback(deps.aclose)
+        yield deps

@@ -4,8 +4,8 @@
  * Centro de credenciales (DIRECCION_ACTUAL.md "Pantalla de Configuración" +
  * "Principio de UX no negociable: configuración de pocos clicks"):
  * configuración PROGRESIVA en tarjetas "Conectar" independientes, nunca un
- * formulario gigante. Workers AI es administrado por el host; voz,
- * telefonía, conectores OAuth y mensajería siguen siendo opcionales.
+ * formulario gigante. Solo el LLM es necesario para chatear — el resto
+ * (voz, telefonía, conectores OAuth, mensajería) es siempre opcional.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -21,19 +21,25 @@ import { TravelConnectionsPanel } from "@/components/configuracion/TravelConnect
 import { SelectorBusqueda } from "@/components/configuracion/SelectorBusqueda";
 import { SelectorCasaInteligente } from "@/components/configuracion/SelectorCasaInteligente";
 import { SelectorImagenes } from "@/components/configuracion/SelectorImagenes";
+import { SelectorLLM } from "@/components/configuracion/SelectorLLM";
+import { SelectorModeloLLM } from "@/components/configuracion/SelectorModeloLLM";
 import { SelectorVoz } from "@/components/configuracion/SelectorVoz";
 import { BrainIcon, MicIcon, PlugIcon, SearchIcon, SparklesIcon } from "@/components/icons";
 import { Alert, Spinner } from "@/components/ui";
 import {
+  LLM_KIND_LABELS,
   deleteImagesCredentials,
+  deleteLlmCredential,
   deleteSearchCredentials,
   deleteSmarthomeCredentials,
   deleteVoiceStt,
   deleteVoiceTts,
   getCredentials,
+  getSetupDetect,
   getSetupStatus,
   getSmarthomeStatus,
   type CredentialsOut,
+  type SetupDetect,
   type SetupStatus,
   type SmarthomeStatus,
 } from "@/lib/api-configuracion";
@@ -45,6 +51,7 @@ export function ConexionesSection({
 } = {}) {
   const [credentials, setCredentials] = useState<CredentialsOut | null>(null);
   const [status, setStatus] = useState<SetupStatus | null>(null);
+  const [detect, setDetect] = useState<SetupDetect | null>(null);
   const [smarthome, setSmarthome] = useState<SmarthomeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -55,14 +62,16 @@ export function ConexionesSection({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [creds, st, casa] = await Promise.all([
+      const [creds, st, det, casa] = await Promise.all([
         getCredentials(),
         getSetupStatus(),
+        getSetupDetect(),
         getSmarthomeStatus(),
       ]);
       setCredentials(creds);
       setStatus(st);
-      onLocalModeDetected?.(st.local_mode === true);
+      setDetect(det);
+      onLocalModeDetected?.(det.local_mode === true);
       setSmarthome(casa);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cargar la configuración.");
@@ -74,6 +83,18 @@ export function ConexionesSection({
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function handleQuitarLlm() {
+    setQuitando("llm");
+    try {
+      await deleteLlmCredential();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo quitar la credencial.");
+    } finally {
+      setQuitando(null);
+    }
+  }
 
   async function handleQuitarStt() {
     setQuitando("stt");
@@ -135,7 +156,7 @@ export function ConexionesSection({
     }
   }
 
-  const llmEstado: EstadoCredencial = status?.llm_configured ? "conectado" : "sin_conectar";
+  const llmEstado: EstadoCredencial = credentials?.llm ? "conectado" : "sin_conectar";
   const vozEstado: EstadoCredencial = credentials?.voice_stt || credentials?.voice_tts ? "conectado" : "sin_conectar";
   const casaEstado: EstadoCredencial = smarthome?.configured ? "conectado" : "sin_conectar";
   const imagenesEstado: EstadoCredencial = credentials?.images ? "conectado" : "sin_conectar";
@@ -151,16 +172,16 @@ export function ConexionesSection({
           Conexiones
         </h2>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-          La inteligencia se configura una sola vez en el host. Conecta únicamente los servicios opcionales que quieras usar.
+          Elige cómo quieres que Edecan piense. Luego conecta solo lo que quieras usar; todo lo demás es opcional.
         </p>
         <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-          Workers AI decide automáticamente el modelo de chat. Las claves de servicios opcionales se guardan cifradas.
+          Las API keys se validan al conectarlas y se guardan cifradas; nunca vuelven a mostrarse completas.
         </p>
       </div>
 
       {!loading && status && !status.llm_configured && (
         <div className="mb-4">
-          <Alert variant="info">Falta configurar Workers AI en el host para poder conversar.</Alert>
+          <Alert variant="info">Elige cómo pensará Edecan para empezar a conversar. Todo lo demás es opcional.</Alert>
         </div>
       )}
       {error && (
@@ -177,18 +198,26 @@ export function ConexionesSection({
         <div className="space-y-4">
           <CardCredencial
             icon={<BrainIcon className="h-4 w-4 text-brand-600" />}
-            titulo="Inteligencia automática"
-            descripcion="Chat, voz y herramientas ligeras usan Workers AI. Edecan elige el modelo según la tarea."
+            titulo="Cómo piensa Edecan"
+            descripcion="Usa Claude CLI, Codex CLI u Ollama sin API key, o conecta de forma segura Anthropic, OpenAI o Gemini."
             estado={llmEstado}
             resumen={
-              credentials?.llm ? (
-                <FilaCredencialConectada>
-                  Workers AI · selección automática
-                </FilaCredencialConectada>
-              ) : undefined
+              credentials?.llm
+                ? <>
+                    <FilaCredencialConectada onQuitar={handleQuitarLlm} quitando={quitando === "llm"}>
+                      {[LLM_KIND_LABELS[credentials.llm.kind], credentials.llm.model_principal, credentials.llm.masked]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </FilaCredencialConectada>
+                    <SelectorModeloLLM onUpdated={load} />
+                  </>
+                : undefined
             }
+            defaultExpanded={!credentials?.llm}
             destacado
-          />
+          >
+            <SelectorLLM detect={detect} onConnected={load} />
+          </CardCredencial>
 
           <PhonePairingCard />
 
@@ -223,7 +252,7 @@ export function ConexionesSection({
               </>
             }
           >
-            <SelectorVoz localMode={status?.local_mode === true} onSttConnected={load} onTtsConnected={load} />
+            <SelectorVoz localMode={detect?.local_mode === true} onSttConnected={load} onTtsConnected={load} />
           </CardCredencial>
 
           <CardCredencial
@@ -276,7 +305,7 @@ export function ConexionesSection({
             <SelectorCasaInteligente onConnected={load} />
           </CardCredencial>
 
-          <CardServidoresMcp localMode={status?.local_mode === true} />
+          <CardServidoresMcp localMode={detect?.local_mode === true} />
           </ConnectionCategory>
 
           <ConnectionCategory title="Correo, calendario, llamadas y mensajería" description="Google, Microsoft, redes, Twilio, bots e iCloud.">

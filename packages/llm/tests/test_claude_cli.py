@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from edecan_llm.base import ChatMessage, CompletionRequest, ToolSpec
-from edecan_llm.claude_cli import ClaudeCLIProvider
+from edecan_llm.claude_cli import ClaudeCLIProvider, _windows_shim_argv
 from edecan_llm.errors import CLINotAuthenticatedError, CLINotInstalledError, LLMError
 
 
@@ -81,6 +81,20 @@ def test_binary_resuelto_via_which(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr("shutil.which", lambda name: fake if name == "claude" else None)
     provider = ClaudeCLIProvider()
     assert provider._binary_path == fake  # type: ignore[attr-defined]
+
+
+def test_windows_cmd_shim_sin_shell_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("edecan_llm.claude_cli.os.name", "nt")
+    monkeypatch.setenv("ComSpec", r"C:\\Windows\\System32\\cmd.exe")
+
+    assert _windows_shim_argv([r"C:\\npm\\claude.cmd", "--version"]) == [
+        r"C:\\Windows\\System32\\cmd.exe",
+        "/d",
+        "/s",
+        "/c",
+        r"C:\\npm\\claude.cmd",
+        "--version",
+    ]
 
 
 @pytest.mark.asyncio
@@ -257,6 +271,10 @@ async def test_complete_sin_modelo_no_agrega_flag(tmp_path: Path) -> None:
 
     args = (tmp_path / "args.txt").read_text().splitlines()
     assert "--model" not in args
+    assert "--safe-mode" in args
+    assert "--no-session-persistence" in args
+    assert "--tools" in args
+    assert args[args.index("--tools") + 1] == ""
 
 
 @pytest.mark.asyncio
@@ -417,9 +435,7 @@ async def test_stream_publica_antes_de_que_termine_claude(tmp_path: Path) -> Non
             },
         }
     )
-    result = json.dumps(
-        {"type": "result", "usage": {"input_tokens": 4, "output_tokens": 2}}
-    )
+    result = json.dumps({"type": "result", "usage": {"input_tokens": 4, "output_tokens": 2}})
     script = tmp_path / "claude-live"
     script.write_text(
         "#!/bin/sh\n"

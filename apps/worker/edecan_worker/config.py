@@ -82,6 +82,19 @@ class Settings(BaseSettings):
     # -> caía al alias de respaldo, de nuevo el modelo chico). 120s le da aire.
     WORKERS_AI_TIMEOUT_SECONDS: float = 120.0
     WORKERS_AI_FALLBACK_MODEL: str | None = None
+    LLM_PROVIDER: str | None = None
+    AZURE_AI_FOUNDRY_ENDPOINT: str | None = None
+    AZURE_AI_FOUNDRY_API_KEY: str | None = None
+    AZURE_AI_FOUNDRY_TEXT_DEPLOYMENT: str | None = None
+    OPENAI_COMPAT_BASE_URL: str | None = None
+    OPENAI_COMPAT_API_KEY: str | None = None
+
+    # Proveedores locales, disponibles solo en la app desktop single-user.
+    EDECAN_LOCAL_MODE: bool = False
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    CLAUDE_CLI_PATH: str | None = None
+    CODEX_CLI_PATH: str | None = None
+    LLM_CLI_TIMEOUT_SECONDS: int = 300
 
     # --- Imágenes de posts: gpt-image-2 (portado de REFERENCIA) ------------------
     # El post COMPLETO se le pasa a gpt-image-2 como "director de arte" y ÉL crea

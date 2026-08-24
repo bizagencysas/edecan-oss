@@ -598,6 +598,7 @@ class FakeVault:
 
 
 def make_deps(**overrides: Any) -> Deps:
+    resolve_tenant_llm = bool(overrides.pop("_resolve_tenant_llm", False))
     settings = overrides.pop("settings", None) or Settings(
         SQS_QUEUE_URL="http://localhost:4566/000000000000/edecan-jobs",
         S3_BUCKET="edecan-files-test",
@@ -612,4 +613,11 @@ def make_deps(**overrides: Any) -> Deps:
         vault=lambda session: FakeVault(),
     )
     defaults.update(overrides)
-    return Deps(**defaults)
+    deps = Deps(**defaults)
+    if not resolve_tenant_llm:
+
+        async def _global_router_for(_tenant_id: uuid.UUID | None) -> Any:
+            return deps.llm_router
+
+        deps.llm_router_for = _global_router_for  # type: ignore[method-assign]
+    return deps

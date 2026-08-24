@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from edecan_llm.base import CompletionRequest, CompletionResponse, LLMProvider, StreamChunk, Usage
+from edecan_llm.config import LLMProviderConfig
 from edecan_llm.router import LLMRouter
 
 
@@ -85,6 +86,24 @@ def test_provider_factory_is_the_only_swap_point() -> None:
     assert router.resolve("rapido", {})[0] is fake
     assert router.resolve("principal", {})[0] is fake
     assert calls == 1
+
+
+def test_workers_ai_del_tenant_usa_su_cuenta_token_y_modelo() -> None:
+    config = LLMProviderConfig(
+        kind="workers_ai",
+        api_key="tenant-token",
+        model_principal="@cf/vendor/model",
+        model_rapido="@cf/vendor/model-fast",
+        extra={"account_id": "tenant-account"},
+    )
+    router = LLMRouter(_settings(), provider_config=config)
+
+    provider, model = router.resolve("principal", {})
+
+    assert provider.name == "workers_ai"
+    assert provider.account_id == "tenant-account"  # type: ignore[attr-defined]
+    assert provider._api_token == "tenant-token"  # type: ignore[attr-defined]
+    assert model == "@cf/vendor/model"
 
 
 @pytest.mark.asyncio

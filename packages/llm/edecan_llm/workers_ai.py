@@ -376,8 +376,7 @@ def _ultimo_mensaje_pide_rescate_sin_tools(req: CompletionRequest) -> bool:
         return True
     if ultimo.role == "user" and isinstance(ultimo.content, list):
         return any(
-            isinstance(bloque, dict) and bloque.get("type") == "image"
-            for bloque in ultimo.content
+            isinstance(bloque, dict) and bloque.get("type") == "image" for bloque in ultimo.content
         )
     return False
 
@@ -679,9 +678,7 @@ class WorkersAIProvider(LLMProvider):
         # debe poder decidir lo que el usuario EJECUTA. Si el chat necesita otro modelo, se
         # dice explícitamente con `WORKERS_AI_CHAT_MODEL`.
         self.model = (
-            model
-            or _valor_entorno("WORKERS_AI_CHAT_MODEL", respaldo)
-            or MODELO_POR_DEFECTO
+            model or _valor_entorno("WORKERS_AI_CHAT_MODEL", respaldo) or MODELO_POR_DEFECTO
         )
         self._api_token = api_token or _valor_entorno("CLOUDFLARE_API_TOKEN", respaldo)
         self._base_url = base_url.rstrip("/")
@@ -756,9 +753,7 @@ class WorkersAIProvider(LLMProvider):
         # ``edecan_core`` habla con los proveedores por contrato estructural.
         # Mantener ``getattr`` aquí permite que adaptadores externos antiguos,
         # que todavía no exponen ``reasoning_effort``, sigan siendo válidos.
-        esfuerzo = req.metadata.get("reasoning_effort") or getattr(
-            req, "reasoning_effort", None
-        )
+        esfuerzo = req.metadata.get("reasoning_effort") or getattr(req, "reasoning_effort", None)
         if esfuerzo is not None:
             cuerpo["reasoning_effort"] = str(esfuerzo)
         if isinstance(extra := req.metadata.get("extra_body"), dict):

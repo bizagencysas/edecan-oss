@@ -134,6 +134,10 @@ _PLATFORM_CONFIG_KEYS = frozenset(
         "AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS",
         "OPENAI_COMPAT_BASE_URL",
         "OPENAI_COMPAT_API_KEY",
+        "CLAUDE_CLI_PATH",
+        "CODEX_CLI_PATH",
+        "OLLAMA_BASE_URL",
+        "LLM_CLI_TIMEOUT_SECONDS",
         # Imágenes de posts con gpt-image-2 (director de arte, portado de REFERENCIA).
         # SIN estas claves en el allowlist, el `IMAGES_API_KEY` del platform-config
         # nunca llegaba al worker y el post salía SIN imagen (bug real: la card

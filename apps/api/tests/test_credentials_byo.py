@@ -88,7 +88,7 @@ def _install(app: Any) -> FakeVault:
 
 
 @respx.mock
-async def test_put_llm_anthropic_rechaza_byo_sin_contactar_al_proveedor(client, app) -> None:
+async def test_put_llm_anthropic_acepta_byo_sin_usar_la_plataforma(client, app) -> None:
     route = respx.get("https://api.anthropic.com/v1/models").mock(
         return_value=httpx.Response(200, json={"data": []})
     )
@@ -100,21 +100,16 @@ async def test_put_llm_anthropic_rechaza_byo_sin_contactar_al_proveedor(client, 
         headers=_headers(),
     )
 
-    assert response.status_code == 409
-    assert "Workers AI" in response.json()["detail"]
-    assert not route.called
-    assert vault.puts == []
+    assert response.status_code == 204
+    assert route.called
+    assert len(vault.puts) == 1
 
 
 @respx.mock
-async def test_put_llm_openai_compat_rechaza_byo_sin_contactar_base_url_del_tenant(
-    client, app
-) -> None:
-    """La inferencia administrada no valida ni persiste endpoints LLM BYO."""
+async def test_put_llm_openai_compat_acepta_y_valida_base_url_del_tenant(client, app) -> None:
+    """El endpoint del tenant se valida y su configuración queda cifrada."""
     route = respx.get("https://servidor-del-tenant.example/v1/models").mock(
-        return_value=httpx.Response(
-            200, json={"data": [{"id": "modelo-del-tenant", "created": 1}]}
-        )
+        return_value=httpx.Response(200, json={"data": [{"id": "modelo-del-tenant", "created": 1}]})
     )
     vault = _install(app)
 
@@ -128,10 +123,9 @@ async def test_put_llm_openai_compat_rechaza_byo_sin_contactar_base_url_del_tena
         headers=_headers(),
     )
 
-    assert response.status_code == 409
-    assert "Workers AI" in response.json()["detail"]
-    assert not route.called
-    assert vault.puts == []
+    assert response.status_code == 204
+    assert route.called
+    assert len(vault.puts) == 1
 
 
 @respx.mock
@@ -238,10 +232,8 @@ async def test_put_search_tavily_no_filtra_la_clave_de_plataforma(client, app) -
 
 
 @respx.mock
-async def test_put_llm_anthropic_rechazado_no_toca_base_url_de_plataforma(
-    client, app
-) -> None:
-    """Ni la clave del tenant ni la plataforma salen por red al rechazar BYO."""
+async def test_put_llm_anthropic_byo_no_toca_credencial_de_plataforma(client, app) -> None:
+    """La validación usa la clave del tenant, nunca la credencial del host."""
     route = respx.get("https://api.anthropic.com/v1/models").mock(
         return_value=httpx.Response(200, json={"data": []})
     )
@@ -253,7 +245,7 @@ async def test_put_llm_anthropic_rechazado_no_toca_base_url_de_plataforma(
         headers=_headers(),
     )
 
-    assert response.status_code == 409
-    assert "Workers AI" in response.json()["detail"]
-    assert not route.called
-    assert vault.puts == []
+    assert response.status_code == 204
+    assert route.called
+    assert len(vault.puts) == 1
+    assert _SENTINEL not in route.calls.last.request.headers.get("x-api-key", "")

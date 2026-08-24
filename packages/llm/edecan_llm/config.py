@@ -57,7 +57,16 @@ from typing import Any
 # un work package futuro — "Cualquier IA — extensibilidad genérica",
 # DIRECCION_ACTUAL.md).
 PROVIDER_KINDS: frozenset[str] = frozenset(
-    {"workers_ai", "anthropic", "openai_compat", "vertex", "claude_cli", "ollama", "azure_openai"}
+    {
+        "workers_ai",
+        "anthropic",
+        "openai_compat",
+        "vertex",
+        "claude_cli",
+        "codex_cli",
+        "ollama",
+        "azure_openai",
+    }
 )
 
 

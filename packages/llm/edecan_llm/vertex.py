@@ -379,8 +379,8 @@ def _parse_completion(data: dict) -> CompletionResponse:
         input_tokens=usage_data.get("promptTokenCount", 0),
         output_tokens=usage_data.get("candidatesTokenCount", 0),
     )
-    stop_reason = "tool_use" if tool_calls else _FINISH_REASON_MAP.get(
-        candidate.get("finishReason"), "end"
+    stop_reason = (
+        "tool_use" if tool_calls else _FINISH_REASON_MAP.get(candidate.get("finishReason"), "end")
     )
     return CompletionResponse(
         text=text, tool_calls=tool_calls, usage=usage, stop_reason=stop_reason

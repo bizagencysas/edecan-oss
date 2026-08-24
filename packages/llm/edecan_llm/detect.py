@@ -31,13 +31,15 @@ def detect_local_providers(settings: Any = None) -> dict[str, Any]:
 
     Shape exacto:
     ``{"claude_cli": {"installed", "path", "version"},
+    "codex_cli": {"installed", "path", "version"},
     "ollama": {"running", "base_url", "models"}}``. `settings`, si se pasa,
-    puede traer `CLAUDE_CLI_PATH`/`OLLAMA_BASE_URL` para
+    puede traer `CLAUDE_CLI_PATH`/`CODEX_CLI_PATH`/`OLLAMA_BASE_URL` para
     saltarse la búsqueda automática (`getattr` con default `None`, así que
     cualquier objeto — o `None` — sirve).
     """
     return {
         "claude_cli": _detect_cli(settings, "claude", "CLAUDE_CLI_PATH"),
+        "codex_cli": _detect_cli(settings, "codex", "CODEX_CLI_PATH"),
         "ollama": _detect_ollama(settings),
     }
 

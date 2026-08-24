@@ -548,7 +548,9 @@ export function AlwaysListenMode({
       for (let i = 0; i < oraciones.length; i++) {
         if (cerradoRef.current || interrumpirHablaRef.current) break;
         const stream = siguiente;
-        siguiente = i + 1 < oraciones.length ? speakTextStream(oraciones[i + 1], voice, abort.signal) : null;
+        if (i + 1 < oraciones.length) {
+          siguiente = speakTextStream(oraciones[i + 1], voice, abort.signal);
+        }
 
         const finished = player.beginSession();
         let attachedMeter = false;

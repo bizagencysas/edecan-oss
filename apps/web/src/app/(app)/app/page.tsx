@@ -1231,8 +1231,9 @@ function ChatPage() {
     for (let i = 0; i < sentences.length; i++) {
       if (speakSessionRef.current !== session || abort.signal.aborted) return;
       const stream = nextStream;
-      nextStream =
-        i + 1 < sentences.length ? speakTextStream(sentences[i + 1], voice, abort.signal) : null;
+      if (i + 1 < sentences.length) {
+        nextStream = speakTextStream(sentences[i + 1], voice, abort.signal);
+      }
 
       const finished = player.beginSession();
       try {

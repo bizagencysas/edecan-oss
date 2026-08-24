@@ -32,8 +32,8 @@
  *    `localhost:8000` por defecto (ARCHITECTURE.md §10.14). Si algún día eso
  *    cambia, `lib/api.ts` necesitará el mismo `??` — documentado también en
  *    `docs/primeros-pasos.md`.
- * 2. **Tolerancia a 404 en las lecturas** (`getCredentials`/`getSetupStatus`):
- *    mientras WP-V3-02/05 no hayan montado
+ * 2. **Tolerancia a 404 en las lecturas** (`getCredentials`/`getSetupStatus`/
+ *    `getSetupDetect`): mientras WP-V3-02/05 no hayan montado
  *    `edecan_api.routers.credentials`/`setup`, estas rutas no existen todavía
  *    y devuelven 404 de Starlette. Esta pantalla NO debe verse rota por eso
  *    (ni en desarrollo mientras aterrizan en paralelo, ni en un self-host
@@ -58,10 +58,24 @@ import { ApiError } from "./api";
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ?? "http://localhost:8000";
 
-// --- Estado de la inteligencia administrada --------------------------------
+// --- Tipos: LLM (ARCHITECTURE.md §12, DIRECCION_ACTUAL.md "Nuevo requisito:
+// conectar el LLM vía CLI local") ---------------------------------------------
+
+/** `"vertex"` cubre tanto el modo API key de Gemini como el de cuenta de servicio GCP (`extra.mode`). */
+export type LlmKind = "workers_ai" | "anthropic" | "openai_compat" | "vertex" | "claude_cli" | "codex_cli" | "ollama";
+
+export const LLM_KIND_LABELS: Record<LlmKind, string> = {
+  workers_ai: "Cloudflare Workers AI",
+  anthropic: "Anthropic",
+  openai_compat: "Compatible con OpenAI",
+  vertex: "Vertex AI / Gemini",
+  claude_cli: "Claude CLI",
+  codex_cli: "Codex CLI",
+  ollama: "Ollama (local)",
+};
 
 export interface LlmCredentialStatus {
-  kind: "workers_ai";
+  kind: LlmKind;
   model_principal: string | null;
   model_rapido: string | null;
   model_profundo: string | null;
@@ -69,6 +83,18 @@ export interface LlmCredentialStatus {
   base_url: string | null;
   /** Nunca la key real — p. ej. `"sk-ant-…ab12"`. */
   masked: string | null;
+}
+
+export interface LlmModelsOut {
+  kind: LlmKind;
+  model_principal: string | null;
+  model_rapido: string | null;
+  model_profundo: string | null;
+  reasoning_effort_profundo: string | null;
+  models: string[];
+  manual_allowed: boolean;
+  capabilities_managed_by_edecan: boolean;
+  discovery_error: string | null;
 }
 
 export interface VoiceSttStatus {
@@ -120,6 +146,37 @@ export interface SetupStatus {
   version: string;
 }
 
+export interface CliDetection {
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+}
+
+export interface OllamaDetection {
+  running: boolean;
+  base_url: string | null;
+  models: string[];
+}
+
+export interface SetupDetect {
+  local_mode: boolean;
+  claude_cli: CliDetection;
+  codex_cli: CliDetection;
+  ollama: OllamaDetection;
+}
+
+export interface PutLlmCredentialInput {
+  kind: LlmKind;
+  api_key?: string;
+  base_url?: string;
+  model_principal?: string;
+  model_rapido?: string;
+  model_profundo?: string;
+  reasoning_effort_profundo?: string;
+  extra?: Record<string, unknown>;
+  validate?: boolean;
+}
+
 /**
  * Forma asumida por esta pantalla para `PUT /v1/credentials/voice/{stt|tts}`
  * (ver punto final del docstring de cabecera). `provider` es `"deepgram"`
@@ -163,6 +220,13 @@ const SETUP_STATUS_EMPTY: SetupStatus = {
   onboarding_completed: false,
   version: "",
 };
+const SETUP_DETECT_EMPTY: SetupDetect = {
+  local_mode: false,
+  claude_cli: { installed: false, path: null, version: null },
+  codex_cli: { installed: false, path: null, version: null },
+  ollama: { running: false, base_url: null, models: [] },
+};
+
 // --- Tipos: Casa inteligente / Home Assistant (ARCHITECTURE.md §12.a, §12.b;
 // docs/casa-inteligente.md; apps/api/edecan_api/routers/smarthome.py). Router
 // v3 montado defensivamente igual que `credentials`/`setup`/`skills`, así que
@@ -291,6 +355,29 @@ export async function putSetupComplete(): Promise<void> {
   await apiJson<void>("/v1/setup/complete", { method: "PUT" });
 }
 
+let setupDetectInFlight: Promise<SetupDetect> | null = null;
+
+async function fetchSetupDetect(): Promise<SetupDetect> {
+  try {
+    return await apiJson<SetupDetect>("/v1/setup/detect");
+  } catch (err) {
+    if (isNotFound(err)) return SETUP_DETECT_EMPTY;
+    throw err;
+  }
+}
+
+/** Comparte una detección en vuelo. React Strict Mode monta los efectos dos
+ * veces en desarrollo y dos subprocesos CLI simultáneos son trabajo inútil;
+ * además, una respuesta tardía no debe ocultar un resultado válido. */
+export function getSetupDetect(): Promise<SetupDetect> {
+  if (setupDetectInFlight === null) {
+    setupDetectInFlight = fetchSetupDetect().finally(() => {
+      setupDetectInFlight = null;
+    });
+  }
+  return setupDetectInFlight;
+}
+
 export async function getSmarthomeStatus(): Promise<SmarthomeStatus> {
   try {
     return await apiJson<SmarthomeStatus>("/v1/smarthome/status");
@@ -298,6 +385,30 @@ export async function getSmarthomeStatus(): Promise<SmarthomeStatus> {
     if (isNotFound(err)) return SMARTHOME_STATUS_EMPTY;
     throw err;
   }
+}
+
+// --- Escrituras: LLM ----------------------------------------------------------
+
+/** `PUT /v1/credentials/llm` → 204, o lanza `ApiError` con el `detail` exacto del proveedor en un 400. */
+export async function putLlmCredential(input: PutLlmCredentialInput): Promise<void> {
+  await apiJson<void>("/v1/credentials/llm", { method: "PUT", body: input });
+}
+
+export async function deleteLlmCredential(): Promise<void> {
+  await apiJson<void>("/v1/credentials/llm", { method: "DELETE" });
+}
+
+export async function getLlmModels(): Promise<LlmModelsOut> {
+  return apiJson<LlmModelsOut>("/v1/credentials/llm/models");
+}
+
+export async function updateLlmModels(input: {
+  model_principal: string;
+  model_rapido?: string;
+  model_profundo?: string;
+  reasoning_effort_profundo?: string;
+}): Promise<void> {
+  await apiJson<void>("/v1/credentials/llm/models", { method: "PATCH", body: input });
 }
 
 // --- Escrituras: Voz ------------------------------------------------------------

@@ -24,6 +24,7 @@ def test_nada_instalado_ni_corriendo(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result == {
         "claude_cli": {"installed": False, "path": None, "version": None},
+        "codex_cli": {"installed": False, "path": None, "version": None},
         "ollama": {"running": False, "base_url": "http://localhost:11434", "models": []},
     }
 
@@ -173,7 +174,7 @@ def test_shape_siempre_completo_con_settings_vacio(monkeypatch: pytest.MonkeyPat
 
     result = detect_local_providers(SimpleNamespace())
 
-    assert set(result.keys()) == {"claude_cli", "ollama"}
+    assert set(result.keys()) == {"claude_cli", "codex_cli", "ollama"}
     for key in ("claude_cli",):
         assert set(result[key].keys()) == {"installed", "path", "version"}
     assert set(result["ollama"].keys()) == {"running", "base_url", "models"}

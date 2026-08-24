@@ -41,6 +41,7 @@ def _ruta_yaml_efectiva(ruta_yaml: Path | str | None) -> Path:
             return bundled
     return RUTA_CONFIG_MODELOS
 
+
 METADATA_MODELO_ELEGIDO = "modelo_elegido"
 """Clave de `CompletionRequest.metadata` con el modelo que fijó el usuario.
 
@@ -396,15 +397,29 @@ class TaskRouter:
         self,
         *,
         chat_model: str | None = None,
+        principal_model: str | None = None,
         deep_model: str | None = None,
+        voice_model: str | None = None,
+        engineering_model: str | None = None,
+        allow_catalog_selection: bool = True,
+        allow_empty_models: bool = False,
         config_path: Path | str | None = None,
     ) -> None:
         self._config_path = config_path
-        self._chat_model = chat_model or modelo_para_perfil("chat_rapido", config_path)
+        self._allow_empty_models = allow_empty_models
+        self._chat_model = (
+            (chat_model or "").strip()
+            if allow_empty_models
+            else chat_model or modelo_para_perfil("chat_rapido", config_path)
+        )
         # Alias "profundo": el escritor de posts pide un modelo fuerte. Si no se
         # configura, cae al de chat (comportamiento anterior). Ver
         # `apps/api/edecan_api/config.py::WORKERS_AI_MODEL_PROFUNDO`.
         self._deep_model = (deep_model or "").strip() or None
+        self._principal_model = (principal_model or "").strip() or None
+        self._voice_model = (voice_model or "").strip() or None
+        self._engineering_model = (engineering_model or "").strip() or None
+        self._allow_catalog_selection = allow_catalog_selection
 
     def decide(
         self,
@@ -422,11 +437,23 @@ class TaskRouter:
         surface = str(combined.get("surface") or "").strip().lower()
 
         if alias == "ingenieria_software":
-            model = modelo_para_perfil("ingenieria_software", self._config_path)
+            model = (
+                self._engineering_model or ""
+                if self._allow_empty_models
+                else self._engineering_model
+                or modelo_para_perfil("ingenieria_software", self._config_path)
+            )
             return TaskDecision(
                 kind=TaskKind.ENGINEERING,
                 model=model,
                 reason="perfil de ingeniería de software (Forge)",
+            )
+
+        if alias == "principal" and (self._principal_model is not None or self._allow_empty_models):
+            return TaskDecision(
+                kind=TaskKind.BACKGROUND,
+                model=self._principal_model or "",
+                reason="perfil principal configurado por el usuario",
             )
 
         # Alias "profundo": el ESCRITOR (posts de LinkedIn) pide un modelo fuerte,
@@ -457,7 +484,7 @@ class TaskRouter:
         # existe. La decisión sigue viviendo aquí y las tres autoridades
         # viejas quedan intactas como fallback documentado.
         elegido = combined.get(METADATA_MODELO_ELEGIDO)
-        if elegido:
+        if elegido and self._allow_catalog_selection:
             elegido = str(elegido).strip()
             if modelo_chat_permitido(elegido, self._config_path):
                 return TaskDecision(
@@ -478,10 +505,16 @@ class TaskRouter:
         if kind == TaskKind.VOICE:
             return TaskDecision(
                 kind=kind,
-                model=modelo_para_perfil("voz_llamada", self._config_path),
+                model=(self._voice_model or "")
+                if self._allow_empty_models
+                else self._voice_model or modelo_para_perfil("voz_llamada", self._config_path),
                 reason="llamada o voz: modelo de baja latencia",
             )
-        model = self._chat_model or modelo_para_perfil("chat_rapido", self._config_path)
+        model = (
+            self._chat_model
+            if self._allow_empty_models
+            else self._chat_model or modelo_para_perfil("chat_rapido", self._config_path)
+        )
         return TaskDecision(kind=kind, model=model, reason=reason)
 
     def _clasificar(

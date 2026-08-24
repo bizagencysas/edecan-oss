@@ -19,26 +19,26 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "3.14.9",
+    "@tanstack/react-virtual": "3.14.10",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "next": "15.5.21",
+    "next": "16.3.2",
     "qrcode.react": "4.2.0",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "shiki": "^4.3.1"
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "shiki": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^20.14.9",
-    "@types/react": "19.2.2",
-    "@types/react-dom": "19.2.2",
-    "autoprefixer": "^10.4.19",
-    "eslint": "8.57.1",
-    "eslint-config-next": "15.5.21",
+    "@types/node": "^26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "autoprefixer": "^10.5.4",
+    "eslint": "10.9.0",
+    "eslint-config-next": "16.3.2",
     "postcss": "8.5.26",
-    "tailwindcss": "^3.4.4",
-    "typescript": "^5.5.3"
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "postcss": "8.5.26",

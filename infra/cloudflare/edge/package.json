@@ -14,10 +14,10 @@
     "test": "vitest run && node --test scripts/generate-private-config.node.mjs"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@types/node": "^24.3.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.125.0"
   }
 }

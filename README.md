@@ -114,7 +114,7 @@ through a hosted intermediary. Edecan follows a different model:
 | Python core, API, workers, tools | Implemented | 5,300+ offline tests pass locally |
 | Web application | Implemented | Next.js production build renders 37 routes |
 | Local desktop runtime | Preview | Tauri shell + packaged Python backend for macOS, Windows and Linux x64 |
-| Native desktop packaging | Preview | DMG, NSIS/MSI, AppImage, Debian and RPM builds; public installers are not signed yet |
+| Native desktop packaging | Preview | DMG, NSIS/MSI, Debian and RPM builds; public installers are not signed yet |
 | Native iOS and Android companions | Preview | iOS 0.9.0 (build 68) in-place on the owner device: step cards only on tool turns; ordinary chat stays a bubble. Android debug APK compiles from source |
 | Mobile code studio | Implemented | Authorized workspaces, durable agent/terminal sessions, editor and typed Git share one API contract on iOS and Android |
 | Self-hosted server | Preview | Docker Compose and developer-mode paths; operator owns backups and TLS |
@@ -218,8 +218,7 @@ push.
 - **Windows:** open the generated `Edecán-Setup.exe`; the installer creates the
   normal Start-menu shortcut and uninstaller.
 - **Linux x64:** open the generated `.deb` in the software center on
-  Debian/Ubuntu, use the `.rpm` on Fedora/openSUSE, or mark the AppImage as
-  executable and double-click it on other desktop distributions.
+  Debian/Ubuntu or use the `.rpm` on Fedora/openSUSE.
 
 Mobile QR pairing and optional service connections live under
 **Settings → Connections**. The operator configures Workers AI once in the host
@@ -362,8 +361,8 @@ scripts/        local install and repository verification helpers
 - Python tests: pytest/pytest-asyncio, offline and deterministic.
 - Python dependency advisories: pinned `pip-audit` scan of the exported lock.
 - Web checks: dependency audit, ESLint, TypeScript, and production build.
-- Desktop checks: locked Rust tests plus a Linux build of AppImage, Debian and
-  RPM packages that boots the packaged backend, checks `/healthz`, opens a real
+- Desktop checks: locked Rust tests plus Linux Debian and RPM builds that boot
+  the packaged backend, check `/healthz`, open a real
   window in a virtual display and verifies clean shutdown without orphaned
   sidecars.
 - Self-host checks: clean image builds, real migrations, readiness, CSP, worker import, and non-root runtimes.

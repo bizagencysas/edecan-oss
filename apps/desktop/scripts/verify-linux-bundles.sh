@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verificación de release Linux x64. Inspecciona los tres paquetes y arranca
-# el AppImage en un X virtual, esperando al backend real y cerrando la ventana
+# Verificación de release Linux x64. Inspecciona Debian/RPM y arranca la
+# aplicación extraída del .deb en un X virtual, esperando al backend real y cerrando la ventana
 # por el protocolo normal del escritorio para comprobar el apagado del sidecar.
 set -euo pipefail
 
@@ -35,7 +35,6 @@ find_one() {
   printf '%s\n' "${matches[0]}"
 }
 
-APPIMAGE="$(find_one "$BUNDLE_DIR/appimage" '*.AppImage' 'AppImage')"
 DEB="$(find_one "$BUNDLE_DIR/deb" '*.deb' 'paquete Debian')"
 RPM="$(find_one "$BUNDLE_DIR/rpm" '*.rpm' 'paquete RPM')"
 
@@ -64,6 +63,13 @@ for required_path in \
 done
 
 SMOKE_DIR="$(mktemp -d)"
+DEB_ROOT="$SMOKE_DIR/deb-root"
+dpkg-deb --extract "$DEB" "$DEB_ROOT"
+LAUNCH_TARGET="$(find "$DEB_ROOT" -type f -name edecan-desktop -perm -u+x -print -quit)"
+if [[ -z "$LAUNCH_TARGET" ]]; then
+  echo "error: el paquete Debian no contiene un ejecutable edecan-desktop." >&2
+  exit 1
+fi
 APP_LOG="$SMOKE_DIR/edecan-linux.log"
 DISPLAY_FILE="$SMOKE_DIR/display"
 XAUTHORITY_FILE="$SMOKE_DIR/xauthority"
@@ -108,14 +114,12 @@ export XDG_RUNTIME_DIR="$SMOKE_DIR/runtime"
 export EDECAN_DESKTOP_DIAGNOSTICS=1
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
-chmod u+x "$APPIMAGE"
-
-echo "==> Arrancando el AppImage y su backend real en Xvfb…"
+echo "==> Arrancando el paquete Debian extraído y su backend real en Xvfb…"
 # `xvfb-run` elige una pantalla libre y solo exporta DISPLAY/XAUTHORITY a su
 # proceso hijo. El wrapper escribe ambos valores: compartir solo DISPLAY no
 # basta, porque Xvfb rechaza los clientes externos que no presentan la cookie
 # del archivo de autoridad efímero creado por xvfb-run.
-APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a dbus-run-session sh -c '
+xvfb-run -a dbus-run-session sh -c '
   printf "%s\n" "$DISPLAY" > "$1"
   printf "%s\n" "$XAUTHORITY" > "$2"
 
@@ -134,7 +138,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a dbus-run-session sh -c '
     exit 1
   fi
   exec "$3" --exit-on-close
-' _ "$DISPLAY_FILE" "$XAUTHORITY_FILE" "$APPIMAGE" >"$APP_LOG" 2>&1 &
+' _ "$DISPLAY_FILE" "$XAUTHORITY_FILE" "$LAUNCH_TARGET" >"$APP_LOG" 2>&1 &
 LAUNCHER_PID="$!"
 
 for _attempt in $(seq 1 20); do
@@ -184,7 +188,7 @@ fi
 PORT=""
 for _attempt in $(seq 1 120); do
   if ! kill -0 "$LAUNCHER_PID" 2>/dev/null; then
-    echo "error: el AppImage terminó antes de dejar listo el backend." >&2
+    echo "error: la aplicación Debian terminó antes de dejar listo el backend." >&2
     sed -n '1,240p' "$APP_LOG" >&2
     exit 1
   fi
@@ -253,7 +257,7 @@ LAUNCHER_STATUS="$?"
 set -e
 LAUNCHER_PID=""
 if (( LAUNCHER_STATUS != 0 )); then
-  echo "error: el AppImage terminó con código $LAUNCHER_STATUS después del cierre." >&2
+  echo "error: la aplicación Debian terminó con código $LAUNCHER_STATUS después del cierre." >&2
   sed -n '1,240p' "$APP_LOG" >&2
   pgrep -af "(edecan-local|postgres).*$SMOKE_DIR" >&2 || true
   exit 1
@@ -261,7 +265,7 @@ fi
 
 for _attempt in $(seq 1 10); do
   if ! pgrep -f "(edecan-local|postgres).*$SMOKE_DIR" >/dev/null 2>&1; then
-    echo "==> Linux verificado: AppImage + deb + rpm, health real y cero procesos huérfanos."
+    echo "==> Linux verificado: deb + rpm, health real y cero procesos huérfanos."
     exit 0
   fi
   sleep 1

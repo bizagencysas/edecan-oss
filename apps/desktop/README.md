@@ -54,7 +54,7 @@ apps/desktop/
 │   ├── dev.sh                   # cargo tauri dev, backend desde fuente
 │   ├── build-app.sh             # build-backend + cargo tauri build
 │   ├── verify-windows-bundles.ps1 # instala NSIS, extrae MSI y hace smoke real
-│   ├── verify-linux-bundles.sh  # smoke real AppImage + inspección deb/rpm
+│   ├── verify-linux-bundles.sh  # smoke real del .deb + inspección deb/rpm
 │   └── make-icons.sh            # assets/icon-source.png -> src-tauri/icons/
 └── assets/
     └── icon-source.png          # placeholder — reemplazalo por el logo real
@@ -90,7 +90,7 @@ el tamaño del artefacto; nada de `node_modules` o Chromium entra en Git.
 En Windows x64, el equivalente es `scripts\build-app.ps1`; el CI extrae MSI,
 instala NSIS y arranca la aplicación instalada con
 `scripts\verify-windows-bundles.ps1`. En Linux x64 el mismo `build-app.sh`
-produce AppImage, `.deb` y `.rpm`; el CI arranca el AppImage y comprueba que
+produce `.deb` y `.rpm`; el CI arranca la aplicación extraída del `.deb` y comprueba que
 los tres paquetes contienen FyDesign completo. Ambos gates esperan el backend
 real y confirman que cerrar la ventana no deje procesos huérfanos.
 

@@ -22,8 +22,7 @@ def test_bundle_targets_are_native_and_platform_specific() -> None:
     assert "targets" not in base["bundle"]
     assert macos["bundle"]["targets"] == ["app", "dmg"]
     assert windows["bundle"]["targets"] == ["nsis", "msi"]
-    assert linux["bundle"]["targets"] == ["appimage", "deb", "rpm"]
-    assert linux["bundle"]["linux"]["appimage"]["bundleMediaFramework"] is True
+    assert linux["bundle"]["targets"] == ["deb", "rpm"]
 
 
 def test_desktop_updater_uses_signed_https_channels() -> None:
@@ -56,7 +55,6 @@ def test_linux_release_builds_and_exercises_the_packaged_application() -> None:
     assert 'TAURI_CONFIG: \'{"bundle":{"externalBin":[]}}\'' in linux_job
     assert "./apps/desktop/scripts/build-app.sh" in workflow
     assert "./apps/desktop/scripts/verify-linux-bundles.sh" in workflow
-    assert "apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage" in workflow
     assert "apps/desktop/src-tauri/target/release/bundle/deb/*.deb" in workflow
     assert "apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm" in workflow
     for dependency in ("dbus-x11", "openbox", "wmctrl"):
@@ -249,9 +247,9 @@ def test_linux_is_documented_as_a_first_class_desktop_target() -> None:
     desktop_guide = (REPO_ROOT / "docs" / "desktop.md").read_text(encoding="utf-8")
     desktop_readme = (REPO_ROOT / "apps" / "desktop" / "README.md").read_text(encoding="utf-8")
 
-    assert "AppImage" in desktop_guide
     assert "paquete `.deb`" in desktop_guide
-    assert "AppImage" in desktop_readme
+    assert "`.rpm`" in desktop_guide
+    assert "`.deb`" in desktop_readme
     assert "no publica hoy un bundle Tauri para Linux" not in desktop_guide
     assert "no publica hoy un bundle Tauri para Linux" not in desktop_readme
     assert "una build o un smoke test ejecutado en macOS" in desktop_readme

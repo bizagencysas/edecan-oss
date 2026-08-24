@@ -191,16 +191,14 @@ cd apps/desktop
 ```
 
 El script construye la web, congela el backend local con PyInstaller y genera
-tres formatos en `src-tauri/target/release/bundle/`:
+dos formatos en `src-tauri/target/release/bundle/`:
 
-- `appimage/Edecán_<version>_amd64.AppImage` — portable y recomendado para
-  distribuciones que no usan Debian o RPM.
 - `deb/Edecán_<version>_amd64.deb` — instalación integrada para Debian/Ubuntu.
 - `rpm/Edecán-<version>-1.x86_64.rpm` — instalación integrada para
   Fedora/openSUSE y otras distribuciones RPM.
 
 Después del build, `./scripts/verify-linux-bundles.sh` inspecciona los paquetes,
-arranca el AppImage en Xvfb, espera el `/healthz` del backend empaquetado, exige
+arranca la aplicación extraída del `.deb` en Xvfb, espera el `/healthz` del backend empaquetado, exige
 una ventana visible y confirma que el cierre no deja `edecan-local` huérfano.
 También exige que `.deb` y `.rpm` contengan el runtime completo de FyDesign:
 Node 22, MCP, Chromium, ffmpeg, ffprobe y yt-dlp. Ese mismo smoke test corre en

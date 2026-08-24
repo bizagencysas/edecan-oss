@@ -67,7 +67,7 @@ case "$TARGET_TRIPLE" in
     YTDLP_ASSET="yt-dlp_linux_aarch64"
     YTDLP_SHA256="cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd"
     FFMPEG_ASSET_NAME="ffmpeg-n8.1-latest-linuxarm64-gpl-8.1.tar.xz"
-    FFMPEG_SHA256="bd08d0dce50143a5f53e87226a548d8438912247a1b6aacea29d66c38722a4b6"
+    FFMPEG_SHA256="3e2ece10635753f73af1b1c0653b40d27293dbe41ccede45c2c2312c64d4795c"
     ;;
   x86_64-unknown-linux-gnu)
     FFMPEG_ARCHIVE_KIND="combined-tar-xz"
@@ -76,7 +76,7 @@ case "$TARGET_TRIPLE" in
     YTDLP_ASSET="yt-dlp_linux"
     YTDLP_SHA256="bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66"
     FFMPEG_ASSET_NAME="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
-    FFMPEG_SHA256="1adc8a27a3700b82f859bcd0ceae320e8896b328592c783b169a2af2871705ed"
+    FFMPEG_SHA256="5084e5bd22bedd579b5886d3f7f9bb66e1b894a66fbb52ba42305c3559df5c2f"
     ;;
   *)
     echo "error: FyDesign Studio no tiene Node 22 fijado para $TARGET_TRIPLE." >&2

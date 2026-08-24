@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from edecan_core.speech_tags import SPEECH_TAG_RE, enriquecer_speech_tags, ocultar_speech_tags
+from edecan_core.speech_tags import ocultar_speech_tags
 
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)]\([^)]+\)")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)]\([^)]+\)")

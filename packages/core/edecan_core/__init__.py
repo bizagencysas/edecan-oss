@@ -20,12 +20,12 @@ from .creator_planner import (
 )
 from .event_bus import EventBus
 from .persona import build_system_prompt
-from .speech_tags import enriquecer_speech_tags
 from .provider_health import ProviderHealth
 from .queue import enqueue
 from .safety import redact
 from .session import UnifiedSessionState
 from .session_store import load_unified_session, save_unified_session
+from .speech_tags import enriquecer_speech_tags
 from .tools.base import Tool, ToolContext, ToolResult
 from .tools.registry import ToolRegistry
 from .veracidad import Fidelidad, InfoFidelidad, ProveedorDeclarado

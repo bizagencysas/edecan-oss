@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from edecan_schemas import PersonaConfig
 
-from .cognitive_architecture import LEAN_MODULE_KEYS, CognitiveContext, render_cognitive_architecture
+from .cognitive_architecture import (
+    LEAN_MODULE_KEYS,
+    CognitiveContext,
+    render_cognitive_architecture,
+)
 
 _FORMALIDAD_ES: dict[int, str] = {
     0: "Tutéalo de forma muy relajada e informal, como con un amigo de toda la vida.",

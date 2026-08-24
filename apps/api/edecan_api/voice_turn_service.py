@@ -16,8 +16,8 @@ from uuid import UUID
 from edecan_core.agent import Agent
 from edecan_core.queue import enqueue
 from edecan_core.safety import redact
-from edecan_core.speech_tags import enriquecer_speech_tags
 from edecan_core.session_store import load_unified_session, save_unified_session
+from edecan_core.speech_tags import enriquecer_speech_tags
 from edecan_core.tools import ToolContext
 from edecan_llm.router import LLMRouter
 

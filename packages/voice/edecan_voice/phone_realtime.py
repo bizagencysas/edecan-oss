@@ -19,6 +19,7 @@ from uuid import UUID
 
 import httpx
 from edecan_core.speech_tags import SPEECH_TAG_RE
+
 from edecan_voice.expression import plain_text_for_speech
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ DEEPGRAM_LIVE_URL = (
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 FLASH_MODEL = "eleven_flash_v2_5"
 _MULAW_FRAME = 160  # 20 ms a 8 kHz
-_LIVE: dict[str, "LiveCall"] = {}
+_LIVE: dict[str, LiveCall] = {}
 
 
 @dataclass

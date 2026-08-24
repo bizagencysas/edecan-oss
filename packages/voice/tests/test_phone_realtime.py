@@ -1,7 +1,7 @@
 from edecan_voice.phone_realtime import (
-    _parece_voz,
     LiveCall,
     TranscriptTurn,
+    _parece_voz,
     chunk_mulaw,
     drop_live_call,
     enqueue_whisper,

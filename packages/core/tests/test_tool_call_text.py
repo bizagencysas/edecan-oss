@@ -1,8 +1,8 @@
 from edecan_core.tool_call_text import (
-    parse_emitted_tool_call,
-    parse_emitted_tool_calls,
     parece_json_de_tool,
     parece_llamada_en_corchetes,
+    parse_emitted_tool_call,
+    parse_emitted_tool_calls,
 )
 
 

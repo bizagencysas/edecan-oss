@@ -5,7 +5,7 @@ import Testing
 /// iPhone y el navegador no se separen sin que nadie se dé cuenta.
 @Suite("Tablas y gráficas del texto del IDE")
 struct TextoRicoMarkdownTests {
-    private func tabla(_ texto: String) -> TablaRica? {
+    private func extraerTabla(_ texto: String) -> TablaRica? {
         for segmento in TextoRicoParser.segmentar(texto) {
             if case .tabla(_, let tabla) = segmento { return tabla }
         }
@@ -38,7 +38,7 @@ struct TextoRicoMarkdownTests {
 
     @Test("acepta tablas sin barras en los extremos y con alineación centrada")
     func sinBarrasExteriores() throws {
-        let tabla = try #require(tabla("a | b | c\n:-: | :-- | --:\n1 | 2 | 3"))
+        let tabla = try #require(extraerTabla("a | b | c\n:-: | :-- | --:\n1 | 2 | 3"))
         #expect(tabla.alineaciones == [.centro, .izquierda, .derecha])
         #expect(tabla.filas == [["1", "2", "3"]])
     }
@@ -48,24 +48,24 @@ struct TextoRicoMarkdownTests {
         let texto = "```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```"
         let segmentos = TextoRicoParser.segmentar(texto)
         #expect(segmentos.count == 1)
-        #expect(tabla(texto) == nil)
+        #expect(extraerTabla(texto) == nil)
     }
 
     @Test("no convierte en tabla una frase con barras")
     func frasesConBarras() {
-        #expect(tabla("Corre npm run lint | npm test y avisa.\nOtra línea.") == nil)
+        #expect(extraerTabla("Corre npm run lint | npm test y avisa.\nOtra línea.") == nil)
     }
 
     @Test("rellena celdas faltantes y descarta las que sobran, como GFM")
     func filasDesparejas() throws {
-        let tabla = try #require(tabla("| a | b |\n| --- | --- |\n| 1 |\n| 1 | 2 | 3 |"))
+        let tabla = try #require(extraerTabla("| a | b |\n| --- | --- |\n| 1 |\n| 1 | 2 | 3 |"))
         #expect(tabla.filas == [["1", ""], ["1", "2"]])
     }
 
     @Test("respeta las barras escapadas dentro de una celda")
     func barrasEscapadas() throws {
         #expect(TextoRicoParser.celdas("| a \\| b | c |") == ["a | b", "c"])
-        let tabla = try #require(tabla("| x | y |\n| --- | --- |\n| a \\| b | c |"))
+        let tabla = try #require(extraerTabla("| x | y |\n| --- | --- |\n| a \\| b | c |"))
         #expect(tabla.filas == [["a | b", "c"]])
     }
 
@@ -80,7 +80,7 @@ struct TextoRicoMarkdownTests {
     func topeDeFilas() throws {
         let filas = (0..<(TextoRicoParser.maxFilas + 5)).map { "| f\($0) | \($0) |" }
         let texto = (["| a | b |", "| --- | --- |"] + filas).joined(separator: "\n")
-        let tabla = try #require(tabla(texto))
+        let tabla = try #require(extraerTabla(texto))
         #expect(tabla.filas.count == TextoRicoParser.maxFilas)
         #expect(tabla.filasTotales == TextoRicoParser.maxFilas + 5)
     }
@@ -110,7 +110,7 @@ struct TextoRicoMarkdownTests {
     @Test("arma series solo con columnas enteramente numéricas")
     func seriesNumericas() throws {
         let tabla = try #require(
-            tabla(
+            extraerTabla(
                 """
                 | Canal | Ventas | Notas |
                 | --- | ---: | --- |
@@ -129,14 +129,14 @@ struct TextoRicoMarkdownTests {
 
     @Test("numera las etiquetas repetidas en vez de fundir dos filas en una barra")
     func etiquetasRepetidas() throws {
-        let tabla = try #require(tabla("| Mes | Ventas |\n| --- | --- |\n| Enero | 1 |\n| Enero | 2 |"))
+        let tabla = try #require(extraerTabla("| Mes | Ventas |\n| --- | --- |\n| Enero | 1 |\n| Enero | 2 |"))
         let grafica = try #require(TextoRicoParser.grafica(de: tabla))
         #expect(grafica.etiquetas == ["Enero", "Enero (2)"])
     }
 
     @Test("sin ninguna columna numérica no hay gráfica que ofrecer")
     func sinSeries() throws {
-        let tabla = try #require(tabla("| a | b |\n| --- | --- |\n| uno | dos |\n| tres | cuatro |"))
+        let tabla = try #require(extraerTabla("| a | b |\n| --- | --- |\n| uno | dos |\n| tres | cuatro |"))
         #expect(TextoRicoParser.grafica(de: tabla) == nil)
     }
 
@@ -147,7 +147,7 @@ struct TextoRicoMarkdownTests {
     @Test("pasado el tope de series dice cuántas quedaron fuera")
     func seriesOmitidas() throws {
         let tabla = try #require(
-            tabla(
+            extraerTabla(
                 """
                 | clave | s1 | s2 | s3 | s4 | s5 | s6 | s7 |
                 | --- | --- | --- | --- | --- | --- | --- | --- |

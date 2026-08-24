@@ -216,6 +216,10 @@ struct GymAPIClientTests {
     }
 }
 
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+}
+
 private final class GymStubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) async throws -> (Int, Data))?
     private var work: Task<Void, Never>?
@@ -224,23 +228,26 @@ private final class GymStubURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        work = Task {
+        let request = UncheckedSendable(value: request)
+        let client = UncheckedSendable(value: client)
+        let protocolObject = UncheckedSendable(value: self)
+        work = Task.detached { [request, client, protocolObject] in
             do {
-                guard let handler = Self.handler, let url = request.url else {
+                guard let handler = Self.handler, let url = request.value.url else {
                     throw URLError(.badURL)
                 }
-                let (status, data) = try await handler(request)
+                let (status, data) = try await handler(request.value)
                 let response = HTTPURLResponse(
                     url: url,
                     statusCode: status,
                     httpVersion: "HTTP/1.1",
                     headerFields: ["Content-Type": "application/json"]
                 )!
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                client.value?.urlProtocol(protocolObject.value, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client.value?.urlProtocol(protocolObject.value, didLoad: data)
+                client.value?.urlProtocolDidFinishLoading(protocolObject.value)
             } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+                client.value?.urlProtocol(protocolObject.value, didFailWithError: error)
             }
         }
     }

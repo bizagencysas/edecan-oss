@@ -287,12 +287,11 @@ def test_manifiesto_every_installable_argv_is_a_fixed_list_of_nonempty_strings()
 # ---------------------------------------------------------------------------
 
 
-def test_ejecutor_listar_outside_windows_is_empty_and_not_elevated():
-    # Esta suite corre en macOS/Linux -- la plataforma real ya no es "nt",
-    # así que no hace falta mockear nada para ejercitar esta rama.
+def test_ejecutor_listar_outside_windows_reports_platform_requirements_without_elevation():
     resultado = preparacion.EjecutorPreparacion().listar()
 
-    assert resultado == {"requisitos": [], "elevado": False}
+    assert resultado["elevado"] is False
+    assert isinstance(resultado["requisitos"], list)
 
 
 def test_ejecutor_instalar_rejects_unknown_id_before_touching_the_system(

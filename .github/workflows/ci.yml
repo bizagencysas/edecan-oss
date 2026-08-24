@@ -58,7 +58,12 @@ jobs:
       - name: Build every Python distribution
         run: uv build --all-packages
 
+      - name: Install the pinned OpenCode test engine
+        run: ./apps/desktop/scripts/download-opencode.sh
+
       - name: Test
+        env:
+          EDECAN_OPENCODE_BIN: ${{ github.workspace }}/apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu
         run: uv run --frozen --all-packages pytest
 
   tests-windows:

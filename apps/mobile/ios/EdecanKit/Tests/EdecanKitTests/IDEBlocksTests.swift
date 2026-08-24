@@ -44,7 +44,7 @@ struct IDEBlocksTests {
         try? JSONDecoder().decode(IDEBlock.self, from: Data(json.utf8))
     }
 
-    private func evento(presentation: String) -> IDESessionEvent? {
+    private func decodificarEvento(presentation: String) -> IDESessionEvent? {
         let json = """
         {"cursor": 4, "type": "blocks", "text": "equivalente", "timestamp": 0,
          "presentation": \(presentation)}
@@ -109,7 +109,7 @@ struct IDEBlocksTests {
 
     @Test("un bloque de tipo desconocido se descarta sin tumbar el resto")
     func tipoDesconocido() throws {
-        let evento = try #require(evento(presentation: "[{\"schema_version\": 1, \"type\": \"mapa\"}, \(Self.tabla)]"))
+        let evento = try #require(decodificarEvento(presentation: "[{\"schema_version\": 1, \"type\": \"mapa\"}, \(Self.tabla)]"))
         #expect(evento.presentation.count == 1)
         if case .table = evento.presentation[0] {} else { Issue.record("debía quedar la tabla") }
     }
@@ -117,7 +117,7 @@ struct IDEBlocksTests {
     @Test("no dibuja más de tres bloques por evento")
     func topeDeBloques() throws {
         let lista = "[\(Array(repeating: Self.tabla, count: 4).joined(separator: ","))]"
-        let evento = try #require(evento(presentation: lista))
+        let evento = try #require(decodificarEvento(presentation: lista))
         #expect(evento.presentation.count == IDEBlockLimites.maxBloquesPorEvento)
     }
 

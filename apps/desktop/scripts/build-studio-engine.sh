@@ -18,7 +18,7 @@ YTDLP_VERSION="2026.06.09"
 YTDLP_DIST_BASE="https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION"
 FFMPEG_VERSION="8.1.2"
 FFMPEG_DIST_BASE="https://ffmpeg.martin-riedl.de/download"
-FFMPEG_BTB_RELEASE="autobuild-2026-07-22-13-36"
+FFMPEG_BTB_RELEASE="latest"
 FFMPEG_BTB_BASE="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_BTB_RELEASE"
 FFMPEG_GPL_URL="https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VERSION/COPYING.GPLv3"
 FFMPEG_GPL_SHA256="8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
@@ -66,8 +66,8 @@ case "$TARGET_TRIPLE" in
     NODE_SHA256="3e99df8b01b27dc8b334a2a30d1cd500442b3b0877d217b308fd61a9ccfc33d4"
     YTDLP_ASSET="yt-dlp_linux_aarch64"
     YTDLP_SHA256="cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd"
-    FFMPEG_ASSET_NAME="ffmpeg-n8.1.2-30-g45f1910444-linuxarm64-gpl-8.1.tar.xz"
-    FFMPEG_SHA256="369dac151ae4ebf752c789cc48fbb520a193665ba41463a39615777b7236222a"
+    FFMPEG_ASSET_NAME="ffmpeg-n8.1-latest-linuxarm64-gpl-8.1.tar.xz"
+    FFMPEG_SHA256="bd08d0dce50143a5f53e87226a548d8438912247a1b6aacea29d66c38722a4b6"
     ;;
   x86_64-unknown-linux-gnu)
     FFMPEG_ARCHIVE_KIND="combined-tar-xz"
@@ -75,8 +75,8 @@ case "$TARGET_TRIPLE" in
     NODE_SHA256="0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a"
     YTDLP_ASSET="yt-dlp_linux"
     YTDLP_SHA256="bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66"
-    FFMPEG_ASSET_NAME="ffmpeg-n8.1.2-30-g45f1910444-linux64-gpl-8.1.tar.xz"
-    FFMPEG_SHA256="4ad0d6eb98bde796841050cf12bf9428e188446bd518b245fb4aa02f25b633a0"
+    FFMPEG_ASSET_NAME="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+    FFMPEG_SHA256="1adc8a27a3700b82f859bcd0ceae320e8896b328592c783b169a2af2871705ed"
     ;;
   *)
     echo "error: FyDesign Studio no tiene Node 22 fijado para $TARGET_TRIPLE." >&2

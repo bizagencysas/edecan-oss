@@ -889,7 +889,10 @@ class WorkersAIProvider(LLMProvider):
         # corto y el único reintento se gastaba sin arreglar nada, pero desde uno
         # chico duplicar da menos que ese piso fijo. El tope de 16384 lo impone
         # la guarda de arriba.
-        if not res.text and res.stop_reason == "max_tokens" and req.max_tokens < 16384:
+        exhausted_without_answer = not res.text or (
+            bool(res.reasoning_content) and res.text == res.reasoning_content
+        )
+        if exhausted_without_answer and res.stop_reason == "max_tokens" and req.max_tokens < 16384:
             ampliado = min(max(req.max_tokens * 2, req.max_tokens + 512), 16384)
             nuevo_req = req.model_copy(update={"max_tokens": ampliado})
             cuerpo_reintento = self._build_body(nuevo_req, stream=False)

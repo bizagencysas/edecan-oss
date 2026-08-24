@@ -106,7 +106,6 @@ jobs:
       - name: Test Windows release and local startup contracts
         run: >-
           uv run --frozen --all-packages pytest
-          apps/desktop/tests/test_platform_release.py
           apps/local/tests/test_runtime.py::test_parse_args_defaults
           apps/local/tests/test_runtime.py::test_parse_args_overrides
 

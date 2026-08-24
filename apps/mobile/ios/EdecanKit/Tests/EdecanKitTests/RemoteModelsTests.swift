@@ -1,0 +1,408 @@
+import Testing
+import Foundation
+@testable import EdecanKit
+
+/// Decodifica el mismo *shape* que devuelven de verdad
+/// `POST /v1/remote/sessions`, `GET /v1/remote/sessions[/{id}]` y
+/// `POST /v1/remote/sessions/{id}/end` — `Repo._REMOTE_SESSION_COLUMNS`,
+/// verificado contra `apps/api/edecan_api/repo.py` y
+/// `apps/api/tests/test_remote_router.py` (mismo criterio que
+/// `MissionsModelsTests`).
+struct RemoteSessionModelsTests {
+    @Test func decodificaSesionPendienteReciénCreada() throws {
+        let json = """
+        {
+          "id": "s1", "tenant_id": "t1", "user_id": "u1", "device_id": null,
+          "kind": "view", "status": "pending", "started_at": null, "ended_at": null,
+          "frames_count": 0, "created_at": "2026-07-09T10:00:00Z", "updated_at": "2026-07-09T10:00:00Z"
+        }
+        """
+        let sesion = try APIClient.crearDecoder().decode(RemoteSession.self, from: Data(json.utf8))
+        #expect(sesion.id == "s1")
+        #expect(sesion.deviceId == nil)
+        #expect(sesion.kind == "view")
+        #expect(sesion.status == "pending")
+        #expect(sesion.startedAt == nil)
+        #expect(sesion.framesCount == 0)
+        #expect(sesion.esControl == false)
+        #expect(sesion.sigueViva == true)
+        #expect(sesion.esTerminal == false)
+    }
+
+    @Test func decodificaSesionDeControlActiva() throws {
+        let json = """
+        {
+          "id": "s2", "tenant_id": "t1", "user_id": "u1", "device_id": null,
+          "kind": "control", "status": "active", "started_at": "2026-07-09T10:00:05Z", "ended_at": null,
+          "frames_count": 4, "created_at": "2026-07-09T10:00:00Z", "updated_at": "2026-07-09T10:00:05Z"
+        }
+        """
+        let sesion = try APIClient.crearDecoder().decode(RemoteSession.self, from: Data(json.utf8))
+        #expect(sesion.esControl == true)
+        #expect(sesion.status == "active")
+        #expect(sesion.startedAt != nil)
+        #expect(sesion.framesCount == 4)
+        #expect(sesion.sigueViva == true)
+        #expect(sesion.esTerminal == false)
+    }
+
+    @Test func decodificaSesionDenegadaYTerminada() throws {
+        let denegadaJSON = """
+        {"id": "s3", "tenant_id": "t1", "user_id": "u1", "device_id": null, "kind": "view",
+         "status": "denied", "started_at": null, "ended_at": null, "frames_count": 0,
+         "created_at": "2026-07-09T10:00:00Z", "updated_at": "2026-07-09T10:00:01Z"}
+        """
+        let denegada = try APIClient.crearDecoder().decode(RemoteSession.self, from: Data(denegadaJSON.utf8))
+        #expect(denegada.esTerminal == true)
+        #expect(denegada.sigueViva == false)
+
+        let terminadaJSON = """
+        {"id": "s4", "tenant_id": "t1", "user_id": "u1", "device_id": null, "kind": "view",
+         "status": "ended", "started_at": "2026-07-09T10:00:00Z", "ended_at": "2026-07-09T10:05:00Z",
+         "frames_count": 12, "created_at": "2026-07-09T10:00:00Z", "updated_at": "2026-07-09T10:05:00Z"}
+        """
+        let terminada = try APIClient.crearDecoder().decode(RemoteSession.self, from: Data(terminadaJSON.utf8))
+        #expect(terminada.esTerminal == true)
+        #expect(terminada.endedAt != nil)
+    }
+
+    @Test func decodificaListaDeSesiones() throws {
+        let json = """
+        [{"id": "s1", "tenant_id": "t1", "user_id": "u1", "device_id": null, "kind": "view",
+          "status": "ended", "started_at": null, "ended_at": null, "frames_count": 0,
+          "created_at": "2026-07-09T10:00:00Z", "updated_at": "2026-07-09T10:00:00Z"}]
+        """
+        let sesiones = try APIClient.crearDecoder().decode([RemoteSession].self, from: Data(json.utf8))
+        #expect(sesiones.count == 1)
+        #expect(sesiones[0].id == "s1")
+    }
+
+    // MARK: - conEstado / conFrame
+
+    private func sesionDePrueba(status: String = "pending", framesCount: Int = 0, startedAt: Date? = nil) -> RemoteSession {
+        RemoteSession(
+            id: "s1", tenantId: "t1", userId: "u1", deviceId: nil, kind: "control", status: status,
+            startedAt: startedAt, endedAt: nil, framesCount: framesCount,
+            createdAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    @Test func conEstadoReemplazaSoloElStatus() {
+        let original = sesionDePrueba(status: "active", framesCount: 3)
+        let denegada = original.conEstado("denied")
+        #expect(denegada.status == "denied")
+        #expect(denegada.id == original.id)
+        #expect(denegada.framesCount == original.framesCount)
+        #expect(denegada.kind == original.kind)
+    }
+
+    @Test func conFramePasaAActivaYActualizaConteoYFechaDeInicio() {
+        let pendiente = sesionDePrueba(status: "pending", framesCount: 0, startedAt: nil)
+        let frame = RemoteFrame(imageB64: "aGVsbG8=", width: 100, height: 100, seq: 1)
+        let activa = pendiente.conFrame(frame)
+        #expect(activa.status == "active")
+        #expect(activa.framesCount == 1)
+        #expect(activa.startedAt != nil)
+    }
+
+    @Test func conFrameNoPisaUnaFechaDeInicioYaFijada() {
+        let inicio = Date(timeIntervalSince1970: 500)
+        let activa = sesionDePrueba(status: "active", framesCount: 1, startedAt: inicio)
+        let conSegundoFrame = activa.conFrame(RemoteFrame(imageB64: "x", width: 10, height: 10, seq: 2))
+        #expect(conSegundoFrame.startedAt == inicio)
+        #expect(conSegundoFrame.framesCount == 2)
+    }
+}
+
+struct RemoteFrameModelsTests {
+    @Test func decodificaFrame() throws {
+        let json = #"{"image_b64": "aGVsbG8=", "width": 1440, "height": 900, "seq": 3}"#
+        let frame = try JSONDecoder().decode(RemoteFrame.self, from: Data(json.utf8))
+        #expect(frame.imageB64 == "aGVsbG8=")
+        #expect(frame.width == 1440)
+        #expect(frame.height == 900)
+        #expect(frame.seq == 3)
+    }
+}
+
+/// Codifica exactamente el *shape* que espera
+/// `edecan_api.routers.remote.PointerInputIn`/`KeyInputIn` (verificado
+/// contra el código fuente del router) — decodifica de vuelta a
+/// ``JSONValue`` (ya `Codable` en `EdecanKit`) para inspeccionar claves y
+/// valores sin depender de un tipo de respuesta que el backend nunca manda.
+struct RemoteInputModelsTests {
+    private func codificarComoDiccionario<T: Encodable>(_ valor: T) throws -> [String: JSONValue] {
+        let data = try JSONEncoder().encode(valor)
+        return try JSONDecoder().decode([String: JSONValue].self, from: data)
+    }
+
+    @Test func codificaPointerInputConBotonOmiteBotonSiEsNil() throws {
+        let dict = try codificarComoDiccionario(RemotePointerInput(x: 10, y: 20, accion: .click))
+        #expect(dict["tipo"] == .string("pointer"))
+        #expect(dict["x"] == .number(10))
+        #expect(dict["y"] == .number(20))
+        #expect(dict["accion"] == .string("click"))
+        #expect(dict["button"] == nil)
+    }
+
+    @Test func omiteLasCoordenadasNormalizadasCuandoNoSeMandan() throws {
+        // Payload de un cliente que todavía no las manda: ni una clave nueva.
+        let dict = try codificarComoDiccionario(RemotePointerInput(x: 10, y: 20, accion: .click))
+        #expect(dict["nx"] == nil)
+        #expect(dict["ny"] == nil)
+        #expect(dict["start_nx"] == nil)
+        #expect(dict["start_ny"] == nil)
+    }
+
+    @Test func codificaLasCoordenadasNormalizadasSinPerderSnakeCase() throws {
+        let dict = try codificarComoDiccionario(
+            RemotePointerInput(
+                x: 100, y: 120, accion: .drag, startX: 10, startY: 20,
+                nx: 0.75, ny: 0.5, startNx: 0.25, startNy: 0.1
+            )
+        )
+        #expect(dict["nx"] == .number(0.75))
+        #expect(dict["ny"] == .number(0.5))
+        #expect(dict["start_nx"] == .number(0.25))
+        #expect(dict["start_ny"] == .number(0.1))
+        // `x`/`y` siguen viajando: el backend los usa si el companion es viejo.
+        #expect(dict["x"] == .number(100))
+        #expect(dict["start_x"] == .number(10))
+    }
+
+    @Test func nuncaMandaMediaCoordenadaNormalizada() throws {
+        // El backend responde 422 con medio par (`nx` sin `ny`): acá ni se arma.
+        let soloNx = try codificarComoDiccionario(
+            RemotePointerInput(x: 1, y: 2, accion: .click, nx: 0.5)
+        )
+        #expect(soloNx["nx"] == nil)
+        #expect(soloNx["ny"] == nil)
+    }
+
+    @Test func recortaLasCoordenadasNormalizadasAlRangoDelContrato() throws {
+        let dict = try codificarComoDiccionario(
+            RemotePointerInput(x: 1, y: 2, accion: .click, nx: 1.4, ny: -0.3)
+        )
+        #expect(dict["nx"] == .number(1))
+        #expect(dict["ny"] == .number(0))
+    }
+
+    @Test func codificaPointerInputConBotonExplicito() throws {
+        let dict = try codificarComoDiccionario(
+            RemotePointerInput(x: 5, y: 6, accion: .rightClick, button: .right)
+        )
+        #expect(dict["accion"] == .string("right_click"))
+        #expect(dict["button"] == .string("right"))
+    }
+
+    @Test func codificaKeyInputDeTextoOmiteTecla() throws {
+        let dict = try codificarComoDiccionario(RemoteKeyInput.texto("hola"))
+        #expect(dict["tipo"] == .string("key"))
+        #expect(dict["texto"] == .string("hola"))
+        #expect(dict["tecla"] == nil)
+    }
+
+    @Test func codificaKeyInputDeTeclaEspecialOmiteTexto() throws {
+        let dict = try codificarComoDiccionario(RemoteKeyInput.tecla(.enter))
+        #expect(dict["tipo"] == .string("key"))
+        #expect(dict["tecla"] == .string("enter"))
+        #expect(dict["texto"] == nil)
+    }
+
+    @Test func todasLasTeclasEspecialesCodificanAlVocabularioExactoDelBackend() throws {
+        // `edecan_companion.actions._SPECIAL_KEYS` — cualquier valor fuera de
+        // este conjunto lo rechaza el backend con 422.
+        let esperadas: Set<String> = [
+            "enter", "tab", "escape", "backspace",
+            "arrow_up", "arrow_down", "arrow_left", "arrow_right",
+            "delete_forward", "home", "end", "page_up", "page_down", "space",
+            "a", "c", "v", "x", "z", "s",
+        ]
+        let codificadas = Set(RemoteSpecialKey.allCases.map(\.rawValue))
+        #expect(codificadas == esperadas)
+    }
+
+    @Test func codificaDragScrollYAtajosSinPerderSnakeCase() throws {
+        let drag = try codificarComoDiccionario(
+            RemotePointerInput(x: 100, y: 120, accion: .drag, startX: 10, startY: 20)
+        )
+        #expect(drag["start_x"] == .number(10))
+        #expect(drag["start_y"] == .number(20))
+        let scroll = try codificarComoDiccionario(
+            RemotePointerInput(x: 100, y: 120, accion: .scroll, deltaY: -420)
+        )
+        #expect(scroll["delta_y"] == .number(-420))
+        let shortcut = try codificarComoDiccionario(
+            RemoteKeyInput.tecla(.c, modifiers: [.command, .shift])
+        )
+        #expect(shortcut["modifiers"] == .array([.string("command"), .string("shift")]))
+    }
+
+    /// Compara CONTENIDO decodificado, no bytes crudos: `JSONEncoder` no
+    /// garantiza un orden de claves estable entre dos llamadas a `encode`
+    /// distintas (sin `.sortedKeys`, el orden es un detalle de
+    /// implementación) — lo que de verdad importa acá es que envolver en
+    /// ``RemoteInput`` no agregue ni pierda ningún campo ni nivel de
+    /// anidación, no que los bytes coincidan letra por letra.
+    @Test func remoteInputEnvuelveSinAnidarProduceElMismoContenidoQueElTipoConcreto() throws {
+        func comoDiccionario<T: Encodable>(_ valor: T) throws -> [String: JSONValue] {
+            try JSONDecoder().decode([String: JSONValue].self, from: JSONEncoder().encode(valor))
+        }
+
+        let pointerDirecto = try comoDiccionario(RemotePointerInput(x: 1, y: 2, accion: .move))
+        let pointerEnvuelto = try comoDiccionario(RemoteInput.pointer(RemotePointerInput(x: 1, y: 2, accion: .move)))
+        #expect(pointerDirecto == pointerEnvuelto)
+
+        let keyDirecto = try comoDiccionario(RemoteKeyInput.texto("hola"))
+        let keyEnvuelto = try comoDiccionario(RemoteInput.key(.texto("hola")))
+        #expect(keyDirecto == keyEnvuelto)
+    }
+
+    @Test func decodificaResultadoDeInputConDatos() throws {
+        let json = #"{"ok": true, "result": {"x": 10, "y": 20, "accion": "click", "button": "left"}}"#
+        let resultado = try JSONDecoder().decode(RemoteInputResult.self, from: Data(json.utf8))
+        #expect(resultado.ok == true)
+        #expect(resultado.result?["accion"] == .string("click"))
+    }
+
+    @Test func decodificaResultadoDeInputSinDatos() throws {
+        let json = #"{"ok": true, "result": null}"#
+        let resultado = try JSONDecoder().decode(RemoteInputResult.self, from: Data(json.utf8))
+        #expect(resultado.ok == true)
+        #expect(resultado.result == nil)
+    }
+}
+
+/// Réplica de `apps/web/src/components/remoto/coords.ts` — mismos tres casos
+/// que importan: mapeo 1:1 cuando las proporciones coinciden, `nil` cuando
+/// el punto cae en la franja vacía del letterbox, y recorte a los bordes del
+/// frame en el punto límite exacto.
+struct RemoteCoordinateMapperTests {
+    @Test func mapeaUnoAUnoCuandoLasProporcionesCoinciden() {
+        let frame = RemoteFrame(imageB64: "x", width: 200, height: 100, seq: 1)
+        let punto = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 100, puntoLocalY: 50,
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(punto?.x == 100)
+        #expect(punto?.y == 50)
+    }
+
+    @Test func devuelveNilFueraDelRectanguloAunSinLetterbox() {
+        let frame = RemoteFrame(imageB64: "x", width: 200, height: 100, seq: 1)
+        let punto = RemoteCoordinateMapper.mapear(
+            puntoLocalX: -5, puntoLocalY: 10,
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(punto == nil)
+    }
+
+    @Test func devuelveNilEnLaFranjaVaciaDelLetterboxVertical() {
+        // Elemento cuadrado (200x200), frame ancho (400x100, aspecto 4:1) —
+        // la imagen llena el ancho completo y deja franjas arriba/abajo.
+        let frame = RemoteFrame(imageB64: "x", width: 400, height: 100, seq: 1)
+        let enLaFranja = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 100, puntoLocalY: 10, // top=75 con este tamaño, 10 < 75
+            anchoElemento: 200, altoElemento: 200,
+            frame: frame
+        )
+        #expect(enLaFranja == nil)
+
+        let dentroDeLaImagen = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 100, puntoLocalY: 100, // dentro del rango [75, 125]
+            anchoElemento: 200, altoElemento: 200,
+            frame: frame
+        )
+        #expect(dentroDeLaImagen?.x == 200) // centro horizontal del elemento -> centro del frame (400/2)
+        #expect(dentroDeLaImagen?.y == 50)
+    }
+
+    @Test func recortaAlLimiteMaximoDelFrameEnElPuntoLimiteExacto() {
+        let frame = RemoteFrame(imageB64: "x", width: 200, height: 100, seq: 1)
+        let punto = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 200, puntoLocalY: 100, // exactamente el borde del elemento
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(punto?.x == 199) // frame.width - 1, nunca frame.width (fuera de rango)
+        #expect(punto?.y == 99)
+    }
+
+    /// La fracción es lo ÚNICO que sobrevive a que el frame viaje comprimido:
+    /// el companion la multiplica por el tamaño real de la pantalla (en
+    /// puntos), no por `frame.width`, que es el ancho del JPEG reducido.
+    @Test func devuelveLaFraccionNormalizadaAdemasDeLosPixelesDelFrame() {
+        // 1600x1034 = el frame que de verdad recibe el teléfono cuando la Mac
+        // captura 3456x2234 Retina y el backend pide `max_width: 1600`.
+        let frame = RemoteFrame(imageB64: "x", width: 1600, height: 1034, seq: 1)
+        let centro = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 200, puntoLocalY: 129.25,
+            anchoElemento: 400, altoElemento: 258.5,
+            frame: frame
+        )
+        #expect(centro?.nx == 0.5)
+        #expect(centro?.ny == 0.5)
+        #expect(centro?.x == 800) // los píxeles del frame siguen ahí, sin cambios
+    }
+
+    @Test func laFraccionLlegaAUnoEnLaEsquinaAunqueLosPixelesSeRecortenAlPenultimo() {
+        // El síntoma que reportó el usuario: la franja derecha y el Dock eran
+        // inalcanzables. `x` se recorta a `width - 1` (contrato viejo), pero
+        // `nx` sí llega a 1.0 y el companion lo resuelve al último punto real.
+        let frame = RemoteFrame(imageB64: "x", width: 200, height: 100, seq: 1)
+        let esquina = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 200, puntoLocalY: 100,
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(esquina?.nx == 1)
+        #expect(esquina?.ny == 1)
+        #expect(esquina?.x == 199)
+
+        let origen = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 0, puntoLocalY: 0,
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(origen?.nx == 0)
+        #expect(origen?.ny == 0)
+    }
+
+    @Test func laFraccionIgnoraElOrigenDelMonitorPorqueEsRelativaAlFrame() {
+        // `originX/Y` son PUNTOS del escritorio global y solo aplican a `x`/`y`.
+        // La fracción es relativa al frame, así que no los toca: el companion
+        // ya suma el origen del display cuando resuelve `nx`/`ny`.
+        let frame = RemoteFrame(
+            imageB64: "x", width: 200, height: 100, originX: 2056, originY: -120, seq: 1
+        )
+        let punto = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 100, puntoLocalY: 50,
+            anchoElemento: 200, altoElemento: 100,
+            frame: frame
+        )
+        #expect(punto?.x == 2056 + 100)
+        #expect(punto?.y == -120 + 50)
+        #expect(punto?.nx == 0.5)
+        #expect(punto?.ny == 0.5)
+    }
+
+    @Test func devuelveNilConFrameSinDimensiones() {
+        let frame = RemoteFrame(imageB64: "x", width: 0, height: 0, seq: 1)
+        let punto = RemoteCoordinateMapper.mapear(
+            puntoLocalX: 10, puntoLocalY: 10, anchoElemento: 100, altoElemento: 100, frame: frame
+        )
+        #expect(punto == nil)
+    }
+
+    @Test func rectanguloContenidoDegeneradoDevuelveElElementoCompleto() {
+        let rect = RemoteCoordinateMapper.rectanguloContenido(
+            anchoElemento: 0, altoElemento: 100, anchoNatural: 50, altoNatural: 50
+        )
+        #expect(rect.width == 0)
+        #expect(rect.height == 100)
+        #expect(rect.left == 0)
+        #expect(rect.top == 0)
+    }
+}

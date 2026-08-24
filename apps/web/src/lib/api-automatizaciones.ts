@@ -1,0 +1,240 @@
+/**
+ * Cliente HTTP de `apps/api/edecan_api/routers/automations.py` (`/v1/automations/*`,
+ * `ROADMAP_V2.md` §7.6/§7.10, dueño WP-V2-07).
+ *
+ * `lib/api.ts` es compartido y no se toca (`ROADMAP_V2.md` §7.10): este
+ * archivo importa de ahí solo lo que SÍ está exportado (`API_BASE_URL`,
+ * `ApiError`) y replica localmente el mismo patrón de autenticación
+ * (`Authorization: Bearer <access_token>` + un reintento tras refrescar en
+ * 401) porque `authedFetch`/`apiJson` siguen siendo privados. La rotación sí
+ * usa `session-refresh`, compartido con todos los vertical slices.
+ *
+ * Tipos propios (`Automation`, `AutomationRun`) en vez de `lib/types.ts` por
+ * el mismo motivo: ese archivo tampoco está en la lista de rutas que este
+ * paquete de trabajo puede tocar.
+ */
+
+import { API_BASE_URL, ApiError } from "./api";
+import { recoverSessionAfterUnauthorized, isRefreshResultCurrent } from "./session-refresh";
+import { getAccessToken } from "./tokens";
+
+/** `edecan_schemas.plans.FLAG_AUTOMATIONS_RULES` (`ROADMAP_V2.md` §7.2). */
+export const FLAG_AUTOMATIONS_RULES = "automations.rules";
+/** `edecan_schemas.plans.LIMIT_AUTOMATIONS_ACTIVE` (`ROADMAP_V2.md` §7.2). */
+export const LIMIT_AUTOMATIONS_ACTIVE = "limits.automations_active";
+
+export interface ScheduleTrigger {
+  kind: "schedule";
+  rrule: string;
+  /** La `rrule` en cristiano ("Todos los días a las 4:00 UTC"), armada por el
+   * servidor (`routers/automations.py::_public_automation` →
+   * `edecan_automations.describe`) y no acá: la frase lleva HORA, y sólo el
+   * backend sabe en qué zona corre de verdad la regla — por eso viene rotulada
+   * UTC y NO se convierte a la del navegador. El instante concreto en hora
+   * local ya lo da `next_run_at` aparte.
+   *
+   * `null` cuando la regla no se puede traducir con certeza (`UNTIL`, "el
+   * último viernes del mes", …): ahí se muestra la `rrule` cruda, nunca una
+   * hora aproximada. `undefined` si el backend es anterior a este campo. */
+  descripcion?: string | null;
+}
+
+/** Redactado (ver `routers/automations.py::_public_automation`): nunca trae
+ * `hook_secret` salvo en la respuesta puntual de `POST`/`PATCH` que lo generó
+ * (ahí viaja aparte, en `Automation.hook_secret` — no en este objeto). */
+export interface WebhookTriggerPublic {
+  kind: "webhook";
+  has_secret: boolean;
+  hook_url: string;
+}
+
+export type AutomationTrigger = ScheduleTrigger | WebhookTriggerPublic;
+
+export interface AutomationAccion {
+  kind: "agent_instruction";
+  instruccion: string;
+  agente?: string | null;
+}
+
+export interface Automation {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  trigger: AutomationTrigger;
+  accion: AutomationAccion;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Solo presente en la respuesta del `POST`/`PATCH` que ACABA de generarlo. */
+  hook_secret?: string;
+}
+
+export type AutomationRunStatus = "running" | "done" | "error" | "waiting_confirmation";
+
+export interface AutomationRun {
+  id: string;
+  status: AutomationRunStatus | string;
+  detalle: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface AutomationSuggestion {
+  kind: "automation_suggestion";
+  action: "review_automation";
+  automation_id: string;
+  nombre: string;
+  failure_count: number;
+  enabled: boolean;
+  requires_user_confirmation: true;
+  reason: string;
+}
+
+export interface AutomationTriggerIn {
+  kind: "schedule" | "webhook";
+  rrule?: string;
+}
+
+export interface AutomationAccionIn {
+  instruccion: string;
+  agente?: string;
+}
+
+export interface CreateAutomationInput {
+  nombre: string;
+  descripcion?: string;
+  trigger: AutomationTriggerIn;
+  accion: AutomationAccionIn;
+  enabled?: boolean;
+}
+
+export interface UpdateAutomationInput {
+  nombre?: string;
+  descripcion?: string;
+  trigger?: AutomationTriggerIn;
+  accion?: AutomationAccionIn;
+  enabled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Auth (mismo patrón que `lib/api.ts`/`lib/api-remoto.ts`, ver docstring del módulo)
+// ---------------------------------------------------------------------------
+
+// `/v1/auth/refresh` exige `totp_code` si la cuenta tiene 2FA activo (mismo
+// gate que `/login`, ver `auth.py::refresh`, ~L196-207). Replica acá el
+// manejo de `lib/api.ts::tryRefreshWithTotpPrompt` (HOTFIXES_PENDIENTES.md
+// #2) para no forzar un logout duro cada ~30 min a usuarios con TOTP activo.
+async function rawFetch(path: string, init: RequestInit): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+}
+
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  let res = await rawFetch(path, init);
+  if (res.status === 401) {
+    const result = await recoverSessionAfterUnauthorized(API_BASE_URL);
+    if (isRefreshResultCurrent(result)) res = await rawFetch(path, init);
+  }
+  return res;
+}
+
+async function extractErrorMessage(res: Response): Promise<{ message: string; detail: unknown }> {
+  let detail: unknown;
+  try {
+    detail = await res.clone().json();
+  } catch {
+    return { message: `Error HTTP ${res.status}`, detail: undefined };
+  }
+  const raw = (detail as { detail?: unknown } | null)?.detail;
+  if (typeof raw === "string") return { message: raw, detail };
+  return { message: `Error HTTP ${res.status}`, detail };
+}
+
+async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  const body = init.body;
+  if (typeof body === "string") {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await authedFetch(path, { ...init, headers, body });
+  if (!res.ok) {
+    const { message, detail } = await extractErrorMessage(res);
+    throw new ApiError(res.status, message, detail);
+  }
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+function jsonBody(value: unknown): RequestInit {
+  return { body: JSON.stringify(value) };
+}
+
+// ---------------------------------------------------------------------------
+// Presentación del disparador
+// ---------------------------------------------------------------------------
+
+/** Fallback cuando el servidor no pudo traducir la `rrule` con certeza: honesto
+ * y corto para una lista. El detalle además enseña la regla cruda. */
+export const AGENDA_SIN_TRADUCIR = "Agenda personalizada";
+
+/** Una línea que describe cuándo corre una automatización. Nunca arma la frase
+ * acá: para las de agenda usa la que ya vino del servidor (ver
+ * `ScheduleTrigger.descripcion`), de modo que web e iOS digan exactamente lo
+ * mismo. */
+export function triggerResumen(trigger: AutomationTrigger): string {
+  if (trigger.kind === "webhook") return "Se dispara por webhook entrante";
+  return trigger.descripcion || AGENDA_SIN_TRADUCIR;
+}
+
+// ---------------------------------------------------------------------------
+// Fetchers (`/v1/automations/*`, ver `apps/api/edecan_api/routers/automations.py`)
+// ---------------------------------------------------------------------------
+
+export async function listAutomations(): Promise<Automation[]> {
+  return apiJson<Automation[]>("/v1/automations");
+}
+
+export async function listAutomationSuggestions(): Promise<AutomationSuggestion[]> {
+  return apiJson<AutomationSuggestion[]>("/v1/automations/suggestions");
+}
+
+export async function getAutomation(automationId: string): Promise<Automation> {
+  return apiJson<Automation>(`/v1/automations/${automationId}`);
+}
+
+export async function createAutomation(input: CreateAutomationInput): Promise<Automation> {
+  return apiJson<Automation>("/v1/automations", { method: "POST", ...jsonBody(input) });
+}
+
+export async function updateAutomation(
+  automationId: string,
+  patch: UpdateAutomationInput,
+): Promise<Automation> {
+  return apiJson<Automation>(`/v1/automations/${automationId}`, {
+    method: "PATCH",
+    ...jsonBody(patch),
+  });
+}
+
+export async function deleteAutomation(automationId: string): Promise<void> {
+  return apiJson<void>(`/v1/automations/${automationId}`, { method: "DELETE" });
+}
+
+/** `POST /v1/automations/{id}/probar` — corre la automatización ya mismo,
+ * sin esperar a su agenda ni a un webhook (funciona incluso si está desactivada). */
+export async function probarAutomation(automationId: string): Promise<{ queued: boolean }> {
+  return apiJson<{ queued: boolean }>(`/v1/automations/${automationId}/probar`, {
+    method: "POST",
+  });
+}
+
+export async function listAutomationRuns(automationId: string): Promise<AutomationRun[]> {
+  return apiJson<AutomationRun[]>(`/v1/automations/${automationId}/runs`);
+}
+
+export { ApiError };

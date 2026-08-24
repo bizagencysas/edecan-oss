@@ -1,0 +1,107 @@
+[package]
+name = "edecan-desktop"
+version = "0.7.4"
+default-run = "edecan-desktop"
+description = "Edecán — asistente personal de IA (app de escritorio)"
+authors = ["Edecán"]
+edition = "2021"
+rust-version = "1.77.2"
+license = "Apache-2.0"
+
+# Ver docs/desktop.md y ../README.md para el resto del contrato de este
+# crate. Resumen: este binario es un cascarón Tauri v2 que NO reimplementa
+# la UI (reusa apps/web ya construido, servido por el sidecar) ni el backend
+# (apps/local / edecan_local) — solo orquesta: elige puerto,
+# lanza el sidecar, espera a que avise que está listo, muestra la ventana
+# principal apuntando a http://127.0.0.1:<puerto>/, y lo mata al cerrar.
+
+[lib]
+name = "edecan_desktop_lib"
+# Deja la puerta abierta a targets móviles (staticlib/cdylib) sin reescribir
+# nada si algún día se agrega mobile — mismo patrón que genera
+# `create-tauri-app` v2 para cualquier proyecto nuevo, aunque hoy solo se
+# compilen targets de escritorio.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+serde_json = "1"
+
+[dependencies]
+# "tray-icon" habilita tauri::tray + tauri::menu (menú de bandeja: item (g)
+# del contrato). "image-png"/"image-ico" habilitan los decoders que usa
+# `app.default_window_icon()` (src/tray.rs) para poder reusar como ícono de
+# bandeja el mismo ícono de ventana que arma `tauri-build` a partir de
+# `bundle.icon` (PNG en mac/Linux, ICO en Windows, ver tauri.conf.json) — sin
+# esto, esa llamada puede devolver `None`/panicar en tiempo de ejecución
+# según la plataforma. No se pudo confirmar con `cargo check` en esta
+# máquina (ver README.md); se agregan las dos por las dudas, costo nulo.
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
+tauri-plugin-shell = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+# Verificador independiente usado por CI para demostrar que cada artefacto
+# publicado pertenece a la misma raíz minisign compilada en la aplicación.
+minisign-verify = "=0.2.5"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Capacidad criptográfica efímera que une exclusivamente el sidecar local con
+# la WebView/navegador abierto por este mismo proceso de escritorio.
+getrandom = "0.2.17"
+# Solo lo que se usa de verdad: tokio::time::timeout para el timeout de 60s
+# esperando el sidecar. El runtime async en sí lo administra Tauri
+# (tauri::async_runtime::spawn), no arrancamos un runtime propio.
+tokio = { version = "1", features = ["time"] }
+# --- "Escuchar siempre" (src/listen.rs): micrófono en segundo plano ---
+# cpal: acceso cross-platform (CoreAudio en mac, WASAPI en Windows, ALSA en
+# Linux) al micrófono de entrada, sin ningún binding nativo que compilar
+# aparte. Queda anclado en la serie 0.17.x porque el propio crate declara
+# `rust-version = "1.77"` en su Cargo.toml — no fuerces un upgrade de esta
+# dependencia más allá de lo que cargo elija solo, se rompería el mínimo de
+# Rust de todo este binario (línea `rust-version` de arriba).
+cpal = "0.17.1"
+# rustpotter: motor de wake-word 100% Rust, offline, sin API keys ni cuenta
+# de terceros — entrena un modelo chico a partir de 3 muestras de voz del
+# propio usuario (ver `always_listen_train` en src/listen.rs) en vez de usar
+# un modelo genérico preentrenado. Se descartó whisper-rs/whisper.cpp para
+# TODO este subsistema porque compila C/C++ vía cmake y esta máquina no lo
+# tiene instalado (ver docs/desktop.md) — rustpotter es 100% Rust puro, no
+# necesita ningún toolchain extra.
+rustpotter = "3.0.2"
+# rustpotter 3.0.2 still depends on candle 0.2.x, whose `half` integration
+# expects rand 0.8. half >=2.7 switched that optional integration to rand
+# 0.9 and makes candle fail to compile. Keep the last compatible release
+# explicit until rustpotter upgrades candle.
+half = "=2.4.1"
+# hound: lectura/escritura de WAV PCM16, 100% Rust puro sin dependencias
+# nativas. Se usa tanto para las 3 muestras de entrenamiento de la wake word
+# como para codificar el audio del comando que se emite a JS después de
+# detectarla (src/listen.rs).
+hound = "3.5.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# El control remoto debe ejecutarse desde el proceso .app al que macOS
+# concede TCC, no desde el sidecar Python. CoreGraphics sintetiza input desde
+# esa identidad. Las capturas viajan codificadas por el socket local privado.
+core-graphics = { version = "0.25", features = ["highsierra"] }
+# Captura sostenida de pantalla en macOS. Se mantiene bajo target macOS para
+# que Windows/Linux no arrastren frameworks Apple ni cambien su binario.
+objc2 = { version = "0.6.4", features = ["std"] }
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSError"] }
+objc2-core-media = { version = "0.3.2", features = ["CMSampleBuffer"] }
+objc2-core-video = { version = "0.3.2", features = ["CVBase", "CVBuffer", "CVImageBuffer", "CVReturn"] }
+objc2-screen-capture-kit = "0.3.2"
+png = "0.17.16"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

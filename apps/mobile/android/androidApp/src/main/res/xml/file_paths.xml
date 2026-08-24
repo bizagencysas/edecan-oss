@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="shared_artifacts"
+        path="shared_artifacts/" />
+    <!-- APK ya verificado por hash, package id, versionCode y certificado.
+         Ninguna otra carpeta del teléfono se expone al instalador. -->
+    <cache-path
+        name="verified_updates"
+        path="updates/" />
+</paths>

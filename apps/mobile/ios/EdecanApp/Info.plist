@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Edecán</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>cc.edecan.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>edecan</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>EdecanUpdateChannel</key>
+	<string>$(EDECAN_IOS_UPDATE_CHANNEL)</string>
+	<key>EdecanUpdateManifestURL</key>
+	<string>$(EDECAN_IOS_UPDATE_MANIFEST_URL)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Edecán usa la cámara para escanear el QR de conexión y para adjuntar fotos que tú decidas enviar en el chat.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Edecán lee tus entrenamientos y pasos de Salud para mostrarte tu actividad del día y guardar la sesión de gimnasio que terminas.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Edecán guarda en Salud el entrenamiento de fuerza que terminas para que quede en tu historial de actividad.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Edecán usa tu red local para conectarse de forma directa y privada con tu computador después de escanear su QR.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Edecan necesita el micrófono para escuchar tus solicitudes por voz desde el chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Edecán accede únicamente a las fotos que tú elijas para adjuntarlas en el chat.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Edecan usa el reconocimiento de voz del dispositivo para convertir tus solicitudes en texto sin exigir una clave externa.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,47 @@
+{
+  "_comentario": "FIXTURE DORADA -- contrato congelado. Fuente única de verdad para el MVP de Server-Driven UI del chat (ver /private/tmp/sdui_plan_mvp.json). packages/schemas/tests/test_chat_card.py la valida contra Pydantic; EdecanKitTests/CardGenericaTests.swift (iOS), y los tests de web/Android, decodifican ESTOS MISMOS BYTES -- si una plataforma se desvía de este contrato, su test dorado truena. No editar sin actualizar las 4 plataformas a la vez.",
+  "_descripcion": "Card válida (nivel 1 de forward-compat) con un nodo 'holograma' -- que NO existe en el vocabulario de 6 primitivas -- intercalado entre hijos conocidos. Prueba que el cliente lo decodifica como el caso tolerante (.desconocido) y lo SALTA al pintar, sin tumbar la card ni a sus hermanos.",
+  "type": "card",
+  "schema_version": 1,
+  "card_id": "card-nodo-desconocido-1",
+  "fallback_text": "Contenido con un nodo futuro que este cliente no reconoce todavía.",
+  "raiz": {
+    "nodo": "stack",
+    "eje": "vertical",
+    "espaciado": "m",
+    "hijos": [
+      {
+        "nodo": "texto",
+        "contenido": "Antes del nodo futuro",
+        "rol": "titulo",
+        "enfasis": "fuerte"
+      },
+      {
+        "nodo": "holograma",
+        "algo_futuro": true,
+        "proyeccion_3d": {
+          "activa": true,
+          "color": "#00ffea"
+        }
+      },
+      {
+        "nodo": "divisor"
+      },
+      {
+        "nodo": "texto",
+        "contenido": "Después del nodo futuro",
+        "rol": "cuerpo"
+      },
+      {
+        "nodo": "boton",
+        "estilo": "primario",
+        "accion": {
+          "id": "boton.futuro",
+          "label": "Lanzar",
+          "action": "lanzar_cohete",
+          "launch_pad": "39A"
+        }
+      }
+    ]
+  }
+}

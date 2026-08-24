@@ -1,0 +1,65 @@
+[project]
+name = "edecan-companion"
+version = "0.7.4"
+description = "Edecán Companion — agente local de escritorio, opt-in: acceso controlado y auditable al equipo del usuario"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "edecan-llm",
+    "edecan-toolkit",
+    "websockets>=13.0",
+    "pyyaml>=6.0",
+    "send2trash>=1.8.3",
+    # Terminal del IDE en Windows (ConPTY): ver docs/edecan-windows.md §1 y
+    # edecan_companion/pty_compat.py. Marcador de entorno: jamás se instala
+    # fuera de Windows, así que macOS/Linux no ven esta dependencia.
+    "pywinpty>=2.0.14; sys_platform == 'win32'",
+]
+
+# Deliberadamente SIN dependencias de los demás paquetes del monorepo
+# (edecan_core, edecan_schemas, FastAPI, SQLAlchemy, ...): este es el único
+# paquete pensado para instalarse solo, en la máquina del propio usuario,
+# separado del servidor. Ver README.md y ARCHITECTURE.md §10.1/§10.12.
+
+# Remote control stays optional: the companion loads platform backends lazily
+# and every non-remote action continues to work without these packages.
+[project.optional-dependencies]
+remote-input = ["pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'"]
+remote-control = [
+    "pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'",
+    "mss>=10.0; sys_platform != 'darwin'",
+    "pynput>=1.7.7; sys_platform != 'darwin'",
+    "Pillow>=10.4",
+]
+# El navegador controlable del agente del IDE (`ide_navegador.py`) es opcional
+# y perezoso a propósito: Playwright es una dependencia pesada y su instalación
+# NUNCA debe ocurrir sola. Instálala a mano cuando quieras que el agente
+# controle un navegador real:
+#   uv pip install 'edecan-companion[playwright]'
+#   uv run playwright install chromium   (el binario de Chromium es aparte)
+playwright = ["playwright>=1.47"]
+
+[project.scripts]
+edecan-companion = "edecan_companion.main:main"
+
+[tool.uv.sources]
+edecan-llm = { workspace = true }
+edecan-toolkit = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_companion"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,28 @@
+{
+	admin off
+}
+
+{$EDECAN_DOMAIN} {
+	encode zstd gzip
+
+	@api path /v1/* /healthz /readyz /openapi.json /docs* /redoc*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

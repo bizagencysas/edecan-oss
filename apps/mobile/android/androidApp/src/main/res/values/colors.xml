@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo del tema XML "previo a Compose" (ver themes.xml) — evita un
+         flash de color equivocado antes de que `setContent` monte la UI
+         real. Los acentos morado/azul de marca NO viven aquí: los usa
+         directamente `EdecanColors` en `ui/theme/Theme.kt` (colorScheme de
+         Material 3) — duplicarlos como recursos XML sin ningún layout XML
+         que los referencie sería un recurso muerto (lint `UnusedResources`,
+         detectado corriendo `./gradlew :androidApp:lintDebug` real). -->
+    <color name="edecan_fondo_light">#FFF7F5FC</color>
+    <color name="edecan_fondo_dark">#FF17151F</color>
+</resources>

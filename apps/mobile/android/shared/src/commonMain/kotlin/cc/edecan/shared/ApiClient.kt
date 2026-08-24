@@ -1,0 +1,1845 @@
+package cc.edecan.shared
+
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.delete
+import io.ktor.client.request.forms.formData
+import io.ktor.client.request.forms.InputProvider
+import io.ktor.client.request.forms.submitFormWithBinaryData
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.patch
+import io.ktor.client.request.post
+import io.ktor.client.request.put
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.Headers
+import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
+import io.ktor.http.encodeURLParameter
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.io.Buffer
+import kotlinx.io.Source
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * Errores tipados de [EdecanApi] — mensajes en español listos para pintar
+ * tal cual en la UI (`OnboardingScreen`, `ChatScreen`), mismo criterio que
+ * `APIClient.APIError` en `apps/mobile/ios/EdecanKit/Sources/EdecanKit/APIClient.swift`.
+ */
+sealed class ApiException(message: String) : Exception(message) {
+    class UrlInvalida : ApiException("La URL del servidor no es válida.")
+
+    class SinConexion(detalle: String) :
+        ApiException("No se pudo conectar con el servidor: $detalle")
+
+    class CredencialesInvalidas :
+        ApiException("Correo, contraseña o código de verificación incorrectos.")
+
+    class SesionExpirada : ApiException("La sesión expiró. Vuelve a iniciar sesión.")
+
+    class Servidor(val status: Int, val detalle: String) :
+        ApiException("El servidor respondió con un error ($status): $detalle")
+
+    class RespuestaInvalida :
+        ApiException("El servidor envió una respuesta que no se pudo interpretar.")
+
+    class DispositivoNoEmparejado :
+        ApiException(
+            "Este estudio requiere un dispositivo emparejado por QR. " +
+                "Vuelve a emparejarlo desde Edecán en tu computadora.",
+        )
+}
+
+@Serializable
+private data class LoginBody(
+    val email: String,
+    val password: String,
+    @SerialName("totp_code") val totpCode: String? = null,
+)
+
+@Serializable
+private data class RefreshBody(
+    @SerialName("refresh_token") val refreshToken: String,
+    @SerialName("totp_code") val totpCode: String? = null,
+)
+
+@Serializable
+private data class LogoutBody(@SerialName("refresh_token") val refreshToken: String)
+
+@Serializable
+private data class CrearConversacionBody(val title: String? = null)
+
+@Serializable
+private data class RenombrarConversacionBody(val title: String)
+@Serializable
+private data class IdeRunBody(val command: String)
+@Serializable
+private data class IdeWriteBody(val path: String, val content: String)
+@Serializable
+private data class IdeWorkspaceCreateBody(val path: String, val name: String? = null)
+@Serializable
+private data class IdeTerminalCreateBody(
+    @SerialName("workspace_id") val workspaceId: String,
+    val argv: List<String>? = null,
+    val title: String? = null,
+)
+@Serializable
+private data class IdeTerminalInputBody(val data: String)
+@Serializable
+private data class IdeAgentCreateBody(
+    @SerialName("workspace_id") val workspaceId: String,
+    val prompt: String,
+    val provider: String = "auto",
+    val title: String? = null,
+    val model: String? = null,
+)
+@Serializable
+private data class IdeGitPathsBody(val paths: List<String>)
+@Serializable
+private data class IdeGitCommitBody(val message: String)
+@Serializable
+private data class IdeGitBranchBody(val name: String, val checkout: Boolean = false)
+@Serializable
+private data class IdeGitCheckoutBody(val name: String, val create: Boolean = false)
+@Serializable
+private data class IdeGitPushBody(
+    val remote: String = "origin",
+    val branch: String? = null,
+    @SerialName("set_upstream") val setUpstream: Boolean = false,
+)
+
+private data class IdeDeviceIdentity(val id: String, val token: String)
+
+// Deben superar los timeouts del router (`ide.py`) para que sea el servidor
+// quien devuelva el error preciso. El timeout REST global de 30 s no alcanza
+// para aprobaciones humanas ni para un push remoto.
+private const val IDE_RUN_REQUEST_TIMEOUT_MILLIS = 105_000L
+private const val IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS = 80_000L
+private const val IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS = 135_000L
+private const val IDE_GIT_PUSH_REQUEST_TIMEOUT_MILLIS = 260_000L
+private const val IDE_DEVICE_ID_HEADER = "X-Edecan-Device-Id"
+private const val IDE_DEVICE_TOKEN_HEADER = "X-Edecan-Device-Token"
+
+@Serializable
+private data class ErrorBody(val detail: String? = null)
+
+@Serializable
+private data class RegisterBody(
+    val email: String,
+    val password: String,
+    @SerialName("tenant_name") val tenantName: String,
+)
+
+@Serializable
+private data class SpeakBody(val text: String, @SerialName("voice_id") val voiceId: String? = null)
+
+@Serializable
+private data class TranscribeOut(val text: String)
+
+@Serializable
+private data class DeviceRegisterBody(
+    val nombre: String,
+    val plataforma: String = "android",
+    val kind: String = "mobile",
+    val fingerprint: String? = null,
+)
+
+@Serializable
+private data class DeviceOut(val id: String = "")
+
+@Serializable
+private data class PushTokenBody(
+    @SerialName("push_token") val pushToken: String,
+    @SerialName("push_platform") val pushPlatform: String,
+)
+
+@Serializable
+data class PushStatus(
+    val apns: Boolean = false,
+    val fcm: Boolean = false,
+    @SerialName("devices_con_token") val devicesWithToken: Int = 0,
+)
+
+@Serializable
+private data class PairingClaimBody(
+    @SerialName("pairing_token") val pairingToken: String,
+    val nombre: String,
+    val plataforma: String = "android",
+    val kind: String = "mobile",
+    val fingerprint: String? = null,
+)
+
+@Serializable
+private data class PairingRefreshBody(
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_token") val deviceToken: String,
+)
+
+@Serializable
+private data class PairingClaimOut(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("refresh_token") val refreshToken: String,
+    @SerialName("token_type") val tokenType: String = "bearer",
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_token") val deviceToken: String,
+)
+
+private data class SessionSnapshot(val epoch: Long, val accessToken: String?)
+
+private data class LogoutCredentials(val accessToken: String?, val refreshToken: String?)
+
+/** Bytes privados listos para guardar temporalmente y compartir con Android.
+ * La capa shared no escribe archivos ni conoce `Context`. */
+data class DownloadedArtifact(val artifact: ArtifactRef, val bytes: ByteArray)
+
+/** Contenido reabrible para un multipart. La fuente se abre de nuevo si un
+ * `401` obliga a reconstruir la petición después de renovar el token; nunca
+ * exige materializar el archivo completo en un `ByteArray`. */
+class UploadContent(
+    val sizeBytes: Long,
+    val openSource: () -> Source,
+) {
+    init {
+        require(sizeBytes >= 0) { "El tamaño del archivo no puede ser negativo" }
+    }
+}
+
+/** Ventana privada de audio/video obtenida mediante HTTP Range. [offset]
+ * indica el primer byte real incluido y [totalSize] permite al extractor
+ * nativo conocer el largo sin una URL pública ni un token congelado. */
+data class PrivateMediaRange(
+    val bytes: ByteArray,
+    val offset: Long,
+    val totalSize: Long?,
+)
+
+// --- Misiones (`/v1/missions/*`, WP-V5-07) ---------------------------------
+
+@Serializable
+private data class MisionCrearBody(val objetivo: String)
+
+@Serializable
+private data class MisionConfirmarBody(val approved: Boolean)
+
+// --- Automatizaciones (`/v1/automations/*`, WP-V5-07) ----------------------
+
+@Serializable
+private data class AutomationTriggerBody(val kind: String, val rrule: String? = null)
+
+@Serializable
+private data class AutomationAccionBody(val instruccion: String, val agente: String? = null)
+
+@Serializable
+private data class AutomationCrearBody(
+    val nombre: String,
+    val descripcion: String = "",
+    val trigger: AutomationTriggerBody,
+    val accion: AutomationAccionBody,
+    val enabled: Boolean = true,
+)
+
+@Serializable
+private data class AutomationTogglePatchBody(val enabled: Boolean)
+
+// --- Recordatorios (`/v1/reminders/*`, WP-V5-07) ----------------------------
+
+@Serializable
+private data class RecordatorioCrearBody(
+    @SerialName("due_at") val dueAt: String,
+    val message: String,
+    val rrule: String? = null,
+    val channel: String = "web",
+)
+
+@Serializable
+private data class RecordatorioCompletarBody(val status: String = "sent")
+
+// --- Control remoto (`/v1/remote/*`, WP-V6-09) ------------------------------
+
+@Serializable
+private data class RemoteSessionCreateBody(val consent: Boolean, val kind: String = REMOTE_KIND_VIEW)
+
+@Serializable
+private data class RemotePointerInputBody(
+    val tipo: String = "pointer",
+    val x: Int,
+    val y: Int,
+    val accion: String,
+    val button: String? = null,
+    @SerialName("start_x") val startX: Int? = null,
+    @SerialName("start_y") val startY: Int? = null,
+    @SerialName("delta_x") val deltaX: Int = 0,
+    @SerialName("delta_y") val deltaY: Int = 0,
+    // Coordenada NORMALIZADA 0.0..1.0 (`RemoteCoords.kt::RemotePoint.nx/ny`).
+    // Aditiva y opcional: cuando llega, el companion la resuelve contra el
+    // tamaño REAL del display (en puntos lógicos) e ignora `x`/`y`. Es lo
+    // único que hace que el toque caiga donde el dedo lo puso, porque el
+    // frame viaja reducido a `max_width` y no coincide con ninguna
+    // resolución real de la Mac. `null` = no se serializa (el backend la
+    // trata como ausente y usa el camino viejo).
+    val nx: Double? = null,
+    val ny: Double? = null,
+    @SerialName("start_nx") val startNx: Double? = null,
+    @SerialName("start_ny") val startNy: Double? = null,
+)
+
+@Serializable
+private data class RemoteKeyInputBody(
+    val tipo: String = "key",
+    val texto: String? = null,
+    val tecla: String? = null,
+    val modifiers: List<String> = emptyList(),
+)
+
+@Serializable
+private data class RemoteClipboardSetBody(val text: String)
+
+@Serializable
+private data class RemoteFilePushBody(
+    val name: String,
+    @SerialName("content_b64") val contentB64: String,
+)
+
+/** `commonMain` es compartido con los targets iOS declarados (ver
+ * `shared/build.gradle.kts`) — nada de `java.net.*` aquí, que solo existe en
+ * el target JVM/Android. `io.ktor.http.encodeURLParameter` (`CodecsKt`, del
+ * propio `ktor-client-core` ya declarado) es la codificación de porcentaje
+ * multiplataforma real que ya usa Ktor puertas adentro para construir URLs. */
+private fun urlEncode(value: String): String = value.encodeURLParameter()
+
+/** Extrae el total de `Content-Range` tanto en respuestas 206 como 416. */
+private fun totalDesdeContentRange(raw: String?): Long? =
+    raw?.substringAfterLast('/', missingDelimiterValue = "")
+        ?.takeUnless { it.isBlank() || it == "*" }
+        ?.toLongOrNull()
+
+private fun inicioDesdeContentRange(raw: String?): Long? =
+    raw?.substringAfter(' ', missingDelimiterValue = "")
+        ?.substringBefore('-')
+        ?.toLongOrNull()
+
+/** Corre `bloque`; ante cualquier error (de red, `404` porque el endpoint
+ * todavía no aterrizó del lado del servidor, etc.) devuelve `null` en vez de
+ * propagar — para llamadas "mejor esfuerzo" que nunca deben bloquear un
+ * flujo principal (login, logout). SIEMPRE relanza [CancellationException]:
+ * swallowing esa excepción específica rompería la cancelación cooperativa de
+ * la coroutine que llama esto (p. ej. si el `ViewModel` se destruye a mitad
+ * de la llamada) — solo se atrapan errores "reales". */
+private suspend fun <T> mejorEsfuerzo(bloque: suspend () -> T): T? =
+    try {
+        bloque()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+/**
+ * Cliente tipado a mano contra las rutas `/v1/...` (`docs/api.md`, `ARCHITECTURE.md`
+ * §10.12) usando Ktor `HttpClient` + coroutines — el equivalente Kotlin de
+ * `APIClient.swift` en `EdecanKit` (iOS). Mismo contrato de red, dos
+ * implementaciones nativas independientes (ver "Por qué no React Native" en
+ * `docs/movil-android.md`).
+ *
+ * El envío de mensajes de chat (`POST /v1/conversations/{id}/messages`,
+ * SSE) NO vive aquí — ver [SseClient]. Esta clase sí sabe construir la
+ * URL/token de autenticación que ese stream necesita ([tokenDeAccesoValido]
+ * / [urlCompleta]); quien conecta ambas piezas es `vm/ChatViewModel.kt` en
+ * `androidApp` — igual división de responsabilidades que `ChatViewModel` +
+ * `APIClient` + `SSEClient` en EdecanApp/iOS.
+ *
+ * No es un `actor` (Kotlin no tiene ese concepto): el [Mutex] en
+ * [tokenDeAccesoValido] evita que dos 401 concurrentes disparen dos
+ * refreshes a la vez; el resto asume el uso normal de un solo ViewModel
+ * (llamadas secuenciales desde un `viewModelScope`).
+ *
+ * Diferencia deliberada con la versión iOS: `APIClient.init` de Swift carga
+ * el access token del Keychain de forma SÍNCRONA en el constructor; el
+ * [TokenStore] de Kotlin es 100% `suspend` (DataStore/`EncryptedSharedPreferences`
+ * vía coroutines), así que no hay equivalente síncrono — en su lugar,
+ * [accessTokenVigente] carga el access token persistido de forma perezosa
+ * en la primera llamada autenticada tras crear una instancia nueva (p. ej.
+ * tras reabrir la app). Si ese token quedó vencido, el servidor responde
+ * `401` y [conAutoRefresh] dispara el refresh normal con el refresh token
+ * del [TokenStore] — mismo resultado neto, sin bloquear el constructor.
+ */
+class EdecanApi private constructor(
+    baseUrl: String,
+    private val tokenStore: TokenStore,
+    private val http: HttpClient,
+    private val onSessionExpired: (() -> Unit)?,
+) {
+    constructor(baseUrl: String, tokenStore: TokenStore, onSessionExpired: (() -> Unit)? = null) : this(
+        baseUrl,
+        tokenStore,
+        HttpClient {
+            install(ContentNegotiation) { json(edecanJson) }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 30_000
+                connectTimeoutMillis = 15_000
+            }
+            expectSuccess = false
+        },
+        onSessionExpired,
+    )
+
+    private var baseUrl: String = baseUrl.trimEnd('/')
+    private var accessTokenEnMemoria: String? = null
+    private val refreshMutex = Mutex()
+    private val sessionStateMutex = Mutex()
+    private var sessionEpoch = 0L
+    private var ideDeviceIdentityInMemory: IdeDeviceIdentity? = null
+
+    internal companion object {
+        /** Fábrica visible al módulo de pruebas para verificar el contrato
+         * HTTP sin red real. La app usa el constructor público. */
+        fun paraPruebas(
+            baseUrl: String,
+            tokenStore: TokenStore,
+            httpClient: HttpClient,
+            onSessionExpired: (() -> Unit)? = null,
+        ): EdecanApi = EdecanApi(baseUrl, tokenStore, httpClient, onSessionExpired)
+    }
+
+    /** El mismo `HttpClient` Ktor, para que `ChatViewModel` se lo pase a
+     * [SseClient] y reutilice el connection pool en vez de abrir uno nuevo
+     * — ese cliente igual aplica SU PROPIO timeout, mucho más largo (una
+     * SSE de chat puede tardar minutos; las llamadas REST de esta clase,
+     * no). */
+    val httpClientParaStream: HttpClient get() = http
+
+    /** Cambia el servidor contra el que habla este cliente (p. ej. si el
+     * onboarding vuelve atrás y el usuario corrige la URL). */
+    fun actualizarBaseUrl(url: String) {
+        baseUrl = url.trimEnd('/')
+    }
+
+    suspend fun haySesion(): Boolean = tokenStore.isPaired()
+
+    // -------------------------------------------------------------------
+    // Autenticación
+    // -------------------------------------------------------------------
+
+    /** `POST /v1/auth/login`. `totpCode` solo hace falta si la cuenta tiene
+     * 2FA activado — se manda solo si no viene vacío. */
+    suspend fun login(email: String, password: String, totpCode: String? = null): TokenPair {
+        val epoch = comenzarNuevaSesion()
+        val tokens: TokenPair =
+            peticionSinSesion("/v1/auth/login", LoginBody(email, password, totpCode.aNuloSiVacio()))
+        guardarTokensSiVigente(tokens, epoch)
+        return tokens
+    }
+
+    /** `POST /v1/auth/register`. Crea tenant + usuario (owner) + persona por
+     * defecto, y deja la sesión iniciada de una — mismo `TokenPair` que
+     * [login], mismo `409` (`ApiException.Servidor`) si el correo ya existe. */
+    suspend fun registrar(email: String, password: String, tenantName: String): TokenPair {
+        val epoch = comenzarNuevaSesion()
+        val tokens: TokenPair =
+            peticionSinSesion("/v1/auth/register", RegisterBody(email, password, tenantName))
+        guardarTokensSiVigente(tokens, epoch)
+        return tokens
+    }
+
+    /** Canjea el secreto efímero contenido en el QR. La petición no lleva
+     * Authorization; la respuesta deja tanto JWTs rotables como la
+     * credencial durable del dispositivo cifrados por [TokenStore]. */
+    suspend fun reclamarEmparejamiento(
+        pairingToken: String,
+        nombre: String,
+        fingerprint: String?,
+    ) {
+        val epoch = comenzarNuevaSesion()
+        val result: PairingClaimOut = peticionSinSesion(
+            "/v1/devices/pairing/claim",
+            PairingClaimBody(
+                pairingToken = pairingToken,
+                nombre = nombre,
+                fingerprint = fingerprint,
+            ),
+        )
+        sessionStateMutex.withLock {
+            if (sessionEpoch != epoch) throw ApiException.SesionExpirada()
+            // Primero la credencial durable: si el proceso muere antes de
+            // guardar JWTs, el próximo arranque todavía puede recuperarlos.
+            tokenStore.saveDevicePairing(result.deviceId, result.deviceToken)
+            tokenStore.saveTokens(result.accessToken, result.refreshToken)
+            accessTokenEnMemoria = result.accessToken
+            ideDeviceIdentityInMemory = IdeDeviceIdentity(
+                id = result.deviceId,
+                token = result.deviceToken,
+            )
+        }
+    }
+
+    /** `POST /v1/auth/refresh`. El backend rota el refresh token en cada
+     * uso, así que todas las renovaciones pasan por un único [Mutex]. Un
+     * `401` aquí invalida la sesión persistida; no son credenciales de login
+     * mal escritas. */
+    suspend fun refrescar(totpCode: String? = null): TokenPair =
+        refreshMutex.withLock { refrescarSinLock(totpCode) }
+
+    private suspend fun refrescarSinLock(totpCode: String? = null): TokenPair {
+        val snapshot = snapshotDeSesion()
+        val refreshToken = sessionStateMutex.withLock {
+            if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+            tokenStore.getRefreshToken()
+        }
+        if (refreshToken != null) {
+            try {
+                val tokens: TokenPair = peticionSinSesion(
+                    "/v1/auth/refresh",
+                    RefreshBody(refreshToken, totpCode.aNuloSiVacio()),
+                )
+                guardarTokensSiVigente(tokens, snapshot.epoch)
+                return tokens
+            } catch (_: ApiException.CredencialesInvalidas) {
+                // El refresh JWT puede expirar o ser revocado mientras el
+                // emparejamiento durable del dispositivo sigue vigente.
+            }
+        }
+        return refrescarConDispositivoSinLock(snapshot)
+    }
+
+    private suspend fun refrescarConDispositivoSinLock(snapshot: SessionSnapshot): TokenPair {
+        val pairing = sessionStateMutex.withLock {
+            if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+            tokenStore.getDeviceId()?.let { id ->
+                tokenStore.getDeviceToken()?.let { token -> id to token }
+            }
+        }
+        if (pairing == null) expirarEmparejamiento(snapshot.epoch)
+        return try {
+            val tokens: TokenPair = peticionSinSesion(
+                "/v1/devices/pairing/refresh",
+                PairingRefreshBody(pairing.first, pairing.second),
+            )
+            guardarTokensSiVigente(tokens, snapshot.epoch)
+            tokens
+        } catch (_: ApiException.CredencialesInvalidas) {
+            expirarEmparejamiento(snapshot.epoch)
+        }
+    }
+
+    private suspend fun expirarEmparejamiento(expectedEpoch: Long): Nothing {
+        if (invalidarSesionSiVigente(expectedEpoch, clearDevicePairing = true)) {
+            onSessionExpired?.invoke()
+        }
+        throw ApiException.SesionExpirada()
+    }
+
+    /** Invalida la sesión local de inmediato y revoca, con copias capturadas
+     * de las credenciales, el dispositivo y el refresh token. Las llamadas
+     * remotas son best-effort: estar offline nunca conserva una sesión local. */
+    suspend fun cerrarSesion(deviceId: String? = null) {
+        val credenciales = sessionStateMutex.withLock {
+            val captured = LogoutCredentials(
+                accessToken = accessTokenSinLock(),
+                refreshToken = tokenStore.getRefreshToken(),
+            )
+            sessionEpoch += 1
+            accessTokenEnMemoria = null
+            ideDeviceIdentityInMemory = null
+            tokenStore.clearTokens()
+            captured
+        }
+
+        if (deviceId != null && credenciales.accessToken != null) {
+            mejorEsfuerzo {
+                val response = ejecutar {
+                    http.post(urlCompleta("/v1/devices/$deviceId/revoke")) {
+                        header(HttpHeaders.Authorization, "Bearer ${credenciales.accessToken}")
+                    }
+                }
+                validarStatus(response)
+            }
+        }
+        if (credenciales.refreshToken != null) {
+            mejorEsfuerzo {
+                val response = ejecutar {
+                    http.post(urlCompleta("/v1/auth/logout")) {
+                        contentType(ContentType.Application.Json)
+                        setBody(LogoutBody(credenciales.refreshToken))
+                    }
+                }
+                validarStatus(response)
+            }
+        }
+    }
+
+    /** Un access token utilizable ahora mismo, refrescando una vez si hace
+     * falta. Pensado para quien construye su propia petición fuera de esta
+     * clase ([SseClient], vía `ChatViewModel`). */
+    suspend fun tokenDeAccesoValido(): String {
+        accessTokenVigente()?.let { return it }
+        return refreshMutex.withLock {
+            accessTokenVigente() ?: run {
+                refrescarSinLock()
+                accessTokenEnMemoria ?: throw ApiException.SesionExpirada()
+            }
+        }
+    }
+
+    /** Resuelve `path` (p. ej. `"/v1/conversations/$id/messages"`) contra
+     * la `baseUrl` configurada. Público para que `ChatViewModel` arme su
+     * propia petición SSE con la misma base que usa el resto del cliente. */
+    fun urlCompleta(path: String): String {
+        if (baseUrl.isBlank()) throw ApiException.UrlInvalida()
+        return baseUrl + path
+    }
+
+    // -------------------------------------------------------------------
+    // Perfil y conversaciones
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/me`. */
+    suspend fun me(): Me = conAutoRefresh { obtener("/v1/me") }
+
+    /** Configuración server-driven para navegación, textos y flags móviles. */
+    suspend fun mobileConfig(platform: String = "android", build: Int = 1): MobileServerConfig =
+        conAutoRefresh { obtener("/v1/mobile/config?platform=${urlEncode(platform)}&build=$build") }
+
+    /** Perfil personal compartido por computador, iOS, Android y el agente. */
+    suspend fun liveProfile(): LiveProfile = conAutoRefresh { obtener("/v1/perfil") }
+
+    /** Guarda la identidad declarada sin tocar las categorías aprendidas. */
+    suspend fun updateLiveProfile(identity: ProfileIdentity, summary: String): LiveProfile =
+        conAutoRefresh {
+            actualizar(
+                "/v1/perfil",
+                LiveProfilePatch(summary, ProfileDataPatch(identity)),
+            )
+        }
+
+    /** `GET /v1/conversations` — más recientes primero (orden que ya
+     * aplica el backend). */
+    suspend fun conversations(): List<Conversation> = conAutoRefresh { obtener("/v1/conversations") }
+
+    /** `POST /v1/conversations`. `titulo` es opcional, igual que en la API. */
+    suspend fun createConversation(titulo: String? = null): Conversation =
+        conAutoRefresh { enviar("/v1/conversations", CrearConversacionBody(titulo)) }
+
+    /** Cambia el título visible del chat en todos los dispositivos. */
+    suspend fun renameConversation(id: String, titulo: String): Conversation =
+        conAutoRefresh {
+            actualizar("/v1/conversations/$id", RenombrarConversacionBody(titulo))
+        }
+
+    /** `GET /v1/conversations/{id}` con mensajes persistidos. */
+    suspend fun conversation(id: String): Conversation =
+        conAutoRefresh { obtener("/v1/conversations/$id") }
+
+    /** `POST /v1/files` autenticado y transmitido por streaming. [contenido]
+     * debe poder abrir una fuente nueva: `conAutoRefresh` reconstruye el
+     * multipart una sola vez cuando el primer intento recibe `401`. */
+    suspend fun uploadFile(contenido: UploadContent, filename: String, mime: String): UploadedFile =
+        conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val safeFilename = filename.replace('"', '_').replace('\r', '_').replace('\n', '_')
+                .take(255).ifBlank { "archivo" }
+            val safeMime = mime.takeIf { it.contains('/') && '\r' !in it && '\n' !in it }
+                ?: "application/octet-stream"
+            val response = ejecutar {
+                http.submitFormWithBinaryData(
+                    url = urlCompleta("/v1/files"),
+                    formData = formData {
+                        append(
+                            "file",
+                            InputProvider(contenido.sizeBytes, contenido.openSource),
+                            Headers.build {
+                                append(HttpHeaders.ContentType, safeMime)
+                                append(HttpHeaders.ContentDisposition, "filename=\"$safeFilename\"")
+                            },
+                        )
+                    },
+                ) { header(HttpHeaders.Authorization, "Bearer $token") }
+            }
+            manejarRespuestaAutenticada(response)
+        }
+
+    /** Compatibilidad para payloads pequeños y tests. El flujo de archivos de
+     * Android usa siempre la sobrecarga streaming de [UploadContent]. */
+    suspend fun uploadFile(bytes: ByteArray, filename: String, mime: String): UploadedFile =
+        uploadFile(
+            UploadContent(bytes.size.toLong()) {
+                Buffer().apply { write(bytes) }
+            },
+            filename,
+            mime,
+        )
+
+    /** `GET /v1/files/{id}/download` autenticado. Conserva los bytes en
+     * memoria; `androidApp` decide cuando escribirlos en su cache privado y
+     * abrir el share intent. */
+    suspend fun downloadArtifact(artifact: ArtifactRef): DownloadedArtifact {
+        val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/download") }
+        return DownloadedArtifact(artifact, bytes)
+    }
+
+    /** Registra o reemplaza el token FCM actual de este dispositivo. El
+     * token es opaco: nunca se registra en logs ni se guarda en shared. */
+    suspend fun registerPushToken(deviceId: String, token: String) {
+        conAutoRefresh {
+            enviarSinRespuesta(
+                "/v1/devices/$deviceId/push-token",
+                PushTokenBody(pushToken = token, pushPlatform = "fcm"),
+            )
+        }
+    }
+
+    /** Quita el destino push antes de revocar el dispositivo. */
+    suspend fun deletePushToken(deviceId: String) {
+        conAutoRefresh { eliminarSinCuerpo("/v1/devices/$deviceId/push-token") }
+    }
+
+    suspend fun pushStatus(): PushStatus = conAutoRefresh { obtener("/v1/devices/push/status") }
+
+    /** Historial tenant-scoped de llamadas, incluido el resumen humano que
+     * el servidor agrega al terminar. La creación sigue naciendo del chat y
+     * conserva su confirmación explícita; esta ruta es solo lectura. */
+    suspend fun phoneCalls(): List<PhoneCall> = conAutoRefresh { obtener("/v1/phone/calls") }
+
+    /** Imagen privada para preview inline. Usa el endpoint MIME-allowlisted
+     * `/content`; audio/video no pasan por aquí porque Android los transmite
+     * directamente con Bearer + Range desde `ChatScreen`. */
+    suspend fun previewArtifact(artifact: ArtifactRef): DownloadedArtifact {
+        val bytes = conAutoRefresh { descargarBytes("/v1/files/${artifact.fileId}/content") }
+        return DownloadedArtifact(artifact, bytes)
+    }
+
+    /** Lee una ventana de audio/video con un token vigente en CADA petición.
+     * Si una solicitud Range recibe `401`, [conAutoRefresh] rota el token y
+     * repite esa misma ventana; así una reproducción larga no depende del
+     * access token que existía cuando se abrió la tarjeta. */
+    suspend fun privateMediaRange(
+        artifact: ArtifactRef,
+        offset: Long,
+        length: Int,
+    ): PrivateMediaRange {
+        require(offset >= 0) { "El offset no puede ser negativo" }
+        require(length > 0) { "La ventana debe contener al menos un byte" }
+        require(length <= MAX_PRIVATE_MEDIA_RANGE_BYTES) { "La ventana multimedia es demasiado grande" }
+        val endInclusive = (offset + length.toLong() - 1).coerceAtLeast(offset)
+        return conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val response = ejecutar {
+                http.get(urlCompleta("/v1/files/${artifact.fileId}/content")) {
+                    header(HttpHeaders.Authorization, "Bearer $token")
+                    header(HttpHeaders.Range, "bytes=$offset-$endInclusive")
+                }
+            }
+            if (response.status.value == 401) throw ApiException.SesionExpirada()
+            if (response.status.value == 416) {
+                return@conAutoRefresh PrivateMediaRange(
+                    bytes = ByteArray(0),
+                    offset = offset,
+                    totalSize = totalDesdeContentRange(response.headers[HttpHeaders.ContentRange]),
+                )
+            }
+            validarStatus(response)
+            val contentRange = response.headers[HttpHeaders.ContentRange]
+            val responseOffset = inicioDesdeContentRange(contentRange)
+                ?: if (response.status.value == 200) 0L else offset
+            val total = totalDesdeContentRange(contentRange)
+                ?: response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                    ?.takeIf { response.status.value == 200 }
+            PrivateMediaRange(leerBytesAcotados(response, length), responseOffset, total)
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Negocios (`/v1/negocios/*` — pestaña Negocios)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/negocios/kpis?mes=YYYY-MM` — `mes` `null` deja que el
+     * servidor decida el mes actual UTC (`edecan_business.kpis.kpis_mes`). */
+    suspend fun negociosKpis(mes: String? = null): NegociosKpis =
+        conAutoRefresh { obtener("/v1/negocios/kpis" + (mes?.let { "?mes=${urlEncode(it)}" } ?: "")) }
+
+    /** `GET /v1/negocios/facturas?status=` — más recientes primero. */
+    suspend fun negociosFacturas(status: String? = null): List<Invoice> =
+        conAutoRefresh {
+            obtener("/v1/negocios/facturas" + (status?.let { "?status=${urlEncode(it)}" } ?: ""))
+        }
+
+    // -------------------------------------------------------------------
+    // Credenciales bring-your-own y wizard de arranque (Ajustes)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/credentials` — nunca trae el secreto completo, solo lo
+     * enmascarado (`LlmCredentialOut.masked`, etc.). */
+    suspend fun credentials(): CredentialsOut = conAutoRefresh { obtener("/v1/credentials") }
+
+    /** `GET /v1/setup/status` — informa si la inteligencia administrada del
+     * host está disponible. */
+    suspend fun setupStatus(): SetupStatusOut = conAutoRefresh { obtener("/v1/setup/status") }
+
+    // -------------------------------------------------------------------
+    // Voz web (`/v1/voice/*` — micrófono dentro de Chat)
+    // -------------------------------------------------------------------
+
+    /** `POST /v1/voice/transcribe` — sube `audioBytes` como
+     * `multipart/form-data` (campo `audio`, más `language` si no es nulo) y
+     * devuelve el texto transcrito. Si el tenant no conectó su propio
+     * proveedor de voz (`PUT /v1/credentials/voice/stt`), el servidor cae al
+     * `StubSTT` offline: SIEMPRE el mismo texto fijo, sin importar el audio
+     * real (ver `docs/api.md` §"Voz web") — la pantalla de Voz avisa de esto
+     * por separado leyendo [credentials]. */
+    suspend fun transcribirVoz(
+        audioBytes: ByteArray,
+        filename: String,
+        mime: String,
+        language: String? = null,
+    ): String =
+        conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val response = ejecutar {
+                http.submitFormWithBinaryData(
+                    url = urlCompleta("/v1/voice/transcribe"),
+                    formData = formData {
+                        append(
+                            "audio",
+                            audioBytes,
+                            Headers.build {
+                                append(HttpHeaders.ContentType, mime)
+                                append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
+                            },
+                        )
+                        if (!language.isNullOrBlank()) append("language", language)
+                    },
+                ) { header(HttpHeaders.Authorization, "Bearer $token") }
+            }
+            val out: TranscribeOut = manejarRespuestaAutenticada(response)
+            out.text
+        }
+
+    /** `POST /v1/voice/speak` — el `Content-Type` de la respuesta decide el
+     * formato real (`audio/mpeg` normalmente, `audio/wav` si cayó al
+     * `StubTTS` offline, ver `docs/api.md` §"Voz web"); nunca se asume uno
+     * fijo. */
+    suspend fun hablar(texto: String, vozId: String? = null): VoiceAudio =
+        conAutoRefresh {
+            val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+            val response = ejecutar {
+                http.post(urlCompleta("/v1/voice/speak")) {
+                    header(HttpHeaders.Authorization, "Bearer $token")
+                    contentType(ContentType.Application.Json)
+                    setBody(SpeakBody(texto, vozId))
+                }
+            }
+            if (response.status.value == 401) throw ApiException.SesionExpirada()
+            validarStatus(response)
+            val bytes: ByteArray = response.body()
+            val tipo = response.headers[HttpHeaders.ContentType] ?: "audio/mpeg"
+            VoiceAudio(bytes, tipo)
+        }
+
+    // -------------------------------------------------------------------
+    // IDE embebido, solo lectura (`/v1/ide/*` — Modo avanzado)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/ide/status` — `false`/`503` en el resto de rutas de `/v1/ide`
+     * si no hay companion de escritorio conectado. */
+    suspend fun ideStatus(): IdeStatusOut = conAutoRefresh { obtener("/v1/ide/status") }
+
+    /** `GET /v1/ide/tree?path=` — árbol recursivo del sandbox del companion;
+     * `path` nulo pide la raíz. */
+    suspend fun ideTree(path: String? = null): IdeTreeOut =
+        conAutoRefresh { obtener("/v1/ide/tree" + (path?.let { "?path=${urlEncode(it)}" } ?: "")) }
+
+    /** `GET /v1/ide/file?path=` — contenido completo de un archivo del
+     * sandbox del companion. */
+    suspend fun ideFile(path: String): IdeFileOut =
+        conAutoRefresh { obtener("/v1/ide/file?path=${urlEncode(path)}") }
+
+    suspend fun ideRun(command: String): IdeRunOut =
+        conAutoRefresh {
+            enviar(
+                "/v1/ide/run",
+                IdeRunBody(command),
+                timeoutMillis = IDE_RUN_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideWrite(path: String, content: String) {
+        conAutoRefresh {
+            actualizarSinCuerpo(
+                "/v1/ide/file",
+                IdeWriteBody(path, content),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    /** Proyectos que esta instalación de escritorio autorizó explícitamente. */
+    suspend fun ideWorkspaces(): IdeWorkspacesOut =
+        conAutoRefresh { obtenerIde("/v1/ide/workspaces") }
+
+    suspend fun ideAddWorkspace(path: String, name: String? = null): IdeWorkspace =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/workspaces",
+                IdeWorkspaceCreateBody(path = path, name = name?.trim()?.ifBlank { null }),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideActivateWorkspace(workspaceId: String): IdeWorkspace =
+        conAutoRefresh {
+            enviarIdeSinCuerpo("/v1/ide/workspaces/${urlEncode(workspaceId)}/activate")
+        }
+
+    suspend fun ideWorkspaceTree(workspaceId: String, path: String? = null): IdeTreeOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/tree" +
+                    (path?.let { "?path=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideWorkspaceFile(workspaceId: String, path: String): IdeFileOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/file?path=${urlEncode(path)}",
+            )
+        }
+
+    suspend fun ideWorkspaceWrite(workspaceId: String, path: String, content: String) {
+        conAutoRefresh {
+            actualizarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/file",
+                IdeWriteBody(path, content),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideTerminalSessions(workspaceId: String? = null): IdeSessionsOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/terminals" +
+                    (workspaceId?.let { "?workspace_id=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideStartTerminal(
+        workspaceId: String,
+        argv: List<String>? = null,
+        title: String? = null,
+    ): IdeSession =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/terminals",
+                IdeTerminalCreateBody(
+                    workspaceId = workspaceId,
+                    argv = argv?.takeIf { it.isNotEmpty() },
+                    title = title?.trim()?.ifBlank { null },
+                ),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideReadTerminal(sessionId: String, cursor: Int = 0): IdeSessionReadOut =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/terminals/${urlEncode(sessionId)}?cursor=$cursor")
+        }
+
+    suspend fun ideTerminalInput(sessionId: String, data: String) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/terminals/${urlEncode(sessionId)}/input",
+                IdeTerminalInputBody(data),
+            )
+        }
+    }
+
+    suspend fun ideCloseTerminal(sessionId: String): IdeSession =
+        conAutoRefresh {
+            eliminarIde<IdeSessionActionOut>(
+                "/v1/ide/terminals/${urlEncode(sessionId)}",
+            ).session
+        }
+
+    suspend fun ideAgentSessions(workspaceId: String? = null): IdeSessionsOut =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/agents" +
+                    (workspaceId?.let { "?workspace_id=${urlEncode(it)}" } ?: ""),
+            )
+        }
+
+    suspend fun ideStartAgent(
+        workspaceId: String,
+        prompt: String,
+        provider: String = "auto",
+        title: String? = null,
+        model: String? = null,
+    ): IdeSession =
+        conAutoRefresh {
+            enviarIde(
+                "/v1/ide/agents",
+                IdeAgentCreateBody(
+                    workspaceId = workspaceId,
+                    prompt = prompt,
+                    provider = provider,
+                    title = title?.trim()?.ifBlank { null },
+                    model = model?.trim()?.ifBlank { null },
+                ),
+                timeoutMillis = IDE_APPROVAL_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+
+    suspend fun ideReadAgent(sessionId: String, cursor: Int = 0): IdeSessionReadOut =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/agents/${urlEncode(sessionId)}?cursor=$cursor")
+        }
+
+    suspend fun ideCancelAgent(sessionId: String): IdeSession =
+        conAutoRefresh {
+            eliminarIde<IdeSessionActionOut>(
+                "/v1/ide/agents/${urlEncode(sessionId)}",
+            ).session
+        }
+
+    suspend fun ideGitStatus(workspaceId: String): IdeGitStatus =
+        conAutoRefresh {
+            obtenerIde("/v1/ide/workspaces/${urlEncode(workspaceId)}/git/status")
+        }
+
+    suspend fun ideGitDiff(
+        workspaceId: String,
+        staged: Boolean = false,
+        path: String? = null,
+    ): IdeGitDiff =
+        conAutoRefresh {
+            val query = buildList {
+                add("staged=$staged")
+                path?.let { add("path=${urlEncode(it)}") }
+            }.joinToString("&")
+            obtenerIde("/v1/ide/workspaces/${urlEncode(workspaceId)}/git/diff?$query")
+        }
+
+    suspend fun ideGitLog(workspaceId: String, limit: Int = 30): IdeGitLog =
+        conAutoRefresh {
+            obtenerIde(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/log?limit=${limit.coerceIn(1, 100)}",
+            )
+        }
+
+    suspend fun ideGitStage(workspaceId: String, paths: List<String>) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/stage",
+                IdeGitPathsBody(paths),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitUnstage(workspaceId: String, paths: List<String>) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/unstage",
+                IdeGitPathsBody(paths),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCommit(workspaceId: String, message: String) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/commit",
+                IdeGitCommitBody(message),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCreateBranch(
+        workspaceId: String,
+        name: String,
+        checkout: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/branch",
+                IdeGitBranchBody(name, checkout),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitCheckout(
+        workspaceId: String,
+        name: String,
+        create: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/checkout",
+                IdeGitCheckoutBody(name, create),
+                timeoutMillis = IDE_GIT_MUTATION_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    suspend fun ideGitPush(
+        workspaceId: String,
+        remote: String = "origin",
+        branch: String? = null,
+        setUpstream: Boolean = false,
+    ) {
+        conAutoRefresh {
+            enviarIdeSinRespuesta(
+                "/v1/ide/workspaces/${urlEncode(workspaceId)}/git/push",
+                IdeGitPushBody(
+                    remote = remote,
+                    branch = branch,
+                    setUpstream = setUpstream,
+                ),
+                timeoutMillis = IDE_GIT_PUSH_REQUEST_TIMEOUT_MILLIS,
+            )
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Emparejamiento de dispositivo (`/v1/devices`, contrato de WP-V4-01 —
+    // en paralelo a este work package, ver docstring de [mejorEsfuerzo]).
+    // -------------------------------------------------------------------
+
+    /** Registra este dispositivo al iniciar sesión/registrarse. "Mejor
+     * esfuerzo" a propósito (nunca lanza, ver [mejorEsfuerzo]): si
+     * `/v1/devices` todavía no existe del lado del servidor (`404`) u ocurre
+     * cualquier otro error, devuelve `null` en silencio — emparejar el
+     * dispositivo nunca debe bloquear ni fallar visiblemente un login. */
+    suspend fun emparejarDispositivo(nombre: String, fingerprint: String?): String? =
+        mejorEsfuerzo {
+            val out: DeviceOut = conAutoRefresh {
+                enviar("/v1/devices", DeviceRegisterBody(nombre = nombre, fingerprint = fingerprint))
+            }
+            out.id.ifBlank { null }
+        }
+
+    /** `POST /v1/devices/{deviceId}/revoke` al cerrar sesión — mismo criterio
+     * "mejor esfuerzo" que [emparejarDispositivo]: nunca lanza, para que
+     * cerrar sesión en este dispositivo nunca falle por esto. */
+    suspend fun revocarDispositivo(deviceId: String) {
+        mejorEsfuerzo {
+            conAutoRefresh {
+                enviarSinCuerpo<DeviceOut>("/v1/devices/$deviceId/revoke")
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Misiones (`/v1/missions/*` — pestaña Misiones, WP-V5-07)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/missions` — más recientes primero (orden que ya aplica el
+     * backend). `403` (`ApiException.Servidor`) si el plan del tenant no
+     * trae el flag `agents.missions` ([FLAG_AGENTS_MISSIONS]). */
+    suspend fun listMissions(): List<Mission> = conAutoRefresh { obtener("/v1/missions") }
+
+    /** Incluye misiones archivadas para la vista histórica del dispositivo. */
+    suspend fun listArchivedMissions(): List<Mission> =
+        conAutoRefresh { obtener("/v1/missions?include_archived=true") }
+
+    /** `POST /v1/missions {objetivo}` — encola el job `run_mission`; la
+     * planificación/ejecución real corre asíncrona en el worker
+     * (`missions.py`, docstring del módulo), así que esta misión vuelve en
+     * `status = "planning"`. */
+    suspend fun createMission(objetivo: String): Mission =
+        conAutoRefresh { enviar("/v1/missions", MisionCrearBody(objetivo)) }
+
+    /** `GET /v1/missions/{id}` — la misión más sus `agent_steps`
+     * (`MissionDetailOut`). */
+    suspend fun getMission(missionId: String): MissionDetail =
+        conAutoRefresh { obtener("/v1/missions/$missionId") }
+
+    /** `POST /v1/missions/{id}/confirm {approved}` — resuelve el paso
+     * `waiting_confirmation` pendiente: `approve = true` lo aprueba y
+     * reencola `run_mission` para que siga corriendo; `approve = false`
+     * cancela la misión entera (`missions.py::confirm_mission`). `409` si
+     * la misión no tiene una confirmación pendiente en este momento. */
+    suspend fun confirmMission(missionId: String, approve: Boolean): Mission =
+        conAutoRefresh { enviar("/v1/missions/$missionId/confirm", MisionConfirmarBody(approve)) }
+
+    /** Archiva una misión terminada sin borrar su resultado ni sus pasos. */
+    suspend fun archiveMission(missionId: String): Mission =
+        conAutoRefresh { enviarSinCuerpo("/v1/missions/$missionId/archive") }
+
+    /** Pausa en el siguiente checkpoint sin borrar el estado de la misión. */
+    suspend fun pauseMission(missionId: String): Mission =
+        conAutoRefresh { enviarSinCuerpo("/v1/missions/$missionId/pause") }
+
+    /** Reanuda una misión pausada y encola su continuación durable. */
+    suspend fun resumeMission(missionId: String): Mission =
+        conAutoRefresh { enviarSinCuerpo("/v1/missions/$missionId/resume") }
+
+    suspend fun undoLastAction(): UndoActionOut =
+        conAutoRefresh { enviarSinCuerpo("/v1/me/actions/undo") }
+
+    // -------------------------------------------------------------------
+    // Automatizaciones (`/v1/automations/*` — pestaña Automatizaciones, WP-V5-07)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/automations` — más recientes primero. `403` si el plan no
+     * trae el flag `automations.rules` ([FLAG_AUTOMATIONS_RULES]). */
+    suspend fun listAutomations(): List<Automation> = conAutoRefresh { obtener("/v1/automations") }
+
+    /** `POST /v1/automations` — alta simple (`AutomatizacionesScreen`):
+     * siempre un disparador `kind = "schedule"` (`rrule` RFC 5545, mismos
+     * presets que `AutomationForm.tsx` en el panel web) más una acción
+     * `agent_instruction`. Este cliente no ofrece crear automatizaciones
+     * `kind = "webhook"` — esas solo se crean desde el panel web, que sí
+     * muestra el secreto generado una sola vez. */
+    suspend fun createAutomation(
+        nombre: String,
+        rrule: String,
+        instruccion: String,
+        agente: String? = null,
+        descripcion: String = "",
+        enabled: Boolean = true,
+    ): Automation =
+        conAutoRefresh {
+            enviar(
+                "/v1/automations",
+                AutomationCrearBody(
+                    nombre = nombre,
+                    descripcion = descripcion,
+                    trigger = AutomationTriggerBody(kind = "schedule", rrule = rrule),
+                    accion = AutomationAccionBody(instruccion = instruccion, agente = agente),
+                    enabled = enabled,
+                ),
+            )
+        }
+
+    /** `PATCH /v1/automations/{id} {enabled}` — `AutomatizacionesScreen`
+     * actualiza su Switch de forma optimista ANTES de llamar esto y revierte
+     * a mano si lanza (`AutomatizacionesViewModel.alternar`); también puede
+     * lanzar `403` si al reactivar (`enabled = true`) el tenant ya alcanzó
+     * `limits.automations_active` de su plan. */
+    suspend fun toggleAutomation(automationId: String, enabled: Boolean): Automation =
+        conAutoRefresh {
+            actualizarParcial("/v1/automations/$automationId", AutomationTogglePatchBody(enabled))
+        }
+
+    /** `GET /v1/automations/{id}/runs` — más recientes primero, hasta 50
+     * (`_RUNS_LIMIT_DEFAULT` en `automations.py`). */
+    suspend fun listAutomationRuns(automationId: String): List<AutomationRun> =
+        conAutoRefresh { obtener("/v1/automations/$automationId/runs") }
+
+    // -------------------------------------------------------------------
+    // Recordatorios (`/v1/reminders/*` — pestaña Recordatorios, WP-V5-07)
+    // -------------------------------------------------------------------
+
+    /** `GET /v1/reminders` — sin flag de plan (disponible en los 4 planes,
+     * `ARCHITECTURE.md` §10.13). */
+    suspend fun listReminders(): List<Reminder> = conAutoRefresh { obtener("/v1/reminders") }
+
+    /** `POST /v1/reminders {due_at, message, channel}`. `mobile` permite FCM
+     * y la app agenda además una notificación local como respaldo OSS. */
+    suspend fun createReminder(texto: String, fecha: String, canal: String = "mobile"): Reminder =
+        conAutoRefresh {
+            enviar("/v1/reminders", RecordatorioCrearBody(dueAt = fecha, message = texto, channel = canal))
+        }
+
+    /** `PUT /v1/reminders/{id} {status: "sent"}` — "completa" un recordatorio
+     * pendiente a mano, antes de que `send_reminder_scan` lo alcance por su
+     * cuenta (`ARCHITECTURE.md` §10.11). El vocabulario real de
+     * `ReminderPatch.status` es solo `pending`/`sent`/`cancelled` — no existe
+     * un status `"done"` propio; `"sent"` es el que representa "ya se
+     * entregó/atendió", el mismo que usa el job automático
+     * (`repo.mark_reminder_sent`). */
+    suspend fun completeReminder(reminderId: String): Reminder =
+        conAutoRefresh { actualizar("/v1/reminders/$reminderId", RecordatorioCompletarBody()) }
+
+    // -------------------------------------------------------------------
+    // Control remoto (`/v1/remote/*` — pantalla Remoto, WP-V6-09). Errores
+    // propios de este grupo (403 plan/flag/denegado, 404, 409, 422, 429, 501,
+    // 502, 503) llegan todos como [ApiException.Servidor] con su `status`
+    // real — ver el docstring de `edecan_api.routers.remote` para el detalle
+    // línea por línea de cada código.
+    // -------------------------------------------------------------------
+
+    /** `POST /v1/remote/sessions`. `consent` DEBE ser `true` (el servidor
+     * responde `422` si no) — `RemotoScreen` solo llama esto tras el
+     * checkbox de consentimiento explícito, mismo criterio que
+     * `ConsentGate.tsx` en el panel web. `kind` = [REMOTE_KIND_CONTROL]
+     * exige además el flag de plan `companion.remote_input`
+     * ([FLAG_COMPANION_REMOTE_INPUT]) — `403` si no. */
+    suspend fun createRemoteSession(consent: Boolean, kind: String = REMOTE_KIND_VIEW): RemoteSession =
+        conAutoRefresh {
+            enviar("/v1/remote/sessions", RemoteSessionCreateBody(consent = consent, kind = kind))
+        }
+
+    /** `GET /v1/remote/sessions` — todas las sesiones del tenant (cualquier
+     * estado), más recientes primero (orden que ya aplica el backend). */
+    suspend fun listRemoteSessions(): List<RemoteSession> =
+        conAutoRefresh { obtener("/v1/remote/sessions") }
+
+    suspend fun getRemoteSession(sessionId: String): RemoteSession =
+        conAutoRefresh { obtener("/v1/remote/sessions/$sessionId") }
+
+    /** `GET /v1/remote/sessions/{id}/frame` — pide un frame nuevo al
+     * companion. El primer frame exitoso pasa la sesión a `active` (es lo
+     * que dispara la aprobación LOCAL en el companion — `RemotoViewModel`
+     * llama esto de inmediato tras [createRemoteSession]). Puede lanzar
+     * `429` (pediste un frame antes de que pasara
+     * `REMOTE_FRAME_MIN_INTERVAL_SECONDS`, ver [remoteFramePollDelayMillis]),
+     * `501` (el companion no soporta/tiene deshabilitada la captura, o
+     * corre en una plataforma sin soporte), `403` (el usuario lo denegó en
+     * el companion, o la sesión ya estaba `denied`), `409` (sesión ya
+     * `ended`) o `503` (companion no conectado o sin respuesta a tiempo). */
+    suspend fun getRemoteFrame(sessionId: String): RemoteFrame =
+        conAutoRefresh { obtener("/v1/remote/sessions/$sessionId/frame") }
+
+    suspend fun listSkills(): List<SkillSummary> =
+        conAutoRefresh { obtener<SkillsEnvelope>("/v1/skills").skills }
+
+    suspend fun listMcpServers(): List<McpServerSummary> =
+        conAutoRefresh { obtener("/v1/mcp/servers") }
+
+    /** `POST /v1/remote/sessions/{id}/end` — termina la sesión (idempotente,
+     * repetirlo no falla). Devuelve la sesión ya actualizada. */
+    suspend fun endRemoteSession(sessionId: String): RemoteSession =
+        conAutoRefresh { enviarSinCuerpo("/v1/remote/sessions/$sessionId/end") }
+
+    /** `POST /v1/remote/sessions/{id}/input {tipo:"pointer",...}` — solo
+     * sesiones `kind` = [REMOTE_KIND_CONTROL] ya `active`. [accion] debe
+     * ser una de [REMOTE_POINTER_ACCIONES]; [button] (default `"left"` del
+     * lado del servidor si se omite) una de [REMOTE_MOUSE_BUTTONS]. Puede
+     * lanzar, además de los genéricos de arriba, `403` (sesión no es de
+     * control, o el companion/usuario denegó el comando), `409` (todavía
+     * `pending`, o ya `ended`) y `429` (rate limit propio, mucho más laxo
+     * que el de [getRemoteFrame]).
+     *
+     * [nx]/[ny] (y [startNx]/[startNy] para `drag`) son la coordenada
+     * NORMALIZADA `0.0..1.0` del toque dentro del frame — ver
+     * `RemoteCoords.kt::RemotePoint`. Se mandan JUNTAS o no se manda ninguna
+     * (medio par = `422`); cuando llegan, el companion las usa en lugar de
+     * [x]/[y], que siguen viajando tal cual para no romper nada. */
+    suspend fun sendRemotePointerInput(
+        sessionId: String,
+        x: Int,
+        y: Int,
+        accion: String,
+        button: String? = null,
+        startX: Int? = null,
+        startY: Int? = null,
+        deltaX: Int = 0,
+        deltaY: Int = 0,
+        nx: Double? = null,
+        ny: Double? = null,
+        startNx: Double? = null,
+        startNy: Double? = null,
+    ): RemoteInputResult =
+        conAutoRefresh {
+            val parNormalizado = if (nx != null && ny != null) {
+                nx.coerceIn(0.0, 1.0) to ny.coerceIn(0.0, 1.0)
+            } else {
+                null
+            }
+            val parInicio = if (startNx != null && startNy != null) {
+                startNx.coerceIn(0.0, 1.0) to startNy.coerceIn(0.0, 1.0)
+            } else {
+                null
+            }
+            enviar(
+                "/v1/remote/sessions/$sessionId/input",
+                RemotePointerInputBody(
+                    x = x, y = y, accion = accion, button = button,
+                    startX = startX, startY = startY, deltaX = deltaX, deltaY = deltaY,
+                    nx = parNormalizado?.first, ny = parNormalizado?.second,
+                    startNx = parInicio?.first, startNy = parInicio?.second,
+                ),
+            )
+        }
+
+    /** `POST .../input {tipo:"key", texto}` — escribe [texto] tal cual,
+     * carácter por carácter, en el equipo remoto (Unicode, sin depender del
+     * layout de teclado — ver `edecan_companion.actions._input_key`). */
+    suspend fun sendRemoteKeyTexto(sessionId: String, texto: String): RemoteInputResult =
+        conAutoRefresh {
+            enviar("/v1/remote/sessions/$sessionId/input", RemoteKeyInputBody(texto = texto))
+        }
+
+    /** `POST .../input {tipo:"key", tecla}` — [tecla] debe ser una de
+     * [REMOTE_SPECIAL_KEYS]. */
+    suspend fun sendRemoteKeyTecla(
+        sessionId: String, tecla: String, modifiers: List<String> = emptyList()
+    ): RemoteInputResult =
+        conAutoRefresh {
+            enviar(
+                "/v1/remote/sessions/$sessionId/input",
+                RemoteKeyInputBody(tecla = tecla, modifiers = modifiers),
+            )
+        }
+
+    // Portapapeles y transferencia de archivos compartidos (WP-V7). Mismos
+    // candados que el input (`kind` = [REMOTE_KIND_CONTROL] ya `active`) y los
+    // mismos códigos de error (`ApiException.Servidor` con su `status`).
+
+    /** `GET .../clipboard` — trae el portapapeles (texto) de la computadora. */
+    suspend fun getRemoteClipboard(sessionId: String): String =
+        conAutoRefresh { obtener<RemoteClipboard>("/v1/remote/sessions/$sessionId/clipboard").text }
+
+    /** `POST .../clipboard {text}` — escribe el portapapeles de la computadora. */
+    suspend fun setRemoteClipboard(sessionId: String, text: String) =
+        conAutoRefresh {
+            enviarSinRespuesta(
+                "/v1/remote/sessions/$sessionId/clipboard", RemoteClipboardSetBody(text = text)
+            )
+        }
+
+    /** `GET .../files` — lista la carpeta compartida de la computadora. */
+    suspend fun listRemoteFiles(sessionId: String): RemoteSharedFiles =
+        conAutoRefresh { obtener("/v1/remote/sessions/$sessionId/files") }
+
+    /** `POST .../files {name, content_b64}` — teléfono → computadora. Devuelve
+     * el nombre FINAL con el que quedó guardado. */
+    suspend fun pushRemoteFile(
+        sessionId: String, name: String, contentB64: String
+    ): RemotePushedFile =
+        conAutoRefresh {
+            enviar(
+                "/v1/remote/sessions/$sessionId/files",
+                RemoteFilePushBody(name = name, contentB64 = contentB64),
+            )
+        }
+
+    /** `GET .../files/content?name=…` — computadora → teléfono. */
+    suspend fun pullRemoteFile(sessionId: String, name: String): RemotePulledFile =
+        conAutoRefresh {
+            obtener("/v1/remote/sessions/$sessionId/files/content?name=${urlEncode(name)}")
+        }
+
+    // -------------------------------------------------------------------
+    // Internals: HTTP
+    // -------------------------------------------------------------------
+
+    private fun String?.aNuloSiVacio(): String? = this?.trim()?.ifEmpty { null }
+
+    /** Identidad durable del pairing, cargada una sola vez desde el almacén
+     * cifrado. Los pollers IDE no deben abrir Android Keystore cada 900 ms. */
+    private suspend fun ideDeviceIdentity(): IdeDeviceIdentity =
+        sessionStateMutex.withLock {
+            ideDeviceIdentityInMemory ?: run {
+                val id = tokenStore.getDeviceId()?.trim().orEmpty()
+                val token = tokenStore.getDeviceToken()?.trim().orEmpty()
+                if (id.isEmpty() || token.isEmpty()) {
+                    throw ApiException.DispositivoNoEmparejado()
+                }
+                IdeDeviceIdentity(id = id, token = token).also {
+                    ideDeviceIdentityInMemory = it
+                }
+            }
+        }
+
+    private fun HttpRequestBuilder.agregarIdentidadIde(identity: IdeDeviceIdentity?) {
+        if (identity == null) return
+        header(IDE_DEVICE_ID_HEADER, identity.id)
+        header(IDE_DEVICE_TOKEN_HEADER, identity.token)
+    }
+
+    private suspend fun accessTokenVigente(): String? = sessionStateMutex.withLock { accessTokenSinLock() }
+
+    private suspend fun accessTokenSinLock(): String? =
+        accessTokenEnMemoria ?: tokenStore.getAccessToken()?.also { accessTokenEnMemoria = it }
+
+    private suspend fun snapshotDeSesion(): SessionSnapshot = sessionStateMutex.withLock {
+        SessionSnapshot(sessionEpoch, accessTokenSinLock())
+    }
+
+    /** Inicia un login/registro nuevo e invalida cualquier refresh anterior.
+     * La respuesta solo podrá persistirse si este epoch sigue activo. */
+    private suspend fun comenzarNuevaSesion(): Long = sessionStateMutex.withLock {
+        sessionEpoch += 1
+        accessTokenEnMemoria = null
+        ideDeviceIdentityInMemory = null
+        tokenStore.clearTokens()
+        tokenStore.clearDevicePairing()
+        sessionEpoch
+    }
+
+    private suspend fun guardarTokensSiVigente(tokens: TokenPair, expectedEpoch: Long) {
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) throw ApiException.SesionExpirada()
+            tokenStore.saveTokens(tokens.accessToken, tokens.refreshToken)
+            accessTokenEnMemoria = tokens.accessToken
+        }
+    }
+
+    private suspend fun invalidarSesionSiVigente(
+        expectedEpoch: Long,
+        clearDevicePairing: Boolean = false,
+    ): Boolean =
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) return@withLock false
+            sessionEpoch += 1
+            accessTokenEnMemoria = null
+            if (clearDevicePairing) ideDeviceIdentityInMemory = null
+            tokenStore.clearTokens()
+            if (clearDevicePairing) tokenStore.clearDevicePairing()
+            true
+        }
+
+    private suspend fun validarEpoch(expectedEpoch: Long) {
+        sessionStateMutex.withLock {
+            if (sessionEpoch != expectedEpoch) throw ApiException.SesionExpirada()
+        }
+    }
+
+    /** Ejecuta `operacion`; si falla porque el access token expiró,
+     * refresca UNA vez y reintenta. Si el refresh también falla, propaga
+     * el error del refresh (normalmente [ApiException.SesionExpirada]). */
+    private suspend fun <T> conAutoRefresh(operacion: suspend () -> T): T {
+        val snapshot = snapshotDeSesion()
+        return try {
+            val resultado = operacion()
+            validarEpoch(snapshot.epoch)
+            resultado
+        } catch (e: ApiException.SesionExpirada) {
+            validarEpoch(snapshot.epoch)
+            refreshMutex.withLock {
+                // Otra petición pudo haber renovado mientras esta esperaba.
+                // Solo quien todavía vea el token que recibió el 401 consume
+                // el refresh token one-time.
+                val necesitaRefresh = sessionStateMutex.withLock {
+                    if (sessionEpoch != snapshot.epoch) throw ApiException.SesionExpirada()
+                    accessTokenSinLock() == snapshot.accessToken
+                }
+                if (necesitaRefresh) {
+                    refrescarSinLock()
+                }
+            }
+            validarEpoch(snapshot.epoch)
+            val resultado = operacion()
+            validarEpoch(snapshot.epoch)
+            resultado
+        }
+    }
+
+    private suspend inline fun <reified R> obtenerIde(path: String): R =
+        obtener(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified B, reified R> enviarIde(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ): R =
+        enviar(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+
+    private suspend inline fun <reified B> enviarIdeSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ) {
+        enviarSinRespuesta(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+    }
+
+    private suspend inline fun <reified R> enviarIdeSinCuerpo(path: String): R =
+        enviarSinCuerpo(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified B> actualizarIdeSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+    ) {
+        actualizarSinCuerpo(
+            path,
+            body,
+            timeoutMillis = timeoutMillis,
+            ideIdentity = ideDeviceIdentity(),
+        )
+    }
+
+    private suspend inline fun <reified R> eliminarIde(path: String): R =
+        eliminar(path, ideIdentity = ideDeviceIdentity())
+
+    private suspend inline fun <reified R> obtener(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.get(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    private suspend fun descargarBytes(path: String): ByteArray {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.get(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+        return response.body()
+    }
+
+    /** Lee como máximo [maxBytes] incluso si un proxy ignora `Range` y
+     * devuelve el archivo completo con 200 o transferencia chunked. */
+    private suspend fun leerBytesAcotados(response: HttpResponse, maxBytes: Int): ByteArray {
+        val channel = response.bodyAsChannel()
+        val buffer = ByteArray(maxBytes + 1)
+        var total = 0
+        while (total < buffer.size) {
+            val read = channel.readAvailable(buffer, total, buffer.size - total)
+            if (read < 0) break
+            if (read == 0) continue
+            total += read
+        }
+        if (total > maxBytes) throw ApiException.RespuestaInvalida()
+        return buffer.copyOf(total)
+    }
+
+    private suspend inline fun <reified B, reified R> enviar(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.post(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    /** `POST` con JSON cuya respuesta correcta es `204 No Content`. */
+    private suspend inline fun <reified B> enviarSinRespuesta(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.post(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+        // Algunas rutas IDE devuelven un JSON de confirmación con 200 en vez
+        // de 204. Consumirlo libera la conexión para el siguiente polling.
+        response.bodyAsText()
+    }
+
+    /** `POST` sin cuerpo que SÍ decodifica una respuesta (`POST
+     * /v1/remote/sessions/{id}/end`, [endRemoteSession]) — a diferencia de
+     * [enviar], no manda `Content-Type` ni cuerpo alguno. */
+    private suspend inline fun <reified R> enviarSinCuerpo(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.post(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    /** `PUT` cuya respuesta exitosa es `204 No Content`: a
+     * diferencia de [enviar], no intenta decodificar ningún cuerpo. */
+    private suspend inline fun <reified B> actualizarSinCuerpo(
+        path: String,
+        body: B,
+        timeoutMillis: Long? = null,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.put(urlCompleta(path)) {
+                if (timeoutMillis != null) {
+                    timeout { requestTimeoutMillis = timeoutMillis }
+                }
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+        response.bodyAsText()
+    }
+
+    /** `PUT` que SÍ decodifica un cuerpo de respuesta — a diferencia de
+     * [actualizarSinCuerpo] (pensado para `204`), úsalo cuando el endpoint
+     * devuelve la fila ya actualizada (p. ej. `PUT /v1/reminders/{id}`,
+     * [completeReminder]). */
+    private suspend inline fun <reified B, reified R> actualizar(path: String, body: B): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.put(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    /** `PATCH` con cuerpo, decodifica la respuesta (p. ej. `PATCH
+     * /v1/automations/{id}`, [toggleAutomation] — devuelve la fila ya
+     * actualizada). */
+    private suspend inline fun <reified B, reified R> actualizarParcial(path: String, body: B): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.patch(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    /** `PATCH` cuya respuesta exitosa es `204 No Content`. */
+    private suspend inline fun <reified B> parchearSinCuerpo(path: String, body: B) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.patch(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+    }
+
+    /** `DELETE` "mejor esfuerzo" (`revocarDispositivo`): un `404` se trata
+     * como éxito silencioso (idempotente — el recurso ya no está, o el
+     * endpoint todavía no aterrizó del lado del servidor), no como error. */
+    private suspend fun eliminarSinCuerpo(path: String) {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.delete(urlCompleta(path)) { header(HttpHeaders.Authorization, "Bearer $token") }
+        }
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        if (response.status.value == 404) return
+        validarStatus(response)
+        response.bodyAsText()
+    }
+
+    /** `DELETE` que conserva y decodifica el cuerpo exitoso (sesiones IDE). */
+    private suspend inline fun <reified R> eliminar(
+        path: String,
+        ideIdentity: IdeDeviceIdentity? = null,
+    ): R {
+        val token = accessTokenVigente() ?: throw ApiException.SesionExpirada()
+        val response = ejecutar {
+            http.delete(urlCompleta(path)) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                agregarIdentidadIde(ideIdentity)
+            }
+        }
+        return manejarRespuestaAutenticada(response)
+    }
+
+    /** Variante para `/login` y `/refresh`: no llevan `Authorization`, y un
+     * `401` significa credenciales inválidas, no sesión expirada. */
+    private suspend inline fun <reified B, reified R> peticionSinSesion(path: String, body: B): R {
+        val response = ejecutar {
+            http.post(urlCompleta(path)) {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+        if (response.status.value == 401) throw ApiException.CredencialesInvalidas()
+        validarStatus(response)
+        return decodificar(response)
+    }
+
+    private suspend inline fun <reified R> manejarRespuestaAutenticada(response: HttpResponse): R {
+        if (response.status.value == 401) throw ApiException.SesionExpirada()
+        validarStatus(response)
+        return decodificar(response)
+    }
+
+    private suspend fun ejecutar(bloque: suspend () -> HttpResponse): HttpResponse =
+        try {
+            bloque()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw ApiException.SinConexion(e.message ?: e::class.simpleName ?: "error desconocido")
+        }
+
+    private suspend fun validarStatus(response: HttpResponse) {
+        if (response.status.value !in 200..299) {
+            throw ApiException.Servidor(response.status.value, extraerMensajeDeError(response))
+        }
+    }
+
+    private suspend inline fun <reified R> decodificar(response: HttpResponse): R =
+        try {
+            response.body()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ApiException.RespuestaInvalida()
+        }
+
+    /** FastAPI manda `{"detail": "..."}` en sus errores — se usa tal cual
+     * si existe; si no, un texto genérico en vez de fallar decodificando. */
+    private suspend fun extraerMensajeDeError(response: HttpResponse): String =
+        try {
+            edecanJson.decodeFromString(ErrorBody.serializer(), response.bodyAsText()).detail ?: "sin detalle"
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "sin detalle"
+        }
+}
+
+private const val MAX_PRIVATE_MEDIA_RANGE_BYTES = 1024 * 1024

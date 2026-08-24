@@ -1,0 +1,72 @@
+# Dependencias de desarrollo local para Edecán (ver ARCHITECTURE.md §8).
+# Este compose SOLO levanta infraestructura (Postgres+pgvector, Redis,
+# LocalStack). Las apps (api/worker/web) se corren con `make api|worker|web`
+# fuera de Docker durante el desarrollo.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: edecan
+      POSTGRES_PASSWORD: edecan
+      POSTGRES_DB: edecan
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edecan -d edecan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    restart: unless-stopped
+    environment:
+      SERVICES: s3,sqs
+      DEFAULT_REGION: us-east-1
+      PERSISTENCE: "1"
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Crea una sola vez el bucket S3 y las colas SQS que espera la app.
+  # No representa AWS real: apunta siempre a LocalStack (AWS_ENDPOINT_URL).
+  init-aws:
+    image: amazon/aws-cli:2.15.30
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      sh -c "
+      aws --endpoint-url=http://localstack:4566 s3 mb s3://edecan-files || true &&
+      aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name edecan-jobs &&
+      aws --endpoint-url=http://localstack:4566 sqs create-queue --queue-name edecan-jobs-dlq
+      "
+
+volumes:
+  postgres_data:
+  localstack_data:

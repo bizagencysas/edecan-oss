@@ -1,0 +1,682 @@
+/**
+ * Tipos TypeScript que reflejan los contratos de `edecan_schemas` y las
+ * formas reales devueltas por los routers de `edecan_api` (ARCHITECTURE.md
+ * §10.5, §10.12). Se toman del código real de los routers en
+ * `apps/api/edecan_api/routers/*.py` como fuente de verdad, en vez de
+ * duplicarlos a mano desde `docs/api.md`.
+ */
+
+// --- Auth --------------------------------------------------------------
+
+export interface TokenPair {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+// --- Perfil / tenant -----------------------------------------------------
+
+export interface UserOut {
+  id: string;
+  email: string;
+  is_superadmin: boolean;
+  created_at: string;
+}
+
+export interface TenantOut {
+  id: string;
+  name: string;
+  slug: string;
+  plan_key: string;
+  status: string;
+  created_at: string;
+}
+
+export interface MeOut {
+  user: UserOut;
+  tenant: TenantOut;
+  flags: Record<string, boolean | number>;
+}
+
+// --- Persona "nivel Dios" (§10.5) ----------------------------------------
+
+export type RelationshipStyle = "profesional" | "coach" | "amigo" | "romantico";
+
+export interface PersonaConfig {
+  nombre_asistente: string;
+  idioma: string;
+  tono: string;
+  formalidad: 0 | 1 | 2 | 3;
+  emojis: boolean;
+  instrucciones: string;
+  rasgos: string[];
+  memoria_activada: boolean;
+  voice_id: string | null;
+  estilo_relacion: RelationshipStyle;
+  adulto_confirmado: boolean;
+  consentimiento_romantico: boolean;
+}
+
+export const PERSONA_DEFAULT: PersonaConfig = {
+  nombre_asistente: "Edecán",
+  idioma: "es",
+  tono: "cálido y profesional",
+  formalidad: 1,
+  emojis: false,
+  instrucciones: "",
+  rasgos: [],
+  memoria_activada: true,
+  voice_id: null,
+  estilo_relacion: "profesional",
+  adulto_confirmado: false,
+  consentimiento_romantico: false,
+};
+
+// --- Conversaciones y chat (SSE, §10.7, §9) -------------------------------
+
+export interface ConversationOut {
+  id: string;
+  title: string | null;
+  channel: string;
+  created_at: string;
+  updated_at: string;
+  messages?: MessageOut[];
+  pending_confirmation?: PendingConfirmationOut | null;
+  /** Modelo elegido para ESTA conversación; `null` = automático (decide el
+   * Task Router). Lo escribe `PUT /v1/conversations/{id}/model`. */
+  model?: string | null;
+  /** Nivel de esfuerzo persistido; `null` = el default del backend. Se guarda
+   * aunque el modelo activo no lo soporte, para no olvidarlo al cambiar de
+   * modelo (el gate es al aplicarlo, no al guardarlo). */
+  effort?: string | null;
+}
+
+// --- Catálogo del selector de modelos del chat (`GET /v1/models/chat`) ------
+
+/** Los 8 campos que sirve `apps/api/edecan_api/routers/models.py`. La lista
+ * viene de `config/modelos.yml` -> `modelos_chat`, así que la UI NUNCA
+ * hardcodea nombres ni ids: todo se pinta con lo que llega. */
+export interface ChatModelInfo {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  orden: number;
+  /** `true` = va en la portada de la hoja; `false` = detrás de "Más modelos". */
+  principal: boolean;
+  ve_imagenes: boolean;
+  /** `false` = la fila "Esfuerzo" NO se muestra con este modelo activo (el
+   * nivel no cambiaría nada y un control decorativo es peor que ninguno). */
+  soporta_esfuerzo: boolean;
+  contexto_ventana: number;
+}
+
+export interface ChatModelCatalog {
+  default: string;
+  esfuerzos: string[];
+  esfuerzo_default: string;
+  modelos: ChatModelInfo[];
+}
+
+export interface PendingConfirmationOut {
+  tool_call_id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface MessageOut {
+  id: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: {
+    text?: string;
+    attachments?: ArtifactRef[];
+    explanation?: string;
+    pinned?: boolean;
+    bookmark?: boolean;
+    reply_to?: string;
+  } | string | null;
+  tool_calls: unknown[] | null;
+  tokens_in: number;
+  tokens_out: number;
+  created_at: string;
+}
+
+export interface ArtifactRef {
+  file_id: string;
+  filename: string;
+  mime: string | null;
+}
+
+export interface ChatMessageInput {
+  text: string;
+  attachments: string[];
+}
+
+export interface ChatAttachmentDraft {
+  localId: string;
+  filename: string;
+  sizeBytes: number;
+  status: "uploading" | "ready" | "error";
+  fileId: string | null;
+  mime: string | null;
+  error: string | null;
+}
+
+export type ChatScreen =
+  | "assistant"
+  | "create"
+  | "remote"
+  | "activity"
+  | "settings"
+  | "travel"
+  | "orders"
+  | "files"
+  | "skills";
+
+export type ChatAction =
+  | { id: string; label: string; action: "open_url"; url: string }
+  | { id: string; label: string; action: "open_screen"; screen: ChatScreen }
+  | { id: string; label: string; action: "prefill_message"; message: string };
+
+interface ChatBlockBase {
+  schema_version: 1;
+  fallback_text: string | null;
+}
+
+export interface MediaBlock extends ChatBlockBase {
+  type: "media";
+  media_kind: "image" | "video" | "audio";
+  artifact: ArtifactRef;
+  alt: string;
+  caption: string | null;
+}
+
+export interface LinkPreviewBlock extends ChatBlockBase {
+  type: "link_preview";
+  url: string;
+  title: string;
+  description: string | null;
+  site_name: string | null;
+  observed_at: string | null;
+  source_mode: "demo" | "live" | "unknown";
+  actions: ChatAction[];
+}
+
+export interface FlightCardBlock extends ChatBlockBase {
+  type: "flight";
+  offer_id: string;
+  airline: string;
+  origin: string;
+  destination: string;
+  departure: string | null;
+  arrival: string | null;
+  stops: number;
+  price: string;
+  currency: string;
+  source_mode: "demo" | "live" | "unknown";
+  provider: string | null;
+  observed_at: string | null;
+  expires_at: string | null;
+  taxes: string | null;
+  cancellation: string | null;
+  actions: ChatAction[];
+}
+
+export interface HotelCardBlock extends ChatBlockBase {
+  type: "hotel";
+  offer_id: string;
+  name: string;
+  city: string;
+  checkin: string | null;
+  checkout: string | null;
+  rating: string | null;
+  price: string;
+  currency: string;
+  address: string | null;
+  image_url: string | null;
+  source_mode: "demo" | "live" | "unknown";
+  provider: string | null;
+  observed_at: string | null;
+  expires_at: string | null;
+  taxes: string | null;
+  cancellation: string | null;
+  actions: ChatAction[];
+}
+
+export interface QuestionOption {
+  /** Texto del botón. */
+  label: string;
+  description: string | null;
+  /**
+   * Lo que se manda como mensaje al elegir esta opción. `null` = usar `label`.
+   * Separarlos permite mostrar "Personal" y mandar "Publícalo en mi cuenta
+   * personal", que le deja al modelo una instrucción sin ambigüedad.
+   */
+  value: string | null;
+}
+
+/**
+ * Pregunta con 2-4 opciones que el chat muestra como modal, para que el agente
+ * pregunte en vez de adivinar un dato que solo el usuario sabe.
+ *
+ * Emitirla termina el turno: la respuesta viaja como un mensaje normal en el
+ * turno siguiente, así que el cliente no mantiene ningún estado suspendido.
+ */
+export interface QuestionBlock extends ChatBlockBase {
+  type: "question";
+  question: string;
+  header: string | null;
+  options: QuestionOption[];
+  multi_select: boolean;
+  allow_free_text: boolean;
+}
+
+export interface SourceCitation {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  author?: string | null;
+  date?: string | null;
+  excerpt?: string | null;
+  retrieved_at?: string | null;
+}
+
+export interface SourcesBlock extends ChatBlockBase {
+  type: "sources";
+  citations: SourceCitation[];
+}
+
+export interface ChartSeries {
+  label: string;
+  value: number;
+}
+
+export interface ChartBlock extends ChatBlockBase {
+  type: "chart";
+  title: string;
+  series: ChartSeries[];
+}
+
+export type ChatBlock =
+  | MediaBlock
+  | LinkPreviewBlock
+  | FlightCardBlock
+  | HotelCardBlock
+  | QuestionBlock
+  | SourcesBlock
+  | ChartBlock;
+
+export type AgentEvent =
+  | { type: "text_delta"; text: string }
+  | {
+      type: "tool_start";
+      tool_call_id: string | null;
+      name: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_progress";
+      tool_call_id: string | null;
+      name: string;
+      elapsed_seconds: number;
+      message: string;
+    }
+  | {
+      type: "tool_end";
+      tool_call_id: string | null;
+      name: string;
+      result_preview: string;
+      artifacts: ArtifactRef[];
+      blocks_version: 1;
+      blocks: ChatBlock[];
+      mission_id: string | null;
+    }
+  | {
+      type: "confirmation_required";
+      tool_call_id: string;
+      name: string;
+      args: Record<string, unknown>;
+    }
+  | { type: "done"; usage: Record<string, number>; explanation?: string | null }
+  | { type: "error"; message: string };
+
+/** Nombre de evento SSE -> se ignora, el `type` embebido en `data` ya basta. */
+export const SSE_EVENT_NAMES = [
+  "message.delta",
+  "tool.start",
+  "tool.progress",
+  "tool.end",
+  "confirmation.required",
+  "message.done",
+  "error",
+] as const;
+
+// --- Memoria (§10.7, §10.3) ------------------------------------------------
+
+export interface MemoryItem {
+  id: string;
+  kind: string;
+  content: string;
+  importance: number;
+  confidence?: number;
+  source: string;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+/** Ítem propuesto por `POST /v1/memory/import/preview` — todavía sin `id`/
+ * `created_at` porque no se guardó nada aún. */
+export interface MemoryImportItem {
+  kind: string;
+  content: string;
+  importance: number;
+  source: string;
+}
+
+// --- Conectores (§10.8) ---------------------------------------------------
+
+export interface ConnectorAccount {
+  id: string;
+  connector_key: string;
+  external_account_id: string | null;
+  display_name: string | null;
+  status: string;
+  scopes: string[];
+  created_at: string;
+}
+
+export interface ConnectorListItem {
+  key: string;
+  display_name: string;
+  accounts: ConnectorAccount[];
+  /** Solo presentes en conectores OAuth (ver `CONNECTORS` en el backend) —
+   * Twilio/Telegram/Discord/WhatsApp no los traen. */
+  app_configured?: boolean;
+  app_client_id_masked?: string | null;
+  oauth_redirect_uri?: string;
+}
+
+// --- Consentimientos y llamadas de telefonía OSS ----------------------------
+
+export interface ConsentOut {
+  phone_e164: string;
+  kind: "sms" | "voice";
+  source: string;
+}
+
+export type PhoneCallStatus =
+  | "draft"
+  | "confirmed"
+  | "queued"
+  | "ringing"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "busy"
+  | "no_answer"
+  | "cancelled";
+
+export interface PhoneAgentTemplate {
+  id: string;
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  knowledge_context: string;
+  required_information: string;
+  voice_id: string;
+  operating_profile: PhoneAgentOperatingProfile;
+  handles_inbound: boolean;
+  handles_outbound: boolean;
+  is_default: boolean;
+  is_inbound_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PhoneAgentOperatingProfile {
+  funcion_y_mision: string;
+  capabilities: string;
+  out_of_scope: string;
+  allowed_actions: string;
+  prohibited_actions: string;
+  escalation_rules: string;
+  success_criteria: string;
+}
+
+export interface PhoneAgentTemplateInput {
+  name: string;
+  agent_name: string;
+  persona_prompt: string;
+  default_goal: string;
+  opening_message: string;
+  knowledge_context: string;
+  required_information: string;
+  voice_id: string;
+  operating_profile: PhoneAgentOperatingProfile;
+  handles_inbound: boolean;
+  handles_outbound: boolean;
+  is_default: boolean;
+  is_inbound_default: boolean;
+}
+
+export interface PhoneAgentTemplateBundle {
+  schema_version: 1;
+  kind: "edecan.phone-agent-templates";
+  conflict_policy?: "skip" | "replace";
+  templates: PhoneAgentTemplateInput[];
+}
+
+export interface PhoneAgentTemplateImportResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  templates: PhoneAgentTemplate[];
+}
+
+export interface PushStatus {
+  apns: boolean;
+  fcm: boolean;
+  devices_con_token: number;
+}
+
+export interface PushPreferences {
+  work: boolean;
+  content: boolean;
+  design: boolean;
+  files: boolean;
+  self_repair: boolean;
+}
+
+export interface PushCredentialsInput {
+  apns?: {
+    team_id: string;
+    key_id: string;
+    bundle_id: string;
+    p8_key: string;
+    environment: "production" | "sandbox";
+  };
+  fcm?: {
+    service_account_json: string;
+  };
+}
+
+export interface PhoneCallSummary {
+  version: number;
+  status: PhoneCallStatus;
+  direction: "incoming" | "outgoing";
+  participants: Array<{
+    role: "assistant" | "external";
+    name: string | null;
+    phone_e164: string;
+  }>;
+  duration_seconds: number | null;
+  key_points: string[];
+  commitments: string[];
+  next_steps: string[];
+  transcript: { available: boolean; turn_count: number };
+}
+
+export interface PhoneCall {
+  id: string;
+  conversation_id: string;
+  direction: "incoming" | "outgoing";
+  from_e164: string;
+  to_e164: string;
+  recipient_name: string | null;
+  goal: string;
+  agent: {
+    template_id: string | null;
+    template_name: string | null;
+    name: string | null;
+  } | null;
+  status: PhoneCallStatus;
+  confirmed_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error: string | null;
+  summary: PhoneCallSummary | null;
+  summary_generated_at: string | null;
+  created_at: string;
+  updated_at: string;
+  requires_confirmation?: boolean;
+  verification?: {
+    to_e164: string;
+    recipient_name: string;
+    goal: string;
+    agent_template_id: string;
+    agent_template_name: string;
+    agent_name: string;
+  };
+}
+
+// --- Archivos (§10.14) -----------------------------------------------------
+
+export interface FileOut {
+  id: string;
+  filename: string;
+  mime: string;
+  size_bytes: number;
+  status: "uploaded" | "processing" | "ready" | "error" | string;
+  created_at: string;
+}
+
+// --- Recordatorios -----------------------------------------------------
+
+export interface Reminder {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  due_at: string;
+  rrule: string | null;
+  message: string;
+  channel: string;
+  status: "pending" | "sent" | "cancelled" | string;
+  created_at: string;
+  updated_at: string;
+}
+
+// --- Contactos -----------------------------------------------------------
+
+export interface Contact {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  nombre: string;
+  emails: string[];
+  phones: string[];
+  empresa: string | null;
+  notas: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// --- Importar contactos (Google / iCloud) -----------------------------------
+
+/** `POST /v1/contacts/import/google` — reusa el conector OAuth `google` ya
+ * conectado para Gmail/Calendar (ver routers/contacts.py). */
+export interface ContactsImportResult {
+  importados: number;
+  total_google: number;
+}
+
+export interface ICloudStatus {
+  connected: boolean;
+  apple_id: string | null;
+}
+
+/** `POST /v1/contacts/import/icloud` — CardDAV, no OAuth. */
+export interface ICloudContactsImportResult {
+  importados: number;
+  total_icloud: number;
+}
+
+// --- Finanzas --------------------------------------------------------------
+
+export interface Transaction {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  fecha: string;
+  monto: string | number;
+  moneda: string;
+  categoria: string | null;
+  descripcion: string | null;
+  cuenta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceSummary {
+  ingresos: string | number;
+  gastos: string | number;
+  neto: string | number;
+  num_transacciones: number;
+  por_categoria: { categoria: string; total: string | number }[];
+  mes: string;
+}
+
+export interface StripeStatus {
+  connected: boolean;
+  masked: string | null;
+}
+
+export interface StripeSyncResult {
+  sincronizadas: number;
+  total_stripe: number;
+}
+
+// --- Uso y planes (§10.13) --------------------------------------------------
+
+export interface UsageOut {
+  plan_key: string;
+  period_start: string;
+  usage: Record<string, number>;
+  limits: Record<string, number>;
+  flags: Record<string, boolean>;
+}
+
+export const FLAG_VOICE_WEB = "voice.web";
+export const FLAG_VOICE_TELEPHONY = "voice.telephony";
+export const FLAG_CONNECTORS_SOCIAL = "connectors.social";
+export const FLAG_CAMPAIGNS = "campaigns";
+export const FLAG_COMPANION = "companion";
+export const FLAG_MODELS_PREMIUM = "models.premium";
+
+export const LIMIT_MESSAGES_PER_DAY = "limits.messages_per_day";
+export const LIMIT_VOICE_MINUTES_MONTH = "limits.voice_minutes_month";
+export const LIMIT_STORAGE_MB = "limits.storage_mb";
+export const LIMIT_PHONE_NUMBERS = "limits.phone_numbers";
+export const LIMIT_SEATS = "limits.seats";
+
+export const UNLIMITED = -1;
+
+export const PLAN_LABELS: Record<string, string> = {
+  free_selfhost: "Core self-host",
+  hosted_basic: "Hosted Básico",
+  hosted_pro: "Hosted Pro",
+  hosted_business: "Hosted Business",
+};

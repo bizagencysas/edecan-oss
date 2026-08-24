@@ -1,0 +1,58 @@
+[project]
+name = "edecan-creative"
+version = "0.7.4"
+description = "Image and office-document generation tools for Edecan"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "httpx>=0.27",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aioboto3>=13.0",
+    "edecan-core",
+    "edecan-schemas",
+    "edecan-db",
+    "edecan-voice",
+    # `social.py` llama a `ctx.llm.complete` de verdad para el crítico de imagen
+    # (`imagen_editorial.criticar`, vía un `llamar_modelo` inyectado) y necesita
+    # `ChatMessage`/`CompletionRequest` de `edecan_llm.base` para construirlo —
+    # mismo motivo documentado en `packages/docanalysis/pyproject.toml` para su
+    # propio uso de `ctx.llm.complete` en `vision.py`.
+    "edecan-llm",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "fpdf2>=2.7",
+    "Pillow>=10.0",
+]
+
+# Entry point que consume `edecan_core.ToolRegistry.load_entry_points`
+# (group="edecan.tools", ver ARCHITECTURE.md §10.7): resuelve a un callable
+# sin argumentos que devuelve `list[Tool]`.
+[project.entry-points."edecan.tools"]
+creative = "edecan_creative:get_all_tools"
+
+[dependency-groups]
+dev = [
+    "pypdf>=5",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[tool.uv.sources]
+edecan-core = { workspace = true }
+edecan-schemas = { workspace = true }
+edecan-db = { workspace = true }
+edecan-voice = { workspace = true }
+edecan-llm = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["edecan_creative"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

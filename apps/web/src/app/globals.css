@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: light dark;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-50;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+::selection {
+  @apply bg-brand-200 text-brand-950;
+}
+
+/* Wordmark redondo y grueso sin descargar fuentes durante el build.
+   Prioriza familias nativas de macOS, Windows y Linux para que el
+   empaquetado de escritorio también funcione sin conexión. */
+.wordmark {
+  font-family:
+    ui-rounded,
+    "SF Pro Rounded",
+    "Arial Rounded MT Bold",
+    "Nunito Sans",
+    "Trebuchet MS",
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.005em;
+}
+
+/* Scrollbars discretos para paneles internos (lista de chat, sidebars). */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225 / 0.8) transparent;
+}
+
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}
+
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}

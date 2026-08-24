@@ -1,0 +1,49 @@
+package cc.edecan.app.vm
+
+import cc.edecan.shared.REMOTE_MOUSE_BUTTONS
+import cc.edecan.shared.REMOTE_POINTER_ACCIONES
+import cc.edecan.shared.REMOTE_SPECIAL_KEYS
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * Tests JVM puros de [TECLAS_ESPECIALES] — el vocabulario/etiquetas de la
+ * barra de teclado de `RemotoScreen` (WP-V6-09), movidos a esta clase
+ * precisamente para poder testearlos sin Compose/Android. Fija que coincide EXACTO con el
+ * vocabulario real de `edecan_api.routers.remote.SpecialKey`
+ * (`shared/RemoteModels.kt::REMOTE_SPECIAL_KEYS`).
+ */
+class RemotoTeclasTest {
+
+    @Test
+    fun teclasEspeciales_visibles_pertenecen_al_vocabulario_del_backend() {
+        assertTrue(REMOTE_SPECIAL_KEYS.containsAll(TECLAS_ESPECIALES.map { it.valor }))
+    }
+
+    @Test
+    fun teclasEspeciales_no_tienen_duplicados() {
+        assertEquals(14, TECLAS_ESPECIALES.size)
+        assertEquals(TECLAS_ESPECIALES.size, TECLAS_ESPECIALES.map { it.valor }.toSet().size)
+    }
+
+    @Test
+    fun cada_tecla_especial_tiene_etiqueta_y_titulo_no_vacios() {
+        TECLAS_ESPECIALES.forEach { tecla ->
+            assertTrue(tecla.etiqueta.isNotBlank(), "${tecla.valor} sin etiqueta")
+            assertTrue(tecla.titulo.isNotBlank(), "${tecla.valor} sin título")
+        }
+    }
+
+    @Test
+    fun vocabulario_de_pointer_accion_y_mouse_button_sigue_siendo_el_de_remote_py() {
+        // Sanity check adicional (no específico de la UI): estos dos sets se
+        // usan directo en `RemotoViewModel.enviarPointer` — un cambio de
+        // vocabulario en el backend debe hacer fallar ESTE test primero.
+        assertEquals(
+            setOf("move", "click", "double_click", "right_click", "mouse_down", "mouse_up", "drag", "scroll"),
+            REMOTE_POINTER_ACCIONES,
+        )
+        assertEquals(setOf("left", "right", "middle"), REMOTE_MOUSE_BUTTONS)
+    }
+}

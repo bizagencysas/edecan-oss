@@ -1,0 +1,56 @@
+# Capa pública para un Edecán personal siempre disponible.
+#
+# Se aplica ENCIMA de compose.selfhost.yml. El núcleo sigue siendo el mismo:
+# esta capa solo agrega TLS automático, un único origen HTTPS y los valores
+# que distinguen un nodo online del companion local.
+#
+# Uso recomendado: scripts/instalar-online.sh
+
+services:
+  migrate:
+    environment:
+      ENV: prod
+      PUBLIC_BASE_URL: https://${EDECAN_DOMAIN}
+      WEB_BASE_URL: https://${EDECAN_DOMAIN}
+
+  api:
+    environment:
+      ENV: prod
+      PUBLIC_BASE_URL: https://${EDECAN_DOMAIN}
+      WEB_BASE_URL: https://${EDECAN_DOMAIN}
+      EDECAN_LOCAL_MODE: "false"
+    # Solo Caddy publica la API. El bind de compose.selfhost permanece en
+    # loopback como puerto de diagnóstico del propio servidor.
+
+  worker:
+    environment:
+      ENV: prod
+      PUBLIC_BASE_URL: https://${EDECAN_DOMAIN}
+      WEB_BASE_URL: https://${EDECAN_DOMAIN}
+
+  web:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://${EDECAN_DOMAIN}
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    environment:
+      EDECAN_DOMAIN: ${EDECAN_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.online:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  caddy_data:
+  caddy_config:

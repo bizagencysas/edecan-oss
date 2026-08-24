@@ -1,0 +1,201 @@
+"""`MCPClient` — conecta a un servidor MCP externo (vía cualquier
+`edecan_mcp.transport.MCPTransport`), hace el *handshake* y descubre/llama
+sus tools. Adaptado de OpenJarvis (`src/openjarvis/mcp/client.py`,
+Apache-2.0, ver `NOTICE`), reescrito async.
+"""
+
+from __future__ import annotations
+
+import itertools
+import logging
+from typing import Any
+
+from .protocol import MCPRequest, MCPResponse
+from .transport import MCPTransport, MCPTransportError
+
+logger = logging.getLogger(__name__)
+
+PROTOCOL_VERSION = "2025-03-26"
+CLIENT_NAME = "edecan"
+CLIENT_VERSION = "1.0"
+
+MAX_RESULT_CHARS = 8000
+_TRUNCATION_SUFFIX = "\n\n[…resultado truncado — superó los 8000 caracteres…]"
+
+# `tools/list` de la spec MCP pagina: cada respuesta puede traer un
+# `nextCursor` que hay que devolver como `cursor` en la SIGUIENTE llamada
+# hasta que deje de aparecer. Sin esto, un servidor con más tools de las que
+# caben en una página quedaba truncado en silencio a la primera (medido:
+# servidor propio con 250 tools / 50 por página → Edecán veía 50, sin ningún
+# aviso). El tope de páginas es la contraparte defensiva: un servidor
+# roto/hostil que repita el mismo `nextCursor` para siempre no debe colgar
+# `list_tools()` — 200 páginas ya es un catálogo enorme (con 50 tools/página,
+# 10.000 tools) para cualquier servidor real.
+MAX_TOOLS_LIST_PAGES = 200
+
+
+class MCPClientError(RuntimeError):
+    """Error de protocolo/negocio MCP con mensaje YA legible para mostrarle
+    al modelo o al usuario — `edecan_mcp.tool_adapter` nunca deja escapar un
+    traceback crudo hacia el chat, siempre pasa por este tipo (o por
+    `MCPTransportError`, que tiene la misma garantía)."""
+
+
+class MCPClient:
+    """Cliente MCP sobre un `MCPTransport` ya construido.
+
+    Uso típico (ver `edecan_mcp.tool_adapter`, que abre uno nuevo por
+    llamada en v1, sin caché de sesión):
+
+        transport = HTTPTransport(url, headers=headers)
+        async with MCPClient(transport) as client:
+            await client.initialize()
+            tools = await client.list_tools()
+            texto = await client.call_tool(tools[0]["name"], {})
+    """
+
+    def __init__(self, transport: MCPTransport) -> None:
+        self._transport = transport
+        self._initialized = False
+        self._capabilities: dict[str, Any] = {}
+        self._id_counter = itertools.count(1)
+
+    def _next_id(self) -> int:
+        return next(self._id_counter)
+
+    async def _send(self, method: str, params: dict[str, Any] | None = None) -> MCPResponse:
+        request = MCPRequest(method=method, params=params or {}, id=self._next_id())
+        try:
+            response = await self._transport.send(request)
+        except MCPTransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - cualquier fallo de transporte se traduce
+            raise MCPTransportError(f"Fallo de transporte MCP: {exc}") from exc
+        if response.error is not None:
+            mensaje = (
+                response.error.get("message", "error desconocido")
+                if isinstance(response.error, dict)
+                else str(response.error)
+            )
+            raise MCPClientError(f"El servidor MCP respondió un error en «{method}»: {mensaje}")
+        return response
+
+    async def initialize(self) -> dict[str, Any]:
+        """Handshake MCP completo: `initialize` + `notifications/initialized`
+        (spec: el cliente DEBE mandar esa notificación tras recibir la
+        respuesta de `initialize`, antes de cualquier otra llamada)."""
+        params = {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
+        }
+        response = await self._send("initialize", params)
+        self._initialized = True
+        self._capabilities = (response.result or {}).get("capabilities", {})
+        await self._notify("notifications/initialized")
+        return response.result or {}
+
+    async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        request = MCPRequest(method=method, params=params or {}, id=None)
+        try:
+            await self._transport.send_notification(request)
+        except MCPTransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise MCPTransportError(f"Fallo de transporte MCP (notificación): {exc}") from exc
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """`[{"name", "description", "input_schema"}, …]` — tools que expone
+        el servidor, siguiendo `nextCursor` hasta agotar TODAS las páginas
+        (ver `MAX_TOOLS_LIST_PAGES` para el tope de seguridad). Descarta
+        silenciosamente cualquier entrada sin `name` (servidor mal
+        comportado) en vez de reventar."""
+        tools: list[dict[str, Any]] = []
+        cursor: str | None = None
+        paginas = 0
+        while True:
+            params = {"cursor": cursor} if cursor else {}
+            response = await self._send("tools/list", params)
+            resultado = response.result or {}
+            crudo = resultado.get("tools", [])
+            if isinstance(crudo, list):
+                tools.extend(
+                    {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "input_schema": t.get("inputSchema", {}),
+                    }
+                    for t in crudo
+                    if isinstance(t, dict) and t.get("name")
+                )
+            paginas += 1
+
+            siguiente_cursor = resultado.get("nextCursor")
+            if not siguiente_cursor:
+                # Ausencia de `nextCursor` (o cadena vacía) = no hay más
+                # páginas, exactamente lo que dice la spec.
+                break
+            if paginas >= MAX_TOOLS_LIST_PAGES:
+                logger.warning(
+                    "tools/list superó %d páginas sin agotar nextCursor; se corta acá para no "
+                    "colgarse (servidor roto o hostil).",
+                    MAX_TOOLS_LIST_PAGES,
+                )
+                break
+            cursor = str(siguiente_cursor)
+        return tools
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        max_chars: int | None = MAX_RESULT_CHARS,
+    ) -> str:
+        """Ejecuta la tool remota `name` y devuelve su resultado como texto
+        (bloques `type=text` concatenados). Por defecto se trunca a
+        `MAX_RESULT_CHARS` para no inundar el contexto de un modelo. Los
+        consumidores internos que necesitan parsear una respuesta estructurada
+        completa pueden pasar `max_chars=None`; esto no cambia el contrato de
+        las tools MCP que se presentan directamente al modelo.
+
+        Si el servidor marca `isError=True`, el texto se devuelve igual (con
+        un prefijo "Error MCP:") en vez de lanzar — es el resultado de
+        NEGOCIO de la tool remota, no un fallo de protocolo/transporte (ver
+        `edecan_core.tools.base.Tool.run`: los errores de negocio son
+        contenido, no excepciones).
+        """
+        response = await self._send("tools/call", {"name": name, "arguments": arguments or {}})
+        resultado = response.result or {}
+        texto = _concatenar_contenido(resultado.get("content") or [])
+        if resultado.get("isError"):
+            return f"Error MCP: {texto or 'la herramienta remota reportó un error sin detalle.'}"
+        return _truncar(texto, max_chars=max_chars)
+
+    async def close(self) -> None:
+        await self._transport.close()
+
+    async def __aenter__(self) -> MCPClient:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()
+
+
+def _concatenar_contenido(bloques: list[Any]) -> str:
+    partes = [
+        str(bloque.get("text", ""))
+        for bloque in bloques
+        if isinstance(bloque, dict) and bloque.get("type") == "text"
+    ]
+    return "\n".join(partes)
+
+
+def _truncar(texto: str, *, max_chars: int | None = MAX_RESULT_CHARS) -> str:
+    if max_chars is None or len(texto) <= max_chars:
+        return texto
+    limite = max(0, max_chars)
+    return texto[:limite] + _TRUNCATION_SUFFIX
+
+
+__all__ = ["MAX_RESULT_CHARS", "MAX_TOOLS_LIST_PAGES", "MCPClient", "MCPClientError"]

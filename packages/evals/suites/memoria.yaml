@@ -1,0 +1,48 @@
+# Suite: memoria.
+#
+# Cada caso es multi-turno (`mensajes` con 2+ elementos): el primer turno le
+# "enseña" un hecho/preferencia al asistente y el segundo pregunta por él.
+# `edecan_evals.runner.ejecutar_caso` acumula el historial entre turnos y
+# evalúa `esperado` contra el texto final del ÚLTIMO turno — así se valida
+# que la orquestación (historial -> siguiente turno -> respuesta) funciona,
+# sin necesitar acceso directo a `MemoryStore`.
+nombre: memoria
+descripcion: >
+  Verifica, en casos de 2 turnos, que el segundo turno pueda responder con un
+  dato que el usuario dio en el primero.
+
+guion:
+  "color favorito es el azul":
+    texto: "Anotado: tu color favorito es el azul."
+  "cu[aá]l es mi color favorito":
+    texto: "Tu color favorito es el azul."
+  "diseñadora gr[aá]fica":
+    texto: "Perfecto, quedó anotado que trabajas como diseñadora gráfica freelance."
+  "a qu[eé] me dedico":
+    texto: "Te dedicas al diseño gráfico como freelance."
+  "aniversario de bodas es el 14 de febrero":
+    texto: "Listo, anotado: 14 de febrero."
+  "cu[aá]ndo es mi aniversario":
+    texto: "Tu aniversario es el 14 de febrero."
+
+casos:
+  - id: mem01_color_favorito
+    mensajes:
+      - "Mi color favorito es el azul, ¿lo recuerdas para la próxima vez?"
+      - "¿Cuál es mi color favorito?"
+    esperado:
+      contiene: ["azul"]
+
+  - id: mem02_ocupacion
+    mensajes:
+      - "Trabajo como diseñadora gráfica freelance, apúntalo."
+      - "¿A qué me dedico?"
+    esperado:
+      contiene: ["diseño"]
+
+  - id: mem03_fecha_importante
+    mensajes:
+      - "Mi aniversario de bodas es el 14 de febrero, no lo olvides."
+      - "¿Cuándo es mi aniversario?"
+    esperado:
+      contiene: ["14 de febrero"]

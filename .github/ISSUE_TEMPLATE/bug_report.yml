@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a reproducible problem in Edecan.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Edecan. Search existing issues first and remove secrets, personal data, tokens, and document contents from every field and attachment.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true
+        - label: I read and agree to follow the Code of Conduct.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - API or worker
+        - Web application
+        - Desktop application
+        - iOS application
+        - Android application
+        - Companion runtime
+        - Installation or packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the Edecan release, tag, or commit SHA where the problem occurs.
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, architecture, runtime versions, and deployment mode that matter to this report.
+      placeholder: |
+        OS:
+        Architecture:
+        Python/Node/Rust/Swift/Java version:
+        Installation or deployment method:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest deterministic sequence that demonstrates the problem.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the smallest useful excerpt. Redact secrets, personal data, tokens, local paths, and document contents.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, traces, or links that help explain the problem after redacting sensitive information.

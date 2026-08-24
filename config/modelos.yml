@@ -1,0 +1,315 @@
+# Qué cerebro usa Edecán para cada cosa.
+#
+# Este archivo es DATO, no código. Cambiar de modelo es editar aquí, no tocar
+# ningún módulo. Es la forma más simple del contrato `AgentProfile` descrito en
+# `docs/arquitectura-forge.md` §A: cada perfil ata una clase de tarea a unos
+# requisitos de capacidad y a un presupuesto.
+#
+# Los PRECIOS no se codifican a mano: se leen de la propia API de Cloudflare
+#   GET /client/v4/accounts/{ACCOUNT_ID}/ai/models/search?search={modelo}
+# Los que aparecen abajo son la lectura real del 27-07-2026 y están solo como
+# referencia humana. Si el código los necesita, los consulta; no los copia.
+
+version: 1
+proveedor_por_defecto: workers_ai
+
+perfiles:
+
+  # ----------------------------------------------------------------------- #
+  chat_rapido:
+    descripcion: >
+      Conversar. Amigo, socio, consulta suelta. Respuesta inmediata, sin
+      herramientas pesadas y sin plan. Es el 90 % de las interacciones y tiene
+      que costar prácticamente nada.
+    # OJO, esto cambió: `modelos_ide` y `modelos_chat` (más abajo) SÍ se leen en tiempo de
+    # ejecución — `packages/llm/edecan_llm/task_router.py` los carga con
+    # `modelos_ide_disponibles()` / `modelos_chat_disponibles()` y el fallback constante de
+    # ese módulo solo cubre instalaciones sin este archivo. Lo que NO se lee es
+    # `perfiles.chat_rapido.modelo`: la autoridad del modelo que corre el chat cuando nadie
+    # eligió nada sigue siendo `MODELO_POR_DEFECTO` en
+    # `packages/llm/edecan_llm/workers_ai.py` (con `WORKERS_AI_CHAT_MODEL` por encima). Aquí
+    # se documenta la decisión y su evidencia; si cambias una, cambia la otra. Dejar las dos
+    # divergentes ya costó caro una vez: este archivo decía `gpt-oss-20b` mientras el chat
+    # corría en glm-5.2 a 42 s por vuelta, y nadie lo notó porque el config se veía correcto.
+    #
+    # Medición 1 (29-07-2026): latencia de un turno con herramientas, sin medir acierto.
+    #   gpt-oss-20b        0.99s
+    #   mistral-small-3.1  1.68s
+    #   qwen3-30b-a3b      2.02s
+    #   gemma-4-26b-a4b    3.05s
+    #   glm-4.7-flash      5.13s
+    #
+    # Medición 2 (29-07-2026): la anterior medía RAPIDEZ pero no si ACERTABA la herramienta,
+    # que es lo que de verdad rompe una conversación. 3 corridas por caso, mismas 9 tools:
+    #
+    #                     crear un post      contestar una pregunta     charla suelta
+    #   llama-4-scout     3/3   4.04s        3/3   3.74s                3/3   0.99s
+    #   gpt-oss-20b       4/5   ~2.5s        5/5   ~2.4s                5/5   0.61s
+    #   glm-4.7-flash     3/3  12.38s        1/3   4.49s                3/3   5.14s (peor 34.25s)
+    #
+    # Decide la columna del medio: contestar una pregunta llamando a la herramienta correcta.
+    # Es el turno más frágil del chat (el usuario ya invirtió un mensaje y espera acción) y es
+    # exactamente donde falló en producción. gpt-oss-20b además devuelve la llamada como TEXTO
+    # en vez de como tool_call 1 de cada 5 veces: cuando eso pasa, la herramienta no se ejecuta
+    # y el usuario ve al asistente "hablando de" hacer algo en vez de hacerlo.
+    #
+    # llama-4-scout: 15/15 en las tres columnas, nativamente multimodal (sirve para las
+    # imágenes que el chat ya recibe) y 131k de ventana.
+    modelo: "@cf/meta/llama-4-scout-17b-16e-instruct"
+    modelo_alternativo: "@cf/moonshotai/kimi-k2.7-code"
+    horizonte: L0            # reflejo: un turno, sin checkpoint ni verificación
+    contexto_max_tokens: 16000
+    presupuesto_usd_por_turno: 0.01
+    herramientas: [memoria, agenda, contactos, buscar]
+    requisitos:
+      function_calling: true
+      ttft_p95_s: 1.5        # si no lo cumple, deja de servir para chat
+    precio_referencia:       # USD por millón — lectura de la API, no autoridad
+      entrada: 0.0605
+      salida: 0.40
+    contexto_ventana: 131072
+
+  # ----------------------------------------------------------------------- #
+  voz_llamada:
+    descripcion: >
+      Turno de teléfono. Tiene que contestar en menos de dos segundos: si tarda
+      siete, el otro lado pregunta «¿escuchas?» y cuelga. Sin herramientas.
+    # chat_rapido (llama-3.3-70b) con la plantilla de Asistente de Recepción (~13k tokens de
+    # entrada) midió 6–7 s por turno el 22-ago-2026. Eso no sirve en una llamada.
+    # llama-4-scout en la medición 2 del chat: 0.99 s en charla suelta.
+    modelo: "@cf/meta/llama-4-scout-17b-16e-instruct"
+    modelo_alternativo: "@cf/openai/gpt-oss-20b"
+    horizonte: L0
+    contexto_max_tokens: 16000
+    presupuesto_usd_por_turno: 0.01
+    herramientas: []
+    requisitos:
+      function_calling: false
+      ttft_p95_s: 1.5
+    contexto_ventana: 131072
+
+  # ----------------------------------------------------------------------- #
+  ingenieria_software:
+    descripcion: >
+      Forge. Construir software de verdad: escribir, ejecutar, ver el error,
+      arreglar, probar, desplegar. Sesiones de horas o días.
+    # Medido el 29-07-2026 contra esta cuenta, tarea de edición con herramientas:
+    #   gpt-oss-120b        0.58s   128k
+    #   kimi-k2.7-code      1.25s   262k   <- elegido: especialista en código
+    #   nemotron-3-120b     1.68s   256k
+    #   kimi-k2.6           2.06s   262k
+    #   glm-5.2            42.10s   262k   <- el anterior
+    # Los 42s de glm-5.2 no son un valor atípico de una llamada: son 42s POR VUELTA del
+    # ciclo agente↔herramientas. Con las 53 vueltas que llegó a dar una edición de README,
+    # eso son horas. Un modelo así no sirve para trabajo agéntico por muy capaz que sea.
+    modelo: "@cf/moonshotai/kimi-k2.7-code"
+    modelo_preferido: "@cf/moonshotai/kimi-k3"   # en cuanto la cuenta tenga acceso
+    modelo_alternativo: "@cf/openai/gpt-oss-120b"
+    horizonte: L3            # proyecto multi-sesión, con checkpoint y verificación
+    contexto_max_tokens: 96000   # provisional: lo fija la sonda de contexto útil
+    presupuesto_usd_por_tarea: 2.00
+    herramientas: [filesystem, terminal, git, browser, database, deploy, mcp]
+    verificacion: obligatoria    # el contrato de aceptación no es opcional aquí
+    requisitos:
+      function_calling: true
+      reasoning: true
+      contexto_util_min: 48000   # umbral GO/NO-GO de la fase 0
+    precio_referencia:
+      entrada: 1.40
+      salida: 4.40
+      entrada_cacheada: 0.26     # 5x más barato: el orden del prompt importa
+    contexto_ventana: 262144
+
+# --------------------------------------------------------------------------- #
+# Modelos elegibles para Forge Studio / IDE.
+#
+# Lectura real del catálogo Workers AI de esta cuenta el 28-07-2026. La UI
+# puede permitir cambiar entre estos modelos por turno, pero el estado de la
+# conversación se conserva por `conversation_id` y no por el nombre del modelo.
+# Si Cloudflare añade Kimi K3 a la cuenta, se agrega aquí sin tocar código.
+# --------------------------------------------------------------------------- #
+modelos_ide:
+  - id: "@cf/zai-org/glm-5.2"
+    nombre: "GLM 5.2"
+    descripcion: "Modelo principal para ingeniería: contexto largo, tool calling y buen balance entre razonamiento y costo."
+    insignia: "Principal"
+    contexto_ventana: 262144
+    capacidades: [codigo, razonamiento, herramientas, contexto_largo]
+  - id: "@cf/moonshotai/kimi-k2.7-code"
+    nombre: "Kimi K2.7 Code"
+    descripcion: "Especialista de código: refactors grandes, debugging y sesiones largas con visión cuando la cuenta lo soporte."
+    insignia: "Código"
+    contexto_ventana: 262144
+    capacidades: [codigo, razonamiento, herramientas, vision, contexto_largo]
+  - id: "@cf/nvidia/nemotron-3-120b-a12b"
+    nombre: "Nemotron 3 120B"
+    descripcion: "Modelo grande generalista para análisis pesado, arquitectura y razonamiento técnico."
+    insignia: "Pesado"
+    contexto_ventana: 256000
+    capacidades: [razonamiento, herramientas, contexto_largo]
+  - id: "@cf/openai/gpt-oss-120b"
+    nombre: "GPT-OSS 120B"
+    descripcion: "Modelo abierto grande para análisis general, escritura técnica y tareas de producto."
+    insignia: "OSS"
+    contexto_ventana: 128000
+    capacidades: [razonamiento, herramientas]
+  - id: "@cf/meta/llama-4-scout-17b-16e-instruct"
+    nombre: "Llama 4 Scout"
+    descripcion: "Modelo multimodal útil para visión, revisión de interfaces y tareas donde la imagen importa."
+    insignia: "Visión"
+    contexto_ventana: 131000
+    capacidades: [vision, herramientas]
+
+# --------------------------------------------------------------------------- #
+# Modelos elegibles para el SELECTOR DEL CHAT (hoja "Seleccionar modelo" de iOS
+# y de la web). Autoridad declarada del catálogo: lo lee
+# `edecan_llm.task_router.modelos_chat_disponibles()` y lo sirve tal cual
+# `GET /v1/models/chat`. Agregar o retirar un modelo del selector es editar
+# aquí; el fallback constante de `task_router.py` existe solo para
+# instalaciones que no traigan este archivo.
+#
+# La selección es propiedad de la CONVERSACIÓN (`conversations.chat_model` /
+# `chat_effort`, migración 0027), no de la credencial del tenant: por eso
+# `PATCH /v1/credentials/llm/models` sigue devolviendo 409. NULL en esas
+# columnas = automático, y ahí decide la cadena de siempre
+# (`WORKERS_AI_CHAT_MODEL` -> `MODELO_POR_DEFECTO`).
+#
+# Solo modelos CON visión: si trabajan en la Mac tienen que ver la pantalla.
+# Llama 3.3 (Copla) y los GPT-OSS/Nemotron se retiraron porque son ciegos.
+# Nombres de formas poéticas, elegidos por el dueño. Medido el 29-07-2026:
+#
+#   - VISIÓN verificada empíricamente, no por la ficha del proveedor: PNG de
+#     64x64 con la mitad de arriba roja y la de abajo azul, mandado como bloque
+#     `image_url` con data: URI, pidiendo ubicar AMBAS mitades (no se acierta
+#     adivinando un color). Los cuatro contestaron "arriba rojo, abajo azul".
+#   - ACIERTO DE HERRAMIENTAS: 9/9 los cuatro (3 casos x 3 corridas, 20 tools
+#     ofrecidas). llama-4-scout además 15/15 en la medición del perfil de
+#     arriba.
+#   - PISO DE PRESUPUESTO: con `max_tokens=100` los dos kimis devolvieron
+#     `content` VACÍO mirando la imagen; con 2000 acertaron. El razonamiento
+#     siempre activo (ver la regla `presupuesto_de_razonamiento`) se come el
+#     presupuesto ANTES de la primera palabra. De ahí sale el piso de 2048 del
+#     Esfuerzo "bajo" en `edecan_core.agent._max_tokens_por_esfuerzo`.
+#   - PISO DE TAMAÑO DE IMAGEN: gemma-4 (Soneto) responde HTTP 400
+#     "image dimensions must be at least 10px" con imágenes de menos de 10px de
+#     lado. Hoy el chat manda la imagen original sin miniaturizar; si algún día
+#     se agrega re-escalado, Soneto es el primero que se rompe.
+#
+# Descartados con evidencia dura, para que nadie los vuelva a proponer:
+# glm-5.2 (42 s POR VUELTA del ciclo agente-herramientas),
+# llama-3.2-11b-vision (ve imágenes pero no tiene function calling: inútil para
+# un asistente con herramientas).
+#
+# `soporta_esfuerzo` es lo que decide si la UI muestra la fila "Esfuerzo": solo
+# los que razonan de verdad. Un control que no cambia nada es peor que no
+# tenerlo.
+# --------------------------------------------------------------------------- #
+modelos_chat:
+  - id: "@cf/meta/llama-4-scout-17b-16e-instruct"
+    nombre: "Scout"
+    descripcion: "Rápido y multimodal · ve la Mac y las fotos"
+    orden: 1
+    principal: true
+    ve_imagenes: true
+    soporta_esfuerzo: false
+    contexto_ventana: 131072
+  - id: "@cf/moonshotai/kimi-k2.7-code"
+    nombre: "Silva"
+    descripcion: "Contexto enorme, fuerte en código · ve imágenes"
+    orden: 2
+    principal: true
+    ve_imagenes: true
+    soporta_esfuerzo: true
+    contexto_ventana: 262144
+  - id: "@cf/google/gemma-4-26b-a4b-it"
+    nombre: "Soneto"
+    descripcion: "Equilibrado y con criterio · ve imágenes"
+    orden: 3
+    principal: true
+    ve_imagenes: true
+    soporta_esfuerzo: true
+    contexto_ventana: 256000
+  - id: "@cf/moonshotai/kimi-k2.6"
+    nombre: "Oda"
+    descripcion: "El más profundo, para lo difícil · ve imágenes"
+    orden: 4
+    principal: true
+    ve_imagenes: true
+    soporta_esfuerzo: true
+    contexto_ventana: 262144
+
+# --------------------------------------------------------------------------- #
+# Reglas que gobiernan este archivo
+# --------------------------------------------------------------------------- #
+reglas:
+
+  - id: prefijo_estable
+    descripcion: >
+      El prompt se ordena siempre igual — sistema, herramientas, contexto
+      estable, historial, turno actual — y nunca se reordena entre turnos.
+      Con la entrada cacheada a 0,19 frente a 0,95, esto vale del orden de un
+      65 % más de trabajo con el mismo crédito.
+
+  - id: presupuesto_de_razonamiento
+    descripcion: >
+      El razonamiento de los modelos Kimi está siempre activo, llega en
+      `message.reasoning_content` y se factura como salida. Medido: una
+      respuesta de dos palabras gastó 65 tokens de salida. `max_tokens` debe
+      reservar al menos 200 tokens por encima del contenido esperado, o la
+      respuesta llega VACÍA y se cobra igual.
+
+  - id: sin_nombres_de_modelo_en_el_codigo
+    descripcion: >
+      Ningún módulo comprueba `if modelo == "..."`. Se consulta la ModelCard
+      (`packages/forge-probe`) o este archivo. Cambiar de proveedor debe ser
+      una edición aquí y nada más.
+
+  - id: piso_medido
+    descripcion: >
+      Los `requisitos` de un perfil se contrastan contra mediciones reales, no
+      contra la ficha del proveedor. Un modelo sin medir se admite marcado como
+      no verificado, nunca se rechaza en silencio.
+
+# --------------------------------------------------------------------------- #
+# Política de razonamiento
+#
+# Tanto los modelos Kimi como GLM-5.2 devuelven `message.reasoning_content`,
+# separado de `message.content`. Es el rastro de CÓMO pensó el agente, y se
+# conserva: es la única forma de responder "por qué hizo eso" seis horas después.
+# --------------------------------------------------------------------------- #
+razonamiento:
+
+  conservar: true
+  para: [depuracion, reproducibilidad, auditoria, evaluacion]
+
+  # Cuatro reglas que hacen que conservarlo sea viable en vez de un problema.
+
+  nunca_reenviar_al_modelo: >
+    El `reasoning_content` de un turno JAMÁS vuelve al historial del siguiente.
+    Es del turno, no de la conversación. Reenviarlo cuesta tokens de entrada y
+    empeora la salida. Se guarda; no se recicla.
+
+  siempre_al_cas_nunca_en_linea: >
+    El razonamiento va al almacén por hash como blob, y el evento del journal
+    solo lleva la referencia. Es la invariante 4 y aquí es obligatoria por
+    volumen: medido con GLM-5.2, 2.305 caracteres de razonamiento para una
+    respuesta de una frase — el 88 % de los tokens de salida. Un journal con
+    razonamiento en línea se vuelve ilegible y no se puede compactar.
+
+  redaccion_obligatoria: >
+    El filtro de secretos DEBE cubrir el razonamiento, y con más motivo que el
+    contenido. Es exactamente donde un modelo repite en claro la clave que acaba
+    de leer en un archivo mientras `content` sale limpio. Un pipeline que solo
+    redacta `content` tiene una fuga abierta.
+
+  no_es_memoria: >
+    Guardar razonamiento NO hace que el agente aprenda. Es evidencia, no
+    memoria. Convertirlo en aprendizaje exige decidir qué merece recordarse y
+    cómo se recupera, que es el motor de memoria de `docs/arquitectura-forge.md`
+    §3. Necesario, pero muy lejos de suficiente.
+
+  visibilidad:
+    ide: mostrar        # aquí el usuario es quien desarrolla: ver el razonamiento
+                        # es depuración, y va en el inspector de contexto
+    chat: ocultar       # en la conversación es ruido y expone el andamiaje
+    journal: siempre    # por referencia al CAS, redactado

@@ -31,12 +31,6 @@ build-backend = "hatchling.build"
 # árbol de fuentes y desapareciera en cuanto el paquete se instalara.
 packages = ["edecan_forge_probe", "bench"]
 
-[tool.hatch.build.targets.wheel.force-include]
-# Los criterios del banco son guiones y oráculos que se ejecutan como archivos,
-# no se importan: sin esto el wheel llevaría las BenchTask pero no su examen.
-"bench/checks" = "bench/checks"
-"bench/oraculos" = "bench/oraculos"
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # Cuando la suite se lanza apuntando a este paquete, pytest toma ESTE archivo

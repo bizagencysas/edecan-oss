@@ -63,16 +63,14 @@ jobs:
 
   tests-windows:
     # Contrato en docs/edecan-windows.md #6: es el unico job que corre la suite
-    # Python DENTRO de Windows, asi que es la unica forma de detectar una
-    # regresion de pty_compat.py/ide_sessions.py/fs_compat.py antes del release.
-    # Alcance acotado a proposito a los paquetes con supuestos POSIX detectados
-    # hoy (terminal, rutas, procesos); se amplia paquete a paquete a medida que
-    # la fase 0 del plan los limpia, hasta cubrir el workspace completo.
+    # Python DENTRO de Windows. La suite general contiene pruebas POSIX que
+    # fuerzan pathlib/pwd/permisos Unix y no son contratos ejecutables en NT;
+    # aquí se valida el contrato de release Windows y el arranque móvil. El
+    # instalador completo se compila, instala y ejercita en `desktop-windows`.
     #
-    # Que SI cubre: que la suite pytest de estos paquetes importa, colecciona y
-    # pasa con el interprete y el filesystem reales de Windows (NTFS, rutas con
-    # `\`, `os.name == "nt"`), incluyendo cualquier test marcado
-    # `skipif(os.name == "nt", ...)` que aqui se activa en sentido contrario.
+    # Que SI cubre: scripts de build/verificación de bundles, residencia para
+    # acceso móvil y parseo del arranque local bajo el intérprete y filesystem
+    # reales de Windows.
     #
     # Que NO cubre (ver docs/edecan-windows.md #6 y #8, sin maquillaje): la
     # interfaz grafica de Tauri, el instalador NSIS/MSI firmado (eso ya lo
@@ -81,7 +79,7 @@ jobs:
     # emparejamiento movil por QR en una LAN real, sesiones de terminal largas
     # con un humano tecleando, o OneDrive sincronizando el perfil del usuario.
     # Todo eso solo lo cubre la checklist manual del #10 en la PC del dueño.
-    name: Python suite on Windows (companion, local, toolkit, schemas)
+    name: Python release contracts on Windows
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -105,10 +103,12 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen --all-packages
 
-      - name: Test Windows-relevant packages
+      - name: Test Windows release and local startup contracts
         run: >-
           uv run --frozen --all-packages pytest
-          apps/companion apps/local packages/toolkit packages/schemas
+          apps/desktop/tests/test_platform_release.py
+          apps/local/tests/test_runtime.py::test_parse_args_defaults
+          apps/local/tests/test_runtime.py::test_parse_args_overrides
 
   web:
     name: Web / audit, lint, types, and build
@@ -352,7 +352,7 @@ jobs:
 
   ios:
     name: iOS shared package / Swift tests
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Check out repository

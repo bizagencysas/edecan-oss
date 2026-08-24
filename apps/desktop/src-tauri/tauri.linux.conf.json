@@ -4,7 +4,7 @@
     "targets": ["appimage", "deb", "rpm"],
     "linux": {
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": false
       }
     }
   }

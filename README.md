@@ -134,8 +134,7 @@ instead of assuming every integration is enabled by default.
 Recent companion work (owner installs, not a public release): inbound call
 agents use the agent prompt and voice, not the lean chat prompt; native
 Workers AI streams that omit OpenAI `choices` are parsed; iOS step cards
-apply only to tool turns; ordinary chat stays a bubble. See `HANDOFF.md`
-for the 22–23 Aug 2026 operator checkpoint.
+apply only to tool turns; ordinary chat stays a bubble.
 
 Core intelligence requires the operator's Cloudflare account ID and Workers AI
 token; end users never select models or connect an LLM account. See
@@ -226,6 +225,39 @@ Mobile QR pairing and optional service connections live under
 **Settings → Connections**. The operator configures Workers AI once in the host
 environment; no provider or model selector is exposed in the normal-person
 flow.
+
+### Use the iPhone away from the computer's LAN
+
+The iOS app can work with Edecán running on macOS, Windows or Linux. There are
+two connection modes:
+
+- **Same network:** the desktop app enables mobile access and the iPhone pairs
+  with the computer's private LAN address. This is useful for local testing.
+- **Any network:** the computer needs an outbound HTTPS tunnel or relay that
+  points to its local Edecán API. This is the mode to use from a mall, mobile
+  data, or another Wi-Fi network. Do not expose the API by opening a router
+  port directly.
+
+For the second mode, the operator must:
+
+1. Create a hostname and HTTPS tunnel in their own Cloudflare account (or use
+   another HTTPS reverse tunnel they control) with the tunnel origin pointing
+   to `http://127.0.0.1:8765`.
+2. Keep that tunnel and the Edecán desktop app running on the same computer.
+3. Set `EDECAN_MOBILE_PUBLIC_URL` to the tunnel's HTTPS URL, or configure the
+   tunnel URL in the local data directory as documented in
+   [`desktop-local.md`](./docs/desktop-local.md).
+4. Generate a new mobile pairing QR after configuring the URL and scan it from
+   the iPhone. The QR carries the HTTPS server URL and a one-time pairing
+   token; it does not contain a tunnel secret.
+
+The OSS repository does not include anyone else's Cloudflare account, tunnel,
+DNS zone or secret. Every operator creates and owns those resources. If the
+computer is offline, the optional edge-continuity deployment can queue basic
+chat; private files, local memory, IDE access, screen viewing and remote input
+still require the computer and its tunnel to be online. See
+[`continuidad-hibrida.md`](./docs/continuidad-hibrida.md) for that optional
+deployment and its limits.
 
 ### Verify the public core
 

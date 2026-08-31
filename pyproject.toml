@@ -59,7 +59,7 @@ dev = [
 release = [
     # Herramienta de empaquetado del sidecar desktop. Fijada y resuelta en
     # uv.lock para que un tag produzca el mismo cierre de dependencias.
-    "pyinstaller==6.21.0",
+    "pyinstaller==6.22.2",
 ]
 
 [tool.ruff]

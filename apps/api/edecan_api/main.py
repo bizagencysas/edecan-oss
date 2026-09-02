@@ -243,14 +243,14 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TUNNEL_LOCAL_ONLY_PATHS = frozenset(
     {
         "/v1/auth/local",
-        "/v1/auth/login",
-        "/v1/auth/register",
     }
 )
 _TUNNEL_UNAUTHENTICATED_PATHS = frozenset(
     {
         "/healthz",
         "/readyz",
+        "/v1/auth/login",
+        "/v1/auth/register",
         "/v1/auth/logout",
         "/v1/auth/refresh",
         "/v1/devices/pairing/claim",

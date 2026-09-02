@@ -1,4 +1,4 @@
-"""Protocolo inter-agente (product design): cola durable de mensajes entre agentes.
+"""Protocolo inter-agente (grokbot.md §12): cola durable de mensajes entre agentes.
 
 Este router administra los mensajes `agent_messages`; no ejecuta trabajo
 autónomo. La autorización de ejecución queda para una ola posterior.
@@ -42,7 +42,7 @@ _MESSAGE_TYPES = (
 )
 _STATUSES = ("pending", "delivered", "acknowledged", "done", "error")
 
-# Tipos que implican trabajo real del receptor (product design): solo estos
+# Tipos que implican trabajo real del receptor (grokbot.md §12-13): solo estos
 # disparan `run_persistent_agent`; `result`/`status`/`cancel`/`blocker` son
 # informativos y no ejecutan nada.
 _RUNNABLE_MESSAGE_TYPES = ("task", "handoff", "question")
@@ -191,7 +191,7 @@ async def _enqueue_receiver_work(
 ) -> None:
     """Encola `run_persistent_agent` para el receptor de un mensaje ejecutable.
 
-    Best-effort (product design): el insert del mensaje ya está persistido;
+    Best-effort (grokbot.md §12-13): el insert del mensaje ya está persistido;
     un fallo de encolado NO debe tumbar la respuesta. El worker receptor vuelve
     a validar enabled/status/presupuesto al correr, y `task_id` queda ligado al
     id del mensaje para que el acknowledge/estado final pueda reconciliarse.
@@ -296,7 +296,7 @@ async def send_message(
         )
         row = result.mappings().first()
         assert row is not None
-        # Inter-agent runtime (product design): si el mensaje va dirigido a
+        # Inter-agent runtime (grokbot.md §12-13): si el mensaje va dirigido a
         # un worker concreto y es ejecutable, el RECEPTOR hace el trabajo.
         if receiver is not None and message_type in _RUNNABLE_MESSAGE_TYPES:
             await _enqueue_receiver_work(
@@ -352,6 +352,7 @@ async def list_messages(
             ),
             {
                 "tenant_id": str(user.tenant_id),
+                "user_id": str(user.user_id),
                 "status": status_filter,
                 "receiver": str(receiver) if receiver else None,
             },

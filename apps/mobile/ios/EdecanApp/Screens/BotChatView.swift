@@ -75,11 +75,9 @@ struct BotChatView: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            if enviandoTurno {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .transition(.opacity.combined(with: .scale))
-            }
+            // Sin spinner en la cabecera: la cara animada (habla + halo) ES el
+            // indicador de trabajo — un spinner encima del nombre leía como
+            // «app rota» en vez de «bot vivo».
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -313,8 +311,9 @@ struct BotChatView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
-            // El bot: texto LIMPIO sobre la superficie, como Grok — sin
-            // burbuja pesada. Markdown vivo (negritas, `código`, listas).
+            // El bot: burbuja Liquid Glass (misma familia que la del dueño,
+            // sin tint morado) — antes el texto iba directo sobre la
+            // superficie y se veía pegado al fondo.
             HStack(alignment: .top, spacing: 8) {
                 GrokFaceAvatar(
                     bot: bot,
@@ -330,6 +329,27 @@ struct BotChatView: View {
                     if !item.texto.isEmpty {
                         textoRico(item.texto)
                             .textSelection(.enabled)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .tarjetaVidrio(esquina: 16)
+                            .frame(maxWidth: 320, alignment: .leading)
+                    }
+                    if item.enProgreso, let estado = item.estadoTrabajo, !estado.isEmpty {
+                        // Narración EN VIVO de lo que hace: cada tool que
+                        // llama se cuenta aquí, en su voz — no un mudo spinner.
+                        HStack(spacing: 6) {
+                            Image(systemName: "ellipsis.bubble")
+                                .font(.caption2)
+                                .foregroundStyle(EdecanTheme.morado)
+                            Text(estado)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .capsulaVidrio()
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
                 Spacer(minLength: 40)
@@ -347,14 +367,37 @@ struct BotChatView: View {
         }
     }
 
-    /// Texto con markdown vivo: negritas, cursivas, `código` y enlaces —
-    /// como lo pinta Grok, sin inventar un renderizador.
+    /// Texto con markdown vivo LÍNEA POR LÍNEA: negritas, cursivas, `código`
+    /// y enlaces, PRESERVANDO los saltos de línea y las viñetas.
+    ///
+    /// Por qué no `AttributedString(markdown:)` del texto completo: el parse
+    /// de bloques se come los `\n` y las listas (el dueño lo vio: todo el
+    /// texto salía corrido, "impecables.React"). Y por qué no la variante
+    /// `inlineOnlyPreservingWhitespace` sobre el texto completo: crashea con
+    /// listas/bloques (crash del 28-ago). Línea por línea no hay bloques →
+    /// inline seguro + `\n` literales entre líneas.
     private func textoRico(_ texto: String) -> Text {
-        // Parsing COMPLETO de markdown: la variante inlineOnlyPreserving-
-        // Whitespace trapea con listas/bloques (crash del 28-ago). El full
-        // parse no tiene esa trampa y pinta igual de bien.
-        let atribuido = (try? AttributedString(markdown: texto)) ?? AttributedString(texto)
-        return Text(atribuido).font(.subheadline)
+        var resultado: Text? = nil
+        for lineaOriginal in texto.components(separatedBy: "\n") {
+            var linea = lineaOriginal
+            let recortada = linea.trimmingCharacters(in: .whitespaces)
+            // Viñetas markdown → punto visual (el parse inline las deja
+            // literales; el "• " lee mejor y conserva el salto).
+            if recortada.hasPrefix("- ") || recortada.hasPrefix("* ") {
+                if let rango = linea.range(of: "- ") ?? linea.range(of: "* ") {
+                    linea.replaceSubrange(rango, with: "• ")
+                }
+            }
+            let atribuido = (try? AttributedString(
+                markdown: linea,
+                options: AttributedString.MarkdownParsingOptions(
+                    interpretedSyntax: .inlineOnlyPreservingWhitespace
+                )
+            )) ?? AttributedString(linea)
+            let pedazo = Text(atribuido)
+            resultado = (resultado == nil) ? pedazo : resultado! + Text("\n") + pedazo
+        }
+        return (resultado ?? Text("")).font(.subheadline)
     }
 
     /// Imágenes adjuntas: miniatura autenticada; tocar abre el visor seguro
@@ -483,7 +526,11 @@ struct BotChatView: View {
                         .capsulaVidrio()
                         .vidrioMorphID("campo", in: composerNamespace)
 
-                    BotonEnviarNegro(habilitado: botonHabilitado, cargando: enviandoTurno) {
+                    // Sin spinner en el botón de enviar: escribir y encolar
+                    // SIEMPRE está permitido mientras el bot trabaja (el
+                    // servidor serializa los turnos). El estado «trabajando»
+                    // vive en la cabecera y en la fila de estado.
+                    BotonEnviarNegro(habilitado: botonHabilitado) {
                         encolarEnvio()
                     }
                     .vidrioMorphID("enviar", in: composerNamespace)
@@ -563,6 +610,7 @@ struct BotChatView: View {
         enviandoTurno = true
         defer { enviandoTurno = false }
         let respuestaId = UUID().uuidString
+        let claveIdempotencia = UUID().uuidString
         items.append(
             ItemMensajeBot(
                 id: respuestaId,
@@ -574,7 +622,9 @@ struct BotChatView: View {
         )
 
         do {
-            let request = try await construirPeticion(client: client, texto: texto, adjuntos: adjuntos)
+            let request = try await construirPeticion(
+                client: client, texto: texto, adjuntos: adjuntos, clave: claveIdempotencia
+            )
             // THROTTLE del streaming: antes cada delta de texto disparaba un
             // re-layout de SwiftUI (markdown incluido) — con respuestas largas
             // el main thread se saturaba y el watchdog de escena mataba la
@@ -591,17 +641,45 @@ struct BotChatView: View {
                     items[indice].texto = textoParcial
                 }
             }
+            func narrar(_ id: String, _ estado: String) {
+                guard let indice = items.firstIndex(where: { $0.id == id }) else { return }
+                items[indice].estadoTrabajo = estado
+            }
+            var falloDelTurno = false
             for try await evento in sseClient.stream(request) {
                 switch evento {
                 case .textDelta(let delta):
                     textoParcial += delta
                     pintar()
+                case .toolStart(_, let name, _):
+                    narrar(respuestaId, "usando \(name)…")
+                case .toolProgress(_, _, _, let mensaje):
+                    narrar(respuestaId, mensaje)
+                case .toolEnd(_, let name, let preview, _, _, _, _):
+                    if name == "avisar_avance", !preview.isEmpty {
+                        // El bot se avisó a sí mismo: el aviso es un mensaje
+                        // real suyo — burbuja propia, ya persistida en el
+                        // servidor.
+                        items.append(
+                            ItemMensajeBot(
+                                id: UUID().uuidString,
+                                esUsuario: false,
+                                texto: preview,
+                                nombreRemitente: bot.nombreVisible
+                            )
+                        )
+                        narrar(respuestaId, "aviso enviado")
+                    } else {
+                        narrar(respuestaId, "✓ \(name)")
+                    }
                 case .done:
                     pintar(final: true)
                     if let indice = items.firstIndex(where: { $0.id == respuestaId }) {
                         items[indice].enProgreso = false
+                        items[indice].estadoTrabajo = nil
                     }
                 case .error:
+                    falloDelTurno = true
                     pintar(final: true)
                     if let indice = items.firstIndex(where: { $0.id == respuestaId }) {
                         items[indice].enProgreso = false
@@ -622,19 +700,134 @@ struct BotChatView: View {
                     break
                 }
             }
-            quitarBurbujaVacia(respuestaId)
+            if !falloDelTurno {
+                quitarBurbujaVacia(respuestaId)
+                return
+            }
         } catch is CancellationError {
-            // La vista se fue; el servidor conserva el turno.
+            // La vista se fue; el servidor conserva el turno y lo completa.
+            // Al volver, `cargar()` trae la respuesta ya persistida.
+            return
         } catch {
-            quitarBurbujaVacia(respuestaId)
-            items.append(
-                ItemMensajeBot(
-                    id: UUID().uuidString,
-                    esUsuario: false,
-                    texto: "Se me cayó la conexión por un momento. Pídemelo otra vez, sigo aquí contigo.",
-                    nombreRemitente: bot.nombreVisible
+            // CONEXIÓN PERDIDA a mitad del turno. Nada de disculpas: el turno
+            // SIGUE corriendo en la Mac (productor desacoplado del socket en
+            // el backend). Reconectamos con la MISMA Idempotency-Key: el
+            // backend responde 409 mientras sigue en vuelo y entrega el
+            // replay exacto del turno completo en cuanto termina.
+        }
+
+        await reconectarTurno(
+            client: client,
+            texto: texto,
+            adjuntos: adjuntos,
+            clave: claveIdempotencia,
+            respuestaId: respuestaId
+        )
+    }
+
+    /// Reconexión con la misma Idempotency-Key: 409 = sigue en vuelo (esperar
+    /// y reintentar); 200 = replay del turno completo; timeout honesto a los
+    /// ~10 minutos (el push del servidor avisa igualmente al terminar).
+    private func reconectarTurno(
+        client: APIClient,
+        texto: String,
+        adjuntos: [AdjuntoBot],
+        clave: String,
+        respuestaId: String
+    ) async {
+        let limite = Date().addingTimeInterval(600)
+        while Date() < limite {
+            try? await Task.sleep(for: .seconds(2))
+            do {
+                let request = try await construirPeticion(
+                    client: client, texto: texto, adjuntos: adjuntos, clave: clave
                 )
-            )
+                var textoParcial = ""
+                var ultimoPintado = Date.distantPast
+                func pintar(final: Bool = false) {
+                    let ahora = Date()
+                    if final || ahora.timeIntervalSince(ultimoPintado) > 0.12 {
+                        ultimoPintado = ahora
+                        guard let indice = items.firstIndex(where: { $0.id == respuestaId }) else { return }
+                        items[indice].texto = textoParcial
+                    }
+                }
+                func narrar(_ id: String, _ estado: String) {
+                    guard let indice = items.firstIndex(where: { $0.id == id }) else { return }
+                    items[indice].estadoTrabajo = estado
+                }
+                var termino = false
+            var falloServidor = false
+            for try await evento in sseClient.stream(request) {
+                switch evento {
+                case .textDelta(let delta):
+                    textoParcial += delta
+                    pintar()
+                case .toolStart(_, let name, _):
+                    narrar(respuestaId, "usando \(name)…")
+                case .toolProgress(_, _, _, let mensaje):
+                    narrar(respuestaId, mensaje)
+                case .toolEnd(_, let name, let preview, _, _, _, _):
+                    if name == "avisar_avance", !preview.isEmpty {
+                        items.append(
+                            ItemMensajeBot(
+                                id: UUID().uuidString,
+                                esUsuario: false,
+                                texto: preview,
+                                nombreRemitente: bot.nombreVisible
+                            )
+                        )
+                    } else {
+                        narrar(respuestaId, "✓ \(name)")
+                    }
+                case .done:
+                    pintar(final: true)
+                    termino = true
+                case .error:
+                    falloServidor = true
+                default:
+                    break
+                }
+            }
+            guard termino, !falloServidor else { return }
+            if let indice = items.firstIndex(where: { $0.id == respuestaId }) {
+                items[indice].enProgreso = false
+                items[indice].estadoTrabajo = nil
+                if items[indice].texto.isEmpty {
+                    items[indice].texto = "Listo, terminé (terminé el trabajo en segundo plano)."
+                }
+            }
+            quitarBurbujaVacia(respuestaId)
+            return
+            } catch is CancellationError {
+                return
+            } catch let sseError as SSEClient.SSEError {
+                if case .servidor(let status, _) = sseError, status == 409 {
+                    continue // sigue en vuelo: esperar y reintentar
+                }
+                if case .servidor(let status, _) = sseError, (400..<500).contains(status) {
+                    // Rechazo definitivo (hash distinto, clave inválida…):
+                    // reintentar no sirve. Mensaje honesto y fin.
+                    marcarBurbujaAtascada(respuestaId)
+                    return
+                }
+                continue // red caída de nuevo: seguir esperando
+            } catch {
+                continue // conexión de nuevo caída: seguir esperando
+            }
+        }
+        marcarBurbujaAtascada(respuestaId)
+    }
+
+    /// Tras el timeout de reconexión: honesto y accionable — el push del
+    /// servidor avisa igualmente cuando el turno termine.
+    private func marcarBurbujaAtascada(_ respuestaId: String) {
+        if let indice = items.firstIndex(where: { $0.id == respuestaId }) {
+            items[indice].enProgreso = false
+            if items[indice].texto.isEmpty {
+                items[indice].texto =
+                    "Sigo trabajando en segundo plano; cuando termine te llega el aviso."
+            }
         }
     }
 
@@ -646,7 +839,7 @@ struct BotChatView: View {
     }
 
     private func construirPeticion(
-        client: APIClient, texto: String, adjuntos: [AdjuntoBot]
+        client: APIClient, texto: String, adjuntos: [AdjuntoBot], clave: String
     ) async throws -> URLRequest {
         let url = try await client.urlCompleta("/v1/agents/workers/\(bot.id)/message")
         let token = try await client.tokenDeAccesoValido()
@@ -654,6 +847,10 @@ struct BotChatView: View {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // Idempotencia: con esta clave el backend desacopla el turno del
+        // socket — si la app se suspende o la red cae, el mismo POST con la
+        // misma clave entrega el replay exacto sin duplicar el trabajo.
+        request.setValue(clave, forHTTPHeaderField: "Idempotency-Key")
         struct Cuerpo: Encodable {
             let text: String
             let attachments: [String]
@@ -830,6 +1027,10 @@ private struct ItemMensajeBot: Identifiable {
     var enProgreso: Bool
     var adjuntos: [AdjuntoBot]
     var evento: EventoNarracion?
+    /// Narración EN VIVO del trabajo (toolStart/toolProgress/toolEnd):
+    /// «usando buscar_web…», «✓ buscar_web». Mientras el bot trabaja, el
+    /// dueño ve QUÉ hace — no un mudo «Trabajando…».
+    var estadoTrabajo: String?
 
     init(
         id: String,
@@ -838,7 +1039,8 @@ private struct ItemMensajeBot: Identifiable {
         nombreRemitente: String? = nil,
         enProgreso: Bool = false,
         adjuntos: [AdjuntoBot] = [],
-        evento: EventoNarracion? = nil
+        evento: EventoNarracion? = nil,
+        estadoTrabajo: String? = nil
     ) {
         self.id = id
         self.esUsuario = esUsuario
@@ -847,6 +1049,7 @@ private struct ItemMensajeBot: Identifiable {
         self.enProgreso = enProgreso
         self.adjuntos = adjuntos
         self.evento = evento
+        self.estadoTrabajo = estadoTrabajo
     }
 
     static func desde(_ mensaje: TeamMessage, nombreBot: String) -> ItemMensajeBot {

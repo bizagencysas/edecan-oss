@@ -150,19 +150,21 @@ struct CaraOrbe: View {
             .position(x: size * 0.5, y: size * 0.68)
     }
 
-    /// Anillo «encendido»: pulso del acento + aro blanco de Liquid Glass.
+    /// Anillo «encendido»: pulso del acento + aro fino — la cara SIEMPRE
+    /// visible debajo. El `.glassEffect(.circle)` anterior llenaba el círculo
+    /// entero con vidrio esmerilado y tapaba los ojos y la boca (el dueño lo
+    /// reportó: «una bola rosa que lo tapa por completo»).
     private var aroTrabajando: some View {
         let acento = acento
         return ZStack {
             Circle()
-                .stroke(acento.opacity(0.65), lineWidth: max(size * 0.055, 1.5))
-                .blur(radius: max(size * 0.06, 1.5))
+                .stroke(acento.opacity(0.55), lineWidth: max(size * 0.045, 1.2))
+                .blur(radius: max(size * 0.05, 1.0))
                 .scaleEffect(pulsoHalo)
-                .opacity(haloEncendido ? 0.9 : 0.35)
+                .opacity(haloEncendido ? 0.85 : 0.3)
             Circle()
-                .stroke(.white.opacity(0.75), lineWidth: max(size * 0.022, 0.6))
+                .stroke(.white.opacity(0.55), lineWidth: max(size * 0.022, 0.6))
                 .frame(width: size * 1.06, height: size * 1.06)
-                .glassEffect(.regular.tint(acento.opacity(0.22)), in: .circle)
         }
         .frame(width: size, height: size)
         .onAppear {
@@ -322,18 +324,35 @@ struct GrokFaceAvatar: View {
     var animado: Bool = true
     var activo: Bool = false
 
+    /// Fallback determinista cuando el bot no trae ojos (avatares legacy con
+    /// `avatar = {}`): sin esto, la cara renderiza como un PUNTO de color —
+    /// exactamente el «dot feo» que el dueño reportó en los bots trabajando.
+    /// Espeja las proporciones del generador del backend (avatars.py).
+    private var ojosRespaldo: (OjoDeCara, OjoDeCara) {
+        let suma = bot.nombreVisible.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        let indice = Double(suma % 100) / 100.0
+        let rotacion = (indice - 0.5) * 24
+        let y = 0.40 + (indice - 0.5) * 0.03
+        let izq = OjoDeCara(x: 0.34, y: y, rx: 0.058, ry: 0.078, rotation: rotacion)
+        let der = OjoDeCara(x: 0.66, y: y, rx: 0.058, ry: 0.078, rotation: rotacion)
+        return (izq, der)
+    }
+
     var body: some View {
-        CaraOrbe(
+        let ojos = (izq: bot.avatarEyes.left, der: bot.avatarEyes.right)
+        let usaRespaldo = ojos.izq == nil && ojos.der == nil
+        let respaldo = usaRespaldo ? ojosRespaldo : (OjoDeCara(x: 0, y: 0, rx: 0, ry: 0, rotation: 0), OjoDeCara(x: 0, y: 0, rx: 0, ry: 0, rotation: 0))
+        return CaraOrbe(
             nombre: bot.nombreVisible,
             formaBot: bot.avatarShape ?? "circle",
             fillHex: bot.avatarFillHex ?? "#6366f1",
             accentHex: bot.avatarAccentHex,
-            ojoIzq: bot.avatarEyes.left.map {
+            ojoIzq: ojos.izq.map {
                 OjoDeCara(x: $0.x, y: $0.y, rx: $0.rx, ry: $0.ry, rotation: $0.rotation)
-            },
-            ojoDer: bot.avatarEyes.right.map {
+            } ?? (usaRespaldo ? respaldo.0 : nil),
+            ojoDer: ojos.der.map {
                 OjoDeCara(x: $0.x, y: $0.y, rx: $0.rx, ry: $0.ry, rotation: $0.rotation)
-            },
+            } ?? (usaRespaldo ? respaldo.1 : nil),
             size: size,
             showOnline: showOnline,
             animado: animado,

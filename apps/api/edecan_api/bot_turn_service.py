@@ -43,7 +43,7 @@ def build_worker_registry(
     En el Mac del dueño (companion presente) el bot recibe **TODO** el
     registro — es un amigo con acceso total: buscar, navegar, archivos,
     terminal, computadora, todo lo que Edecán sabe hacer. La idea del
-    producto es «los bots hacen de verdad todo» (product design), no un
+    producto es «los bots hacen de verdad todo» (grokbot.md), no un
     workforce restringido que solo responde chat.
 
     Sin companion (deploy remoto sin Mac): se respeta la lista declarada
@@ -85,7 +85,9 @@ def build_worker_registry(
         if tool.dangerous:
             continue
         registry.register(tool)
-    for nombre_social in ("enviar_mensaje_bot", "listar_bots"):
+    for nombre_social in ("enviar_mensaje_bot", "listar_bots", "avisar_avance"):
+        # `avisar_avance` solo escribe en el chat PROPIO del bot — no toca la
+        # Mac ni terceros: válida también en deploy remoto.
         tool = full_registry.get(nombre_social)
         if tool is not None:
             registry.register(tool)
@@ -431,6 +433,14 @@ async def stream_worker_turn(
 
     bot_name = worker_display_name(worker)
     bot_id = str(worker["id"])
+    # Canal de narración en vivo: `avisar_avance` escribe avisos del bot en
+    # SU chat — el dueño los ve al instante (regla «avisan todo, como los
+    # LLM que narran cada paso»).
+    ctx.extras["worker_chat"] = {
+        "conversation_id": str(conversation_id),
+        "worker_id": bot_id,
+        "worker_name": bot_name,
+    }
     events = agent.run_turn(
         ctx=ctx,
         persona=persona,

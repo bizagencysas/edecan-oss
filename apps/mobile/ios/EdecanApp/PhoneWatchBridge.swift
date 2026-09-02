@@ -110,7 +110,8 @@ final class PhoneWatchBridge: NSObject, WCSessionDelegate {
         guard let sesion, sesion.activationState == .activated else { return }
         try? sesion.updateApplicationContext(contexto)
         if sesion.isReachable {
-            sesion.sendMessage(delta, replyHandler: nil) { _ in }
+            let bloque: @Sendable (Error) -> Void = { _ in }
+            sesion.sendMessage(delta, replyHandler: nil, errorHandler: bloque)
         }
     }
 

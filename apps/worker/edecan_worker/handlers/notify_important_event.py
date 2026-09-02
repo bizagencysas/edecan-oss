@@ -38,5 +38,18 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         chat_id=_optional_uuid(env.payload, "chat_id"),
         artifact_id=_optional_uuid(env.payload, "artifact_id"),
         resource_id=_optional_uuid(env.payload, "resource_id"),
+        # Overrides de texto del productor (p. ej. «{bot} terminó: {resumen}»).
+        # Sanitizados y acotados: el push es una superficie visible y el
+        # payload viaja por una cola — nunca texto libre sin límite.
+        apns_title=_optional_text(env.payload, "apns_title", 80),
+        apns_body=_optional_text(env.payload, "apns_body", 200),
     )
     await notify_important_event(deps, event)
+
+
+def _optional_text(payload: dict[str, object], name: str, max_chars: int) -> str | None:
+    value = payload.get(name)
+    if value in (None, ""):
+        return None
+    texto = " ".join(str(value).split())
+    return texto[:max_chars] if texto else None

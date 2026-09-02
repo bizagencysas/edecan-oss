@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import time
 import uuid
 from typing import Any
 
+from edecan_core.queue import enqueue
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
@@ -19,13 +24,34 @@ from edecan_api.bot_turn_service import (
     worker_display_name,
 )
 from edecan_api.config import Settings, get_settings
-from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, rate_limit
+from edecan_api.deps import CurrentUser, get_current_user, get_redis, get_tenant_session, rate_limit
+from edecan_api.routers.conversations import _format_sse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/v1/agents/direct-chats",
     tags=["agent-direct-chats"],
     dependencies=[Depends(rate_limit)],
 )
+
+# El turno vive en una tarea DESPRENDIDA de la petición SSE: si el dueño
+# sale de la app, bloquea o cambia de red, el socket muere pero el turno
+# SIGUE en la Mac hasta terminar y notificar. Regla del dueño (2-sep-2026):
+# «trabajen al 100% aunque salga de la app, y mándenme un push siempre».
+_TURNOS_VIVOS: set[asyncio.Task] = set()
+_TURN_LOCKS: dict[str, asyncio.Lock] = {}
+_ESTADO_TTL_S = 2 * 60 * 60
+_VIGILANTE_TOPE_S = 15 * 60
+
+
+def _turn_lock_for(conversation_id: uuid.UUID) -> asyncio.Lock:
+    key = str(conversation_id)
+    lock = _TURN_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _TURN_LOCKS[key] = lock
+    return lock
 
 
 class DirectChatCreateIn(BaseModel):
@@ -145,7 +171,8 @@ async def list_direct_chats(
 ) -> list[dict[str, Any]]:
     result = await session.execute(
         text(
-            "SELECT d.id, d.agent_a_id, d.agent_b_id, d.conversation_id, d.created_at, d.updated_at, "
+            "SELECT d.id, d.agent_a_id, d.agent_b_id, d.conversation_id, "
+            "d.created_at, d.updated_at, "
             "a.name AS agent_a_name, a.display_name AS agent_a_display, "
             "b.name AS agent_b_name, b.display_name AS agent_b_display "
             "FROM agent_direct_chats d "
@@ -244,4 +271,159 @@ async def send_direct_message(
             ):
                 yield chunk
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    # El turno corre DESPRENDIDO del socket: si el teléfono sale de la app,
+    # se bloquea o pierde red, el trabajo SIGUE en la Mac y el push del
+    # resultado llega siempre. La respuesta SSE es un vigilante: emite los
+    # deltas desde el estado en Redis y cierra con done/error.
+    turn_id = uuid.uuid4()
+    estado_key = f"bot_turn:{chat_id}:{turn_id}"
+
+    task = asyncio.create_task(
+        _run_turno_desprendido(
+            request=request,
+            user=user,
+            settings=settings,
+            responder=responder,
+            conversation_id=conversation_id,
+            prompt=prompt,
+            speaker_role="user" if speaker in ("user", "owner", "human") else author_role,
+            speaker_id="user" if speaker in ("user", "owner", "human") else author_id,
+            speaker_name=author_name if speaker not in ("user", "owner", "human") else "Tú",
+            estado_key=estado_key,
+        ),
+        name=f"bot-turn:{turn_id}",
+    )
+    _TURNOS_VIVOS.add(task)
+    task.add_done_callback(_TURNOS_VIVOS.discard)
+
+    async def _vigilante():
+        yield _format_sse("message.started", {"turn_id": str(turn_id)})
+        redis = get_redis(settings)
+        leido = 0
+        inicio = time.monotonic()
+        while True:
+            if time.monotonic() - inicio > _VIGILANTE_TOPE_S:
+                logger.warning(
+                    "vigilante de chat de bots agotó el tope (%.0fs) chat=%s",
+                    _VIGILANTE_TOPE_S, chat_id,
+                )
+                yield _format_sse("message.done", {"type": "done", "usage": {}})
+                return
+            try:
+                raw = await redis.get(estado_key)
+            except Exception:
+                raw = None
+            estado: dict[str, Any] = {}
+            if raw:
+                try:
+                    estado = json.loads(raw)
+                except (TypeError, ValueError):
+                    estado = {}
+            texto = str(estado.get("text") or "")
+            if len(texto) > leido:
+                yield _format_sse(
+                    "message.text_delta", {"type": "text_delta", "text": texto[leido:]}
+                )
+                leido = len(texto)
+            estado_actual = str(estado.get("status") or "")
+            if estado_actual == "done":
+                yield _format_sse("message.done", {"type": "done", "usage": {}})
+                return
+            if estado_actual == "error":
+                yield _format_sse(
+                    "message.error", {"type": "error", "message": "El turno falló en la Mac."}
+                )
+                return
+            await asyncio.sleep(0.4)
+
+    return StreamingResponse(_vigilante(), media_type="text/event-stream")
+
+
+async def _run_turno_desprendido(
+    *,
+    request: Request,
+    user: CurrentUser,
+    settings: Settings,
+    responder: dict[str, Any],
+    conversation_id: uuid.UUID,
+    prompt: str,
+    speaker_role: str,
+    speaker_id: str,
+    speaker_name: str,
+    estado_key: str,
+) -> None:
+    """El turno completo, desprendido de la petición: sesión propia, progreso
+    en Redis y PUSH al dueño al terminar (siempre — aunque el teléfono esté
+    cerrado). El candado por conversación serializa envíos encadenados."""
+    redis = get_redis(settings)
+    lock = _turn_lock_for(conversation_id)
+
+    async def _estado(status: str, texto: str) -> None:
+        try:
+            await redis.set(
+                estado_key,
+                json.dumps({"status": status, "text": texto}, ensure_ascii=False),
+                ex=_ESTADO_TTL_S,
+            )
+        except Exception:
+            logger.warning("No pude escribir el estado del turno %s", estado_key, exc_info=True)
+
+    texto_acumulado = ""
+    async with lock:
+        try:
+            await _estado("running", "")
+            # Sesión PROPIA del turno desprendido: la de la petición muere con
+            # el socket, y este trabajo tiene que sobrevivir a eso.
+            from edecan_db.session import get_session
+
+            async with get_session(user.tenant_id) as session:
+                ultimo = time.monotonic()
+                async for chunk in stream_worker_turn(
+                    request=request,
+                    session=session,
+                    user=user,
+                    settings=settings,
+                    worker=responder,
+                    conversation_id=conversation_id,
+                    user_text=prompt,
+                    speaker_role=speaker_role,
+                    speaker_id=speaker_id,
+                    speaker_name=speaker_name,
+                ):
+                    if '"type": "text_delta"' in chunk or '"type":"text_delta"' in chunk:
+                        try:
+                            datos = chunk.split("data: ", 1)[1].split("\n", 1)[0]
+                            evento = json.loads(datos)
+                            texto_acumulado += str(evento.get("text") or "")
+                        except (IndexError, ValueError, TypeError):
+                            pass
+                    ahora = time.monotonic()
+                    if ahora - ultimo > 0.5:
+                        await _estado("running", texto_acumulado)
+                        ultimo = ahora
+            await _estado("done", texto_acumulado)
+        except Exception:
+            logger.exception(
+                "turno desprendido falló chat=%s estado=%s", conversation_id, estado_key
+            )
+            await _estado("error", texto_acumulado)
+            return
+
+    # PUSH SIEMPRE al terminar: la entrega cuando el teléfono está fuera.
+    try:
+        await enqueue(
+            settings,
+            "notify_important_event",
+            {
+                "user_id": str(user.user_id),
+                "kind": "agent_message",
+                "event_id": str(uuid.uuid4()),
+                "chat_id": str(conversation_id),
+            },
+            user.tenant_id,
+        )
+    except Exception:
+        logger.warning(
+            "No pude encolar el push de fin de turno de bot "
+            "(chat=%s estado=%s)", conversation_id, estado_key, exc_info=True,
+        )

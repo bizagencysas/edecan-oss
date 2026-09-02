@@ -51,7 +51,7 @@ def _turn_lock_for(tenant_id: uuid.UUID, worker_id: uuid.UUID) -> asyncio.Lock:
         _TURN_LOCKS[key] = lock
     return lock
 
-# Campos del perfil rico (migración 0048, product design). Identidad de primer nivel.
+# Campos del perfil rico (migración 0048, grokbot.md §2). Identidad de primer nivel.
 _PROFILE_COLUMNS = (
     "display_name, avatar, role_title, role_short, job_description, personality, "
     "communication_style, instructions, constraints, approval_policy, autonomy_level, "
@@ -493,16 +493,27 @@ async def send_worker_message(
     session: AsyncSession = Depends(get_tenant_session),
     settings: Settings = Depends(get_settings),
 ):
+    from edecan_db.session import get_session
     from fastapi.responses import StreamingResponse
 
     from edecan_api.bot_turn_service import (
         ensure_worker_conversation,
         load_worker,
         stream_worker_turn,
+        worker_display_name,
+    )
+    from edecan_api.deps import get_redis
+    from edecan_api.routers.conversations import (
+        _claim_message_idempotency,
+        _message_idempotency_key,
+        _message_request_hash,
+        _response_for_idempotency_record,
+        _stream_and_complete_idempotency,
     )
 
     worker = await load_worker(session, user, worker_id)
     conversation_id = await ensure_worker_conversation(session, user, worker)
+    redis_client = get_redis(settings)
 
     # Un lock por worker garantiza el ORDEN de los turnos aunque el cliente
     # mande varios mensajes seguidos sin esperar respuesta (chat humano): los
@@ -525,7 +536,140 @@ async def send_worker_message(
             ):
                 yield chunk
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    # Push SIEMPRE al terminar (regla del dueño: «cuando terminen, mándame un
+    # push»), con el resultado real del turno — el teléfono puede estar en
+    # segundo plano, bloqueado o fuera de la app; el trabajo corre en esta Mac
+    # y el push es el aviso. Best-effort: un fallo del push jamás revienta un
+    # turno que ya terminó bien.
+    async def _push_al_listo() -> None:
+        nombre = worker_display_name(worker)
+        titulo = nombre
+        cuerpo = "Terminé. Abre el chat para ver la respuesta."
+        try:
+            # La sesión de la petición pudo cerrarse (turno completado tras
+            # una desconexión del teléfono): el resultado se lee en una
+            # sesión propia.
+            async with get_session(user.tenant_id) as session_fresca:
+                fila = (
+                    await session_fresca.execute(
+                        text(
+                            "SELECT content->>'text' AS texto FROM messages "
+                            "WHERE tenant_id = :tenant_id AND conversation_id = :cid "
+                            "AND role = 'assistant' AND content->>'text' IS NOT NULL "
+                            "AND content->>'text' != '' "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ),
+                        {
+                            "tenant_id": str(user.tenant_id),
+                            "cid": str(conversation_id),
+                        },
+                    )
+                ).mappings().first()
+            if fila is not None and fila["texto"]:
+                cuerpo = " ".join(str(fila["texto"]).split())[:160] or cuerpo
+        except Exception:  # noqa: BLE001 - el push no depende de esta lectura
+            logger.warning(
+                "No pude leer la respuesta del turno para el push "
+                "(worker=%s conversation=%s)",
+                worker_id,
+                conversation_id,
+                exc_info=True,
+            )
+        try:
+            await enqueue(
+                settings,
+                "notify_important_event",
+                {
+                    "user_id": str(user.user_id),
+                    "kind": "agent_message",
+                    "event_id": str(uuid.uuid4()),
+                    "chat_id": str(conversation_id),
+                    "apns_title": titulo,
+                    "apns_body": cuerpo,
+                },
+                user.tenant_id,
+            )
+        except Exception:  # noqa: BLE001 - el turno ya terminó; push best-effort
+            logger.warning(
+                "No pude encolar el push de fin de turno "
+                "(worker=%s conversation=%s)",
+                worker_id,
+                conversation_id,
+                exc_info=True,
+            )
+
+    # Blindaje SIEMPRE: el productor del turno vive en una tarea desacoplada
+    # del socket — si el teléfono sale de la app, se bloquea o pierde red, el
+    # turno SIGUE hasta persistir todo, el push del resultado llega siempre y
+    # el cliente (con Idempotency-Key) recupera el replay exacto. La clave la
+    # manda el cliente nuevo o la genera el servidor para el viejo: ambos
+    # caminos quedan idénticos y reanudables.
+    clave_raw = request.headers.get("Idempotency-Key")
+    idempotency_key: uuid.UUID
+    if clave_raw:
+        try:
+            idempotency_key = uuid.UUID(clave_raw.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Idempotency-Key debe ser un UUID válido.",
+            ) from exc
+    else:
+        idempotency_key = uuid.uuid4()
+
+    redis_client = get_redis(settings)
+    idempotency_ttl = max(60, int(settings.CHAT_IDEMPOTENCY_TTL_SECONDS))
+    redis_idempotency_key = _message_idempotency_key(
+        tenant_id=user.tenant_id,
+        user_id=user.user_id,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+    )
+    request_hash = _message_request_hash(body)
+    owner_token, previo = await _claim_message_idempotency(
+        redis_client,
+        redis_key=redis_idempotency_key,
+        request_hash=request_hash,
+        ttl_seconds=idempotency_ttl,
+    )
+    if previo is not None:
+        # Mismo turno ya reclamado: in_flight → 409 con Retry-After; done →
+        # replay exacto de los chunks guardados. El teléfono reintentando con
+        # la misma clave recupera la respuesta sin duplicar trabajo.
+        return _response_for_idempotency_record(
+            request_hash=request_hash,
+            idempotency_key=idempotency_key,
+            record=previo,
+        )
+
+    async def _avisar_si_el_telefono_se_fue() -> None:
+        # El turno terminó después de que el teléfono soltara el socket:
+        # el push ES la entrega en este camino.
+        await _push_al_listo()
+
+    live_stream = _stream_and_complete_idempotency(
+        stream=_stream(),
+        redis_client=redis_client,
+        redis_key=redis_idempotency_key,
+        request_hash=request_hash,
+        owner_token=owner_token,
+        ttl_seconds=idempotency_ttl,
+        on_disconnected_complete=_avisar_si_el_telefono_se_fue,
+    )
+
+    async def _live_con_push():
+        async for chunk in live_stream:
+            yield chunk
+        await _push_al_listo()
+
+    return StreamingResponse(
+        _live_con_push(),
+        media_type="text/event-stream",
+        headers={
+            "Idempotency-Key": str(idempotency_key),
+            "Idempotency-Replayed": "false",
+        },
+    )
 
 
 @router.delete("/{worker_id}", status_code=status.HTTP_204_NO_CONTENT)

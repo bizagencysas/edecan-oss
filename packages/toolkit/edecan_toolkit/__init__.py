@@ -18,6 +18,7 @@ from .autorreparacion import (
     DiagnosticarAutorreparacionLocalTool,
     GestionarAutorreparacionLocalTool,
 )
+from .avances import AvisarAvanceTool
 from .codigo_local import AccederCodigoLocalTool
 from .computadora import UsarComputadoraTool
 from .contactos import BuscarContactosTool, GestionarContactoTool
@@ -67,6 +68,7 @@ __all__ = [
     "GenerarContenidoTool",
     "GestionarContactoTool",
     "GestionarAutorreparacionLocalTool",
+    "AvisarAvanceTool",
     "GuardarMemoriaTool",
     "HoraActualTool",
     "ListarRecordatoriosTool",
@@ -90,6 +92,7 @@ def get_all_tools() -> list[Tool]:
     return [
         CrearRecordatorioTool(),
         ListarRecordatoriosTool(),
+        AvisarAvanceTool(),
         GuardarMemoriaTool(),
         CambiarRutinaGymTool(),
         AgendaEventosTool(),

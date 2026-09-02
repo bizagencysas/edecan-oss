@@ -801,38 +801,42 @@ class UsarEstudioCreativoTool(_UsarEstudioBase):
         "El costo del razonamiento depende del modelo principal que la persona conectó."
     )
     allowed_capabilities = SAFE_STUDIO_CAPABILITIES
+    # OpenAI-compatible exige que el schema de la función sea un único
+    # `type: object` SIN oneOf/anyOf/enum/const al nivel superior. El original
+    # usaba `oneOf` arriba y el proveedor devolvía 400 al llamarla. Las dos
+    # vías (natural y experta) se aplastan en un solo objeto; `run()` decide
+    # según venga `pedido` o `capacidad`, y `archivos` admite lista (natural)
+    # u objeto (experta) vía `anyOf` anidado, que sí es válido.
     input_schema = {
         "type": "object",
-        "oneOf": [
-            {
-                "properties": {
-                    "pedido": {
-                        "type": "string",
-                        "description": "Petición de la persona en lenguaje natural.",
-                    },
-                    "archivos": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "file_id privados adjuntos, sin elegir campos técnicos.",
-                    },
-                },
-                "required": ["pedido"],
+        "properties": {
+            "pedido": {
+                "type": "string",
+                "description": (
+                    "Petición de la persona en lenguaje natural. Edecán elige la "
+                    "capacidad. Sin 'pedido' se usa la vía experta con 'capacidad' y 'argumentos'."
+                ),
             },
-            {
-                "properties": {
-                    "capacidad": {
-                        "type": "string",
-                        "enum": sorted(SAFE_STUDIO_CAPABILITIES),
-                    },
-                    "argumentos": {"type": "object"},
-                    "archivos": {
-                        "type": "object",
-                        "description": "Mapa campo->file_id para uso experto.",
-                    },
-                },
-                "required": ["capacidad", "argumentos"],
+            "archivos": {
+                "description": (
+                    "Archivos a usar. Para una petición natural: lista de file_id "
+                    "adjuntos. Para vía experta: objeto campo -> file_id."
+                ),
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "object"},
+                ],
             },
-        ],
+            "capacidad": {
+                "type": "string",
+                "enum": sorted(SAFE_STUDIO_CAPABILITIES),
+                "description": "Capacidad exacta del Studio para la vía experta.",
+            },
+            "argumentos": {
+                "type": "object",
+                "description": "Detalles del trabajo de Studio (vía experta, junto a 'capacidad').",
+            },
+        },
     }
 
 
@@ -845,38 +849,38 @@ class UsarEstudioCreativoPremiumTool(_UsarEstudioBase):
     )
     dangerous = True
     allowed_capabilities = PREMIUM_STUDIO_CAPABILITIES
+    # OpenAI-compatible: un único `type: object` sin oneOf arriba (ver
+    # `UsarEstudioCreativoTool.input_schema`); `archivos` admite lista u objeto.
     input_schema = {
         "type": "object",
-        "oneOf": [
-            {
-                "properties": {
-                    "pedido": {
-                        "type": "string",
-                        "description": "Petición de la persona en lenguaje natural.",
-                    },
-                    "archivos": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "file_id privados adjuntos, sin elegir campos técnicos.",
-                    },
-                },
-                "required": ["pedido"],
+        "properties": {
+            "pedido": {
+                "type": "string",
+                "description": (
+                    "Petición de la persona en lenguaje natural. Edecán arma los "
+                    "argumentos. Sin 'pedido' se usa la vía experta con 'capacidad' y 'argumentos'."
+                ),
             },
-            {
-                "properties": {
-                    "capacidad": {
-                        "type": "string",
-                        "enum": sorted(PREMIUM_STUDIO_CAPABILITIES),
-                    },
-                    "argumentos": {"type": "object"},
-                    "archivos": {
-                        "type": "object",
-                        "description": "Mapa campo->file_id para uso experto.",
-                    },
-                },
-                "required": ["capacidad", "argumentos"],
+            "archivos": {
+                "description": (
+                    "Archivos a usar. Para una petición natural: lista de file_id "
+                    "adjuntos. Para vía experta: objeto campo -> file_id."
+                ),
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "object"},
+                ],
             },
-        ],
+            "capacidad": {
+                "type": "string",
+                "enum": sorted(PREMIUM_STUDIO_CAPABILITIES),
+                "description": "Capacidad avanzada del Studio para la vía experta.",
+            },
+            "argumentos": {
+                "type": "object",
+                "description": "Detalles del trabajo de Studio (vía experta, junto a 'capacidad').",
+            },
+        },
     }
 
 

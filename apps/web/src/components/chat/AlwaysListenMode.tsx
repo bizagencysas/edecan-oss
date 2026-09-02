@@ -544,13 +544,17 @@ export function AlwaysListenMode({
       const voice = voiceId ?? "0uHpKhb0ymsdvmCtPV8y";
       const abort = new AbortController();
       speakAbortRef.current = abort;
-      let siguiente = speakTextStream(oraciones[0], voice, abort.signal);
+      let siguiente: ReturnType<typeof speakTextStream> | null = speakTextStream(
+        oraciones[0],
+        voice,
+        abort.signal,
+      );
       for (let i = 0; i < oraciones.length; i++) {
         if (cerradoRef.current || interrumpirHablaRef.current) break;
         const stream = siguiente;
-        if (i + 1 < oraciones.length) {
-          siguiente = speakTextStream(oraciones[i + 1], voice, abort.signal);
-        }
+        if (!stream) return;
+        siguiente =
+          i + 1 < oraciones.length ? speakTextStream(oraciones[i + 1], voice, abort.signal) : null;
 
         const finished = player.beginSession();
         let attachedMeter = false;

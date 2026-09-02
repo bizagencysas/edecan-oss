@@ -46,6 +46,8 @@ class PgMemoryStore:
         confidence: float = 0.8,
         expires_at: datetime | None = None,
         source: str = "",
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> MemoryHit:
         memory_id = uuid4()
         embedding_literal = None
@@ -58,10 +60,11 @@ class PgMemoryStore:
                 """
                 INSERT INTO memory_items (
                     id, tenant_id, user_id, kind, content, embedding, importance,
-                    confidence, source, expires_at, created_at, updated_at
+                    confidence, source, namespace, source_trust, expires_at, created_at, updated_at
                 ) VALUES (
                     :id, :tenant_id, :user_id, :kind, :content, :embedding ::vector,
-                    :importance, :confidence, :source, :expires_at, now(), now()
+                    :importance, :confidence, :source, :namespace, :source_trust,
+                    :expires_at, now(), now()
                 )
                 """
             ),
@@ -75,6 +78,8 @@ class PgMemoryStore:
                 "importance": importance,
                 "confidence": confidence,
                 "source": source,
+                "namespace": namespace,
+                "source_trust": source_trust,
                 "expires_at": expires_at,
             },
         )
@@ -95,6 +100,7 @@ class PgMemoryStore:
         query: str,
         k: int = 8,
         include_neighbors: bool = True,
+        namespace: str = "user",
     ) -> list[MemoryHit]:
         """Los `k` recuerdos más relevantes para `query`, más —si
         `include_neighbors`— los vecinos del grafo de memoria de esos hits
@@ -110,7 +116,7 @@ class PgMemoryStore:
         tocar `base.py` — el marcador es el único punto donde el agente lo ve.
         """
         if self._embedder is None:
-            hits = await self._search_ilike(tenant_id, user_id, query, k)
+            hits = await self._search_ilike(tenant_id, user_id, query, k, namespace)
         else:
             [query_embedding] = await self._embedder.embed([query])
             try:
@@ -125,6 +131,7 @@ class PgMemoryStore:
                                    1 - (embedding <=> :q ::vector) AS score
                             FROM memory_items
                             WHERE tenant_id = :tenant_id AND user_id = :user_id
+                              AND namespace = :namespace
                               AND embedding IS NOT NULL AND superseded_at IS NULL
                               AND (expires_at IS NULL OR expires_at > now())
                             ORDER BY embedding <=> :q ::vector
@@ -134,12 +141,13 @@ class PgMemoryStore:
                         {
                             "tenant_id": tenant_id,
                             "user_id": user_id,
+                            "namespace": namespace,
                             "q": _vector_literal(query_embedding),
                             "k": k,
                         },
                     )
                     negations = await self._search_negations_vector(
-                        tenant_id, user_id, query_embedding, k
+                        tenant_id, user_id, query_embedding, k, namespace
                     )
             except Exception as exc:  # noqa: BLE001 - se filtra estrictamente abajo
                 if not _is_vector_unavailable(exc):
@@ -148,7 +156,7 @@ class PgMemoryStore:
                     "pgvector no está disponible; la memoria continúa con búsqueda textual.",
                     exc_info=True,
                 )
-                hits = await self._search_ilike(tenant_id, user_id, query, k)
+                hits = await self._search_ilike(tenant_id, user_id, query, k, namespace)
             else:
                 hits = _merge_negations(
                     [_row_to_hit(row, default_score=0.0) for row in result.mappings().all()],
@@ -156,11 +164,11 @@ class PgMemoryStore:
                 )
 
         if include_neighbors and hits:
-            return await self._anexar_vecinos(tenant_id, user_id, hits)
+            return await self._anexar_vecinos(tenant_id, user_id, hits, namespace)
         return hits
 
     async def _anexar_vecinos(
-        self, tenant_id: UUID, user_id: UUID, hits: list[MemoryHit]
+        self, tenant_id: UUID, user_id: UUID, hits: list[MemoryHit], namespace: str = "user"
     ) -> list[MemoryHit]:
         """Anexa a `hits` los vecinos del grafo de memoria como contexto
         relacionado. Best-effort: cualquier fallo (tabla `memory_edges`
@@ -168,7 +176,7 @@ class PgMemoryStore:
         directos — los vecinos son contexto extra y nunca deben tumbar la
         búsqueda ni el turno."""
         try:
-            vecinos = await self._fetch_vecinos(tenant_id, user_id, hits)
+            vecinos = await self._fetch_vecinos(tenant_id, user_id, hits, namespace)
         except Exception:  # noqa: BLE001 - los vecinos nunca degradan a error
             logger.warning(
                 "No se pudieron resolver los vecinos del grafo de memoria; "
@@ -181,7 +189,7 @@ class PgMemoryStore:
         return [*hits, *vecinos]
 
     async def _fetch_vecinos(
-        self, tenant_id: UUID, user_id: UUID, hits: list[MemoryHit]
+        self, tenant_id: UUID, user_id: UUID, hits: list[MemoryHit], namespace: str = "user"
     ) -> list[MemoryHit]:
         """Resuelve las aristas salientes de cada hit a `memory_items` y arma
         `MemoryHit`s etiquetados `kind="related"`. Un vecino que ya apareció
@@ -206,7 +214,11 @@ class PgMemoryStore:
             return []
 
         placeholders = ", ".join(f":n{i}" for i in range(len(dst_ids)))
-        params: dict[str, Any] = {"tenant_id": tenant_id, "user_id": user_id}
+        params: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "namespace": namespace,
+        }
         for i, dst_id in enumerate(dst_ids):
             params[f"n{i}"] = dst_id
         result = await self._session.execute(
@@ -215,6 +227,7 @@ class PgMemoryStore:
                 SELECT id, content, kind, importance, confidence, expires_at
                 FROM memory_items
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND namespace = :namespace
                   AND superseded_at IS NULL
                   AND (expires_at IS NULL OR expires_at > now())
                   AND id IN ({placeholders})
@@ -246,7 +259,12 @@ class PgMemoryStore:
         return vecinos
 
     async def _search_negations_vector(
-        self, tenant_id: UUID, user_id: UUID, query_embedding: list[float], k: int
+        self,
+        tenant_id: UUID,
+        user_id: UUID,
+        query_embedding: list[float],
+        k: int,
+        namespace: str = "user",
     ) -> Any:
         """Top negaciones (`kind='negation'`) por relevancia vectorial, aparte
         del `search` normal. Garantiza que el conocimiento negativo del usuario
@@ -262,6 +280,7 @@ class PgMemoryStore:
                        1 - (embedding <=> :q ::vector) AS score
                 FROM memory_items
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND namespace = :namespace
                   AND kind = 'negation' AND embedding IS NOT NULL
                   AND superseded_at IS NULL
                   AND (expires_at IS NULL OR expires_at > now())
@@ -272,13 +291,14 @@ class PgMemoryStore:
             {
                 "tenant_id": tenant_id,
                 "user_id": user_id,
+                "namespace": namespace,
                 "q": _vector_literal(query_embedding),
                 "k": k,
             },
         )
 
     async def _search_ilike(
-        self, tenant_id: UUID, user_id: UUID, query: str, k: int
+        self, tenant_id: UUID, user_id: UUID, query: str, k: int, namespace: str = "user"
     ) -> list[MemoryHit]:
         result = await self._session.execute(
             sql(
@@ -286,6 +306,7 @@ class PgMemoryStore:
                 SELECT id, content, kind, importance, confidence, expires_at
                 FROM memory_items
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND namespace = :namespace
                   AND superseded_at IS NULL
                   AND (expires_at IS NULL OR expires_at > now())
                   AND content ILIKE :q
@@ -293,7 +314,13 @@ class PgMemoryStore:
                 LIMIT :k
                 """
             ),
-            {"tenant_id": tenant_id, "user_id": user_id, "q": f"%{query}%", "k": k},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "namespace": namespace,
+                "q": f"%{query}%",
+                "k": k,
+            },
         )
         hits = [_row_to_hit(row, default_score=0.0) for row in result.mappings().all()]
         neg_result = await self._session.execute(
@@ -302,13 +329,19 @@ class PgMemoryStore:
                 SELECT id, content, kind, importance, confidence, expires_at
                 FROM memory_items
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND namespace = :namespace
                   AND kind = 'negation' AND superseded_at IS NULL
                   AND (expires_at IS NULL OR expires_at > now())
                 ORDER BY importance DESC, created_at DESC
                 LIMIT :k
                 """
             ),
-            {"tenant_id": tenant_id, "user_id": user_id, "k": k},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "namespace": namespace,
+                "k": k,
+            },
         )
         neg_hits = [_row_to_hit(row, default_score=0.0) for row in neg_result.mappings().all()]
         return _merge_negations(hits, neg_hits)

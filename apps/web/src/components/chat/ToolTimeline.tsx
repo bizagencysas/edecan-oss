@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CheckIcon } from "@/components/icons";
 import { Spinner } from "@/components/ui";
@@ -19,9 +19,48 @@ export function ToolTimeline({
   events: ToolEvent[];
   showResultPreview?: boolean;
 }) {
+  const [expandido, setExpandido] = useState(false);
+  const hayEnCurso = events.some((event) => event.status === "running");
+  const terminado = events.length > 0 && !hayEnCurso;
+
+  useEffect(() => {
+    if (hayEnCurso) setExpandido(true);
+  }, [hayEnCurso]);
+
+  const resumen = useMemo(() => {
+    const ultimo = events[events.length - 1];
+    if (!ultimo) return "Trabajo en curso";
+    if (hayEnCurso) return `${displayToolName(ultimo.name)} · en curso`;
+    return `${events.length} paso${events.length === 1 ? "" : "s"} completado${events.length === 1 ? "" : "s"}`;
+  }, [events, hayEnCurso]);
+
   if (events.length === 0) return null;
+
+  if (terminado && !expandido) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpandido(true)}
+        className="flex max-w-[340px] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs text-slate-600 shadow-sm transition hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300"
+      >
+        <CheckIcon className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+        <span>{resumen}</span>
+        <span className="ml-auto text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ver</span>
+      </button>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-900/60">
+    <div className="flex max-w-[340px] flex-col gap-1.5 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+      {terminado && (
+        <button
+          type="button"
+          onClick={() => setExpandido(false)}
+          className="self-end text-[10px] font-semibold uppercase tracking-wide text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+        >
+          Ocultar
+        </button>
+      )}
       {events.map((event) => (
         <div key={event.callKey} className="flex items-start gap-2 text-slate-600 dark:text-slate-300">
           {event.status === "running" ? (
@@ -33,12 +72,14 @@ export function ToolTimeline({
             <span className="font-medium text-slate-700 dark:text-slate-200">{displayToolName(event.name)}</span>
             {showResultPreview && event.status === "done" && event.resultPreview && (
               <span className="text-slate-500 dark:text-slate-400">
-                {" · "}{plainToolResultPreview(event.resultPreview)}
+                {" · "}
+                {plainToolResultPreview(event.resultPreview)}
               </span>
             )}
             {event.status === "running" && (
               <span className="text-slate-400">
-                {" · "}{event.progressMessage ?? "ejecutando…"}
+                {" · "}
+                {event.progressMessage ?? "ejecutando…"}
                 {typeof event.elapsedSeconds === "number" ? ` · ${formatDuration(event.elapsedSeconds)}` : ""}
               </span>
             )}

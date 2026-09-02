@@ -63,6 +63,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { WorkingStatusRow } from "@/components/chat/WorkingStatusRow";
 import { ChevronRightIcon, SparklesIcon } from "@/components/icons";
 import {
   ApiError,
@@ -172,19 +173,6 @@ function pickFinalEvent(events: IdeSessionEvent[], live: boolean): IdeSessionEve
   });
   if (!candidates.length) return undefined;
   return [...candidates].sort((a, b) => b.text.trim().length - a.text.trim().length)[0];
-}
-
-function ThinkingRow() {
-  return (
-    <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
-      <span className="flex gap-1">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300 dark:bg-slate-600" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300 dark:bg-slate-600 [animation-delay:150ms]" />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-300 dark:bg-slate-600 [animation-delay:300ms]" />
-      </span>
-      <span>Edecán está trabajando…</span>
-    </div>
-  );
 }
 
 function UserBubble({
@@ -1321,7 +1309,7 @@ function TurnRow({
           <AgentRichText text={finalEvent.text.trim()} />
         </div>
       ) : live ? (
-        <ThinkingRow />
+        <WorkingStatusRow />
       ) : planPendiente ? (
         <PlanPropuestoCard sessionId={sessionId} plan={planPendiente} />
       ) : preguntaPendiente ? (

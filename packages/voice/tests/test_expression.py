@@ -8,7 +8,7 @@ def test_plain_text_for_speech_removes_markdown_without_losing_content() -> None
     )
 
 
-def test_expressive_replaces_speech_tags_with_one_stable_direction() -> None:
+def test_expressive_removes_speech_tags_without_injecting_a_direction() -> None:
     result = expressive_eleven_v3_text("[warmly] Listo, quedó configurado. [pause] ¿Te parece bien?")
-    assert result == "[calmly] Listo, quedó configurado. ¿Te parece bien?"
-    assert len(SPEECH_TAG_RE.findall(result)) == 1
+    assert result == "Listo, quedó configurado. ¿Te parece bien?"
+    assert len(SPEECH_TAG_RE.findall(result)) == 0

@@ -10,6 +10,7 @@ dueño WP-V2-06).
 
 from __future__ import annotations
 
+from .agent_bus import MESSAGE_STATUSES, MESSAGE_TYPES, enviar_mensaje_agente
 from .orchestrator import DEFAULT_MAX_STEPS, FALLBACK_AGENT_KEY, Mission, Orchestrator, RunDeps
 from .profiles import IMPLEMENTED_AGENT_KEYS, PROFILES, AgentProfile
 from .registry_view import RestrictedRegistry
@@ -19,6 +20,8 @@ __all__ = [
     "DEFAULT_MAX_STEPS",
     "FALLBACK_AGENT_KEY",
     "IMPLEMENTED_AGENT_KEYS",
+    "MESSAGE_STATUSES",
+    "MESSAGE_TYPES",
     "PROFILES",
     "AgentProfile",
     "DelegarMisionTool",
@@ -26,5 +29,6 @@ __all__ = [
     "Orchestrator",
     "RestrictedRegistry",
     "RunDeps",
+    "enviar_mensaje_agente",
     "get_all_tools",
 ]

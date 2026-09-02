@@ -39,10 +39,15 @@ def test_metadatos_de_la_tool():
     assert tool.input_schema["required"] == ["objetivo"]
 
 
-def test_get_all_tools_devuelve_una_sola_instancia():
+def test_get_all_tools_expone_delegacion_y_mensajeria_entre_bots():
     tools = get_all_tools()
-    assert len(tools) == 1
-    assert isinstance(tools[0], DelegarMisionTool)
+    nombres = [type(t).__name__ for t in tools]
+    assert nombres == [
+        "DelegarMisionTool",
+        "EnviarMensajeBotTool",
+        "ListarBotsTool",
+        "EncargarAEquipoTool",
+    ]
 
 
 async def test_rechaza_objetivo_vacio_sin_tocar_sesion_ni_encolar(
@@ -89,7 +94,8 @@ async def test_crea_la_mision_y_encola_run_mission(
     assert "misión" in resultado.content.lower()
     assert "mission_id" in resultado.data
 
-    assert len(session.llamadas) == 1
+    # 1) la misión + 2) el side-record TASK en agent_messages.
+    assert len(session.llamadas) == 2
     sql, params = session.llamadas[0]
     assert "INSERT INTO agent_missions" in sql
     assert "'planning'" in sql
@@ -97,6 +103,15 @@ async def test_crea_la_mision_y_encola_run_mission(
     assert params["user_id"] == str(user_id)
     assert params["objetivo"] == "Investiga el mercado de CRMs"
     assert params["id"] == resultado.data["mission_id"]
+
+    sql_msg, params_msg = session.llamadas[1]
+    assert "INSERT INTO agent_messages" in sql_msg
+    assert params_msg["tenant_id"] == str(tenant_id)
+    assert params_msg["sender"] is None
+    assert params_msg["receiver"] is None
+    assert params_msg["message_type"] == "task"
+    assert params_msg["task_id"] == resultado.data["mission_id"]
+    assert params_msg["goal"] == "Investiga el mercado de CRMs"
 
     assert len(llamadas) == 1
 
@@ -180,9 +195,14 @@ async def test_mision_y_recordatorio_encadenados_comparten_contexto_real(
     assert reminder.data["id"] == reminder_id
     assert len(llamadas_enqueue) == 1
     assert llamadas_enqueue[0][1] == "run_mission"
-    assert len(session.llamadas) == 2
-    assert all(params["tenant_id"] == str(tenant_id) for _, params in session.llamadas)
-    assert all(params["user_id"] == str(user_id) for _, params in session.llamadas)
+    # 1) misión + 2) side-record TASK (agent_messages) + 3) recordatorio.
+    assert len(session.llamadas) == 3
+    # El side-record TASK no lleva `user_id` (protocolo agente→agente, solo
+    # tenant); la misión y el recordatorio sí comparten el mismo tenant/usuario.
+    for sql, params in session.llamadas:
+        assert params["tenant_id"] == str(tenant_id)
+        if "INSERT INTO agent_missions" in sql or "INSERT INTO reminders" in sql:
+            assert params["user_id"] == str(user_id)
 
 
 async def test_presupuesto_usa_missions_max_steps_de_settings(
@@ -310,11 +330,13 @@ async def test_procede_si_hay_cupo_disponible_bajo_el_limite(
     resultado = await DelegarMisionTool().run(ctx, {"objetivo": "Investiga el mercado de CRMs"})
 
     assert "mission_id" in resultado.data
-    assert len(session.llamadas) == 2
+    assert len(session.llamadas) == 3
     sql_cupo, _params_cupo = session.llamadas[0]
     assert "SELECT COUNT(*) FROM agent_missions" in sql_cupo
     sql_insert, _params_insert = session.llamadas[1]
     assert "INSERT INTO agent_missions" in sql_insert
+    sql_msg, _params_msg = session.llamadas[2]
+    assert "INSERT INTO agent_messages" in sql_msg
     assert len(llamadas) == 1
 
 
@@ -330,7 +352,139 @@ async def test_procede_sin_consultar_la_bd_si_el_limite_es_ilimitado(
     resultado = await DelegarMisionTool().run(ctx, {"objetivo": "Investiga el mercado de CRMs"})
 
     assert "mission_id" in resultado.data
-    assert len(session.llamadas) == 1
+    assert len(session.llamadas) == 2
     sql, _params = session.llamadas[0]
     assert "INSERT INTO agent_missions" in sql
+    sql_msg, _params_msg = session.llamadas[1]
+    assert "INSERT INTO agent_messages" in sql_msg
     assert len(llamadas) == 1
+
+
+# ---------------------------------------------------------------------------
+# Delegación a otro worker (directiva §11-13): `destino_worker_id` escribe un
+# `persistent_agent_handoffs` pendiente y enlaza la misión (`owner_agent_id`).
+# ---------------------------------------------------------------------------
+
+
+def _extras_con_worker(worker_id: str) -> dict[str, Any]:
+    return {**_flags_cupo_ilimitado(), "worker_id": worker_id}
+
+
+async def test_delega_a_worker_escribe_handoff_y_enlaza_owner_agent_id(
+    make_ctx, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    llamadas = _install_fake_enqueue(monkeypatch)
+    session = make_session()
+    session.row_results = [{"1": 1}]  # validación "el destino es tuyo" (SELECT 1)
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source = str(uuid4())
+    destino = str(uuid4())
+    ctx = make_ctx(
+        session=session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        extras=_extras_con_worker(source),
+    )
+
+    resultado = await DelegarMisionTool().run(
+        ctx,
+        {
+            "objetivo": "Redacta el informe trimestral",
+            "destino_worker_id": destino,
+            "expected_output": "Un documento PDF de 3 páginas",
+            "priority": "alta",
+            "allowed_tools": ["leer_archivos", "crear_contenido_social"],
+            "approval_boundary": "Publicar requiere aprobación",
+        },
+    )
+
+    assert "mission_id" in resultado.data
+    # validación + nombres + handoff + hilo + side-record + misión = 6 llamadas
+    assert len(session.llamadas) == 6
+    _sqls = [str(st) for st, _ in session.llamadas]
+    _idx_handoff = next(i for i, st in enumerate(_sqls) if "INSERT INTO persistent_agent_handoffs" in st)
+    _idx_chat = next(i for i, st in enumerate(_sqls) if "agent_direct_chats" in st)
+    _idx_msg = next(i for i, st in enumerate(_sqls) if "INSERT INTO agent_messages" in st)
+    _idx_mission = next(i for i, st in enumerate(_sqls) if "INSERT INTO agent_missions" in st)
+    assert _idx_handoff != _idx_chat != _idx_msg != _idx_mission
+
+    # 1) el handoff pendiente
+    sql_handoff, params_handoff = session.llamadas[_idx_handoff]
+    assert "INSERT INTO persistent_agent_handoffs" in sql_handoff
+    assert params_handoff["source"] == source
+    assert params_handoff["destination"] == destino
+    assert params_handoff["task_id"] == resultado.data["mission_id"]
+    assert params_handoff["tenant_id"] == str(tenant_id)
+    assert params_handoff["depth"] == 1
+    assert source in params_handoff["visitados"]
+    envelope = json.loads(params_handoff["envelope"])
+    assert envelope["goal"] == "Redacta el informe trimestral"
+    assert envelope["expected_output"] == "Un documento PDF de 3 páginas"
+    assert envelope["priority"] == "alta"
+    assert envelope["allowed_tools"] == ["leer_archivos", "crear_contenido_social"]
+    assert envelope["approval_boundary"] == "Publicar requiere aprobación"
+    assert "Un documento PDF de 3 páginas" in envelope["instruction"]
+    assert envelope["requires_human_approval"] is True
+
+    # 2) el hilo directo que hace visible la conversación entre bots
+    assert "INSERT INTO agent_direct_chats" in _sqls[_idx_chat]
+    # 3) el side-record HANDOFF en agent_messages (protocolo §12)
+    sql_msg, params_msg = session.llamadas[_idx_msg]
+    assert "INSERT INTO agent_messages" in sql_msg
+    assert params_msg["tenant_id"] == str(tenant_id)
+    assert params_msg["sender"] == source
+    assert params_msg["receiver"] == destino
+    assert params_msg["message_type"] == "handoff"
+    assert params_msg["task_id"] == resultado.data["mission_id"]
+    assert params_msg["goal"] == "Redacta el informe trimestral"
+    assert params_msg["expected_output"] == "Un documento PDF de 3 páginas"
+    assert params_msg["priority"] == "alta"
+    assert json.loads(params_msg["allowed_tools"]) == ["leer_archivos", "crear_contenido_social"]
+    assert json.loads(params_msg["approval_boundary"]) == "Publicar requiere aprobación"
+
+    # 4) la misión queda enlazada al worker dueño
+    sql_mission, params_mission = session.llamadas[_idx_mission]
+    assert "INSERT INTO agent_missions" in sql_mission
+    assert "owner_agent_id" in sql_mission
+    assert params_mission["owner_agent_id"] == destino
+    assert params_mission["tenant_id"] == str(tenant_id)
+
+    assert len(llamadas) == 1
+    assert llamadas[0][1] == "run_mission"
+
+
+async def test_delegar_sin_contexto_de_worker_devuelve_error_y_no_escribe(
+    make_ctx, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    llamadas = _install_fake_enqueue(monkeypatch)
+    session = make_session()
+    ctx = make_ctx(
+        session=session, tenant_id=uuid4(), extras=_flags_cupo_ilimitado()
+    )  # sin worker_id
+
+    resultado = await DelegarMisionTool().run(
+        ctx, {"objetivo": "Redacta el informe", "destino_worker_id": str(uuid4())}
+    )
+
+    assert "worker" in resultado.content.lower()
+    assert resultado.data is None
+    assert session.llamadas == []
+    assert llamadas == []
+
+
+async def test_un_worker_no_puede_delegarse_a_si_mismo(
+    make_ctx, make_session, monkeypatch: pytest.MonkeyPatch
+):
+    llamadas = _install_fake_enqueue(monkeypatch)
+    session = make_session()
+    worker_id = str(uuid4())
+    ctx = make_ctx(session=session, tenant_id=uuid4(), extras=_extras_con_worker(worker_id))
+
+    resultado = await DelegarMisionTool().run(
+        ctx, {"objetivo": "Redacta el informe", "destino_worker_id": worker_id}
+    )
+
+    assert "sí mismo" in resultado.content
+    assert session.llamadas == []
+    assert llamadas == []

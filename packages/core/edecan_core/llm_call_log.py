@@ -127,6 +127,7 @@ def log_llm_call(
     duration_seconds: float,
     input_tokens: int,
     output_tokens: int,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Escribe una línea JSON con esta llamada al proveedor, o no hace nada.
 
@@ -179,6 +180,7 @@ def log_llm_call(
             "duration_ms": round(duration_seconds * 1000),
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "reasoning_effort": reasoning_effort,
             "system_preview": _truncate(system_prompt or "", truncate_chars),
             "messages_preview": [
                 _message_preview(message, truncate_chars) for message in messages[-last_n:]

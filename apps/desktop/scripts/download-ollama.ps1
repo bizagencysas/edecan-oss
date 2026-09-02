@@ -13,7 +13,7 @@
 .DESCRIPTION
     Adaptacion propia (bring-your-own binary, cero llave/servicio
     compartido de la plataforma) del script equivalente de
-    open-jarvis/OpenJarvis (Apache-2.0,
+    open-reference implementation/OpenJarvis (Apache-2.0,
     frontend/src-tauri/scripts/download-ollama.sh) -- ver NOTICE para la
     atribucion completa.
 

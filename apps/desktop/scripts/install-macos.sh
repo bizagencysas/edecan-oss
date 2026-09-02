@@ -61,6 +61,8 @@ collect_process_tree() {
 }
 
 stop_running_edecan() {
+  # Conservado para recuperación manual; install-macos.sh ya no lo invoca:
+  # matar edecan-desktop antes del ditto rompía iOS Remoto hasta reboot.
   local desktop_pids
   local process_tree=""
   local pid
@@ -168,15 +170,39 @@ codesign --verify --deep --strict "$STAGED_APP"
 
 
 if [[ -d "$TARGET_APP" ]]; then
-  stop_running_edecan
   mkdir -p "$HOME/.Trash"
   BACKUP_ARCHIVE="$HOME/.Trash/Edecán anterior $(date +%Y%m%d-%H%M%S).zip"
   ditto -c -k --sequesterRsrc --keepParent "$TARGET_APP" "$BACKUP_ARCHIVE"
-  rm -rf "$TARGET_APP"
   echo "Versión anterior guardada como archivo recuperable en $BACKUP_ARCHIVE"
 fi
+
+DESKTOP_BINARY="$TARGET_APP/Contents/MacOS/edecan-desktop"
+PREVIOUS_HASH=""
+if [[ -f "$DESKTOP_BINARY" ]]; then
+  PREVIOUS_HASH="$(shasum -a 256 "$DESKTOP_BINARY" | awk '{print $1}')"
+fi
+
+# Actualizar in-place sin SIGTERM previo: matar edecan-desktop antes del ditto
+# invalidaba el puente remoto y dejaba tccd anclado al cdhash viejo hasta reboot.
 ditto "$STAGED_APP" "$TARGET_APP"
 migrate_macos_autostart
-open "$TARGET_APP"
+
+NEW_HASH=""
+if [[ -f "$DESKTOP_BINARY" ]]; then
+  NEW_HASH="$(shasum -a 256 "$DESKTOP_BINARY" | awk '{print $1}')"
+fi
+
+if pgrep -x edecan-desktop >/dev/null 2>&1; then
+  if [[ -n "$PREVIOUS_HASH" && "$PREVIOUS_HASH" != "$NEW_HASH" ]]; then
+    osascript -e 'tell application id "cc.edecan.desktop" to quit' >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8; do
+      pgrep -x edecan-desktop >/dev/null 2>&1 || break
+      sleep 1
+    done
+    open "$TARGET_APP"
+  fi
+else
+  open "$TARGET_APP"
+fi
 
 echo "Edecán instalado en $TARGET_APP"

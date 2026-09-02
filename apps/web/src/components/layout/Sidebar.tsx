@@ -7,6 +7,8 @@ import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { ChevronDownIcon } from "@/components/icons";
 import { ASSISTANT_INTENT_EVENT } from "@/lib/assistant-intents";
+import { listTeamsTolerant } from "@/lib/api-teams";
+import { listWorkspacesTolerant } from "@/lib/api-workspaces";
 import { useAuth } from "@/lib/auth-context";
 
 import {
@@ -36,6 +38,23 @@ export function NavList({ onNavigate }: { onNavigate?: () => void }) {
     (item) => itemIsAvailable(item) && isNavItemActive(pathname, item.href),
   );
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [navCounts, setNavCounts] = useState<{ teams?: number; workspaces?: number } | null>(null);
+
+  useEffect(() => {
+    // Conteos en vivo best-effort: si el backend de equipos/workspaces todavía
+    // no existe, la barra lateral simplemente no muestra el número.
+    let cancelled = false;
+    void Promise.allSettled([listTeamsTolerant(), listWorkspacesTolerant()]).then(([teams, workspaces]) => {
+      if (cancelled) return;
+      setNavCounts({
+        teams: teams.status === "fulfilled" ? teams.value.length : undefined,
+        workspaces: workspaces.status === "fulfilled" ? workspaces.value.length : undefined,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let savedOpen = false;
@@ -69,7 +88,13 @@ export function NavList({ onNavigate }: { onNavigate?: () => void }) {
     >
       <div className="space-y-0.5">
         {PRIMARY_NAV_ITEMS.map((item) => (
-          <NavLink key={item.href} item={item} active={isNavItemActive(pathname, item.href)} onNavigate={onNavigate} />
+          <NavLink
+            key={item.href}
+            item={item}
+            active={isNavItemActive(pathname, item.href)}
+            onNavigate={onNavigate}
+            count={item.badge ? navCounts?.[item.badge] : undefined}
+          />
         ))}
       </div>
 
@@ -117,11 +142,13 @@ function NavLink({
   active,
   onNavigate,
   compact = false,
+  count,
 }: {
   item: NavItem;
   active: boolean;
   onNavigate?: () => void;
   compact?: boolean;
+  count?: number;
 }) {
   const Icon = item.icon;
 
@@ -146,7 +173,12 @@ function NavLink({
       )}
     >
       <Icon className={cx("shrink-0", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
-      {item.label}
+      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      {count !== undefined && count > 0 && (
+        <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          {count}
+        </span>
+      )}
     </Link>
   );
 }

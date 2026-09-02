@@ -293,7 +293,7 @@ A diferencia de self-hosting (`self-hosting.md`, pensado para quien ya está có
 
 ## 10. Ollama embebido (opcional)
 
-Patrón de auto-provisioning adaptado de [`open-jarvis/OpenJarvis`](https://github.com/open-jarvis/OpenJarvis) (Apache-2.0, ver `NOTICE`): en vez de depender de que el cliente instale Ollama aparte, quien empaqueta la app puede **incluir el binario de Ollama directo en el instalador** — "IA local gratis, cero fricción" (prioridad del roadmap del producto). Es 100% opcional en los dos sentidos: opcional para quien empaqueta (no hace falta para que la app funcione) y opcional para quien la usa (sigue pudiendo conectar Anthropic/OpenAI/Vertex/Claude CLI/Codex CLI/su propio Ollama externo desde Configuración igual que siempre, ver [`proveedores-llm.md`](./proveedores-llm.md)).
+Patrón de auto-provisioning adaptado de [`open-reference implementation/OpenJarvis`](https://github.com/open-reference implementation/OpenJarvis) (Apache-2.0, ver `NOTICE`): en vez de depender de que el cliente instale Ollama aparte, quien empaqueta la app puede **incluir el binario de Ollama directo en el instalador** — "IA local gratis, cero fricción" (prioridad del roadmap del producto). Es 100% opcional en los dos sentidos: opcional para quien empaqueta (no hace falta para que la app funcione) y opcional para quien la usa (sigue pudiendo conectar Anthropic/OpenAI/Vertex/Claude CLI/Codex CLI/su propio Ollama externo desde Configuración igual que siempre, ver [`proveedores-llm.md`](./proveedores-llm.md)).
 
 **Para quien empaqueta un release:**
 

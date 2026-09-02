@@ -500,6 +500,11 @@ export function parseAgentEvent(value: unknown): AgentEvent | null {
       ? { type: "done", usage: parseUsage(raw.usage), explanation }
       : { type: "done", usage: parseUsage(raw.usage) };
   }
+  if (raw.type === "follow_up_turn") {
+    const pending =
+      typeof raw.pending === "number" && Number.isFinite(raw.pending) ? Math.max(0, raw.pending) : 0;
+    return { type: "follow_up_turn", pending };
+  }
   if (raw.type === "error") {
     return typeof raw.message === "string" ? { type: "error", message: raw.message } : null;
   }

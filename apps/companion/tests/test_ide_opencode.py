@@ -29,10 +29,34 @@ from edecan_companion.ide_opencode import (
     ErrorOpencode,
     ServidorOpencode,
     _argv_y_flags_lanzamiento,
+    _entorno_sin_vars_opencode,
 )
 from edecan_companion.pty_compat import _comando_taskkill
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_entorno_sin_vars_opencode_quita_lo_de_opencode_desktop(monkeypatch):
+    """El entorno del subproceso `opencode serve` no puede arrastrar las
+    variables de la app de escritorio OpenCode.app: con
+    `OPENCODE_SERVER_USERNAME/PASSWORD` el serve activa Basic Auth y el
+    `/api/health` del IDE responde 401 (bug reproducido el 1-sep-2026)."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/Users/example/")
+    monkeypatch.setenv("OPENCODE_SERVER_USERNAME", "opencode")
+    monkeypatch.setenv("OPENCODE_SERVER_PASSWORD", "secreto-que-no-debe-heredarse")
+    monkeypatch.setenv("OPENCODE_CLIENT", "desktop")
+    monkeypatch.setenv("EDECAN_OPENCODE_BIN", "/Applications/Edecán.app/Contents/MacOS/opencode")
+
+    entorno = _entorno_sin_vars_opencode()
+
+    assert entorno["PATH"] == "/usr/bin:/bin"
+    assert entorno["HOME"] == "/Users/example/"
+    assert entorno["EDECAN_OPENCODE_BIN"] == "/Applications/Edecán.app/Contents/MacOS/opencode"
+    assert "OPENCODE_SERVER_USERNAME" not in entorno
+    assert "OPENCODE_SERVER_PASSWORD" not in entorno
+    assert "OPENCODE_CLIENT" not in entorno
+    assert "secreto" not in " ".join(entorno.values())
 
 
 # --------------------------------------------------------------------------- #

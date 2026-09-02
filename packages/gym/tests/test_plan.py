@@ -83,6 +83,69 @@ async def test_generar_plan_feliz():
     assert "hipertrofia" in usuario
 
 
+async def test_generar_plan_prompt_incluye_musculos_recientes():
+    completar, llamadas = _fake_completar([json.dumps(_plan_dict())])
+    historial = [
+        {
+            "plan": {
+                "ejercicios": [
+                    {"nombre": "Sentadilla", "musculo": "Cuádriceps"},
+                    {"nombre": "Press banca", "musculo": "Pectorales"},
+                ]
+            }
+        }
+    ]
+    await generar_plan(completar, historial=historial, objetivo="hipertrofia")
+    _, usuario = llamadas[0]
+    assert "Músculos trabajados en los últimos días" in usuario
+    assert "Cuádriceps" in usuario
+    assert "Pectorales" in usuario
+    assert "NO repitas el mismo grupo muscular principal" in usuario
+
+
+async def test_generar_plan_prompt_deduplica_musculos():
+    completar, llamadas = _fake_completar([json.dumps(_plan_dict())])
+    historial = [
+        {
+            "plan": {
+                "ejercicios": [
+                    {"nombre": "Sentadilla", "musculo": "Cuádriceps"},
+                    {"nombre": "Prensa", "musculo": "CUÁDRICEPS"},
+                    {"nombre": "Press", "musculo": "Pectorales"},
+                ]
+            }
+        }
+    ]
+    await generar_plan(completar, historial=historial)
+    _, usuario = llamadas[0]
+    assert usuario.count("Cuádriceps") == 1
+    assert usuario.count("Pectorales") == 1
+
+
+async def test_generar_plan_sin_historial_no_pone_bloque_de_musculos():
+    completar, llamadas = _fake_completar([json.dumps(_plan_dict())])
+    await generar_plan(completar)
+    _, usuario = llamadas[0]
+    assert "Músculos trabajados en los últimos días" not in usuario
+
+
+async def test_generar_plan_prompt_incluye_readiness():
+    completar, llamadas = _fake_completar([json.dumps(_plan_dict())])
+    await generar_plan(completar, readiness="dormí mal")
+    _, usuario = llamadas[0]
+    assert "Estado de recuperación del usuario hoy" in usuario
+    assert "dormí mal" in usuario
+    assert "poco recuperado" in usuario
+    assert "mantén el estímulo" in usuario
+
+
+async def test_generar_plan_sin_readiness_no_pone_bloque():
+    completar, llamadas = _fake_completar([json.dumps(_plan_dict())])
+    await generar_plan(completar)
+    _, usuario = llamadas[0]
+    assert "Estado de recuperación del usuario hoy" not in usuario
+
+
 async def test_generar_plan_conserva_url_de_imagen():
     completar, _ = _fake_completar([json.dumps(_plan_dict(imagen_url="https://x/y.png"))])
     plan = await generar_plan(completar)

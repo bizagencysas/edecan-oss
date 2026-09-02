@@ -92,14 +92,14 @@ Ejemplo de release estable:
 ```bash
 # primero actualiza las versiones del crate, tauri.conf.json y apps/web
 git tag -a v0.8.0 -m "Edecán 0.8.0"
-git push bizagency v0.8.0
+git push origin v0.8.0
 ```
 
 Ejemplo de vista previa:
 
 ```bash
 git tag -a v0.8.0-beta.1 -m "Edecán 0.8.0 beta 1"
-git push bizagency v0.8.0-beta.1
+git push origin v0.8.0-beta.1
 ```
 
 ## Recuperación y rollback

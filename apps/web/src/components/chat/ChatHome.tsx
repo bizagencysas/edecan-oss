@@ -59,15 +59,18 @@ export function ChatHome({
   }, []);
 
   return (
-    <div className="m-auto flex max-w-xl flex-col items-center px-4 py-10 text-center">
+    <div
+      className="m-auto flex max-w-xl flex-col items-center px-4 py-10 text-center"
+      data-testid="chat-empty-state"
+    >
       <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
         <ChatIcon className="h-5 w-5" />
       </span>
       <p className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-        ¿Qué hacemos?
+        Escríbele a Edecán
       </p>
       <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
-        Escríbelo como se lo dirías a una persona. Edecan organizará el resto.
+        Como un chat con alguien de confianza. También puede escribirte primero con avisos o resultados.
       </p>
       {resume.length > 0 && (
         <div className="mt-4 flex flex-wrap justify-center gap-2">

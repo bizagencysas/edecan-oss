@@ -91,6 +91,18 @@ function ConnectedAccountsList({
             <Badge variant={account.status === "active" ? "success" : "warning"}>
               {account.status === "active" ? "Guardada" : "Requiere atención"}
             </Badge>
+            {account.scopes && account.scopes.length > 0 && (
+              <p className="mt-1 flex flex-wrap gap-1">
+                {account.scopes.map((scope) => (
+                  <span
+                    key={scope}
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                  >
+                    {scope}
+                  </span>
+                ))}
+              </p>
+            )}
           </div>
           <button
             onClick={() => onDisconnect(connectorKey, account.id)}

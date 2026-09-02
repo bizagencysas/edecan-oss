@@ -347,8 +347,55 @@ def _messages_database_path() -> Path:
     return Path.home() / "Library" / "Messages" / "chat.db"
 
 
+
+def mac_mail_recent(params: dict[str, Any], _config: CompanionConfig) -> dict[str, Any]:
+    """Los últimos correos del INBOX (sin filtro): para el contexto rápido."""
+    limit = _bounded_int(params.get("limit"))
+    script = r"""
+on cleanField(valueText)
+    set valueText to valueText as text
+    set AppleScript's text item delimiters to {character id 10, character id 13, ¬
+        character id 31, character id 30}
+    set parts to text items of valueText
+    set AppleScript's text item delimiters to " "
+    set valueText to parts as text
+    set AppleScript's text item delimiters to ""
+    return valueText
+end cleanField
+
+on run argv
+    set maxItems to (item 1 of argv) as integer
+    tell application "Mail"
+        set output to ""
+        set foundCount to 0
+        repeat with accountItem in accounts
+            if foundCount ≥ maxItems then exit repeat
+            try
+                set inboxBox to mailbox "INBOX" of accountItem
+                set recentMessages to (messages of inboxBox)
+                repeat with messageItem in reverse of recentMessages
+                    if foundCount ≥ maxItems then exit repeat
+                    set output to output & my cleanField(name of accountItem) & character id 31
+                    set output to output & my cleanField(sender of messageItem) & character id 31
+                    set output to output & my cleanField(subject of messageItem) & character id 31
+                    set output to output & my cleanField(date received of messageItem) & ¬
+                        character id 31 & character id 10
+                    set foundCount to foundCount + 1
+                end repeat
+            end try
+        end repeat
+        return output
+    end tell
+end run
+"""
+    raw = _run_osascript(script, str(limit))
+    records = _records(raw, ("account", "sender", "subject", "received_at"))
+    return {"messages": records[:limit], "count": min(len(records), limit)}
+
+
 PERSONAL_APP_ACTIONS = {
     "mac_mail_accounts": mac_mail_accounts,
+    "mac_mail_recent": mac_mail_recent,
     "mac_mail_search": mac_mail_search,
     "mac_mail_send": mac_mail_send,
     "mac_contacts_search": mac_contacts_search,

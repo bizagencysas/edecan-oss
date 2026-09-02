@@ -16,6 +16,7 @@ struct HablarStreamTests {
             #expect(json["text"] as? String == "Hola.")
             #expect(json["voice_id"] as? String == "voice-1")
             #expect(json["model_id"] as? String == "eleven_turbo_v2_5")
+            #expect(json["voice_rewrite"] == nil)
             return (200, "audio/mpeg", Data("AAAA".utf8) + Data("BBBB".utf8))
         }
         let api = APIClient(
@@ -35,6 +36,27 @@ struct HablarStreamTests {
         }
         #expect(mime == "audio/mpeg")
         #expect(juntos == Data("AAAABBBB".utf8))
+    }
+
+    @Test func hablarStreamPlaybackEnviaVoiceRewriteFalse() async throws {
+        let tokens = VoiceLockedAuthTokenStore(access: "access-voz", refresh: "refresh-voz")
+        let session = voiceStubSession { request in
+            let json = try #require(
+                JSONSerialization.jsonObject(with: voiceRequestBody(request)) as? [String: Any]
+            )
+            #expect(json["voice_rewrite"] as? Bool == false)
+            return (200, "audio/mpeg", Data("AAAA".utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        let stream = try await api.hablarStream(
+            texto: "Mensaje largo del chat.", voiceRewrite: false
+        )
+        for try await _ in stream {}
     }
 
     @Test func hablarStreamPropagaErrorHTTP() async throws {

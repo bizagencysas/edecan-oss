@@ -147,7 +147,7 @@ public struct MobileServerConfig: Codable, Sendable, Equatable {
         platform: "ios",
         tabs: [
             MobileTabConfig(id: "assistant", title: "Edecán", systemIcon: "bubble.left.and.bubble.right.fill", order: 0),
-            MobileTabConfig(id: "equipo", title: "Equipo", systemIcon: "person.3.fill", order: 1),
+            MobileTabConfig(id: "equipo", title: "Bots", systemIcon: "sparkles", order: 1),
             MobileTabConfig(id: "activity", title: "Actividad", systemIcon: "clock.arrow.circlepath", order: 2),
             MobileTabConfig(id: "ide", title: "IDE", systemIcon: "chevron.left.forwardslash.chevron.right", order: 3),
             MobileTabConfig(id: "profile", title: "Tú", systemIcon: "person.crop.circle.fill", order: 4),

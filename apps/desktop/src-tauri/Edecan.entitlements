@@ -8,5 +8,20 @@
 	<true/>
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
+	<!-- JIT: Tauri firma el bundle Y los sidecars con ESTE archivo. El
+	     sidecar `opencode` corre el runtime de Bun (motor del IDE), y Bun
+	     necesita JIT: sin estas claves, con Hardened Runtime activo, V8
+	     muere con SIGTRAP (código -5) a mitad del primer prompt y el IDE
+	     entero queda muerto — reproducido el 1-sep-2026. Son las mismas
+	     claves de `Opencode.entitlements`, subidas aquí para que la firma
+	     del empaquetado cubra a todos los binarios por igual. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-executable-page-protection</key>
+	<true/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
 </dict>
 </plist>

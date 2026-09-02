@@ -24,6 +24,7 @@ options:
   bundleIdPrefix: cc.edecan
   deploymentTarget:
     iOS: "26.0"
+    watchOS: "26.0"
   xcodeVersion: "26.0"
   createIntermediateGroups: true
   generateEmptyDirectories: false
@@ -33,8 +34,8 @@ options:
 
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "69"
-    MARKETING_VERSION: "0.9.0"
+    CURRENT_PROJECT_VERSION: "123"
+    MARKETING_VERSION: "0.9.15"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
@@ -97,8 +98,8 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSSpeechRecognitionUsageDescription: "Edecan usa el reconocimiento de voz del dispositivo para convertir tus solicitudes en texto sin exigir una clave externa."
-        NSHealthShareUsageDescription: "Edecán lee tus entrenamientos y pasos de Salud para mostrarte tu actividad del día y guardar la sesión de gimnasio que terminas."
-        NSHealthUpdateUsageDescription: "Edecán guarda en Salud el entrenamiento de fuerza que terminas para que quede en tu historial de actividad."
+        NSHealthShareUsageDescription: "Edecán lee tus entrenamientos, pasos y agua de Salud para mostrarte tu actividad del día y guardar la sesión de gimnasio que terminas."
+        NSHealthUpdateUsageDescription: "Edecán guarda en Salud el agua que registras y el entrenamiento de fuerza que terminas."
         CFBundleURLTypes:
           - CFBundleURLName: cc.edecan.pairing
             CFBundleURLSchemes:
@@ -128,6 +129,7 @@ targets:
       - package: EdecanKit
       - target: EdecanWidgetsExtension
       - target: EdecanShareExtension
+      - target: EdecanWatchApp
 
   EdecanWidgetsExtension:
     type: app-extension
@@ -179,6 +181,123 @@ targets:
     dependencies:
       - package: EdecanKit
 
+  # ── Apple Watch (scaffold) ──────────────────────────────────────────────
+  # App del Watch y su extensión (SwiftUI + WatchConnectivity). El Watch NO
+  # enlaza EdecanKit: todavía no tiene acceso a la red — el estado de la
+  # sesión de gym viaja del iPhone al Watch por mensajes WatchConnectivity
+  # (`PhoneWatchBridge` en EdecanApp → `WatchSessionManager` en la
+  # extensión). Bundle ids derivados de `$(EDECAN_IOS_BUNDLE_ID)` (mismo
+  # mecanismo que `.widgets`/`.share`): con el default del instalador
+  # (`EDECAN_IOS_BUNDLE_ID=org.example.edecan`, ver
+  # `scripts/install_device.sh`) quedan en
+  # `org.example.edecan.watchkitapp` y
+  # `org.example.edecan.watchkitapp.watchkitextension`.
+
+  # Apple Watch — SINGLE-TARGET (watchOS 10+, el modelo app+extensión de
+  # watchOS 2-9 quedó DEPRECATED por Apple; el product type
+  # `watchkit2-extension` ya no se compila). TODO el código vive en
+  # `EdecanWatchApp`: las vistas de `EdecanWatchExtension/` (ContentView,
+  # WatchSessionManager) se compilan DENTRO de este target, sin extensión
+  # separada y sin NSExtension en el Info.plist.
+  EdecanWatchApp:
+    type: application
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: EdecanWatchApp
+        excludes:
+          - "**/*.md"
+      - path: EdecanWatchExtension
+        excludes:
+          - "**/*.md"
+          - "Info.plist"
+    resources:
+      - path: EdecanWatchApp/Resources
+    info:
+      path: EdecanWatchApp/Info.plist
+      properties:
+        CFBundleDisplayName: Edecán
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # El companion del Watch es el iPhone con la app principal; el valor
+        # se resuelve a build-time igual que el bundle id de EdecanApp.
+        WKCompanionAppBundleIdentifier: "$(EDECAN_IOS_BUNDLE_ID)"
+        # Marca ESTE bundle como app de Watch (single-target): sin esta clave
+        # `installd` lo rechaza con "does not have WKApplication key set to
+        # true" (MIInstallerErrorDomain 92 InvalidWatchKitApp).
+        WKApplication: true
+        NSHealthShareUsageDescription: "Edecán lee pasos, ritmo, HRV, sueño, movimiento, pie, oxígeno y agua de Salud en el reloj para el resumen del día y el entrenamiento."
+        NSHealthUpdateUsageDescription: "Edecán guarda en Salud el agua, el entrenamiento de gym y los minutos de calma que marcas desde el reloj."
+        WKBackgroundModes:
+          - workout-processing
+        # El App Store valida ambos para apps watch: el PNG físico
+        # (`CFBundleIconFiles` + `AppIcon.png` en la raíz) y el asset catalog
+        # (`CFBundleIconName`). Ambos presentes, ambos válidos.
+        CFBundleIconFiles:
+          - AppIcon
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(EDECAN_IOS_BUNDLE_ID).watchkitapp"
+        PRODUCT_NAME: EdecanWatchApp
+        # App icons en asset catalog (CFBundleIconName) + PNG físico (CFBundleIconFiles):
+        # el App Store con SDK moderno exige ambos para el watch.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "4" # Watch (el base del proyecto usa "1,2")
+        SKIP_INSTALL: "YES" # se embebe en Edecan.app, no se instala suelta
+        CODE_SIGN_ENTITLEMENTS: EdecanWatchApp/EdecanWatchApp.entitlements
+        ENABLE_APP_INTENTS_METADATA_PROCESSING: "NO"
+        ENABLE_APP_INTENTS_COMPILE_TIME_EXTRACTION: "NO"
+        ENABLE_DEBUG_DYLIB: "NO"
+        ONLY_ACTIVE_ARCH: "YES"
+    dependencies:
+      - target: EdecanWatchWidgets
+    scheme: {}
+
+  EdecanWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: EdecanWatchWidgets
+        excludes:
+          - "**/*.md"
+          - "Info.plist"
+          - "*.entitlements"
+    info:
+      path: EdecanWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Edecán
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(EDECAN_IOS_BUNDLE_ID).watchkitapp.widgets"
+        PRODUCT_NAME: EdecanWatchWidgets
+        TARGETED_DEVICE_FAMILY: "4"
+        WATCHOS_DEPLOYMENT_TARGET: "26.0"
+        SKIP_INSTALL: "YES"
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        CODE_SIGN_ENTITLEMENTS: EdecanWatchWidgets/EdecanWatchWidgets.entitlements
+        ENABLE_APP_INTENTS_METADATA_PROCESSING: "NO"
+        ENABLE_APP_INTENTS_COMPILE_TIME_EXTRACTION: "NO"
+        ENABLE_DEBUG_DYLIB: "NO"
+        ONLY_ACTIVE_ARCH: "YES"
+
+  EdecanUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: EdecanUITests
+    dependencies:
+      - target: EdecanApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(EDECAN_IOS_BUNDLE_ID).uitests"
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: EdecanApp
+
 schemes:
   EdecanApp:
     build:
@@ -188,5 +307,7 @@ schemes:
       config: Debug
     test:
       config: Debug
+      targets:
+        - EdecanUITests
     archive:
       config: Release

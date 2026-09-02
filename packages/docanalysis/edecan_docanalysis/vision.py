@@ -17,7 +17,9 @@ capacidad visual depende del modelo concreto, no del nombre del proveedor.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import io
 from typing import Any
 
 from edecan_core import Tool, ToolContext, ToolResult
@@ -26,7 +28,14 @@ from edecan_llm.base import ChatMessage, CompletionRequest
 from . import _s3
 from ._util import parse_uuid, tenant_flags
 
-_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+# Tope DURO de la llamada de visión: sin esto, una imagen pesada o un pico del
+# proveedor dejaba el turno en «está trabajando» para siempre (el harness,
+# no el LLM). A los 60 s se corta y se avisa con honestidad.
+_VISION_TIMEOUT_SECONDS = 60
+# Redimensión server-side: una foto de 12 MP en base64 son 10-20 MB al modelo
+# (lento); se baja a ~1024 px y se comprime. Best-effort (requiere Pillow).
+_MAX_LADO = 1024
 
 _MIME_PERMITIDOS = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _EXT_A_MIME = {
@@ -36,6 +45,32 @@ _EXT_A_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+
+def _reducir_imagen(data: bytes, mime: str) -> tuple[bytes, str]:
+    """Baja la imagen a ~1024 px y la comprime (best-effort; Pillow).
+
+    Devuelve `(bytes, mime)` con el mime final. Si Pillow no está o la imagen
+    no es decodificable, devuelve los bytes originales para no romper nada.
+    """
+    try:
+        from PIL import Image, ImageOps  # type: ignore[import-not-found]
+
+        imagen = Image.open(io.BytesIO(data))
+        # exif_transpose devuelve la imagen rotada (según orientación EXIF);
+        # no todos los Pillow aceptan `inplace` — se asigna el resultado.
+        imagen = ImageOps.exif_transpose(imagen)
+        imagen.thumbnail((_MAX_LADO, _MAX_LADO))
+        salida = io.BytesIO()
+        # JPEG para la visión (sin alpha); si es PNG con transparencia, PNG.
+        fmt = "PNG" if imagen.mode in ("RGBA", "LA") else "JPEG"
+        if fmt == "JPEG":
+            imagen.convert("RGB").save(salida, "JPEG", quality=85)
+            return salida.getvalue(), "image/jpeg"
+        imagen.save(salida, "PNG")
+        return salida.getvalue(), "image/png"
+    except Exception:  # noqa: BLE001 - la imagen original sigue siendo válida
+        return data, mime
 
 _PREGUNTA_DEFECTO = "Describe y transcribe (OCR) esta imagen."
 
@@ -100,24 +135,37 @@ class AnalizarImagenTool(Tool):
 
         flags = tenant_flags(ctx)
         pregunta = str(args.get("pregunta") or "").strip() or _PREGUNTA_DEFECTO
+        # Redimensionar ANTES del base64: una foto de 12 MP al modelo es lenta
+        # y pesada (harness, no LLM). Best-effort con Pillow.
+        datos, mime = _reducir_imagen(archivo.contenido, mime)
         try:
-            respuesta = await ctx.llm.complete(
-                "rapido",
-                flags,
-                CompletionRequest(
-                    model="rapido",
-                    system=_SYSTEM_PROMPT,
-                    messages=[
-                        ChatMessage(
-                            role="user",
-                            content=[
-                                _bloque_imagen(mime, archivo.contenido),
-                                {"type": "text", "text": pregunta},
-                            ],
-                        )
-                    ],
-                    max_tokens=1536,
+            respuesta = await asyncio.wait_for(
+                ctx.llm.complete(
+                    "rapido",
+                    flags,
+                    CompletionRequest(
+                        model="rapido",
+                        system=_SYSTEM_PROMPT,
+                        messages=[
+                            ChatMessage(
+                                role="user",
+                                content=[
+                                    _bloque_imagen(mime, datos),
+                                    {"type": "text", "text": pregunta},
+                                ],
+                            )
+                        ],
+                        max_tokens=1536,
+                    ),
                 ),
+                timeout=_VISION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            return ToolResult(
+                content=(
+                    "El análisis de la imagen tardó más de lo razonable — "
+                    "probá con una imagen más liviana y lo vemos."
+                )
             )
         except Exception as exc:  # noqa: BLE001 - proveedores/modelos heterogéneos
             return ToolResult(

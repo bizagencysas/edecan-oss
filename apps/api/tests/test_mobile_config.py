@@ -3,6 +3,18 @@ from __future__ import annotations
 import json
 
 from conftest import auth_headers
+from edecan_schemas import default_mobile_server_config
+
+
+def test_default_mobile_config_un_solo_tab_bots_sin_teams() -> None:
+    config = default_mobile_server_config()
+    tab_ids = [tab.id for tab in config.tabs]
+    assert tab_ids == ["assistant", "equipo", "activity", "ide", "profile"]
+    assert "teams" not in tab_ids
+    bots_tab = config.tabs[1]
+    assert bots_tab.id == "equipo"
+    assert bots_tab.title == "Bots"
+    assert bots_tab.system_icon == "sparkles"
 
 
 async def test_mobile_config_serves_default_contract(client, fake_repo) -> None:
@@ -26,6 +38,10 @@ async def test_mobile_config_serves_default_contract(client, fake_repo) -> None:
         "ide",
         "profile",
     ]
+    bots_tab = payload["tabs"][1]
+    assert bots_tab["id"] == "equipo"
+    assert bots_tab["title"] == "Bots"
+    assert bots_tab["system_icon"] == "sparkles"
     assert payload["flags"]["server_driven_ui"] is True
 
 

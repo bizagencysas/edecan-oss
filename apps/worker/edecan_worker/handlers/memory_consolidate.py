@@ -616,6 +616,7 @@ async def _extraer_memorias_nuevas(
                 source=item["source"],
                 embedding=embedding,
                 expires_at=expiracion_eventos if kind_efectivo == "event" else None,
+                namespace="user",
             )
             nuevos_ids.append(row["id"])
             contenido_a_id[_normalizar_contenido(item["content"])] = row["id"]
@@ -909,6 +910,7 @@ async def _actualizar_perfil_vivo(
                 confidence=_CONFIDENCE_DOCUMENT,
                 source=_SOURCE_ESPEJO_PERFIL,
                 embedding=embedding,
+                namespace="user",
             )
 
         logger.info(

@@ -261,9 +261,20 @@ async def enviar_apns(
         # UNA vez contra el otro host para que el push "simplemente funcione"
         # sin flipear credenciales a mano (fix del "mal push" 21-ago-2026).
         if response.status_code == 400 and _motivo_del_proveedor(response) == "BadDeviceToken":
-            response = await client.post(
+            retry = await client.post(
                 f"https://{otro_host}/3/device/{push_token}", headers=headers, json=body
             )
+            if retry.status_code == 200:
+                return retry
+            if _motivo_del_proveedor(retry) == "BadDeviceToken":
+                logger.error(
+                    "push: BadDeviceToken en sandbox Y production para device=%s — "
+                    "probable desalineación entre aps-environment del build iOS y las "
+                    "credenciales APNs del vault. Corregir con "
+                    "scripts/flip_push_environment.py (ver HANDOFF.md).",
+                    push_token[:8] + "...",
+                )
+            response = retry
         return response
 
 

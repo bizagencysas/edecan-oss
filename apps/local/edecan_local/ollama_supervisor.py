@@ -1,6 +1,6 @@
 """`edecan_local.ollama_supervisor` — arranque/apagado OPCIONAL de un
 `ollama serve` embebido (`DIRECCION_ACTUAL.md` "Confirmado: agregar Ollama",
-WP-V4-09, patrón de auto-provisioning de open-jarvis/OpenJarvis, ver NOTICE).
+WP-V4-09, patrón de auto-provisioning de open-reference implementation/OpenJarvis, ver NOTICE).
 
 Todo el CICLO DE VIDA (arrancar, esperar que responda, apagar) vive ACÁ, en
 Python -- no en `apps/desktop/src-tauri` (Rust) -- porque este paquete SÍ se

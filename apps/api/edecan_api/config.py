@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     CHAT_CONTEXT_RECENT_MESSAGES: int = 60
     CHAT_CONTEXT_MAX_MESSAGES: int = 220
     CHAT_CONTEXT_MAX_CHARS: int = 80_000
+    # Chat 1:1 con bots (persistent_agents): un hilo humano↔bot puede crecer
+    # a cientos de mensajes sin que el bot "pierda contexto". Independiente del
+    # chat principal para no aumentar coste/latencia del asistente general.
+    BOT_CONTEXT_MAX_MESSAGES: int = 1_000
+    BOT_CONTEXT_MAX_CHARS: int = 200_000
     CHAT_CONTEXT_CROSS_CHAT_ENABLED: bool = True
     CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS: int = 8
     CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION: int = 4
@@ -140,6 +145,7 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
     ELEVENLABS_VOICE_ID: str | None = None
+    # Webhook post-call ConvAI (ElevenLabs): pegar el signing secret al crear el
     POLLY_VOICE: str = "Lupe"
     # Máximo de respuestas LLM por llamada. Evita un Gather/LLM sin límite
     # ante silencio, bots o una llamada olvidada; el último turno cuelga.

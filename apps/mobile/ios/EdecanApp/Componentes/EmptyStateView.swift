@@ -9,6 +9,8 @@ struct EmptyStateView: View {
     let titulo: String
     let descripcion: String
     var etiquetaRoadmap: String? = nil
+    var colorTitulo: Color? = nil
+    var colorDescripcion: Color? = nil
 
     var body: some View {
         VStack(spacing: 16) {
@@ -17,9 +19,10 @@ struct EmptyStateView: View {
                 .foregroundStyle(EdecanTheme.degradado)
             Text(titulo)
                 .font(.title3.weight(.semibold))
+                .foregroundStyle(colorTitulo ?? Color.primary)
             Text(descripcion)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(colorDescripcion ?? Color.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             if let etiquetaRoadmap {

@@ -26,4 +26,17 @@ public struct MCPServerSummary: Codable, Sendable, Equatable, Identifiable {
     public let url: String?
     public let comando: String?
     public let estado: String
+    /// Salud reportada por el servidor (`healthy`/`degraded`/`down`/…), `nil`
+    /// si el backend todavía no la manda (contrato en paralelo).
+    public let health: String?
+    public let latencyMs: Int?
+    public let lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case nombre, transporte, url, comando, estado, health
+        case latencyMs = "latency_ms"
+        case lastError = "last_error"
+    }
+
+    public var estaConectado: Bool { estado == "active" }
 }

@@ -65,8 +65,9 @@ class _FakeLLMVault:
 
 
 class _FakeResult:
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(self, rows: list[dict[str, Any]] | None = None, rowcount: int = 1) -> None:
         self._rows = rows or []
+        self.rowcount = rowcount
 
     def mappings(self) -> _FakeResult:
         return self
@@ -102,6 +103,8 @@ class FakeSession:
             "enabled": True,
             "next_run_at": None,
             "last_run_at": None,
+            "lease_owner": None,
+            "lease_until": None,
         }
         row.update(fields)
         self.automations[str(automation_id)] = row
@@ -131,7 +134,8 @@ class FakeSession:
         primer_token = sql.strip().split(None, 1)[0].upper()
 
         if primer_token == "SELECT" and "FROM automations" in sql and "next_run_at <=" in sql:
-            # _list_due_schedule_automations: barrido global (sin tenant_id).
+            # _list_due_schedule_automations: barrido global (sin tenant_id),
+            # excluyendo arriendo activo (`lease_until >= now`).
             ahora = params["now"]
             rows = [
                 row
@@ -139,6 +143,7 @@ class FakeSession:
                 if row["enabled"]
                 and row.get("next_run_at") is not None
                 and row["next_run_at"] <= ahora
+                and (row.get("lease_until") is None or row["lease_until"] <= ahora)
             ]
             rows.sort(key=lambda r: r["next_run_at"])
             return _FakeResult(rows=rows)
@@ -180,10 +185,17 @@ class FakeSession:
             return _FakeResult()
 
         if primer_token == "UPDATE" and "automations" in sql and "next_run_at" in sql:
+            # _claim_and_advance: claim atómico (lease) + adelanto de next_run_at.
+            # Simula el WHERE (lease_until IS NULL OR lease_until < now()).
             row = self.automations.get(params["id"])
-            if row is not None:
-                row["next_run_at"] = params["next_run_at"]
-            return _FakeResult()
+            if row is None:
+                return _FakeResult(rowcount=0)
+            if row.get("lease_until") is not None and row["lease_until"] > datetime.now(UTC):
+                return _FakeResult(rowcount=0)  # arriendo activo: otro barrido la tiene
+            row["next_run_at"] = params["next_run_at"]
+            row["lease_owner"] = params.get("lease_owner")
+            row["lease_until"] = params.get("lease_until")
+            return _FakeResult(rowcount=1)
 
         if primer_token == "UPDATE" and "automations" in sql and "last_run_at" in sql:
             row = self.automations.get(params["id"])
@@ -1082,6 +1094,67 @@ async def test_scan_multiples_tenants_encola_cada_uno(monkeypatch: pytest.Monkey
 
     tenants_encolados = {tid for _, _, tid in encolados}
     assert tenants_encolados == {tenant_a, tenant_b}
+
+
+async def test_scan_no_reclama_automatizacion_con_lease_activo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una automatización con arriendo activo (`lease_until` en el futuro,
+    reclamada por otro barrido) NO se encola de nuevo — directiva §67-68."""
+    session = FakeSession()
+    automation_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_automation(
+        automation_id,
+        tenant_id,
+        next_run_at=datetime.now(UTC) - timedelta(minutes=5),
+        lease_until=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    _install_fake_compute_next_run(
+        monkeypatch, lambda rrule, after, anchor=None, timezone=None: datetime.now(UTC)
+    )
+
+    encolados: list[Any] = []
+
+    async def fake_enqueue(settings, job_type, payload, tid):
+        encolados.append((job_type, payload, tid))
+        return uuid.uuid4()
+
+    install_fake_edecan_core_queue(monkeypatch, fake_enqueue)
+    deps = make_deps(session_factory=_session_factory(session), vault=lambda s: _FakeLLMVault())
+
+    env = JobEnvelope(job_id=uuid.uuid4(), tenant_id=None, type="automation_scan", payload={})
+    await automation_scan_module.handle(env, deps)
+
+    assert encolados == []
+
+
+async def test_scan_claim_marca_lease_owner_y_lease_until(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Al reclamar, el barrido deja `lease_owner` (scan_id) y `lease_until`
+    en la fila, además de adelantar `next_run_at`."""
+    session = FakeSession()
+    automation_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_automation(
+        automation_id, tenant_id, next_run_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    _install_fake_compute_next_run(
+        monkeypatch, lambda rrule, after, anchor=None, timezone=None: datetime.now(UTC)
+    )
+
+    async def fake_enqueue(settings, job_type, payload, tid):
+        return uuid.uuid4()
+
+    install_fake_edecan_core_queue(monkeypatch, fake_enqueue)
+    deps = make_deps(session_factory=_session_factory(session), vault=lambda s: _FakeLLMVault())
+
+    env = JobEnvelope(job_id=uuid.uuid4(), tenant_id=None, type="automation_scan", payload={})
+    await automation_scan_module.handle(env, deps)
+
+    row = session.automations[str(automation_id)]
+    assert row["lease_owner"] is not None
+    assert row["lease_until"] is not None
+    assert row["lease_until"] > datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------

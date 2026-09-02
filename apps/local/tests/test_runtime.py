@@ -257,6 +257,10 @@ def test_build_env_shape_completo_sin_serve_web_dir(tmp_path: Path) -> None:
         serve_web_dir=None,
         local_secrets=_local_secrets(),
     )
+    # La ruta del repo local se resuelve desde el cwd de la corrida: se
+    # verifica aparte (debe apuntar al checkout) y el resto se pineea exacto.
+    repo_path = env.pop("EDECAN_LOCAL_REPO_PATH", "")
+    assert repo_path.endswith("/edecan")
     assert env == {
         "EDECAN_LOCAL_MODE": "1",
         "DATABASE_URL": "postgresql+asyncpg://u:p@h/d",
@@ -270,6 +274,7 @@ def test_build_env_shape_completo_sin_serve_web_dir(tmp_path: Path) -> None:
         "LOCAL_API_PORT": "8765",
         "JWT_SECRET": "jwt-de-prueba",
         "LOCAL_MASTER_KEY": "master-key-de-prueba",
+        "MISSIONS_MAX_STEPS": "30",
     }
 
 

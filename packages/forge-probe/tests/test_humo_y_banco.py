@@ -11,6 +11,7 @@ intercepta y revienta si alguna se escapa.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -215,11 +216,18 @@ def test_criterio_file_contains_usa_regex(tmp_path: Path) -> None:
 
 
 def test_criterio_command_usa_argv_sin_shell(tmp_path: Path) -> None:
+    # `sys.executable`, no `"python"`: un shim de pyenv sin versión activa
+    # falla con "command not found" y el criterio dejaba de medir lo que
+    # promete (el exit code del comando, no la resolución del intérprete).
     ok = Criterio(
-        kind="command", descripcion="sale 0", comando=["python", "-c", "raise SystemExit(0)"]
+        kind="command",
+        descripcion="sale 0",
+        comando=[sys.executable, "-c", "raise SystemExit(0)"],
     )
     mal = Criterio(
-        kind="command", descripcion="sale 1", comando=["python", "-c", "raise SystemExit(1)"]
+        kind="command",
+        descripcion="sale 1",
+        comando=[sys.executable, "-c", "raise SystemExit(1)"],
     )
     assert evaluar_criterio(ok, tmp_path, task_id="t", indice=0).pasa is True
     assert evaluar_criterio(mal, tmp_path, task_id="t", indice=0).pasa is False

@@ -195,7 +195,7 @@ def test_content_studio_compacts_large_editorial_profile_for_prompt():
     assert len(compact["purpose"]) <= content_studio._EDITORIAL_PROMPT_FIELD_LIMITS["purpose"]
 
 
-def test_content_studio_maps_fydesign_like_jarvis_image_defaults():
+def test_content_studio_maps_fydesign_like_reference_image_defaults():
     body = content_studio.SocialContentCreateIn(
         platform="linkedin",
         topic="Post sobre Gemini 3.6 Flash",

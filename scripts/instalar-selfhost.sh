@@ -62,7 +62,7 @@
 # de OS/arquitectura, rechazo temprano de Windows nativo con guía a WSL2,
 # mensajes de instalación de Docker por sistema operativo, chequeo de
 # espacio en disco) son una adaptación propia del instalador de
-# open-jarvis/OpenJarvis (Apache-2.0, scripts/install/install.sh) a este
+# open-reference implementation/OpenJarvis (Apache-2.0, scripts/install/install.sh) a este
 # script de Docker Compose — ver NOTICE para la atribución completa. A
 # diferencia de ese script, este NO manda telemetría/analítica de ningún
 # tipo (Edecán no la tiene y no la va a tener) y no instala nada fuera de

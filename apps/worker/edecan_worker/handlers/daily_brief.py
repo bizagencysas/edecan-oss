@@ -148,8 +148,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
     async with deps.session_factory(None) as session:
         estado = await _leer_estado(session, tenant_id, user_id)
 
-    brief = _componer_brief(estado)
-    if brief is None:
+    if not _hay_contenido(estado):
         logger.info(
             "daily_brief: nada que reportar para tenant_id=%s user_id=%s; no se envía nada.",
             tenant_id,
@@ -159,54 +158,51 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
 
     conversation_id: uuid.UUID | None = None
     async with deps.session_factory(None) as session:
-        repo = SqlRepo(session)
-        # Idempotencia por día (ver docstring del módulo): si ya se entregó,
-        # este disparo redundante termina sin escribir ni enviar nada.
         if not await record_daily_brief_delivery(
             session, tenant_id=tenant_id, user_id=user_id, brief_key=hoy
         ):
             logger.info("daily_brief: ya entregado hoy para user_id=%s; se ignora.", user_id)
             return
+        repo = SqlRepo(session)
         conversation = await repo.resolve_main_conversation(
             tenant_id=tenant_id, user_id=user_id
         )
         conversation_id = conversation["id"]
-        await repo.add_message(
-            tenant_id=tenant_id,
-            conversation_id=conversation_id,
-            role="assistant",
-            content={"text": brief},
-        )
 
-    # El mensaje YA quedó persistido (la transacción cerró arriba) antes de
-    # intentar el push — un fallo de push nunca hace que el brief "se pierda".
-    # `push.enviar_push_a_usuario` ya nunca lanza por diseño; el `try/except`
-    # es una segunda red de seguridad, igual que `send_reminder.py`/`run_gym_checkin.py`.
+    instruction = _daily_brief_wake_instruction(estado, hoy)
     try:
-        resultado = await push.enviar_push_a_usuario(
-            deps,
+        from edecan_core.companion_wake_enqueue import enqueue_companion_wake
+
+        await enqueue_companion_wake(
+            deps.settings,
             tenant_id=tenant_id,
-            user_id=user_id,
-            titulo=TITULO_PUSH,
-            cuerpo=_resumen_push(estado),
-            data={"route": "activity", "chat_id": str(conversation_id)}
-            if conversation_id
-            else {"route": "activity"},
-        )
-        logger.info(
-            "daily_brief: push tenant_id=%s enviados=%d fallidos=%d",
-            tenant_id,
-            resultado.enviados,
-            resultado.fallidos,
+            payload={
+                "user_id": str(user_id),
+                "wake_key": f"daily_brief:{hoy}",
+                "source": "daily_brief",
+                "urgent": False,
+                "require_message": True,
+                "instruction": instruction,
+                "conversation_id": str(conversation_id) if conversation_id else None,
+                "push": {
+                    "title": TITULO_PUSH,
+                    "body": _resumen_push(estado),
+                    "data": {"route": "activity", "chat_id": str(conversation_id)}
+                    if conversation_id
+                    else {"route": "activity"},
+                },
+            },
         )
     except Exception:
         logger.warning(
-            "daily_brief: fallo inesperado enviando push (el brief ya quedó guardado; "
-            "esto no lo afecta).",
+            "daily_brief: falló encolar companion wake tenant_id=%s user_id=%s",
+            tenant_id,
+            user_id,
             exc_info=True,
         )
+        return
 
-    logger.info("daily_brief completado tenant_id=%s user_id=%s", tenant_id, user_id)
+    logger.info("daily_brief: wake encolado tenant_id=%s user_id=%s", tenant_id, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +333,36 @@ async def _proximos_eventos(
 # ---------------------------------------------------------------------------
 # Composición del brief (determinista, sin LLM)
 # ---------------------------------------------------------------------------
+
+
+def _daily_brief_wake_instruction(estado: EstadoTenant, brief_key: str) -> str:
+    """Facts for a live companion turn — not the chat message."""
+    lineas = [
+        "[Edecán — turno proactivo interno, no visible para el usuario]",
+        "",
+        "Arma un resumen matutino breve para el dueño con los hechos de abajo, en tus "
+        "palabras, en español de Venezuela (tú, sin voseo).",
+        "",
+        "Reglas:",
+        "- Este despertar exige mensaje.",
+        "- No copies esta lista tal cual.",
+        "",
+        f"brief_key: {brief_key}",
+        f"automation_runs_done_24h: {estado.completadas}",
+        f"automation_runs_error_24h: {estado.fallidas}",
+        f"automation_runs_running: {estado.pendientes}",
+    ]
+    if estado.fallidas_nombres:
+        lineas.append(
+            "automation_failures_names: "
+            + ", ".join(estado.fallidas_nombres[:MAX_FALLIDAS_EN_BRIEF])
+        )
+    lineas.append(f"pending_reminders: {estado.recordatorios}")
+    if estado.eventos:
+        lineas.append(
+            "upcoming_calendar: " + "; ".join(estado.eventos[:MAX_EVENTOS_EN_BRIEF])
+        )
+    return "\n".join(lineas)
 
 
 def _componer_brief(estado: EstadoTenant) -> str | None:

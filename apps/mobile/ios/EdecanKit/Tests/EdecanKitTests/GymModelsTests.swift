@@ -184,4 +184,18 @@ struct GymModelsTests {
         #expect(progresoEjercicio["series_total"] as? Int == 4)
         #expect(progresoEjercicio["setsDone"] == nil)
     }
+
+    @Test func decodificaImagenFileIdEnPlan() throws {
+        let json = """
+        {
+          "titulo": "Empuje", "objetivo": "Fuerza", "duracion_min": 45,
+          "imagen_url": "https://cdn.test/gym.png",
+          "imagen_file_id": "file-collage-001",
+          "ejercicios": []
+        }
+        """
+        let plan = try APIClient.crearDecoder().decode(GymPlan.self, from: Data(json.utf8))
+        #expect(plan.imageFileID == "file-collage-001")
+        #expect(plan.imageURL == "https://cdn.test/gym.png")
+    }
 }

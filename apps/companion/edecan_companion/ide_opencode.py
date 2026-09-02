@@ -292,6 +292,25 @@ def _ubicar_binario(ruta_explicita: str | Path | None = None) -> Path:
     return resuelto.ruta
 
 
+def _entorno_sin_vars_opencode() -> dict[str, str]:
+    """Entorno para el subproceso `opencode serve` = el actual SIN las
+    variables que exporta OTRO producto (la app de escritorio OpenCode.app).
+
+    Las letales: `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`
+    activan Basic Auth en `opencode serve`, y el chequeo de salud del IDE
+    (`GET /api/health`) espera 200 — con auth activa responde 401 y el IDE
+    entero queda muerto (reproducido el 1-sep-2026 con la app abierta desde
+    un terminal del desktop de OpenCode.app). `EDECAN_OPENCODE_BIN` se
+    conserva: es la variable propia con la que `_ubicar_binario` encuentra
+    el binario empaquetado.
+    """
+    return {
+        clave: valor
+        for clave, valor in os.environ.items()
+        if not clave.startswith("OPENCODE_") or clave == "EDECAN_OPENCODE_BIN"
+    }
+
+
 def _argv_y_flags_lanzamiento(binario: Path) -> tuple[list[str], dict[str, Any]]:
     """Arma el argv y los ``kwargs`` de plataforma para lanzar
     ``opencode serve --port 0`` -- extraído de :meth:`ServidorOpencode.iniciar`
@@ -461,6 +480,7 @@ class ServidorOpencode:
             cwd=str(directorio),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_entorno_sin_vars_opencode(),
             **flags_lanzamiento,
         )
 

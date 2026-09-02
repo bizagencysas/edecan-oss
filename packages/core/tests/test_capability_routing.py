@@ -56,6 +56,7 @@ ALL_SPECS = [
     _spec("publicar_social", "Publica contenido en una red conectada."),
     _spec("crear_contenido_social", "Crea posts e imágenes para redes."),
     _spec("crear_post_linkedin", "Escribe un post de LinkedIn de principio a fin."),
+    _spec("capturar_senal_editorial", "Guarda una señal editorial sin escribir un post."),
     _spec("configurar_perfil_social", "Configura la estrategia personal para redes."),
     _spec("generar_imagen", "Genera una imagen original."),
     _spec("usar_estudio_creativo", "Usa Studio para trabajos creativos locales."),

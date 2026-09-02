@@ -27,6 +27,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from ._chromium_bootstrap import asegurar_chromium_instalado
+from ._driver_macos import asegurar_driver_playwright_macos
 from .policy import check_navigation
 
 logger = logging.getLogger(__name__)
@@ -299,6 +301,10 @@ class PlaywrightFetcher:
                 "y luego corre `playwright install chromium` (ver docs/navegador.md)."
             ) from exc
 
+        # Mismo arreglo de firma JIT que `navegar_web_interactivo` (ver
+        # `_driver_macos`): best-effort, solo actúa en frozen/macOS.
+        asegurar_driver_playwright_macos()
+        asegurar_chromium_instalado()
         self._async_playwright = async_playwright
         self._user_agent = str(_settings_valor(settings, "BROWSER_USER_AGENT", _USER_AGENT_DEFECTO))
         self._timeout = float(

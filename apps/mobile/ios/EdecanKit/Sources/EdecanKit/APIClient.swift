@@ -1107,19 +1107,33 @@ public actor APIClient {
     /// `POST /v1/voice/speak {text, voice_id?}` — devuelve bytes de audio
     /// crudos (`audio/wav` si el tenant no conectó una credencial de voz
     /// propia — cae al `StubTTS`; `audio/mpeg` con un proveedor real).
-    public func hablar(texto: String, voiceId: String? = nil, modelId: String? = nil) async throws -> HablarResultado {
-        try await conAutoRefresh { try await self.pedirAudio(texto: texto, voiceId: voiceId, modelId: modelId) }
+    public func hablar(
+        texto: String,
+        voiceId: String? = nil,
+        modelId: String? = nil,
+        voiceRewrite: Bool? = nil
+    ) async throws -> HablarResultado {
+        try await conAutoRefresh {
+            try await self.pedirAudio(
+                texto: texto, voiceId: voiceId, modelId: modelId, voiceRewrite: voiceRewrite
+            )
+        }
     }
 
     /// `POST /v1/voice/speak/stream` — el body de audio llega por chunks.
     /// El texto viaja en el POST y el audio se recibe en streaming.
+    /// ``voiceRewrite``: `false` para reproducir el mensaje completo (p. ej. Escuchar
+    /// en chat); `nil` deja el default del servidor (`true`, reescritura conversacional).
     public func hablarStream(
         texto: String,
         voiceId: String? = nil,
-        modelId: String? = nil
+        modelId: String? = nil,
+        voiceRewrite: Bool? = nil
     ) async throws -> AsyncThrowingStream<TrozoHablar, Error> {
         try await conAutoRefresh {
-            try await self.abrirStreamAudio(texto: texto, voiceId: voiceId, modelId: modelId)
+            try await self.abrirStreamAudio(
+                texto: texto, voiceId: voiceId, modelId: modelId, voiceRewrite: voiceRewrite
+            )
         }
     }
 
@@ -1260,6 +1274,24 @@ public actor APIClient {
         }
     }
 
+    /// `POST /v1/missions/{id}/pause` — checkpoint; `409` si no está
+    /// `planning`/`running`/`waiting_confirmation`.
+    @discardableResult
+    public func pauseMission(id: String) async throws -> MissionOut {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/missions/\(id)/pause", method: "POST")
+        }
+    }
+
+    /// `POST /v1/missions/{id}/resume` — reencola `run_mission` con
+    /// `resume_paused`; `409` si no está `paused`.
+    @discardableResult
+    public func resumeMission(id: String) async throws -> MissionOut {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/missions/\(id)/resume", method: "POST")
+        }
+    }
+
     @discardableResult
     public func steerMission(id: String, instruction: String) async throws -> MissionOut {
         struct Body: Encodable { let instruction: String }
@@ -1272,11 +1304,161 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtener("/v1/agents/workers") }
     }
 
+    /// `GET /v1/agents/workers/{id}/messages` — historial normalizado del chat del bot.
+    public func listWorkerMessages(workerId: String) async throws -> [TeamMessage] {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/agents/workers/\(workerId)/messages")
+        }
+    }
+
+    /// `POST /v1/agents/workers/{id}/clear` — reinicia el chat del bot
+    /// (`/clear`): borra los mensajes del hilo 1:1.
+    public func clearWorkerMessages(workerId: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/agents/workers/\(workerId)/clear", method: "POST")
+        }
+    }
+
+    /// `POST /v1/agents/workers` con el perfil rico (migración 0048). `name` y
+    /// `purpose` son obligatorios (mismo contrato que antes); el resto viaja
+    /// como campos opcionales. `avatar` es `{"accent": "#RRGGBB"}` — el
+    /// cliente deriva las iniciales, solo el acento se persiste.
     @discardableResult
-    public func createWorker(name: String, purpose: String) async throws -> PersistentWorker {
-        struct Body: Encodable { let name: String; let purpose: String }
+    public func createWorker(
+        name: String,
+        purpose: String,
+        displayName: String? = nil,
+        avatarAccentHex: String? = nil,
+        roleTitle: String? = nil,
+        roleShort: String? = nil,
+        jobDescription: String? = nil,
+        personality: String? = nil,
+        communicationStyle: String? = nil,
+        instructions: String? = nil,
+        constraints: String? = nil,
+        autonomyLevel: String = "ask",
+        relation: String? = nil
+    ) async throws -> PersistentWorker {
+        struct Body: Encodable {
+            let name: String
+            let purpose: String
+            let displayName: String?
+            let avatar: [String: String]
+            let relation: String?
+            let roleTitle: String?
+            let roleShort: String?
+            let jobDescription: String?
+            let personality: String?
+            let communicationStyle: String?
+            let instructions: String?
+            let constraints: String?
+            let autonomyLevel: String
+            enum CodingKeys: String, CodingKey {
+                case name, purpose, avatar, personality, instructions, constraints, relation
+                case displayName = "display_name"
+                case roleTitle = "role_title"
+                case roleShort = "role_short"
+                case jobDescription = "job_description"
+                case communicationStyle = "communication_style"
+                case autonomyLevel = "autonomy_level"
+            }
+        }
+        var avatar: [String: String] = [:]
+        if let avatarAccentHex, !avatarAccentHex.isEmpty {
+            avatar["accent"] = avatarAccentHex
+        }
+        let body = Body(
+            name: name,
+            purpose: purpose,
+            displayName: displayName,
+            avatar: avatar,
+            relation: relation,
+            roleTitle: roleTitle,
+            roleShort: roleShort,
+            jobDescription: jobDescription,
+            personality: personality,
+            communicationStyle: communicationStyle,
+            instructions: instructions,
+            constraints: constraints,
+            autonomyLevel: autonomyLevel
+        )
         return try await conAutoRefresh {
-            try await self.enviar("/v1/agents/workers", method: "POST", body: Body(name: name, purpose: purpose))
+            try await self.enviar("/v1/agents/workers", method: "POST", body: body)
+        }
+    }
+
+    /// `PATCH /v1/agents/workers/{id}` — edita solo los campos enviados
+    /// (`nil` se omite, el backend lo interpreta como "sin cambios").
+    /// Cambiar `name`/`purpose` dispara en el backend el ack de identidad:
+    /// el bot confirma su nuevo nombre/descripción con un turno real.
+    @discardableResult
+    public func patchWorker(
+        id: String,
+        name: String? = nil,
+        displayName: String? = nil,
+        purpose: String? = nil,
+        avatarAccentHex: String? = nil,
+        roleTitle: String? = nil,
+        roleShort: String? = nil,
+        jobDescription: String? = nil,
+        personality: String? = nil,
+        communicationStyle: String? = nil,
+        instructions: String? = nil,
+        constraints: String? = nil,
+        autonomyLevel: String? = nil,
+        relation: String? = nil
+    ) async throws -> PersistentWorker {
+        struct Body: Encodable {
+            let name: String?
+            let displayName: String?
+            let purpose: String?
+            let avatar: [String: String]?
+            let roleTitle: String?
+            let roleShort: String?
+            let jobDescription: String?
+            let personality: String?
+            let communicationStyle: String?
+            let instructions: String?
+            let constraints: String?
+            let autonomyLevel: String?
+            let relation: String?
+            enum CodingKeys: String, CodingKey {
+                case avatar, personality, instructions, constraints, name, purpose, relation
+                case displayName = "display_name"
+                case roleTitle = "role_title"
+                case roleShort = "role_short"
+                case jobDescription = "job_description"
+                case communicationStyle = "communication_style"
+                case autonomyLevel = "autonomy_level"
+            }
+        }
+        let avatar: [String: String]? = avatarAccentHex.map { ["accent": $0] }
+        let body = Body(
+            name: name,
+            displayName: displayName,
+            purpose: purpose,
+            avatar: avatar,
+            roleTitle: roleTitle,
+            roleShort: roleShort,
+            jobDescription: jobDescription,
+            personality: personality,
+            communicationStyle: communicationStyle,
+            instructions: instructions,
+            constraints: constraints,
+            autonomyLevel: autonomyLevel,
+            relation: relation
+        )
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/agents/workers/\(id)", method: "PATCH", body: body)
+        }
+    }
+
+    /// `DELETE /v1/agents/workers/{id}` — elimina el bot y su chat 1:1.
+    /// Idempotente desde el punto de vista del cliente: 404 después de borrar
+    /// no debe verse como error del flujo (la lista se recarga igual).
+    public func deleteWorker(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/agents/workers/\(id)", method: "DELETE")
         }
     }
 
@@ -1298,6 +1480,206 @@ public actor APIClient {
                 "/v1/agents/workers/\(workerId)/tasks",
                 method: "POST",
                 body: Body(instruction: instruction)
+            )
+        }
+    }
+
+    // MARK: - Memoria (`apps/api/edecan_api/routers/memory.py`)
+
+    /// `GET /v1/memory?namespace=user` — la memoria plana de la persona
+    /// (`memory_items`), con `id` por ítem para poder olvidar de a uno.
+    public func listUserMemory() async throws -> [MemoryItem] {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/memory", [("namespace", "user")])
+        }
+    }
+
+    /// `GET /v1/memory?namespace=agent:<id>` — memoria de un worker
+    /// persistente, devuelta como pares `key`/`value` (sin `id` borrable).
+    public func listAgentMemory(agentId: String) async throws -> [AgentMemoryEntry] {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/memory", [("namespace", "agent:\(agentId)")])
+        }
+    }
+
+    /// `DELETE /v1/memory/{id}` — olvida un único recuerdo (`memory_items`).
+    public func deleteMemory(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/memory/\(id)", method: "DELETE")
+        }
+    }
+
+    /// `GET /v1/memory/suggestions` — sugerencias de memoria propuestas por el
+    /// servidor (solo lectura). Contrato en paralelo: si la ruta todavía no
+    /// aterrizó, quien llama degrada con "Próximamente" (directiva §153).
+    public func listMemorySuggestions() async throws -> [MemorySuggestion] {
+        try await conAutoRefresh { try await self.obtener("/v1/memory/suggestions") }
+    }
+
+    /// `POST /v1/memory` — guarda un recuerdo en el espacio plano del usuario
+    /// (espejo de `memory.py::MemoryIn`). Los campos opcionales caen a los
+    /// defaults del propio backend. Devuelve la fila creada (`_memory_out`).
+    @discardableResult
+    public func addMemory(
+        content: String,
+        kind: String = "fact",
+        importance: Double = 0.5,
+        confidence: Double = 0.8,
+        source: String = "user",
+        namespace: String = "user",
+        sourceTrust: String = "trusted"
+    ) async throws -> MemoryItem {
+        struct Body: Encodable {
+            let kind: String
+            let content: String
+            let importance: Double
+            let confidence: Double
+            let source: String
+            let namespace: String
+            let sourceTrust: String
+            enum CodingKeys: String, CodingKey {
+                case kind, content, importance, confidence, source, namespace
+                case sourceTrust = "source_trust"
+            }
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/memory",
+                method: "POST",
+                body: Body(
+                    kind: kind,
+                    content: content,
+                    importance: importance,
+                    confidence: confidence,
+                    source: source,
+                    namespace: namespace,
+                    sourceTrust: sourceTrust
+                )
+            )
+        }
+    }
+
+    // MARK: - Aprobaciones (`apps/api/edecan_api/routers/approvals.py`)
+
+    /// `GET /v1/approvals` — aprobaciones pendientes del chat, más recientes primero.
+    public func listApprovals() async throws -> [PendingApproval] {
+        try await conAutoRefresh { try await self.obtener("/v1/approvals") }
+    }
+
+    /// `POST /v1/approvals/{id}/approve` — reanuda el turno aprobando la tool.
+    /// La respuesta es un stream del turno reanudado; el cliente la dispara y
+    /// no la decodifica (el estado durable vive en `pending_approvals`).
+    public func approveApproval(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/approvals/\(id)/approve", method: "POST")
+        }
+    }
+
+    /// `POST /v1/approvals/{id}/deny` — rechaza la tool pendiente.
+    public func denyApproval(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/approvals/\(id)/deny", method: "POST")
+        }
+    }
+
+    // MARK: - Actividad y freno de emergencia (`/v1/activity`,
+    // `/v1/agents/workers/pause-all` — contrato en paralelo, ver
+    // ``ActivityEvent``)
+
+    /// `GET /v1/activity` — registro reciente de acciones del tenant, más
+    /// recientes primero (orden que ya aplica el backend). Si la ruta todavía
+    /// no aterrizó, quien llama degrada con "Próximamente" (directiva §153),
+    /// nunca finge éxito.
+    public func listActivity() async throws -> [ActivityEvent] {
+        try await conAutoRefresh { try await self.obtener("/v1/activity") }
+    }
+
+    /// `POST /v1/agents/workers/pause-all` — freno de emergencia: pausa a
+    /// todos los agentes de una vez. Sin cuerpo ni respuesta que decodificar.
+    public func pauseAllWorkers() async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/agents/workers/pause-all", method: "POST")
+        }
+    }
+
+    // MARK: - Sugerencias de rutinas (`automations.py::list_automation_suggestions`)
+
+    /// `GET /v1/automations/suggestions` — sugerencias de revisión; nunca crea
+    /// ni activa automatizaciones (solo lectura).
+    public func listAutomationSuggestions() async throws -> [AutomationSuggestion] {
+        try await conAutoRefresh { try await self.obtener("/v1/automations/suggestions") }
+    }
+
+    // MARK: - Mensajes entre agentes (`/v1/agents/messages`, contrato en
+    // paralelo) — conversación entre workers persistentes, no chat de persona.
+
+    /// `GET /v1/agents/messages` — mensajes recientes entre agentes, más
+    /// recientes primero. Si la ruta todavía no aterrizó, quien llama degrada
+    /// con "Próximamente" (directiva §153).
+    public func listAgentMessages() async throws -> [AgentMessage] {
+        try await conAutoRefresh { try await self.obtener("/v1/agents/messages") }
+    }
+
+    /// `POST /v1/agents/messages` — deja un mensaje dirigido a otro agente.
+    /// `recipientId` es el `id` de un worker de `GET /v1/agents/workers`.
+    @discardableResult
+    public func sendAgentMessage(toAgentId: String, text: String) async throws -> AgentMessage {
+        struct Body: Encodable {
+            let recipientId: String
+            let text: String
+            enum CodingKeys: String, CodingKey {
+                case recipientId = "recipient_id"
+                case text
+            }
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/agents/messages",
+                method: "POST",
+                body: Body(recipientId: toAgentId, text: text)
+            )
+        }
+    }
+
+    // MARK: - "Enseñar una tarea" (`skills.py` §teach)
+
+    /// `POST /v1/skills/teach` — abre una sesión de enseñanza.
+    @discardableResult
+    public func startTeach(nombre: String, descripcion: String) async throws -> TeachSession {
+        struct Body: Encodable { let nombre: String; let descripcion: String }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/skills/teach", method: "POST",
+                body: Body(nombre: nombre, descripcion: descripcion)
+            )
+        }
+    }
+
+    /// `POST /v1/skills/teach/{sessionId}/step` — agrega un paso capturado.
+    @discardableResult
+    public func addTeachStep(sessionId: String, step: TeachStep) async throws -> TeachSession {
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/skills/teach/\(sessionId)/step", method: "POST", body: step)
+        }
+    }
+
+    /// `POST /v1/skills/teach/{sessionId}/finish` — compila los pasos en una
+    /// skill `status='draft'` (nunca se auto-activa).
+    @discardableResult
+    public func finishTeach(sessionId: String) async throws -> TeachSkillDetail {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta(
+                "/v1/skills/teach/\(sessionId)/finish", method: "POST"
+            )
+        }
+    }
+
+    /// `POST /v1/skills/{id}/approve` — promueve la skill `draft` a `active`.
+    @discardableResult
+    public func approveSkill(id: String) async throws -> TeachSkillDetail {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta(
+                "/v1/skills/\(id)/approve", method: "POST"
             )
         }
     }
@@ -1569,10 +1951,12 @@ public actor APIClient {
     /// `POST /v1/gym/checkin {respuesta: "si"|"no"}` — el dueño responde si
     /// quiere entrenar hoy; el backend devuelve `ok` y, según el caso, el
     /// `plan`/`session` resultantes (ambos pueden venir en `null`).
-    public func gymCheckin(respuesta: String) async throws -> GymCheckinOut {
+    public func gymCheckin(respuesta: String, readiness: String? = nil) async throws -> GymCheckinOut {
         try await conAutoRefresh {
             try await self.enviar(
-                "/v1/gym/checkin", method: "POST", body: GymCheckinIn(answer: respuesta)
+                "/v1/gym/checkin",
+                method: "POST",
+                body: GymCheckinIn(answer: respuesta, readiness: readiness),
             )
         }
     }
@@ -1615,6 +1999,26 @@ public actor APIClient {
                 "/v1/gym/sessions/\(sessionId)/sets",
                 method: "POST",
                 body: GymSetLogIn(exerciseIndex: ejercicioIdx, repetitions: repeticiones, weightKg: pesoKg)
+            )
+        }
+    }
+
+    /// `POST /v1/gym/plan/swap-ejercicio` — cambia UN ejercicio del plan de
+    /// hoy por el que pida el dueño. La IA interpreta el nombre aunque no sea
+    /// técnico («pecho», «algo de espalda») y devuelve alternativas.
+    public func gymSwapEjercicio(indice: Int, nombre: String, soloOpciones: Bool) async throws
+        -> GymSwapOut
+    {
+        struct Body: Encodable, Sendable {
+            let ejercicio_idx: Int
+            let nombre: String
+            let solo_opciones: Bool
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/gym/plan/swap-ejercicio",
+                method: "POST",
+                body: Body(ejercicio_idx: indice, nombre: nombre, solo_opciones: soloOpciones)
             )
         }
     }
@@ -1662,13 +2066,312 @@ public actor APIClient {
         return out.session
     }
 
-    /// `GET /v1/gym/history?limit=30` — historial de sesiones terminadas.
-    public func gymHistorial(limit: Int = 30) async throws -> [GymSession] {
-        struct HistorialOut: Decodable, Sendable { let sessions: [GymSession] }
-        let out: HistorialOut = try await conAutoRefresh {
+    /// `GET /v1/gym/history?limit=30` — historial de sesiones terminadas + racha.
+    public func gymHistorial(limit: Int = 30) async throws -> GymHistorialOut {
+        let out: GymHistorialOut = try await conAutoRefresh {
             try await self.obtenerConQuery("/v1/gym/history", [("limit", String(limit))])
         }
-        return out.sessions
+        return out
+    }
+
+    /// `GET /v1/gym/reporte_semanal` — resumen con IA de la última semana
+    /// (progreso, tendencias, recomendación de deload/objetivo).
+    public func gymReporteSemanal() async throws -> GymReporteSemanalOut {
+        try await conAutoRefresh {
+            try await self.obtener("/v1/gym/reporte_semanal")
+        }
+    }
+
+    /// `POST /v1/gym/form/analizar` — feedback de técnica con IA (Sol con
+    /// visión) a partir de una foto del ejercicio.
+    public func gymAnalizarForma(imagen: Data, ejercicio: String) async throws -> GymFormaOut {
+        struct FormaBody: Encodable {
+            let imagenB64: String
+            let ejercicio: String
+        }
+        let body = FormaBody(
+            imagenB64: imagen.base64EncodedString(),
+            ejercicio: ejercicio
+        )
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/gym/form/analizar", method: "POST", body: body)
+        }
+    }
+
+    /// `POST /v1/gym/form/analizar` — feedback de técnica con IA a partir de
+    /// FRAMES de un video (máx. 6, Sol con visión multi-imagen).
+    public func gymAnalizarFormaFrames(frames: [Data], ejercicio: String) async throws -> GymFormaOut {
+        struct FormaFramesBody: Encodable {
+            let framesB64: [String]
+            let ejercicio: String
+        }
+        let body = FormaFramesBody(
+            framesB64: frames.map { $0.base64EncodedString() },
+            ejercicio: ejercicio
+        )
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/gym/form/analizar", method: "POST", body: body)
+        }
+    }
+
+    /// `POST /v1/gym/coach_voz` — una línea de coach con IA (el TTS lo hace el
+    /// cliente). Devuelve `linea` o `nil` si el backend no generó.
+    public func gymCoachVoz(
+        tipo: String,
+        ejercicio: String? = nil,
+        contexto: String? = nil,
+    ) async throws -> GymCoachVozOut {
+        struct CoachBody: Encodable {
+            let tipo: String
+            let ejercicio: String?
+            let contexto: String?
+        }
+        let body = CoachBody(tipo: tipo, ejercicio: ejercicio, contexto: contexto)
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/gym/coach_voz", method: "POST", body: body)
+        }
+    }
+
+    // MARK: - Equipos (`/v1/teams`, contrato en paralelo — ver
+    // ``Team``/``TeamMessage``/``TeamStreamEvent``). El turno de mensaje
+    // (POST streaming) no vive acá: la lectura del stream es de
+    // ``TeamMessageStreamClient``, que se arma con ``urlCompleta(_:)`` +
+    // ``tokenDeAccesoValido()`` igual que el chat (``SSEClient``).
+
+    /// `GET /v1/teams` — equipos del tenant.
+    public func listTeams() async throws -> [Team] {
+        try await conAutoRefresh { try await self.obtener("/v1/teams") }
+    }
+
+    /// `POST /v1/teams {name, description?}` — crea un equipo vacío.
+    @discardableResult
+    public func createTeam(name: String, description: String? = nil) async throws -> Team {
+        struct Body: Encodable { let name: String; let description: String? }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/teams", method: "POST", body: Body(name: name, description: description))
+        }
+    }
+
+    /// `POST /v1/teams/{id}/members {agent_id}` — suma un worker al equipo.
+    public func addTeamMember(teamId: String, agentId: String) async throws {
+        struct Body: Encodable { let agentId: String
+            enum CodingKeys: String, CodingKey { case agentId = "agent_id" }
+        }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta("/v1/teams/\(teamId)/members", method: "POST", body: Body(agentId: agentId))
+        }
+    }
+
+    /// `DELETE /v1/teams/{id}/members/{agent_id}` — quita un miembro.
+    public func removeTeamMember(teamId: String, agentId: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/teams/\(teamId)/members/\(agentId)", method: "DELETE")
+        }
+    }
+
+    /// `DELETE /v1/teams/{id}` — elimina el equipo.
+    public func deleteTeam(id: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/teams/\(id)", method: "DELETE")
+        }
+    }
+
+    /// `GET /v1/teams/{id}/messages` — historial del hilo del equipo.
+    public func listTeamMessages(teamId: String) async throws -> [TeamMessage] {
+        try await conAutoRefresh { try await self.obtener("/v1/teams/\(teamId)/messages") }
+    }
+
+    /// Arma la `URLRequest` de `POST /v1/teams/{id}/message` (SSE) para
+    /// ``SSEClient``. `speaker` es `user` (dueño) o el id de un bot miembro.
+    public func peticionMensajeEquipo(
+        teamId: String,
+        text: String,
+        speaker: String = "user"
+    ) async throws -> URLRequest {
+        let url = try await urlCompleta("/v1/teams/\(teamId)/message")
+        let token = try await tokenDeAccesoValido()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let text: String
+            let speaker: String
+        }
+        request.httpBody = try JSONEncoder().encode(Body(text: text, speaker: speaker))
+        return request
+    }
+
+    /// Arma la `URLRequest` de `POST /v1/conversations/{id}/confirm` (SSE) para
+    /// aprobar o rechazar una herramienta sensible en un hilo de equipo.
+    public func peticionConfirmarConversacion(
+        conversationId: String,
+        toolCallId: String,
+        approved: Bool
+    ) async throws -> URLRequest {
+        let url = try await urlCompleta("/v1/conversations/\(conversationId)/confirm")
+        let token = try await tokenDeAccesoValido()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let toolCallId: String
+            let approved: Bool
+            enum CodingKeys: String, CodingKey {
+                case toolCallId = "tool_call_id"
+                case approved
+            }
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(toolCallId: toolCallId, approved: approved)
+        )
+        return request
+    }
+
+    // MARK: - Reacciones (`/v1/messages/{id}/reactions`, contrato en paralelo)
+
+    /// `POST /v1/messages/{id}/reactions {emoji}` — reacciona a un mensaje.
+    public func addReaction(messageId: String, emoji: String) async throws {
+        struct Body: Encodable { let emoji: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/messages/\(messageId)/reactions", method: "POST", body: Body(emoji: emoji)
+            )
+        }
+    }
+
+    /// `DELETE /v1/messages/{id}/reactions/{emoji}` — quita una reacción. El
+    /// emoji va percent-encoded en el path (puede traer caracteres que
+    /// `URL(string:)` no acepta tal cual).
+    public func removeReaction(messageId: String, emoji: String) async throws {
+        let encoded = emoji.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emoji
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/messages/\(messageId)/reactions/\(encoded)", method: "DELETE")
+        }
+    }
+
+    // MARK: - Hilos (`/v1/messages/{id}/thread`, contrato en paralelo)
+
+    /// `GET /v1/messages/{id}/thread` — mensajes del hilo.
+    public func listThread(messageId: String) async throws -> [ThreadMessage] {
+        try await conAutoRefresh { try await self.obtener("/v1/messages/\(messageId)/thread") }
+    }
+
+    /// `POST /v1/messages/{id}/thread {text}` — responde en el hilo.
+    public func postThread(messageId: String, text: String) async throws {
+        struct Body: Encodable { let text: String }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/messages/\(messageId)/thread", method: "POST", body: Body(text: text)
+            )
+        }
+    }
+
+    // MARK: - Espacios de trabajo (`/v1/workspaces`, contrato en paralelo)
+
+    /// `GET /v1/workspaces` — espacios del tenant.
+    public func listWorkspaces() async throws -> [Workspace] {
+        try await conAutoRefresh { try await self.obtener("/v1/workspaces") }
+    }
+
+    /// `POST /v1/workspaces {name, description?}` — crea un espacio.
+    @discardableResult
+    public func createWorkspace(name: String, description: String? = nil) async throws -> Workspace {
+        struct Body: Encodable { let name: String; let description: String? }
+        return try await conAutoRefresh {
+            try await self.enviar("/v1/workspaces", method: "POST", body: Body(name: name, description: description))
+        }
+    }
+
+    /// `POST /v1/workspaces/{id}/agents {agent_id}` — asigna un agente.
+    public func addWorkspaceAgent(workspaceId: String, agentId: String) async throws {
+        struct Body: Encodable { let agentId: String
+            enum CodingKeys: String, CodingKey { case agentId = "agent_id" }
+        }
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/workspaces/\(workspaceId)/agents", method: "POST", body: Body(agentId: agentId)
+            )
+        }
+    }
+
+    /// `DELETE /v1/workspaces/{id}/agents/{agent_id}` — quita un agente.
+    public func removeWorkspaceAgent(workspaceId: String, agentId: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo(
+                "/v1/workspaces/\(workspaceId)/agents/\(agentId)", method: "DELETE"
+            )
+        }
+    }
+
+    // MARK: - Plano de control de la computadora (`/v1/computer`,
+    // `routers/computer.py`) — administra QUIÉN mueve cada superficie. Sin
+    // WebRTC: la vista por polling ya vive en `/v1/remote`; esto solo muta el
+    // plano de control (`mode`/`status`).
+
+    /// `GET /v1/computer/sessions` — sesiones del tenant.
+    public func listComputerSessions() async throws -> [ComputerSession] {
+        try await conAutoRefresh { try await self.obtener("/v1/computer/sessions") }
+    }
+
+    /// `POST /v1/computer/sessions {kind, agent_id?}` — crea una sesión. Nace
+    /// `mode='agent'` + `status='active'`.
+    @discardableResult
+    public func createComputerSession(kind: String = "desktop", agentId: String? = nil) async throws -> ComputerSession {
+        struct Body: Encodable { let kind: String; let agentId: String?
+            enum CodingKeys: String, CodingKey {
+                case kind
+                case agentId = "agent_id"
+            }
+        }
+        return try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/computer/sessions", method: "POST",
+                body: Body(kind: kind, agentId: agentId)
+            )
+        }
+    }
+
+    /// `POST /v1/computer/sessions/{id}/takeover` — `mode='user'` (el humano
+    /// toma el control; el agente queda suspendido de esa superficie).
+    @discardableResult
+    public func computerTakeover(id: String) async throws -> ComputerSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/computer/sessions/\(id)/takeover", method: "POST")
+        }
+    }
+
+    /// `POST /v1/computer/sessions/{id}/return` — `mode='agent'`.
+    @discardableResult
+    public func computerReturn(id: String) async throws -> ComputerSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/computer/sessions/\(id)/return", method: "POST")
+        }
+    }
+
+    /// `POST /v1/computer/sessions/{id}/pause` — `mode='paused'` + `status='paused'`.
+    @discardableResult
+    public func computerPause(id: String) async throws -> ComputerSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/computer/sessions/\(id)/pause", method: "POST")
+        }
+    }
+
+    /// `POST /v1/computer/sessions/{id}/resume` — `mode='agent'` + `status='active'`.
+    @discardableResult
+    public func computerResume(id: String) async throws -> ComputerSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/computer/sessions/\(id)/resume", method: "POST")
+        }
+    }
+
+    /// `POST /v1/computer/sessions/{id}/end` — `status='ended'`.
+    @discardableResult
+    public func computerEnd(id: String) async throws -> ComputerSession {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta("/v1/computer/sessions/\(id)/end", method: "POST")
+        }
     }
 
     // MARK: - Internals: HTTP
@@ -1981,37 +2684,45 @@ public actor APIClient {
     /// pasar por ``ejecutarAutenticado(_:)``/``decodificar(_:_:)``: usa
     /// ``ejecutarAutenticadoData(_:)`` directo y arma ``HablarResultado`` con
     /// los bytes crudos + el `Content-Type` real de la respuesta.
-    private func pedirAudio(texto: String, voiceId: String?, modelId: String?) async throws -> HablarResultado {
+    private func pedirAudio(
+        texto: String, voiceId: String?, modelId: String?, voiceRewrite: Bool?
+    ) async throws -> HablarResultado {
         struct Body: Encodable {
             let text: String
             let voiceId: String?
             let modelId: String?
+            let voiceRewrite: Bool?
             enum CodingKeys: String, CodingKey {
                 case text
                 case voiceId = "voice_id"
                 case modelId = "model_id"
+                case voiceRewrite = "voice_rewrite"
             }
         }
         var request = URLRequest(url: try urlCompleta("/v1/voice/speak"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(Body(text: texto, voiceId: voiceId, modelId: modelId))
+        request.httpBody = try encoder.encode(
+            Body(text: texto, voiceId: voiceId, modelId: modelId, voiceRewrite: voiceRewrite)
+        )
         let (data, http) = try await ejecutarAutenticadoData(request)
         let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "audio/mpeg"
         return HablarResultado(audio: data, contentType: contentType)
     }
 
     private func abrirStreamAudio(
-        texto: String, voiceId: String?, modelId: String?
+        texto: String, voiceId: String?, modelId: String?, voiceRewrite: Bool?
     ) async throws -> AsyncThrowingStream<TrozoHablar, Error> {
         struct Body: Encodable {
             let text: String
             let voiceId: String?
             let modelId: String?
+            let voiceRewrite: Bool?
             enum CodingKeys: String, CodingKey {
                 case text
                 case voiceId = "voice_id"
                 case modelId = "model_id"
+                case voiceRewrite = "voice_rewrite"
             }
         }
         guard let accessToken else { throw APIError.sesionExpirada }
@@ -2019,7 +2730,9 @@ public actor APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try encoder.encode(Body(text: texto, voiceId: voiceId, modelId: modelId))
+        request.httpBody = try encoder.encode(
+            Body(text: texto, voiceId: voiceId, modelId: modelId, voiceRewrite: voiceRewrite)
+        )
 
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {

@@ -109,6 +109,15 @@ private struct RaizDeLaApp: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             guard phase == .active else { return }
             Task { await updates.checkIfNeeded() }
+            Task { await WatchCompanion.compartido.sincronizar() }
+        }
+        .task(id: "\(pairingStore.isPaired)-\(session.sesionValida)-\(pairingStore.serverURL?.absoluteString ?? "")") {
+            WatchCompanion.compartido.configurar(
+                client: pairingStore.isPaired && session.sesionValida ? session.client : nil
+            )
+            if pairingStore.isPaired && session.sesionValida {
+                await WatchCompanion.compartido.sincronizar()
+            }
         }
     }
 }

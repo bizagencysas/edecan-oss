@@ -39,6 +39,7 @@ class FakeRepo:
         self.phone_consents: list[Row] = []
         self.usage_events: list[Row] = []
         self.memory_items: dict[uuid.UUID, Row] = {}
+        self.persistent_agents: dict[uuid.UUID, Row] = {}
         self.connector_accounts: dict[uuid.UUID, Row] = {}
         self.files: dict[uuid.UUID, Row] = {}
         self.reminders: dict[uuid.UUID, Row] = {}
@@ -578,6 +579,8 @@ class FakeRepo:
         goal: str,
         recipient_name: str | None = None,
         status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
         agent_template_name: str | None = None,
@@ -605,7 +608,8 @@ class FakeRepo:
             "voice_id": voice_id,
             "agent_operating_profile": agent_operating_profile,
             "status": status,
-            "provider": "twilio",
+            "provider": provider,
+            "external_id": external_id,
             "provider_call_sid": provider_call_sid,
             "confirmed_at": None,
             "started_at": None,
@@ -640,6 +644,14 @@ class FakeRepo:
     async def get_phone_call_by_provider_sid(self, *, provider_call_sid: str) -> Row | None:
         for row in self.phone_calls.values():
             if row.get("provider_call_sid") == provider_call_sid:
+                return dict(row)
+        return None
+
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> Row | None:
+        for row in self.phone_calls.values():
+            if row.get("provider") == provider and row.get("external_id") == external_id:
                 return dict(row)
         return None
 
@@ -913,6 +925,7 @@ class FakeRepo:
         kind: str,
         quantity: float,
         meta: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         self.usage_events.append(
             {
@@ -921,6 +934,7 @@ class FakeRepo:
                 "kind": kind,
                 "quantity": quantity,
                 "meta": meta or {},
+                "cost_usd": cost_usd,
                 "created_at": _now(),
             }
         )
@@ -940,6 +954,13 @@ class FakeRepo:
             if e["tenant_id"] == tenant_id and e["created_at"] >= since:
                 totals[e["kind"]] = totals.get(e["kind"], 0.0) + e["quantity"]
         return totals
+
+    async def sum_cost_usd_since(self, *, tenant_id: uuid.UUID, since: datetime) -> float:
+        return sum(
+            float(e.get("cost_usd") or 0.0)
+            for e in self.usage_events
+            if e["tenant_id"] == tenant_id and e["created_at"] >= since
+        )
 
     async def sum_usage_all_tenants_since(self, *, since: datetime) -> list[Row]:
         totals: dict[tuple[uuid.UUID, str], float] = {}
@@ -987,13 +1008,20 @@ class FakeRepo:
     # -- memoria --------------------------------------------------------------
 
     async def list_memory(
-        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, q: str | None, k: int
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        q: str | None,
+        k: int,
+        namespace: str = "user",
     ) -> list[Row]:
         rows = [
             r
             for r in self.memory_items.values()
             if r["tenant_id"] == tenant_id
             and r["user_id"] == user_id
+            and r.get("namespace", "user") == namespace
             and r.get("superseded_at") is None
         ]
         if q:
@@ -1012,6 +1040,8 @@ class FakeRepo:
         source: str,
         confidence: float = 0.8,
         expires_at=None,
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
@@ -1022,12 +1052,20 @@ class FakeRepo:
             "importance": importance,
             "confidence": confidence,
             "source": source,
+            "namespace": namespace,
+            "source_trust": source_trust,
             "expires_at": expires_at,
             "created_at": _now(),
             "updated_at": _now(),
         }
         self.memory_items[row["id"]] = row
         return dict(row)
+
+    async def get_agent_memory(self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Row | None:
+        row = self.persistent_agents.get(agent_id)
+        if row is not None and row.get("tenant_id") == tenant_id:
+            return {"id": agent_id, "memory": row.get("memory", {})}
+        return None
 
     async def delete_memory(self, *, tenant_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
         row = self.memory_items.get(memory_id)
@@ -1534,6 +1572,10 @@ class FakeRedis:
         value = self._store.pop(key, None)
         self._expiry.pop(key, None)
         return value
+
+    async def exists(self, key: str) -> bool:
+        self._expire_if_needed(key)
+        return key in self._store
 
     async def delete(self, key: str) -> int:
         self._expire_if_needed(key)

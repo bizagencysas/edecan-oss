@@ -45,9 +45,9 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Edecán usa la cámara para escanear el QR de conexión y para adjuntar fotos que tú decidas enviar en el chat.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Edecán lee tus entrenamientos y pasos de Salud para mostrarte tu actividad del día y guardar la sesión de gimnasio que terminas.</string>
+	<string>Edecán lee tus entrenamientos, pasos y agua de Salud para mostrarte tu actividad del día y guardar la sesión de gimnasio que terminas.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Edecán guarda en Salud el entrenamiento de fuerza que terminas para que quede en tu historial de actividad.</string>
+	<string>Edecán guarda en Salud el agua que registras y el entrenamiento de fuerza que terminas.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Edecán usa tu red local para conectarse de forma directa y privada con tu computador después de escanear su QR.</string>
 	<key>NSMicrophoneUsageDescription</key>

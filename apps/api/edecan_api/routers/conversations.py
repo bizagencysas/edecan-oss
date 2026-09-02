@@ -71,8 +71,10 @@ from edecan_schemas.plans import LIMIT_MESSAGES_PER_DAY
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from edecan_api.chat_context import ChatContextLimits, build_contextual_history
+from edecan_api.chat_delegation import prepare_chat_delegation
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import (
     CurrentUser,
@@ -128,7 +130,10 @@ EVENT_NAME_MAP: dict[str, str] = {
     "confirmation_required": "confirmation.required",
     "done": "message.done",
     "error": "error",
+    "follow_up_turn": "follow_up_turn",
 }
+
+MAX_QUEUED_CHAT_FOLLOWUPS = 5
 
 _RESULT_PREVIEW_LEN = 400
 """Mismo tope que `edecan_core.agent._RESULT_PREVIEW_LEN`: el `result_preview`
@@ -204,7 +209,7 @@ def _conversation_out(row: dict[str, Any]) -> dict[str, Any]:
         "id": row["id"],
         "title": redact(str(row.get("title") or "")),
         "channel": row.get("channel", "web"),
-        # Frente 5 (paridad REFERENCIA): marca la conversación "principal" -- la
+        # Marca la conversación principal para los eventos asíncronos.
         # que recibe los eventos automáticos que el dueño no pidió. iOS la
         # fija arriba del historial y la distingue visualmente con esta
         # bandera (ver `Repo.resolve_main_conversation`,
@@ -303,10 +308,10 @@ async def get_main_conversation(
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Resuelve (o crea si no existe) la conversación "principal" de este
-    tenant+usuario -- frente 5, paridad REFERENCIA: ahí aterrizan los eventos
+    tenant+usuario: ahí aterrizan los eventos
     automáticos que el dueño no pidió (llamada recibida, automatización
     ejecutada, recordatorio disparado), igual que el hilo de avisos de
-    REFERENCIA. Es el "helper reutilizable" que exponen los frentes 2 (worker,
+    Es el helper reutilizable que exponen los workers,
     escribe los eventos ahí) y 3 (deeplink del push: `conversation_id` en el
     payload apunta a esta misma fila) -- ver `Repo.resolve_main_conversation`
     para la receta exacta que cualquier otro servicio con acceso directo a
@@ -1488,6 +1493,61 @@ async def _pop_pending_confirmation(
     return json.loads(raw)
 
 
+async def _persist_pending_approval(
+    session: Any,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+    name: str,
+    args: dict[str, Any],
+    pending_turn: PendingAgentTurn | dict[str, Any] | None = None,
+) -> None:
+    """Persiste el respaldo durable de una confirmación (directiva §30-32).
+
+    Guarda en `pending_approvals` el MISMO payload que Redis
+    (`{name, args, pending_turn}`) para que `POST /v1/approvals/{id}/approve`
+    reanude el turno después de un reload. Es best-effort y nunca debe romper
+    el camino efímero actual: si no hay sesión (dobles de prueba) o la tabla
+    aún no existe, se registra y se continúa.
+    """
+
+    if session is None:
+        return
+    snapshot: dict[str, Any] = {"name": name, "args": args}
+    if pending_turn is not None:
+        snapshot["pending_turn"] = PendingAgentTurn.model_validate(pending_turn).model_dump()
+    try:
+        await session.execute(
+            text(
+                "INSERT INTO pending_approvals "
+                "(tenant_id, user_id, conversation_id, tool_call_id, agent_snapshot) "
+                "VALUES (:tenant_id, :user_id, :conversation_id, :tool_call_id, "
+                ":snapshot ::jsonb) "
+                "ON CONFLICT (tenant_id, conversation_id, tool_call_id) DO UPDATE SET "
+                "agent_snapshot = EXCLUDED.agent_snapshot, status = 'pending', "
+                "decided_at = NULL, decided_by = NULL, updated_at = now()"
+            ),
+            {
+                "tenant_id": str(tenant_id),
+                "user_id": str(user_id),
+                "conversation_id": str(conversation_id),
+                "tool_call_id": tool_call_id,
+                "snapshot": json.dumps(snapshot, ensure_ascii=False, default=str),
+            },
+        )
+    except Exception:  # noqa: BLE001 - respaldo best-effort; el camino Redis sigue vigente
+        logger.warning(
+            "No se pudo persistir pending_approvals (tenant_id=%s conversation_id=%s "
+            "tool_call_id=%s)",
+            tenant_id,
+            conversation_id,
+            tool_call_id,
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Idempotencia opcional del turno de chat (Redis / fakeredis).
 # ---------------------------------------------------------------------------
@@ -1676,11 +1736,16 @@ def _response_for_idempotency_record(
     record: dict[str, Any],
     request_hash: str,
     idempotency_key: uuid.UUID,
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     if record.get("request_hash") != request_hash:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key ya fue usado con un mensaje diferente.",
+        )
+    if record.get("status") == "queued":
+        return _queued_message_response(
+            idempotency_key=idempotency_key,
+            position=int(record.get("position") or 0),
         )
     if record.get("status") == "in_flight":
         raise HTTPException(
@@ -1760,6 +1825,369 @@ async def _complete_message_idempotency(
         ),
         ex=ttl_seconds,
     )
+
+
+def _chat_turn_active_key(
+    *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> str:
+    return f"chat_turn_active:{tenant_id}:{user_id}:{conversation_id}"
+
+
+def _chat_followup_count_key(
+    *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> str:
+    return f"chat_followup_pending:{tenant_id}:{user_id}:{conversation_id}"
+
+
+def _queued_message_response(
+    *,
+    idempotency_key: uuid.UUID | None,
+    position: int,
+) -> JSONResponse:
+    payload = {
+        "status": "queued",
+        "position": position,
+        "pending": position,
+        "max_pending": MAX_QUEUED_CHAT_FOLLOWUPS,
+    }
+    headers: dict[str, str] = {"Cache-Control": "no-store"}
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = str(idempotency_key)
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload, headers=headers)
+
+
+async def _claim_queued_message_idempotency(
+    redis_client: redis_asyncio.Redis,
+    *,
+    redis_key: str,
+    request_hash: str,
+    position: int,
+    ttl_seconds: int,
+) -> dict[str, Any] | None:
+    record = {
+        "status": "queued",
+        "request_hash": request_hash,
+        "position": position,
+        "queued_at": datetime.now(UTC).isoformat(),
+    }
+    claimed = await redis_client.set(
+        redis_key,
+        json.dumps(record, ensure_ascii=False),
+        ex=ttl_seconds,
+        nx=True,
+    )
+    if claimed:
+        return None
+    return await _load_idempotency_record(redis_client, redis_key=redis_key)
+
+
+async def _enqueue_chat_followup_message(
+    *,
+    redis_client: redis_asyncio.Redis,
+    followup_key: str,
+    ttl_seconds: int,
+    idempotency_key: uuid.UUID | None,
+    redis_idempotency_key: str | None,
+    request_hash: str | None,
+) -> tuple[int, dict[str, Any] | None]:
+    position = int(await redis_client.incr(followup_key))
+    await redis_client.expire(followup_key, ttl_seconds)
+    if position > MAX_QUEUED_CHAT_FOLLOWUPS:
+        await redis_client.decr(followup_key)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="La cola de mensajes mientras Edecán trabaja está llena.",
+        )
+    if idempotency_key is not None:
+        assert redis_idempotency_key is not None and request_hash is not None
+        raced = await _claim_queued_message_idempotency(
+            redis_client,
+            redis_key=redis_idempotency_key,
+            request_hash=request_hash,
+            position=position,
+            ttl_seconds=ttl_seconds,
+        )
+        if raced is not None:
+            if raced.get("request_hash") != request_hash:
+                await redis_client.decr(followup_key)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Idempotency-Key ya fue usado con un mensaje diferente.",
+                )
+            if raced.get("status") != "queued":
+                await redis_client.decr(followup_key)
+                return int(raced.get("position") or position), raced
+            return int(raced.get("position") or position), raced
+    return position, None
+
+
+def _followup_user_text_and_prefix_rows(
+    history_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    last_assistant = -1
+    for index, row in enumerate(history_rows):
+        if row.get("role") == "assistant":
+            last_assistant = index
+    prefix_rows = history_rows[: last_assistant + 1] if last_assistant >= 0 else []
+    new_user_rows = [row for row in history_rows[last_assistant + 1 :] if row.get("role") == "user"]
+    parts = [_extract_text(row.get("content") or {}) for row in new_user_rows]
+    user_text = "\n\n".join(part for part in parts if part.strip())
+    return prefix_rows, user_text
+
+
+async def _stream_with_followup_chain(
+    *,
+    initial_stream: AsyncIterator[str],
+    redis_client: redis_asyncio.Redis,
+    active_key: str,
+    followup_key: str,
+    build_followup_stream: Callable[[], Awaitable[AsyncIterator[str]]],
+) -> AsyncIterator[str]:
+    try:
+        async for chunk in initial_stream:
+            yield chunk
+        while True:
+            pending = int(await redis_client.get(followup_key) or 0)
+            if pending <= 0:
+                break
+            await redis_client.set(followup_key, 0, ex=3600)
+            yield _format_sse(
+                "follow_up_turn",
+                {"type": "follow_up_turn", "pending": pending},
+            )
+            followup_stream = await build_followup_stream()
+            async for chunk in followup_stream:
+                yield chunk
+    finally:
+        await redis_client.delete(active_key)
+
+
+async def _persist_chat_user_message(
+    *,
+    repo: Repo,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    conversation: dict[str, Any],
+    body: ChatMessageIn,
+    stored_user_content: dict[str, Any],
+    safe_user_text: str,
+    inline_credential: Any,
+) -> tuple[str | None, str | None]:
+    needs_semantic_title = not str(conversation.get("title") or "").strip()
+    if needs_semantic_title:
+        automatic_title = (
+            _credential_conversation_title(inline_credential)
+            if inline_credential is not None
+            else _automatic_conversation_title(safe_user_text, fallback="Archivo adjunto")
+        )
+        await repo.update_conversation_title(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            title=automatic_title,
+            only_if_empty=True,
+            source="auto",
+        )
+    modelo_elegido = conversation.get("chat_model") or None
+    esfuerzo_elegido = conversation.get("chat_effort") or None
+    if body.model is not None or body.effort is not None:
+        modelo_elegido = body.model.strip() if body.model else modelo_elegido
+        esfuerzo_elegido = body.effort or esfuerzo_elegido
+        await repo.update_conversation_model(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            model=modelo_elegido,
+            effort=esfuerzo_elegido,
+        )
+    await repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="user",
+        content=stored_user_content,
+    )
+    return modelo_elegido, esfuerzo_elegido
+
+
+async def _enqueue_chat_message_while_busy(
+    *,
+    repo: Repo,
+    redis_client: redis_asyncio.Redis,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    conversation: dict[str, Any],
+    body: ChatMessageIn,
+    stored_user_content: dict[str, Any],
+    safe_user_text: str,
+    inline_credential: Any,
+    idempotency_key: uuid.UUID | None,
+    redis_idempotency_key: str | None,
+    request_hash: str | None,
+    idempotency_ttl: int,
+    followup_key: str,
+) -> JSONResponse:
+    await _persist_chat_user_message(
+        repo=repo,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        conversation=conversation,
+        body=body,
+        stored_user_content=stored_user_content,
+        safe_user_text=safe_user_text,
+        inline_credential=inline_credential,
+    )
+    position, raced = await _enqueue_chat_followup_message(
+        redis_client=redis_client,
+        followup_key=followup_key,
+        ttl_seconds=idempotency_ttl,
+        idempotency_key=idempotency_key,
+        redis_idempotency_key=redis_idempotency_key,
+        request_hash=request_hash,
+    )
+    if raced is not None and raced.get("status") == "queued":
+        position = int(raced.get("position") or position)
+    return _queued_message_response(idempotency_key=idempotency_key, position=position)
+
+
+async def _build_followup_chat_stream(
+    *,
+    request: Request,
+    current_user: CurrentUser,
+    tenant: Any,
+    conversation_id: uuid.UUID,
+    conversation: dict[str, Any],
+    repo: Repo,
+    session: Any,
+    llm_router: LLMRouter,
+    vault: Any,
+    settings: Settings,
+    redis_client: redis_asyncio.Redis,
+) -> AsyncIterator[str]:
+    history_rows = await repo.list_messages(
+        tenant_id=tenant.tenant_id,
+        conversation_id=conversation_id,
+        limit=max(50, int(settings.CHAT_CONTEXT_MAX_MESSAGES)),
+        after=conversation.get("context_cleared_at"),
+    )
+    _prefix_rows, user_text = _followup_user_text_and_prefix_rows(history_rows)
+    if not user_text.strip():
+        yield _format_sse("message.done", {"type": "done", "usage": {}})
+        return
+
+    cross_chat_rows: list[dict[str, Any]] = []
+    if settings.CHAT_CONTEXT_ENABLED and settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED:
+        cross_chat_rows = await repo.list_cross_chat_message_snippets(
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            exclude_conversation_id=conversation_id,
+            conversations_limit=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
+            messages_per_conversation=settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION,
+        )
+    history = build_contextual_history(
+        current_rows=history_rows,
+        cross_chat_rows=cross_chat_rows,
+        limits=ChatContextLimits(
+            enabled=settings.CHAT_CONTEXT_ENABLED,
+            recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
+            max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
+            max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
+            cross_chat_enabled=settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED,
+            cross_chat_conversations=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
+            cross_chat_messages_per_conversation=(
+                settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION
+            ),
+            cross_chat_max_chars=settings.CHAT_CONTEXT_CROSS_CHAT_MAX_CHARS,
+        ),
+    )
+
+    persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
+    persona = persona_from_row(persona_row)
+    profile_context = (
+        await profile_context_for(session, tenant.tenant_id, current_user.user_id)
+        if session is not None
+        else ""
+    )
+    registry = get_tool_registry(request)
+    agent = _agent_for_request(request, llm_router, registry)
+    unified_session = await load_unified_session(
+        session,
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+    )
+    if unified_session is None:
+        unified_session = _unified_session_for(
+            tenant_id=tenant.tenant_id, conversation_id=conversation_id
+        )
+    ctx = _build_ctx(
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        session=session,
+        settings=settings,
+        llm_router=llm_router,
+        vault=vault,
+        persona=persona,
+        request=request,
+        repo=repo,
+        approved_tool_calls=set(),
+        flags=tenant.flags,
+        conversation_id=conversation_id,
+        phone_call_dispatcher=phone_tool_dispatcher_for(
+            request=request,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            repo=repo,
+            vault=vault,
+        ),
+        profile_context=profile_context,
+        unified_session=unified_session,
+    )
+    ctx.extras["tools_con_pregunta_pendiente"] = _tools_con_pregunta_pendiente(history_rows)
+    ctx.extras["lo_pidio_una_persona"] = True
+    unified_session = ctx.extras["unified_session"]
+    unified_session.user_id = str(current_user.user_id)
+    unified_session.touch(modality="text")
+    ctx.extras["visual_memory"] = unified_session.visual_memory
+    extra_tools = await _extra_conversation_tools(request, current_user)
+    seleccion = _seleccion_efectiva(
+        modelo=conversation.get("chat_model") or None,
+        esfuerzo=conversation.get("chat_effort") or None,
+        trae_imagen=False,
+    )
+    events = agent.run_turn(
+        ctx=ctx,
+        persona=persona,
+        history=history,
+        user_text=user_text,
+        flags=tenant.flags,
+        extra_tools=extra_tools,
+        seleccion=seleccion,
+    )
+    stream = _stream_agent_events(
+        events=events,
+        repo=repo,
+        tenant_id=tenant.tenant_id,
+        conversation_id=conversation_id,
+        user_id=current_user.user_id,
+        settings=settings,
+        redis_client=redis_client,
+        llm_router=llm_router,
+        session=session,
+        title_user_text=None,
+    )
+    stream = _persist_session_after_stream(
+        stream,
+        db_session=session,
+        unified_session=unified_session,
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+    )
+    async for chunk in stream:
+        yield chunk
 
 
 # ---------------------------------------------------------------------------
@@ -1860,9 +2288,15 @@ async def _stream_agent_events(
     title_user_text: str | None = None,
     initial_text: str = "",
     initial_tool_log: list[dict[str, Any]] | None = None,
+    session: Any = None,
+    assistant_content_extra: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     text_parts: list[str] = [initial_text] if initial_text else []
     tool_log: list[dict[str, Any]] = list(initial_tool_log or [])
+    # Archivos que el modelo GENERÓ en este turno (crear_pdf, crear_documento,
+    # generar_imagen, generar_grafico…): se adjuntan al mensaje del asistente
+    # para que el teléfono los muestre — así los bots entregan documentos.
+    artefactos_turno: list[dict[str, str | None]] = []
     try:
         async for raw_event in events:
             event = _event_to_dict(raw_event)
@@ -1879,6 +2313,25 @@ async def _stream_agent_events(
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
                 if event_type == "tool_end":
+                    # Archivos generados por la tool (contrato ArtifactRef,
+                    # que llega como objeto pydantic, no dict — se lee por
+                    # atributo y se tolera el dict por robustez).
+                    for ref in event.get("artifacts") or []:
+                        es_dict = isinstance(ref, dict)
+                        file_id = ref.get("file_id") if es_dict else getattr(ref, "file_id", None)
+                        filename = (
+                            ref.get("filename") if es_dict else getattr(ref, "filename", None)
+                        )
+                        mime = ref.get("mime") if es_dict else getattr(ref, "mime", None)
+                        if file_id and filename:
+                            artefactos_turno.append(
+                                {
+                                    "file_id": str(file_id),
+                                    "filename": str(filename),
+                                    "mime": str(mime or ""),
+                                }
+                            )
+                    artefactos_turno = artefactos_turno[:10]
                     try:
                         await _enqueue_tool_notification(
                             settings=settings,
@@ -1911,18 +2364,18 @@ async def _stream_agent_events(
                     output_tokens=output_tokens,
                     cached_input_tokens=int(usage.get("cached_input_tokens", 0) or 0),
                 )
+                assistant_content: dict[str, Any] = {
+                    "text": enriquecer_speech_tags("".join(text_parts)),
+                    **({"explanation": event["explanation"]} if event.get("explanation") else {}),
+                    **({"attachments": artefactos_turno} if artefactos_turno else {}),
+                }
+                if assistant_content_extra:
+                    assistant_content.update(assistant_content_extra)
                 await repo.add_message(
                     tenant_id=tenant_id,
                     conversation_id=conversation_id,
                     role="assistant",
-                    content={
-                        "text": enriquecer_speech_tags("".join(text_parts)),
-                        **(
-                            {"explanation": event["explanation"]}
-                            if event.get("explanation")
-                            else {}
-                        ),
-                    },
+                    content=assistant_content,
                     tool_calls=tool_log or None,
                     tokens_in=input_tokens,
                     tokens_out=output_tokens,
@@ -1939,6 +2392,7 @@ async def _stream_agent_events(
                             "output_tokens": output_tokens,
                             **attribution,
                         },
+                        cost_usd=attribution.get("cost_usd"),
                     )
                 await repo.add_usage_event(
                     tenant_id=tenant_id,
@@ -1988,6 +2442,21 @@ async def _stream_agent_events(
                     await _store_pending_confirmation(
                         redis_client,
                         tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                        tool_call_id=tool_call_id,
+                        name=str(event.get("name") or ""),
+                        args=event.get("args") or {},
+                        pending_turn=event.get("pending_turn"),
+                    )
+                    # Respaldo durable (directiva §30-32): además del caché de
+                    # Redis, se persiste el snapshot en `pending_approvals` para
+                    # que la aprobación sobreviva un reload. Best-effort: si la
+                    # base no está lista (p. ej. dobles de prueba con `session=None`)
+                    # se registra y se sigue, sin romper el camino Redis actual.
+                    await _persist_pending_approval(
+                        session,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
                         conversation_id=conversation_id,
                         tool_call_id=tool_call_id,
                         name=str(event.get("name") or ""),
@@ -2058,6 +2527,31 @@ async def _stream_declined_confirmation(
     yield _format_sse("message.done", {"type": "done", "usage": {}})
 
 
+async def _stream_delegation_confirmation(
+    *,
+    prefix: str,
+    repo: Repo,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> AsyncIterator[str]:
+    """Confirma delegaciones encoladas sin invocar al agente principal."""
+    text = enriquecer_speech_tags(prefix)
+    await repo.add_message(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        content={"text": text},
+    )
+    await repo.add_usage_event(
+        tenant_id=tenant_id,
+        kind="messages",
+        quantity=1.0,
+        meta={"conversation_id": str(conversation_id), "delegation_only": True},
+    )
+    yield _format_sse("message.delta", {"type": "text_delta", "text": text})
+    yield _format_sse("message.done", {"type": "done", "usage": {}})
+
+
 def _is_bare_fix_command(text: str) -> bool:
     """``/fix`` sin contexto no debe abrir un turno LLM potencialmente largo.
 
@@ -2071,12 +2565,12 @@ def _is_bare_fix_command(text: str) -> bool:
 
 
 # Palabras clave que dicen "crea un post de LinkedIn" sin ambigüedad. Idénticas
-# a las que REFERENCIA usa en `app.py:4560` (`features/linkedin_content._route_crear_post`),
+# a las que usa el enrutador directo de contenido,
 # incluyendo la explicación que lo motivó allá: pedirle al modelo que DECIDA qué
 # herramienta invocar añade hasta varias rondas donde la persona no ve nada, y
 # el modelo -- con `tools` cargadas y un system largo -- se cae a escribir el
 # tool_call como texto (`[crear_post_linkedin](tema="...")`) que nadie ejecuta.
-# REFERENCIA lo evita porque NO le pregunta al modelo cuando ya sabe: detecta la
+# El atajo lo evita porque NO le pregunta al modelo cuando ya sabe: detecta la
 # intención en el texto, llama al motor y responde al instante "te preparo el
 # post". Este atajo copia esa decisión.
 # La lista literal de frases no aguantaba cómo se pide esto de verdad. Con
@@ -2091,19 +2585,6 @@ _RE_PEDIDO_LINKEDIN = re.compile(
     re.IGNORECASE,
 )
 
-# Una cuenta configurada nombrada junto a "post" también es un pedido inequívoco:
-# "un post de Acme sobre X" no dice "LinkedIn" en ninguna parte y aun así no
-# hay nada que preguntar. Es como funciona REFERENCIA, donde Acme tiene su propio
-# motor y su propia ruta.
-_RE_PEDIDO_POR_CUENTA = re.compile(
-    r"\b(post|publicaci[oó]n|contenido|encuesta)\b[\w\s'\".,-]{0,40}?"
-    r"\b(acme|organizaci[oó]n|organization)\b"
-    r"|\b(acme|organizaci[oó]n|organization)\b[\w\s'\".,-]{0,40}?"
-    r"\b(post|publicaci[oó]n|contenido|encuesta)\b",
-    re.IGNORECASE,
-)
-
-
 def _es_pedido_directo_de_post_linkedin(text: str) -> bool:
     """`True` si el mensaje es inequívocamente "crea un post de LinkedIn".
 
@@ -2113,7 +2594,7 @@ def _es_pedido_directo_de_post_linkedin(text: str) -> bool:
     al agente normal, que ahí sí tiene que preguntar.
     """
     plano = text or ""
-    return bool(_RE_PEDIDO_LINKEDIN.search(plano) or _RE_PEDIDO_POR_CUENTA.search(plano))
+    return bool(_RE_PEDIDO_LINKEDIN.search(plano))
 
 
 # Cuando la card de destino (`_decidir_destino`) le pregunta al usuario "con la
@@ -2139,7 +2620,7 @@ def _es_respuesta_a_card_de_destino(text: str) -> str | None:
 
 # Hasta cuántos caracteres puede medir un mensaje para tratarlo como una respuesta
 # escrita a la card de destino. Una respuesta de verdad nombra la cuenta y poco
-# más ("organization", "para mi página", "en la personal"); un mensaje largo es otra
+# más ("acme", "para mi página", "en la personal"); un mensaje largo es otra
 # conversación aunque mencione la cuenta de pasada.
 _MAX_RESPUESTA_DESTINO_LIBRE_CHARS = 80
 
@@ -2151,7 +2632,7 @@ async def _destino_de_respuesta_libre(
 
     La card permite texto libre (`allow_free_text=True`), pero el atajo solo
     entendía la frase exacta del botón ("Escríbelo con la voz de '...'"). Quien
-    escribía "organization" o "en mi perfil personal" caía al agente genérico, que
+    escribía "acme" o "en mi perfil personal" caía al agente genérico, que
     es el camino donde el modelo decide libre qué tool llamar -- y donde nacía
     el post con otro motor y otra imagen. Mismo criterio que el resto del atajo:
     si ya se sabe qué quiso decir, no se le pregunta a un LLM.
@@ -2196,15 +2677,12 @@ def _texto_plano_sin_acentos(texto: str) -> str:
 def _destino_desde_el_texto(text: str) -> str | None:
     """La cuenta que la persona nombró en su propio mensaje, o `None` si no nombró ninguna.
 
-    Así es como REFERENCIA resuelve esto en UN mensaje: la cuenta va metida en la
-    ruta. Su `linkedin_content.py` ES el motor personal (se dispara con "post de
-    linkedin" y nunca pregunta), y Acme vive en un archivo aparte,
-    `organization_linkedin_content.py`, con su propia ruta. No hay ambigüedad que
-    resolver, así que no hay nada que preguntar.
+    Una cuenta explícita puede resolverse en el mismo mensaje, sin pedirle a un
+    modelo que vuelva a interpretar una selección ya inequívoca.
 
     Edecán hizo UNA tool para las dos cuentas y por eso terminaba preguntando
     siempre, incluso cuando la respuesta era obvia. Con esto vuelve al
-    comportamiento de REFERENCIA: si la persona nombró la cuenta, se usa; y si pidió
+    comportamiento directo: si la persona nombró la cuenta, se usa; y si pidió
     un post "de LinkedIn" sin más, es el personal, igual que allá. La tarjeta
     queda para la duda real, no para el caso de todos los días.
     """
@@ -2213,8 +2691,6 @@ def _destino_desde_el_texto(text: str) -> str | None:
     # Cualquier nombre de organización configurado por el tenant se detecta en
     # `_decidir_destino` con su config real; acá solo se resuelve lo que se puede
     # decidir sin consultarla, que es el caso frecuente.
-    if re.search(r"\b(acme|organizacion|organization)\b", plano):
-        return "organization"
     if re.search(r"\b(personal|mi perfil|mi cuenta personal)\b", plano):
         return "personal"
     return None
@@ -2293,7 +2769,7 @@ def _es_seguimiento_de_tema_linkedin(text: str, history: list[ChatMessage]) -> s
     tema puro (`_tema_de_seguimiento`) Y hay un pedido directo de post en los
     últimos mensajes del usuario. Sin la segunda condición, cualquier "sobre la
     reunión de mañana" entraría al motor de posts; sin la primera, cualquier
-    mensaje después de un pedido lo haría. REFERENCIA no necesita este puente porque
+    mensaje después de un pedido lo haría. El camino directo no necesita este puente porque
     su ruta se resuelve en UN mensaje; Edecán corta el turno con la card de
     destino, así que el tema llega partido en dos y alguien tiene que volver a
     juntarlo -- determinista, no un LLM adivinando."""
@@ -2354,10 +2830,10 @@ def _extraer_tema_del_historial_linkedin(history: list[ChatMessage]) -> str | No
     return None
 
 
-# Reglas para sacar el tema del propio mensaje, en el mismo orden que REFERENCIA
+# Reglas para sacar el tema del propio mensaje
 # (`features/linkedin_content._extraer_tema_pedido`). "Sobre X", "de X",
 # "acerca de X", "sobre el tema: X". Sin match, el motor rota su calendario
-# editorial como hace REFERENCIA con los pilares.
+# editorial según los pilares configurados.
 #
 # Son DOS patrones con prioridad, no uno, por dos fallos reales del regex único:
 #   - "sobre: X" (con dos puntos pegados, que es como lo escribe el dueño) no
@@ -2417,7 +2893,7 @@ def _extraer_tema_de_post_linkedin(text: str) -> str | None:
 # la persona: nombres de tools entre comillas, órdenes sobre llamar o terminar el
 # turno, y referencias al usuario en tercera persona. `content` es el canal
 # modelo-facing, así que normalmente lo lee el modelo y traduce; en el ATAJO no
-# hay modelo en medio y se le volcaba crudo a la persona. Alex vio en su chat
+# hay modelo en medio y se le volcaba crudo a la persona. Se observó en el chat
 # "vuelve a llamar 'crear_post_linkedin' con ese 'tema'. No repitas la llamada",
 # instrucciones para una máquina, escritas como si él invocara herramientas.
 _FRASES_PARA_EL_MODELO = re.compile(
@@ -2495,7 +2971,7 @@ async def _stream_direct_linkedin_post(
 ) -> AsyncIterator[str]:
     """Genera el post en el mismo turno, sin pasar por el modelo para decidir.
 
-    Copia el patrón de `features/linkedin_content._route_crear_post` de REFERENCIA.
+    Usa un patrón de enrutamiento directo para pedidos inequívocos.
     La diferencia con "encolar en background y responder después" es
     deliberada: el motor nuevo (`crear_post_linkedin`) hace el ciclo entero en
     ~pocos segundos porque investiga, redacta y audita en código; puede correr
@@ -2555,13 +3031,7 @@ async def _stream_direct_linkedin_post(
         # Destino resuelto (o único/ninguno): encolar y avisar. El handler
         # `create_linkedin_post` corre el motor completo con tiempo de sobra y
         # entrega el borrador como card + push en el chat principal.
-        # Acme usa el autopost de fydesign (video product-led con Opus);
-        # el resto (p. ej. "personal") sigue el handler genérico de imagen.
-        job_type = (
-            "create_organization_linkedin_post"
-            if destino_override in ("organization", "organization_linkedin")
-            else "create_linkedin_post"
-        )
+        job_type = "create_linkedin_post"
         try:
             await enqueue(
                 settings,
@@ -2575,13 +3045,7 @@ async def _stream_direct_linkedin_post(
                 },
                 tenant_id,
             )
-            detail = (
-                "Listo, me pongo a preparar tu post de LinkedIn — te llega aquí "
-                "mismo en un momento."
-                if destino_override in ("organization", "organization_linkedin")
-                else "Listo, me pongo a escribir tu post de LinkedIn — te llega aquí "
-                "mismo en un momento, con imagen y todo."
-            )
+            detail = "Listo, me pongo a escribir tu post de LinkedIn — te llega aquí mismo en un momento."
         except Exception as exc:  # noqa: BLE001 - cierre visible y seguro
             logger.warning("no se pudo encolar el post de LinkedIn", exc_info=True)
             detail = f"No pude preparar el post de LinkedIn: {public_error_message(exc)}"
@@ -3146,7 +3610,10 @@ async def resume_message_attempt(
     )
 
 
-@router.post("/{conversation_id}/messages")
+@router.post(
+    "/{conversation_id}/messages",
+    response_model=None,
+)
 async def post_message(
     conversation_id: uuid.UUID,
     body: ChatMessageIn,
@@ -3159,7 +3626,7 @@ async def post_message(
     vault: Any = Depends(get_streaming_vault),
     settings: Settings = Depends(get_settings),
     redis_client: redis_asyncio.Redis = Depends(get_redis),
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     tenant = current_user.tenant
     conversation = await repo.get_conversation(
         tenant_id=tenant.tenant_id,
@@ -3168,6 +3635,19 @@ async def post_message(
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+
+    if (
+        await _get_pending_confirmation(
+            redis_client,
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+        )
+        is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Hay una confirmación pendiente. Aprueba o rechaza antes de enviar otro mensaje.",
+        )
 
     # El override por turno se valida ANTES de cualquier efecto: un id fuera de
     # catálogo no debe llegar a consumir cuota ni a insertar el mensaje.
@@ -3262,6 +3742,35 @@ async def post_message(
         tenant_id=tenant.tenant_id,
     )
 
+    active_key = _chat_turn_active_key(
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+    )
+    followup_key = _chat_followup_count_key(
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+    )
+    if await redis_client.exists(active_key):
+        return await _enqueue_chat_message_while_busy(
+            repo=repo,
+            redis_client=redis_client,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=conversation_id,
+            conversation=conversation,
+            body=body,
+            stored_user_content=stored_user_content,
+            safe_user_text=safe_user_text,
+            inline_credential=inline_credential,
+            idempotency_key=idempotency_key,
+            redis_idempotency_key=redis_idempotency_key,
+            request_hash=request_hash,
+            idempotency_ttl=idempotency_ttl,
+            followup_key=followup_key,
+        )
+
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
     # El proceso real siempre recibe una AsyncSession tenant-scoped. El
@@ -3336,6 +3845,32 @@ async def post_message(
     # `_extra_mcp_tools_or_empty` es fail-open con dos capas (ver su docstring).
     extra_tools = await _extra_conversation_tools(request, current_user)
 
+    turn_owner = str(uuid.uuid4())
+    active_claimed = await redis_client.set(
+        active_key,
+        turn_owner,
+        ex=idempotency_ttl,
+        nx=True,
+    )
+    if not active_claimed:
+        return await _enqueue_chat_message_while_busy(
+            repo=repo,
+            redis_client=redis_client,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=conversation_id,
+            conversation=conversation,
+            body=body,
+            stored_user_content=stored_user_content,
+            safe_user_text=safe_user_text,
+            inline_credential=inline_credential,
+            idempotency_key=idempotency_key,
+            redis_idempotency_key=redis_idempotency_key,
+            request_hash=request_hash,
+            idempotency_ttl=idempotency_ttl,
+            followup_key=followup_key,
+        )
+
     owner_token: str | None = None
     if idempotency_key is not None:
         assert request_hash is not None and redis_idempotency_key is not None
@@ -3346,12 +3881,14 @@ async def post_message(
             ttl_seconds=idempotency_ttl,
         )
         if raced_record is not None:
+            await redis_client.delete(active_key)
             return _response_for_idempotency_record(
                 record=raced_record,
                 request_hash=request_hash,
                 idempotency_key=idempotency_key,
             )
         if owner_token is None:  # pragma: no cover - defensa ante un Redis incompatible
+            await redis_client.delete(active_key)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No se pudo reclamar este turno idempotente.",
@@ -3361,48 +3898,23 @@ async def post_message(
     # persistente. Dos requests concurrentes con la misma clave nunca insertan
     # dos mensajes de usuario ni arrancan dos turnos del agente.
     needs_semantic_title = not str(conversation.get("title") or "").strip()
-    if needs_semantic_title:
-        automatic_title = (
-            _credential_conversation_title(inline_credential)
-            if inline_credential is not None
-            else _automatic_conversation_title(safe_user_text, fallback="Archivo adjunto")
-        )
-        await repo.update_conversation_title(
-            tenant_id=tenant.tenant_id,
-            user_id=current_user.user_id,
-            conversation_id=conversation_id,
-            title=automatic_title,
-            only_if_empty=True,
-            source="auto",
-        )
-    # Selector de modelos: el body del turno gana sobre lo persistido y TAMBIÉN
-    # se persiste, para que elegir-y-enviar en un solo gesto no dependa de una
-    # carrera entre el PUT `/model` y este POST. Un campo ausente conserva lo
-    # que la conversación ya tenía (volver a automático es el PUT con `null`).
-    modelo_elegido = conversation.get("chat_model") or None
-    esfuerzo_elegido = conversation.get("chat_effort") or None
-    if body.model is not None or body.effort is not None:
-        modelo_elegido = body.model.strip() if body.model else modelo_elegido
-        esfuerzo_elegido = body.effort or esfuerzo_elegido
-        await repo.update_conversation_model(
-            tenant_id=tenant.tenant_id,
-            user_id=current_user.user_id,
-            conversation_id=conversation_id,
-            model=modelo_elegido,
-            effort=esfuerzo_elegido,
-        )
+    modelo_elegido, esfuerzo_elegido = await _persist_chat_user_message(
+        repo=repo,
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+        conversation=conversation,
+        body=body,
+        stored_user_content=stored_user_content,
+        safe_user_text=safe_user_text,
+        inline_credential=inline_credential,
+    )
     # El gate de ceguera y el de Esfuerzo son SOLO de este turno: la selección
     # persistida arriba no se toca (ver `_seleccion_efectiva`).
     seleccion = _seleccion_efectiva(
         modelo=modelo_elegido,
         esfuerzo=esfuerzo_elegido,
         trae_imagen=_turno_trae_imagen(attachments),
-    )
-    await repo.add_message(
-        tenant_id=tenant.tenant_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=stored_user_content,
     )
 
     if inline_credential is not None:
@@ -3425,21 +3937,19 @@ async def post_message(
             conversation_id=conversation_id,
         )
     elif _es_pedido_directo_de_post_linkedin(body.text):
-        # Atajo estilo REFERENCIA: cuando el mensaje ya dice "post de linkedin", el
+        # Atajo directo: cuando el mensaje ya dice "post de linkedin", el
         # servidor llama al motor directo sin pedirle al modelo que decida qué
         # herramienta invocar. Ese "pedirle al modelo" es donde se cae hoy: con
         # `tools` cargadas y system largo, llama-4-scout escribe el tool_call
         # como texto (`[crear_post_linkedin](tema="...")`) que nadie ejecuta, y
-        # la persona ve el chat en blanco tras 10 segundos. REFERENCIA lleva
-        # meses sin ese problema porque nunca pregunta cuando ya sabe (ver
-        # `app.py:4560` en el repo de REFERENCIA). Copiamos esa decisión.
+        # la persona ve el chat en blanco. Aquí no se vuelve a preguntar cuando
+        # la intención ya está resuelta.
         stream = _stream_direct_linkedin_post(
             tool=registry.get("crear_post_linkedin"),
             ctx=ctx,
             text=body.text,
-            # Si la persona NOMBRÓ la cuenta en su mensaje ("un post de Acme
-            # sobre X"), se usa y el post sale en UN turno, como en las ROUTES de
-            # REFERENCIA. Si no la nombró, se deja en None a propósito: entonces sale
+            # Si la persona nombró una cuenta configurada en su mensaje, se usa y
+            # el post sale en un turno. Si no la nombró, se deja en None: entonces sale
             # la tarjeta de destino, que el dueño eligió tener porque le parece
             # más elegante que adivinar. Rápido cuando hay certeza, tarjeta
             # cuando de verdad hay duda.
@@ -3472,7 +3982,7 @@ async def post_message(
     elif (
         destino_libre := await _destino_de_respuesta_libre(ctx, body.text, history_rows)
     ) is not None:
-        # La card de destino contestada ESCRIBIENDO ("organization", "en mi perfil
+        # La card de destino contestada ESCRIBIENDO ("acme", "en mi perfil
         # personal") en vez de tocar el botón. La card siempre permitió texto
         # libre; el atajo no lo entendía y la respuesta se iba al agente.
         #
@@ -3498,7 +4008,7 @@ async def post_message(
         # mensaje caía al agente genérico -- el único camino donde un LLM libre
         # decide qué tool llamar y con qué texto -- y de ahí salían los posts
         # con otro redactor y otra imagen que no se parecían en nada a los del
-        # motor. Mismo principio de REFERENCIA que el resto del atajo: cuando el
+        # motor. Mismo principio que el resto del atajo: cuando el
         # texto ya dice qué hacer, ningún modelo tiene que adivinarlo.
         stream = _stream_direct_linkedin_post(
             tool=registry.get("crear_post_linkedin"),
@@ -3515,28 +4025,40 @@ async def post_message(
             conversation_id=conversation_id,
         )
     else:
-        events = agent.run_turn(
-            ctx=ctx,
-            persona=persona,
-            history=history,
-            user_text=user_text,
-            flags=tenant.flags,
-            extra_tools=extra_tools,
-            seleccion=seleccion,
-        )
-        stream = _stream_agent_events(
-            events=events,
-            repo=repo,
-            tenant_id=tenant.tenant_id,
-            conversation_id=conversation_id,
-            user_id=current_user.user_id,
-            settings=settings,
-            redis_client=redis_client,
-            llm_router=llm_router,
-            title_user_text=(
-                safe_user_text if needs_semantic_title and inline_credential is None else None
-            ),
-        )
+        delegation = await prepare_chat_delegation(ctx, body.text)
+        turn_user_text = delegation.user_text if delegation.delegated else user_text
+        if delegation.delegated and not turn_user_text.strip() and delegation.initial_prefix:
+            stream = _stream_delegation_confirmation(
+                prefix=delegation.initial_prefix,
+                repo=repo,
+                tenant_id=tenant.tenant_id,
+                conversation_id=conversation_id,
+            )
+        else:
+            events = agent.run_turn(
+                ctx=ctx,
+                persona=persona,
+                history=history,
+                user_text=turn_user_text,
+                flags=tenant.flags,
+                extra_tools=extra_tools,
+                seleccion=seleccion,
+            )
+            stream = _stream_agent_events(
+                events=events,
+                repo=repo,
+                tenant_id=tenant.tenant_id,
+                conversation_id=conversation_id,
+                user_id=current_user.user_id,
+                settings=settings,
+                redis_client=redis_client,
+                llm_router=llm_router,
+                session=session,
+                title_user_text=(
+                    safe_user_text if needs_semantic_title and inline_credential is None else None
+                ),
+                initial_text=delegation.initial_prefix if delegation.delegated else "",
+            )
     stream = _persist_session_after_stream(
         stream,
         db_session=session,
@@ -3544,6 +4066,29 @@ async def post_message(
         tenant_id=tenant.tenant_id,
         user_id=current_user.user_id,
         conversation_id=conversation_id,
+    )
+
+    async def build_followup_stream() -> AsyncIterator[str]:
+        return _build_followup_chat_stream(
+            request=request,
+            current_user=current_user,
+            tenant=tenant,
+            conversation_id=conversation_id,
+            conversation=conversation,
+            repo=repo,
+            session=session,
+            llm_router=llm_router,
+            vault=vault,
+            settings=settings,
+            redis_client=redis_client,
+        )
+
+    stream = _stream_with_followup_chain(
+        initial_stream=stream,
+        redis_client=redis_client,
+        active_key=active_key,
+        followup_key=followup_key,
+        build_followup_stream=build_followup_stream,
     )
     if idempotency_key is None:
         # Compatibilidad total: clientes existentes conservan streaming en vivo.
@@ -3590,68 +4135,42 @@ async def post_message(
     )
 
 
-@router.post("/{conversation_id}/confirm")
-async def confirm_tool_call(
-    conversation_id: uuid.UUID,
-    body: ConfirmIn,
+async def _resume_approved_turn(
+    *,
     request: Request,
-    current_user: CurrentUser = Depends(get_current_user),
-    repo: Repo = Depends(get_streaming_repo),
-    session: Any = Depends(get_tenant_session, scope="request"),
-    llm_router: LLMRouter = Depends(get_llm_router),
-    vault: Any = Depends(get_streaming_vault),
-    settings: Settings = Depends(get_settings),
-    redis_client: redis_asyncio.Redis = Depends(get_redis),
+    current_user: CurrentUser,
+    tenant: Any,
+    conversation_id: uuid.UUID,
+    conversation: dict[str, Any],
+    tool_call_id: str,
+    pending: dict[str, Any],
+    repo: Repo,
+    session: Any,
+    llm_router: LLMRouter,
+    vault: Any,
+    settings: Settings,
+    redis_client: redis_asyncio.Redis,
 ) -> StreamingResponse:
-    tenant = current_user.tenant
-    conversation = await repo.get_conversation(
-        tenant_id=tenant.tenant_id,
-        user_id=current_user.user_id,
-        conversation_id=conversation_id,
-    )
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+    """Reanuda un turno aprobado desde su foto serializada (`pending`).
 
-    # Se consume tanto al aprobar como al rechazar. GETDEL garantiza que dos
-    # clientes concurrentes no puedan ejecutar el mismo lote y que un rechazo
-    # sea definitivo (no deja una aprobación reutilizable detrás).
-    pending = await _pop_pending_confirmation(
-        redis_client,
-        tenant_id=tenant.tenant_id,
-        conversation_id=conversation_id,
-        tool_call_id=body.tool_call_id,
-    )
-    if pending is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Esa confirmación ya no está disponible (expiró o ya se procesó). "
-                "Pídele la acción de nuevo al asistente."
-            ),
-        )
-
-    if not body.approved:
-        return StreamingResponse(
-            _stream_declined_confirmation(
-                repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
-            ),
-            media_type="text/event-stream",
-        )
+    `pending` es el payload de una confirmación (`{name, args, pending_turn?}`)
+    tal como lo produce `_pop_pending_confirmation` desde Redis o como lo
+    conserva `pending_approvals.agent_snapshot` en la base — el mismo
+    consumidor sirve a `POST /conversations/{id}/confirm` (caché rápido) y a
+    `POST /v1/approvals/{id}/approve` (durable tras reload).
+    """
 
     serialized_turn = pending.get("pending_turn")
     if serialized_turn is not None:
         try:
             pending_turn = PendingAgentTurn.model_validate(serialized_turn)
-        except Exception as exc:  # noqa: BLE001 - payload Redis inválido, fail closed
+        except Exception as exc:  # noqa: BLE001 - payload inválido, fail closed
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El turno pendiente está dañado y no puede reanudarse con seguridad.",
             ) from exc
         call_ids = {call.id for call in pending_turn.tool_calls}
-        if (
-            body.tool_call_id not in call_ids
-            or body.tool_call_id in pending_turn.approved_tool_call_ids
-        ):
+        if tool_call_id not in call_ids or tool_call_id in pending_turn.approved_tool_call_ids:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="La confirmación no corresponde a una acción pendiente de este lote.",
@@ -3681,7 +4200,7 @@ async def confirm_tool_call(
             persona=persona,
             request=request,
             repo=repo,
-            approved_tool_calls={body.tool_call_id},
+            approved_tool_calls={tool_call_id},
             flags=tenant.flags,
             conversation_id=conversation_id,
             phone_call_dispatcher=phone_tool_dispatcher_for(
@@ -3696,7 +4215,7 @@ async def confirm_tool_call(
         events = agent.resume_turn(
             ctx=ctx,
             pending=pending_turn,
-            approved_tool_call_id=body.tool_call_id,
+            approved_tool_call_id=tool_call_id,
             flags=tenant.flags,
             extra_tools=extra_tools,
             # La confirmación corre en un request HTTP DISTINTO al del turno
@@ -3720,6 +4239,7 @@ async def confirm_tool_call(
                 user_id=current_user.user_id,
                 settings=settings,
                 redis_client=redis_client,
+                session=session,
                 initial_text=pending_turn.accumulated_text,
                 initial_tool_log=pending_turn.tool_log,
             ),
@@ -3778,7 +4298,7 @@ async def confirm_tool_call(
         persona=persona,
         request=request,
         repo=repo,
-        approved_tool_calls={body.tool_call_id},
+        approved_tool_calls={tool_call_id},
         flags=tenant.flags,
         conversation_id=conversation_id,
         phone_call_dispatcher=phone_tool_dispatcher_for(
@@ -3792,7 +4312,7 @@ async def confirm_tool_call(
 
     return StreamingResponse(
         _stream_approved_confirmation(
-            tool_call_id=body.tool_call_id,
+            tool_call_id=tool_call_id,
             tool=tool,
             tool_name=pending["name"],
             tool_args=pending.get("args") or {},
@@ -3804,4 +4324,69 @@ async def confirm_tool_call(
             settings=settings,
         ),
         media_type="text/event-stream",
+    )
+
+
+@router.post("/{conversation_id}/confirm")
+async def confirm_tool_call(
+    conversation_id: uuid.UUID,
+    body: ConfirmIn,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_streaming_repo),
+    session: Any = Depends(get_tenant_session, scope="request"),
+    llm_router: LLMRouter = Depends(get_llm_router),
+    vault: Any = Depends(get_streaming_vault),
+    settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_redis),
+) -> StreamingResponse:
+    tenant = current_user.tenant
+    conversation = await repo.get_conversation(
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+
+    # Se consume tanto al aprobar como al rechazar. GETDEL garantiza que dos
+    # clientes concurrentes no puedan ejecutar el mismo lote y que un rechazo
+    # sea definitivo (no deja una aprobación reutilizable detrás).
+    pending = await _pop_pending_confirmation(
+        redis_client,
+        tenant_id=tenant.tenant_id,
+        conversation_id=conversation_id,
+        tool_call_id=body.tool_call_id,
+    )
+    if pending is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Esa confirmación ya no está disponible (expiró o ya se procesó). "
+                "Pídele la acción de nuevo al asistente."
+            ),
+        )
+
+    if not body.approved:
+        return StreamingResponse(
+            _stream_declined_confirmation(
+                repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
+            ),
+            media_type="text/event-stream",
+        )
+
+    return await _resume_approved_turn(
+        request=request,
+        current_user=current_user,
+        tenant=tenant,
+        conversation_id=conversation_id,
+        conversation=conversation,
+        tool_call_id=body.tool_call_id,
+        pending=pending,
+        repo=repo,
+        session=session,
+        llm_router=llm_router,
+        vault=vault,
+        settings=settings,
+        redis_client=redis_client,
     )

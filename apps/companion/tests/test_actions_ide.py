@@ -790,6 +790,8 @@ def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(
         called = True
         raise AssertionError("screencapture no debe ejecutarse sin permiso")
 
+    monkeypatch.delenv("EDECAN_DESKTOP_BRIDGE_SOCKET", raising=False)
+    monkeypatch.delenv("EDECAN_DESKTOP_BRIDGE_TOKEN", raising=False)
     monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
     monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: False)
     monkeypatch.setattr(actions.subprocess, "run", unexpected_run)
@@ -800,35 +802,45 @@ def test_native_macos_capture_does_not_repeat_tcc_prompt_when_permission_is_off(
     assert called is False
 
 
-def test_native_macos_capture_prefers_authorized_helper_over_desktop_bridge(monkeypatch):
+def test_native_macos_capture_prefers_desktop_bridge_when_socket_exists(monkeypatch):
     from PIL import Image
 
-    def fake_run(command, **kwargs):
-        Image.new("RGB", (100, 80)).save(Path(command[-1]), format="PNG")
-        return actions.subprocess.CompletedProcess(command, 0, b"", b"")
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 480), color=(4, 5, 6)).save(buffer, format="PNG")
+    bridge_called = False
 
+    def fake_bridge(action, params):
+        nonlocal bridge_called
+        bridge_called = True
+        assert action == "screenshot"
+        return {"image_b64": base64.b64encode(buffer.getvalue()).decode("ascii")}
+
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("screencapture no debe ejecutarse cuando el puente existe")
+
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_SOCKET", "/tmp/edecan-test.sock")
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_TOKEN", "test-token")
     monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
     monkeypatch.setattr(actions, "_macos_screen_capture_allowed", lambda: True)
-    monkeypatch.setattr(
-        actions,
-        "_desktop_bridge_call",
-        lambda action, params: (_ for _ in ()).throw(
-            AssertionError("no debe usar el bridge si edecan-local ya está autorizado")
-        ),
-    )
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_desktop_bridge_call", fake_bridge)
+    monkeypatch.setattr(actions.subprocess, "run", unexpected_run)
 
     image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})
 
+    assert bridge_called is True
     assert image_bytes.startswith(b"\x89PNG")
-    assert (width, height, origin_x, origin_y) == (100, 80, 0, 0)
+    assert (width, height, origin_x, origin_y) == (640, 480, 0, 0)
 
 
-def test_native_macos_capture_uses_desktop_bridge_only_if_helper_is_not_authorized(monkeypatch):
+def test_native_macos_capture_uses_desktop_bridge_when_socket_exists_without_sidecar_tcc(
+    monkeypatch,
+):
     from PIL import Image
 
     buffer = io.BytesIO()
     Image.new("RGB", (900, 600), color=(1, 2, 3)).save(buffer, format="PNG")
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_SOCKET", "/tmp/edecan-test.sock")
+    monkeypatch.setenv("EDECAN_DESKTOP_BRIDGE_TOKEN", "test-token")
     monkeypatch.setattr(actions, "_macos_display_target", lambda params: (1, 1, 0, 0))
     monkeypatch.setattr(
         actions,
@@ -838,7 +850,9 @@ def test_native_macos_capture_uses_desktop_bridge_only_if_helper_is_not_authoriz
     monkeypatch.setattr(
         actions,
         "_macos_screen_capture_allowed",
-        lambda: False,
+        lambda: (_ for _ in ()).throw(
+            AssertionError("sidecar no debe consultar TCC cuando el puente existe")
+        ),
     )
 
     image_bytes, width, height, origin_x, origin_y = actions._screenshot_via_screencapture({})

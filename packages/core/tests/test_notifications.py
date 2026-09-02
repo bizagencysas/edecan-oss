@@ -158,6 +158,20 @@ async def test_disabled_category_is_returned_with_durable_event() -> None:
     assert durable.push_enabled is False
 
 
+def test_agent_message_kind_includes_chat_deeplink() -> None:
+    chat_id = uuid.uuid4()
+    event = ImportantNotificationEvent(
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        kind="agent_message",
+        event_id=uuid.uuid4(),
+        chat_id=chat_id,
+    )
+    assert event.route == "assistant"
+    assert event.push_data()["event"] == "agent_message"
+    assert event.push_data()["deeplink"] == f"edecan://chat/{chat_id}"
+
+
 def test_event_rejects_non_uuid_occurrence_and_ambiguous_destination() -> None:
     with pytest.raises(ValueError):
         ImportantNotificationEvent(
@@ -232,3 +246,14 @@ async def test_push_delivery_sin_dispositivo_usa_al_usuario_como_target() -> Non
         "platform": "ninguna",
         "outcome": "sin_dispositivos",
     }
+
+
+async def test_agent_message_kind_is_registered() -> None:
+    event = ImportantNotificationEvent(
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        kind="agent_message",
+        event_id=uuid.uuid4(),
+    )
+    assert event.title == "Mensaje de Edecán"
+    assert event.route == "assistant"

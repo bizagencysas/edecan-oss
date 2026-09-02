@@ -57,11 +57,10 @@ export function MessageBubble({
     <div className={cx("flex", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cx(
-          "rounded-2xl px-4 py-3 text-[15px] leading-7 shadow-sm",
-          isUser ? "max-w-[min(42rem,88%)]" : "max-w-[min(48rem,94%)]",
+          "max-w-[min(20rem,78%)] rounded-[18px] px-3 py-2 text-[15px] leading-6 shadow-sm sm:max-w-[min(22rem,82%)]",
           isUser
-            ? "rounded-br-md bg-gradient-to-br from-brand-600 to-indigo-600 text-white"
-            : "rounded-bl-md border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
+            ? "rounded-br-[4px] bg-gradient-to-br from-brand-600 to-indigo-600 text-white"
+            : "rounded-bl-[4px] border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100",
         )}
       >
         {(text || (message.role === "assistant" && blocks.length === 0)) && (

@@ -240,27 +240,41 @@ export default function AutomatizacionesPage() {
                   />
                   <CardBody>
                     <ul className="space-y-3">
-                      {suggestions.map((suggestion) => (
-                        <li
-                          key={suggestion.automation_id}
-                          className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900 dark:bg-amber-950/30"
-                        >
-                          <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
-                            {suggestion.nombre}: {suggestion.reason}
-                          </p>
-                          <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
-                            {suggestion.failure_count} fallos consecutivos · requiere tu confirmación
-                          </p>
-                          <Button
-                            className="mt-3"
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleReviewSuggestion(suggestion.automation_id)}
+                      {suggestions.map((suggestion) =>
+                        suggestion.kind === "automation_suggestion" ? (
+                          <li
+                            key={suggestion.automation_id}
+                            className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900 dark:bg-amber-950/30"
                           >
-                            Revisar automatización
-                          </Button>
-                        </li>
-                      ))}
+                            <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
+                              {suggestion.nombre}: {suggestion.reason}
+                            </p>
+                            <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+                              {suggestion.failure_count} fallos consecutivos · requiere tu confirmación
+                            </p>
+                            <Button
+                              className="mt-3"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleReviewSuggestion(suggestion.automation_id)}
+                            >
+                              Revisar automatización
+                            </Button>
+                          </li>
+                        ) : (
+                          <li
+                            key={`routine:${suggestion.task}`}
+                            className="rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900"
+                          >
+                            <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                              {suggestion.task}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                              {suggestion.repetitions} repeticiones · {suggestion.reason}
+                            </p>
+                          </li>
+                        ),
+                      )}
                     </ul>
                   </CardBody>
                 </Card>

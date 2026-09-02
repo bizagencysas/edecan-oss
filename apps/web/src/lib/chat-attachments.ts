@@ -30,9 +30,9 @@ export function turnoTraeImagen(attachments: readonly ChatAttachmentDraft[]): bo
 export function canSubmitChat(
   text: string,
   attachments: readonly ChatAttachmentDraft[],
-  sending: boolean,
+  blocked: boolean,
 ): boolean {
-  if (sending || attachmentsBlockSend(attachments)) return false;
+  if (blocked || attachmentsBlockSend(attachments)) return false;
   return Boolean(text.trim()) || readyAttachmentIds(attachments).length > 0;
 }
 

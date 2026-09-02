@@ -50,6 +50,11 @@ class ToolRegistry:
         """Devuelve la `Tool` registrada con `name`, o `None` si no existe."""
         return self._tools.get(name)
 
+    def all(self) -> list[Tool]:
+        """Todas las `Tool` registradas (los objetos, no solo specs) — para
+        construir registros derivados (p. ej. el del bot con acceso total)."""
+        return list(self._tools.values())
+
     def specs(self, flags: dict[str, Any]) -> list[ToolSpec]:
         """`ToolSpec` de las herramientas ofrecibles al modelo dado `flags`.
 

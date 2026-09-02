@@ -1,19 +1,12 @@
 "use client";
 
+import { useState } from "react";
+
 import { Button } from "@/components/ui";
 
 /**
  * Advertencias específicas por herramienta, en lenguaje llano, además del
- * JSON crudo de abajo (hallazgo de auditoría "riesgo-legal-tos": una tarjeta
- * genérica no le da a quien aprueba ninguna pista concreta de qué mirar antes
- * de confirmar). `usar_computadora` (control remoto de pantalla/mouse/teclado,
- * `packages/toolkit/edecan_toolkit/computadora.py`) es la más importante:
- * a diferencia de `navegar_web`/`comparar_precios`, que reciben una URL que
- * `edecan_browser.policy.check_navigation` puede bloquear en código (scraping
- * no autorizado, checkout, SSRF), esta herramienta actúa por coordenadas y
- * pulsaciones de teclado — no hay URL que un guardrail de código pueda
- * inspeccionar, así que esta advertencia y el juicio de quien aprueba son la
- * única defensa consciente del contenido en pantalla en este punto.
+ * JSON crudo plegado (hallazgo de auditoría "riesgo-legal-tos").
  */
 const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
   usar_computadora:
@@ -36,11 +29,6 @@ const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
     "Esto iniciará una llamada real y puede tener costo en tu cuenta de Twilio. " +
     "Comprueba la persona, el número internacional, el agente exacto y el objetivo. " +
     "Aprueba solo si reconoces a la persona y tienes su consentimiento para recibir la llamada.",
-  // Una skill NO es un archivo de datos: son instrucciones que Edecán seguirá al pie de la
-  // letra cada vez que se active. Instalar una de una URL arbitraria es dejar que un tercero
-  // escriba parte del prompt del asistente, y ese texto puede intentar redefinir sus reglas.
-  // Por eso esta advertencia es más dura que las de arriba, aunque "instalar un archivo"
-  // suene inofensivo comparado con "hacer una llamada".
   instalar_skill:
     "Una skill son INSTRUCCIONES que Edecán va a seguir literalmente cuando se active, no un " +
     "archivo de datos. Instalarla es dejar que quien la escribió influya en cómo se comporta " +
@@ -48,6 +36,19 @@ const ADVERTENCIAS_POR_HERRAMIENTA: Record<string, string> = {
     "o si llegó de algo que Edecán leyó por su cuenta y no de ti, rechaza. Las que no vienen " +
     "de un índice revisado quedan marcadas «sin revisar» a propósito.",
 };
+
+const TITULOS_CORTOS: Record<string, string> = {
+  usar_computadora: "¿Uso tu computadora?",
+  llamar_contacto: "¿Hago esta llamada?",
+  instalar_skill: "¿Instalo esta skill?",
+  configurar_credencial: "¿Guardo esta credencial?",
+};
+
+function tituloParaHerramienta(name: string): string {
+  if (TITULOS_CORTOS[name]) return TITULOS_CORTOS[name];
+  const legible = name.replace(/[_-]+/g, " ").trim();
+  return legible ? `¿Apruebo «${legible}»?` : "¿Apruebo esta acción?";
+}
 
 function CallPreflight({ args }: { args: Record<string, unknown> }) {
   const fields = [
@@ -58,7 +59,7 @@ function CallPreflight({ args }: { args: Record<string, unknown> }) {
   ] as const;
 
   return (
-    <dl className="mt-3 grid gap-2 rounded-xl border border-amber-200 bg-white/70 p-3 text-xs dark:border-amber-800 dark:bg-black/20 sm:grid-cols-2">
+    <dl className="mt-2 grid gap-2 rounded-xl border border-amber-200/80 bg-white/70 p-3 text-xs dark:border-amber-800 dark:bg-black/20 sm:grid-cols-2">
       {fields.map(([label, value]) => (
         <div key={label} className={label === "Objetivo" ? "sm:col-span-2" : ""}>
           <dt className="text-amber-700 dark:text-amber-300">{label}</dt>
@@ -76,42 +77,61 @@ export function ConfirmationCard({
   args,
   onApprove,
   onDeny,
+  onViewComputer,
   loading,
 }: {
   name: string;
   args: Record<string, unknown>;
   onApprove: () => void;
   onDeny: () => void;
+  onViewComputer?: () => void;
   loading: boolean;
 }) {
+  const [mostrarDetalle, setMostrarDetalle] = useState(false);
   const advertenciaEspecifica = ADVERTENCIAS_POR_HERRAMIENTA[name];
+  const tieneArgs = Object.keys(args).length > 0;
 
   return (
-    <div className="max-w-[85%] rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm shadow-sm dark:border-amber-800 dark:bg-amber-950/40 sm:max-w-[75%]">
-      <p className="font-medium text-amber-900 dark:text-amber-200">
-        Edecán quiere ejecutar <span className="font-mono">{name}</span>
-      </p>
+    <div className="max-w-[340px] rounded-2xl border border-amber-300/90 bg-amber-50 px-3.5 py-3 text-sm shadow-sm dark:border-amber-800 dark:bg-amber-950/40">
+      <p className="font-semibold text-amber-950 dark:text-amber-100">{tituloParaHerramienta(name)}</p>
       {advertenciaEspecifica && (
-        <p className="mt-2 text-xs font-medium text-amber-900 dark:text-amber-100">
+        <p
+          className={`mt-1.5 text-xs text-amber-900 dark:text-amber-100 ${mostrarDetalle ? "" : "line-clamp-3"}`}
+        >
           {advertenciaEspecifica}
         </p>
       )}
       {name === "llamar_contacto" ? (
         <CallPreflight args={args} />
       ) : (
-        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-white/70 p-2 text-xs text-amber-900 dark:bg-black/20 dark:text-amber-100">
-          {JSON.stringify(args, null, 2)}
-        </pre>
+        tieneArgs && (
+          <>
+            <button
+              type="button"
+              onClick={() => setMostrarDetalle((value) => !value)}
+              className="mt-2 text-xs font-semibold text-amber-800 underline-offset-2 hover:underline dark:text-amber-200"
+            >
+              {mostrarDetalle ? "Ocultar detalles" : "Ver detalles"}
+            </button>
+            {mostrarDetalle && (
+              <pre className="mt-1.5 max-h-28 overflow-auto rounded-lg bg-white/70 p-2 text-[11px] text-amber-900 dark:bg-black/20 dark:text-amber-100">
+                {JSON.stringify(args, null, 2)}
+              </pre>
+            )}
+          </>
+        )
       )}
-      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-        Es una acción marcada como sensible: requiere tu confirmación antes de ejecutarse.
-      </p>
-      <div className="mt-3 flex gap-2">
-        <Button size="sm" onClick={onApprove} loading={loading}>
-          Aprobar
-        </Button>
+      <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="secondary" onClick={onDeny} disabled={loading}>
           Rechazar
+        </Button>
+        {name === "usar_computadora" && onViewComputer && (
+          <Button size="sm" variant="secondary" onClick={onViewComputer} disabled={loading}>
+            Ver computadora
+          </Button>
+        )}
+        <Button size="sm" onClick={onApprove} loading={loading} className="ml-auto">
+          Aprobar
         </Button>
       </div>
     </div>

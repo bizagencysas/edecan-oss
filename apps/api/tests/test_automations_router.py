@@ -629,3 +629,55 @@ async def test_list_automation_suggestions_es_solo_lectura(
         sql.strip().split(maxsplit=1)[0].upper() == "SELECT"
         for sql, _ in fake_session.executed
     )
+
+
+async def test_list_suggestions_incluye_stage_y_agent_id(
+    client, fake_session: _FakeSession
+) -> None:
+    tenant_id = uuid.uuid4()
+    automation_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="free_selfhost")
+    fake_session.respuestas = [
+        _FakeResult(
+            rows=[
+                {
+                    "id": automation_id,
+                    "nombre": "Reporte",
+                    "consecutive_failures": 3,
+                    "enabled": True,
+                }
+            ]
+        ),
+        [
+            {
+                "objetivo": "Generar reporte de ventas",
+                "owner_agent_id": agent_id,
+                "created_at": None,
+            },
+            {
+                "objetivo": "generar reporte de ventas",
+                "owner_agent_id": agent_id,
+                "created_at": None,
+            },
+            {
+                "objetivo": "Generar reporte de ventas",
+                "owner_agent_id": None,
+                "created_at": None,
+            },
+        ],
+    ]
+
+    response = await client.get("/v1/automations/suggestions", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+
+    fallida = next(s for s in body if s["kind"] == "automation_suggestion")
+    assert fallida["stage"] == "suggestion"
+    assert fallida["agent_id"] is None
+
+    rutina = next(s for s in body if s["kind"] == "routine_suggestion")
+    assert rutina["stage"] == "suggestion"
+    assert rutina["agent_id"] == str(agent_id)

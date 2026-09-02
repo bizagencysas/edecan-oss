@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from edecan_schemas import JobEnvelope
 from sqlalchemy import text
@@ -38,6 +38,13 @@ from sqlalchemy import text
 from edecan_worker.deps import Deps
 
 logger = logging.getLogger(__name__)
+
+# Arriendo durable de una automatización reclamada por el barrido (directiva
+# §67-68, migración `0050_automation_lease`): si el worker muere después de
+# reclamar y antes de encolar/correr, el arriendo vence solo y el siguiente
+# barrido puede reclamar de nuevo. `run_automation` lo limpia al persistir el
+# estado terminal.
+_LEASE_SECONDS = 900
 
 
 async def handle(env: JobEnvelope, deps: Deps) -> None:
@@ -63,6 +70,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
     from edecan_core.queue import enqueue
 
     now = datetime.now(UTC)
+    scan_id = uuid4()  # dueño del arriendo: un id por invocación del barrido
     async with deps.session_factory(None) as session:
         due = await _list_due_schedule_automations(session, now)
 
@@ -122,13 +130,19 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 )
 
         async with deps.session_factory(None) as session:
-            # Adelanta next_run_at ANTES de encolar `run_automation`: evita
+            # Claim + adelanto de next_run_at ATÓMICOS en un solo UPDATE: evita
             # doble disparo si este barrido (u otro) vuelve a correr antes de
-            # que ese job termine, o si el worker muere justo después de
-            # este punto — mismo espíritu que
-            # `SqlRepo.mark_reminder_sent`/`send_reminder.py`, pero
-            # proactivo (antes de correr) en vez de reactivo (después).
-            await _advance_next_run(session, automation_id, next_run_at)
+            # que ese job termine — el `WHERE (lease_until IS NULL OR
+            # lease_until < now())` hace que solo UN barrido gane la fila
+            # (mismo espíritu que el claim de `run_persistent_agent.py`). Si el
+            # UPDATE no tocó fila, otro barrido ya la reclamó y se salta.
+            claimed = await _claim_and_advance(session, automation_id, next_run_at, scan_id, now)
+        if not claimed:
+            logger.info(
+                "automation_scan: automatización %s ya reclamada por otro barrido; se salta.",
+                automation_id,
+            )
+            continue
 
         # Condición opcional (PHASE2 §60): si la automatización trae una
         # `condition` que NO se cumple contra el contexto de runtime, se salta
@@ -167,26 +181,54 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
 async def _list_due_schedule_automations(session: Any, now: datetime) -> list[dict[str, Any]]:
     """Barrido GLOBAL (sin filtro de `tenant_id`) deliberado — es un job de
     sistema que por definición recorre TODOS los tenants (ver docstring del
-    módulo), mismo criterio que `SqlRepo.list_due_reminders`."""
+    módulo), mismo criterio que `SqlRepo.list_due_reminders`.
+
+    Excluye las automatizaciones con arriendo activo (`lease_until >= now`):
+    una reclamada por otro barrido/concurrente no debe volver a encolarse
+    mientras su arriendo esté vivo — primera defensa antes del claim atómico
+    de `_claim_and_advance`."""
     result = await session.execute(
         text(
             "SELECT * FROM automations WHERE enabled = true AND next_run_at IS NOT NULL "
-            "AND next_run_at <= :now ORDER BY next_run_at ASC"
+            "AND next_run_at <= :now "
+            "AND (lease_until IS NULL OR lease_until < :now) "
+            "ORDER BY next_run_at ASC"
         ),
         {"now": now},
     )
     return [dict(row) for row in result.mappings().all()]
 
 
-async def _advance_next_run(
-    session: Any, automation_id: UUID, next_run_at: datetime | None
-) -> None:
-    await session.execute(
+async def _claim_and_advance(
+    session: Any,
+    automation_id: UUID,
+    next_run_at: datetime | None,
+    lease_owner: UUID,
+    now: datetime,
+) -> bool:
+    """Claim atómico del arriendo + adelanto de `next_run_at` en UN solo
+    `UPDATE` (directiva §67-68, migración `0050_automation_lease`).
+
+    El `WHERE (lease_until IS NULL OR lease_until < now())` hace que solo un
+    barrido gane la fila aunque dos la hayan leído vencida a la vez; devuelve
+    `True` solo si el UPDATE tocó la fila (reclamó). `rowcount` se lee con
+    `getattr(..., 1)` a propósito: los dobles de sesión de tests no exponen
+    `rowcount`, y en ese caso se asume éxito (mismo criterio que
+    `run_persistent_agent.py` con `getattr(claim, "rowcount", 1)`)."""
+    result = await session.execute(
         text(
-            "UPDATE automations SET next_run_at = :next_run_at, updated_at = now() WHERE id = :id"
+            "UPDATE automations SET next_run_at = :next_run_at, "
+            "lease_owner = :lease_owner, lease_until = :lease_until, updated_at = now() "
+            "WHERE id = :id AND (lease_until IS NULL OR lease_until < now())"
         ),
-        {"next_run_at": next_run_at, "id": str(automation_id)},
+        {
+            "next_run_at": next_run_at,
+            "lease_owner": str(lease_owner),
+            "lease_until": now + timedelta(seconds=_LEASE_SECONDS),
+            "id": str(automation_id),
+        },
     )
+    return getattr(result, "rowcount", 1) > 0
 
 
 def _condition_context(automation: dict[str, Any], now: datetime) -> dict[str, Any]:

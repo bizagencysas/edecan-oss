@@ -72,6 +72,17 @@ JOB_TYPES: tuple[str, ...] = (
     # aditivos y se agregan al final para preservar índices históricos.
     "run_persistent_agent",
     "persistent_agent_scan",
+    # Minería proactiva de fondo (product design): detecta tareas repetidas y
+    # registra sugerencias sin auto-crear automatizaciones.
+    "proactive_scan",
+    # Turno proactivo REAL del companion: el scheduler/evento solo despierta;
+    # el modelo decide si escribe en el chat principal (nunca texto plantilla).
+    "run_companion_turn",
+    # Barrido global que encola `run_companion_turn` ante señales (p. ej.
+    # aprobaciones pendientes); no genera contenido de chat.
+    "companion_wake_scan",
+    # Poll de respaldo: ingestar resúmenes ConvAI (ElevenLabs) cuando el webhook
+    # post-call no llegó o el túnel estaba caído.
 )
 
 

@@ -199,6 +199,7 @@ IDE_ACTIONS = frozenset(
         "ide_terminal_read",
         "ide_terminal_input",
         "ide_terminal_close",
+        "ide_terminal_exec_propio",
         "ide_agent_list",
         "ide_agent_start",
         "ide_agent_read",
@@ -2130,7 +2131,27 @@ async def execute_ide_action(
                 return {"ok": False, "error": error}
 
         runtime = _runtime_for(config)
-        result = await asyncio.to_thread(runtime.dispatch, action, params)
+        if action == "ide_terminal_exec_propio":
+            # Terminal COMPARTIDO del proyecto: es await-able (el shell vive y
+            # corre el comando en un hilo), no cabe en el `dispatch` síncrono.
+            res = await runtime.sessions.terminal_compartido(
+                str(params.get("cwd") or ""),
+                str(params.get("command") or ""),
+                timeout=float(params.get("timeout") or 120.0),
+            )
+            if not res.get("ok"):
+                return {"ok": False, "error": str(res.get("error") or "El terminal falló.")}
+            result = res.get("result") or {}
+            audit.log_action(
+                action=action,
+                params=safe_params,
+                approved=approved,
+                ok=True,
+                log_path=config.audit_log_path,
+            )
+            return {"ok": True, "result": result}
+        else:
+            result = await asyncio.to_thread(runtime.dispatch, action, params)
         audit.log_action(
             action=action,
             params=safe_params,

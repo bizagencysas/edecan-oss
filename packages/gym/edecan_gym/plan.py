@@ -100,8 +100,41 @@ def _prompt_sistema() -> str:
     )
 
 
+def _musculos_recientes(historial: list[dict] | None, limite: int = 3) -> list[str]:
+    """Grupos musculares (`musculo`) de las últimas `limite` sesiones, deduplicados.
+
+    El historial trae `plan.ejercicios` (o `ejercicios`) con `musculo` por
+    ejercicio; se preserva el orden de aparición y se ignoran valores vacíos.
+    """
+    musculos: list[str] = []
+    vistos: set[str] = set()
+    for entrada in (historial or [])[-limite:]:
+        plan = entrada.get("plan")
+        ejercicios = plan.get("ejercicios") if isinstance(plan, dict) else None
+        if ejercicios is None:
+            ejercicios = entrada.get("ejercicios")
+        if not isinstance(ejercicios, list):
+            continue
+        for ejercicio in ejercicios:
+            if not isinstance(ejercicio, dict):
+                continue
+            musculo = ejercicio.get("musculo")
+            if not isinstance(musculo, str) or not musculo.strip():
+                continue
+            clave = musculo.strip().lower()
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            musculos.append(musculo.strip())
+    return musculos
+
+
 def _prompt_usuario(
-    *, persona: Any, historial: list[dict] | None, objetivo: str | None
+    *,
+    persona: Any,
+    historial: list[dict] | None,
+    objetivo: str | None,
+    readiness: str | None = None,
 ) -> str:
     partes = ["Genera un plan de entrenamiento de fuerza/hipertrofia."]
     if objetivo:
@@ -109,6 +142,23 @@ def _prompt_usuario(
     if persona:
         partes.append(f"Perfil de la persona: {persona}")
     partes.append(f"Historial reciente:\n{contexto_para_plan(historial or [])}")
+    musculos = _musculos_recientes(historial)
+    if musculos:
+        partes.append(
+            "Músculos trabajados en los últimos días:\n"
+            + "\n".join(musculos)
+            + "\n\nNO repitas el mismo grupo muscular principal en días consecutivos; "
+            "si el grupo ya se trabajó recientemente, elige ejercicios de otros "
+            "grupos o varía el estímulo."
+        )
+    if readiness:
+        partes.append(
+            "Estado de recuperación del usuario hoy: "
+            f"{readiness}\n\n"
+            "Si el usuario está poco recuperado, baja el volumen/intensidad o "
+            "propón movilidad/recuperación; si está bien descansado, mantén el "
+            "estímulo."
+        )
     partes.append(
         "Responde ÚNICAMENTE con un JSON con esta forma exacta: "
         '{"titulo": str, "objetivo": str, "duracion_min": int, "ejercicios": '
@@ -221,6 +271,7 @@ async def generar_plan(
     persona: Any = None,
     historial: list[dict] | None = None,
     objetivo: str | None = None,
+    readiness: str | None = None,
     reintentos: int = 2,
 ) -> WorkoutPlan:
     """Genera un plan llamando al LLM inyectado y validando estrictamente el JSON.
@@ -231,7 +282,9 @@ async def generar_plan(
     `ValueError`.
     """
     sistema = _prompt_sistema()
-    base = _prompt_usuario(persona=persona, historial=historial, objetivo=objetivo)
+    base = _prompt_usuario(
+        persona=persona, historial=historial, objetivo=objetivo, readiness=readiness
+    )
     usuario = base
     ultimo_error = "la respuesta no es un objeto JSON válido"
     for _ in range(reintentos + 1):

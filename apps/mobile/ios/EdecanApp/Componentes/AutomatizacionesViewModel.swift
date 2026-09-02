@@ -11,6 +11,10 @@ final class AutomatizacionesViewModel {
     private(set) var cargando = false
     var errorLista: String?
 
+    /// `GET /v1/automations/suggestions` — solo lectura, nunca auto-crea.
+    private(set) var sugerencias: [AutomationSuggestion] = []
+    var errorSugerencias: String?
+
     private(set) var runs: [AutomationRunOut] = []
     private(set) var cargandoRuns = false
     var errorRuns: String?
@@ -36,6 +40,19 @@ final class AutomatizacionesViewModel {
             automatizaciones = try await client.listAutomations()
         } catch {
             errorLista = error.localizedDescription
+        }
+    }
+
+    func cargarSugerencias(client: APIClient?) async {
+        guard let client else {
+            errorSugerencias = "No hay sesión activa."
+            return
+        }
+        errorSugerencias = nil
+        do {
+            sugerencias = try await client.listAutomationSuggestions()
+        } catch {
+            errorSugerencias = error.localizedDescription
         }
     }
 

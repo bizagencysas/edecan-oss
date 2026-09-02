@@ -120,6 +120,10 @@ final class TabRouter {
         presentacion = .mision(missionId: missionId)
         seleccion = .activity
     }
+
+    /// Mensajes del asistente no vistos en la conversación abierta. Lo
+    /// actualiza ``ChatView`` para el badge de la pestaña Edecán.
+    var mensajesNoLeidosEnChat = 0
 }
 
 /// Navegación assistant-first: Edecan es la conversación universal,
@@ -145,9 +149,16 @@ struct RootTabView: View {
         @Bindable var router = router
         TabView(selection: $router.seleccion) {
             ForEach(tabsVisibles) { tab in
-                vista(tab.destino)
-                    .tabItem { Label(tab.title, systemImage: tab.systemIcon) }
-                    .tag(tab.destino)
+                Group {
+                    if tab.destino == .edecan, router.mensajesNoLeidosEnChat > 0 {
+                        vista(tab.destino)
+                            .badge(router.mensajesNoLeidosEnChat)
+                    } else {
+                        vista(tab.destino)
+                    }
+                }
+                .tabItem { Label(tab.title, systemImage: tab.systemIcon) }
+                .tag(tab.destino)
             }
         }
         .tint(EdecanTheme.morado)
@@ -242,13 +253,19 @@ struct RootTabView: View {
         var tabs = session.mobileConfig.tabs
             .filter(\.enabled)
             .compactMap(ResolvedMobileTab.init(config:))
+        var vistos = Set<AssistantDestination>()
+        tabs = tabs.filter { tab in
+            guard !vistos.contains(tab.destino) else { return false }
+            vistos.insert(tab.destino)
+            return true
+        }
         if !tabs.contains(where: { $0.destino == .equipo }) {
             tabs.append(
                 ResolvedMobileTab(
-                    id: "equipo",
+                    id: "bots",
                     destino: .equipo,
-                    title: "Equipo",
-                    systemIcon: "person.3.fill",
+                    title: "Bots",
+                    systemIcon: "sparkles",
                     order: 1
                 )
             )
@@ -262,8 +279,8 @@ struct RootTabView: View {
         switch destino {
         case .edecan:
             ChatView()
-        case .equipo:
-            NavigationStack { WorkersView() }
+        case .equipo, .teams:
+            NavigationStack { BotsChatsView() }
         case .activity:
             InicioView()
         case .ide:
@@ -285,8 +302,8 @@ private struct ResolvedMobileTab: Identifiable {
         guard let destino = Self.destino(for: config.id) else { return nil }
         self.id = config.id
         self.destino = destino
-        self.title = config.title
-        self.systemIcon = config.systemIcon
+        self.title = Self.tituloVisible(para: destino, configTitle: config.title)
+        self.systemIcon = Self.iconoVisible(para: destino, configIcon: config.systemIcon)
         self.order = config.order
     }
 
@@ -300,7 +317,7 @@ private struct ResolvedMobileTab: Identifiable {
 
     static let fallback = [
         ResolvedMobileTab(id: "assistant", destino: .edecan, title: "Edecán", systemIcon: "bubble.left.and.bubble.right.fill", order: 0),
-        ResolvedMobileTab(id: "equipo", destino: .equipo, title: "Equipo", systemIcon: "person.3.fill", order: 1),
+        ResolvedMobileTab(id: "bots", destino: .equipo, title: "Bots", systemIcon: "sparkles", order: 1),
         ResolvedMobileTab(id: "activity", destino: .activity, title: "Actividad", systemIcon: "clock.arrow.circlepath", order: 2),
         ResolvedMobileTab(id: "ide", destino: .ide, title: "IDE", systemIcon: "chevron.left.forwardslash.chevron.right", order: 3),
         ResolvedMobileTab(id: "profile", destino: .settings, title: "Tú", systemIcon: "person.crop.circle.fill", order: 4),
@@ -310,7 +327,7 @@ private struct ResolvedMobileTab: Identifiable {
         switch id {
         case "assistant", "chat", "edecan":
             return .edecan
-        case "equipo", "workers", "team":
+        case "bots", "equipo", "workers", "team", "teams", "equipos", "chats":
             return .equipo
         case "activity", "inicio":
             return .activity
@@ -320,6 +337,25 @@ private struct ResolvedMobileTab: Identifiable {
             return .settings
         default:
             return nil
+        }
+    }
+
+    /// Bots agrupa chats 1:1 y de grupo; no confiamos en títulos viejos del servidor.
+    private static func tituloVisible(para destino: AssistantDestination, configTitle: String) -> String {
+        switch destino {
+        case .equipo, .teams:
+            return "Bots"
+        default:
+            return configTitle
+        }
+    }
+
+    private static func iconoVisible(para destino: AssistantDestination, configIcon: String) -> String {
+        switch destino {
+        case .equipo, .teams:
+            return "sparkles"
+        default:
+            return configIcon
         }
     }
 }

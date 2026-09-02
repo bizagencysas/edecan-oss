@@ -180,4 +180,32 @@ final class MisionesViewModel {
             errorDetalle = error.localizedDescription
         }
     }
+
+    func pausar(client: APIClient?) async {
+        guard let client, let id = detalle?.mission.id, !accionEnCurso else { return }
+        accionEnCurso = true
+        errorDetalle = nil
+        defer { accionEnCurso = false }
+        do {
+            _ = try await client.pauseMission(id: id)
+            await cargarDetalle(id: id, client: client)
+            await cargarMisiones(client: client)
+        } catch {
+            errorDetalle = error.localizedDescription
+        }
+    }
+
+    func reanudar(client: APIClient?) async {
+        guard let client, let id = detalle?.mission.id, !accionEnCurso else { return }
+        accionEnCurso = true
+        errorDetalle = nil
+        defer { accionEnCurso = false }
+        do {
+            _ = try await client.resumeMission(id: id)
+            await cargarDetalle(id: id, client: client)
+            await cargarMisiones(client: client)
+        } catch {
+            errorDetalle = error.localizedDescription
+        }
+    }
 }

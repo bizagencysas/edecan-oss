@@ -17,7 +17,7 @@
 # variable de entorno que lo active.
 #
 # Estructura adaptada de download-ollama.sh (a su vez adaptado de
-# open-jarvis/OpenJarvis, Apache-2.0 -- ver NOTICE). Diferencias: la tabla de
+# open-reference implementation/OpenJarvis, Apache-2.0 -- ver NOTICE). Diferencias: la tabla de
 # versión/SHA-256 es la de opencode, y no hace falta preservar DLLs
 # adicionales porque cada asset es un único ejecutable autocontenido.
 #

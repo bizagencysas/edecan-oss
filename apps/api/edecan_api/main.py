@@ -229,7 +229,8 @@ DESKTOP_WEB_SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": (
-        "camera=(self), display-capture=(self), geolocation=(), microphone=(self), payment=(), usb=()"
+        "camera=(self), display-capture=(self), geolocation=(), "
+        "microphone=(self), payment=(), usb=()"
     ),
 }
 
@@ -273,7 +274,15 @@ _TUNNEL_UNAUTHENTICATED_PREFIXES = ("/v1/files/public/",)
 # Dejarlos pasar no los deja abiertos: cada uno valida `X-Twilio-Signature` con el token del
 # tenant (`_verify_webhook` -> 403 si no cuadra). La firma ES su autenticación; el Bearer
 # nunca fue aplicable a esta ruta.
-_TUNNEL_WEBHOOK_PREFIX = "/v1/phone/twilio/"
+# Twilio y ElevenLabs ConvAI: los llama el proveedor, no un dispositivo
+# emparejado. Sin esta excepción el guardia del túnel responde 401 y el
+# proveedor auto-deshabilita el webhook (Make ya murió así).
+# No quedan abiertos: Twilio valida X-Twilio-Signature; ConvAI valida
+# ElevenLabs-Signature HMAC.
+_TUNNEL_WEBHOOK_PREFIXES = (
+    "/v1/phone/twilio/",
+    "/v1/phone/elevenlabs/",
+)
 
 
 class LocalTunnelGuardMiddleware(BaseHTTPMiddleware):
@@ -305,7 +314,7 @@ class LocalTunnelGuardMiddleware(BaseHTTPMiddleware):
             request.method == "OPTIONS"
             or path in _TUNNEL_UNAUTHENTICATED_PATHS
             or any(path.startswith(p) for p in _TUNNEL_UNAUTHENTICATED_PREFIXES)
-            or path.startswith(_TUNNEL_WEBHOOK_PREFIX)
+            or any(path.startswith(p) for p in _TUNNEL_WEBHOOK_PREFIXES)
             # El callback OAuth de un conector (`/v1/connectors/<key>/callback`)
             # lo abre el NAVEGADOR al volver del proveedor (LinkedIn, etc.): no
             # lleva token de dispositivo, se auto-autentica con el `state` corto
@@ -562,6 +571,35 @@ def create_app() -> FastAPI:
         app.include_router(persistent_agents.router)
         logger.info("router 'edecan_api.routers.persistent_agents' montado.")
 
+    # Aprobaciones durables del chat (directiva §30-32) — mismo montaje
+    # defensivo que persistent_agents.
+    try:
+        approvals = importlib.import_module("edecan_api.routers.approvals")
+    except ImportError:
+        logger.warning("router approvals no disponible; se omite.")
+    else:
+        app.include_router(approvals.router)
+        logger.info("router 'edecan_api.routers.approvals' montado.")
+
+    # Computer/takeover por agente (directiva §18-24) — mismo montaje defensivo.
+    try:
+        computer = importlib.import_module("edecan_api.routers.computer")
+    except ImportError:
+        logger.warning("router computer no disponible; se omite.")
+    else:
+        app.include_router(computer.router)
+        logger.info("router 'edecan_api.routers.computer' montado.")
+
+    # Colaboración de equipo (teams/workspaces/reactions/threads, §11-15, §81-82).
+    for name in ("teams", "workspaces", "messages", "agent_messages", "agent_direct_chats"):
+        try:
+            mod = importlib.import_module(f"edecan_api.routers.{name}")
+        except ImportError:
+            logger.warning("router %s no disponible; se omite.", name)
+        else:
+            app.include_router(mod.router)
+            logger.info("router 'edecan_api.routers.%s' montado.", name)
+
     # v3 (ARCHITECTURE.md §12) — mismo montaje defensivo que v2, mismo motivo.
     for name in V3_ROUTER_NAMES:
         try:
@@ -640,7 +678,18 @@ def create_app() -> FastAPI:
         app.include_router(mod.router)
         logger.info("router 'edecan_api.routers.%s' montado.", name)
 
-    # v3 (ARCHITECTURE.md §12, runner local WP-V3-05): si hay una carpeta de
+    # Activity feed (`/v1/activity`, directiva §17/§209) — router SIN flag de
+    # plan (como `gym`), montado con el MISMO patrón defensivo que v2/v3/v4/v5/v6.
+    for name in ("activity",):
+        try:
+            mod = importlib.import_module(f"edecan_api.routers.{name}")
+        except ImportError:
+            logger.warning(
+                "router 'edecan_api.routers.%s' no disponible todavía — se omite.", name
+            )
+            continue
+        app.include_router(mod.router)
+        logger.info("router 'edecan_api.routers.%s' montado.", name)
     # export estático de apps/web configurada, la sirve en "/" — SIEMPRE al
     # final, después de todos los routers de arriba, para no tapar /v1/* ni
     # /healthz (Starlette resuelve rutas en orden de registro; un `Mount("/")`

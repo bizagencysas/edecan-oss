@@ -113,7 +113,7 @@ def test_twiml_plays_tenant_voice_without_repeating_say() -> None:
     assert "<Gather" in xml
 
 
-def test_stream_twiml_inyecta_call_id_y_from_como_jarvis() -> None:
+def test_stream_twiml_inyecta_call_id_y_from_como_referencia() -> None:
     xml = stream_twiml(
         stream_url="wss://edecan.test/v1/phone/twilio/media",
         call_id="inbound-uuid",

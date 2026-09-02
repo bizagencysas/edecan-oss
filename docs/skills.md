@@ -119,7 +119,7 @@ anti-inyección (fase v5).
 
 ## Seguridad de skills de terceros
 
-Adaptado de `open-jarvis/OpenJarvis` (Apache-2.0, `openjarvis.skills.security` +
+Adaptado de `open-reference implementation/OpenJarvis` (Apache-2.0, `openjarvis.skills.security` +
 `openjarvis.security.scanner`/`injection_scanner`) al modelo multi-tenant de Edecán — ver
 `packages/skills/edecan_skills/security.py` para la implementación completa.
 

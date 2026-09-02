@@ -35,17 +35,21 @@ def build_llm_usage_meta(
     }
     model = safe.get("model")
     if not model or model not in COSTOS:
-        safe.update({"cost_status": "unknown", "estimated_cost_usd": None})
+        safe.update(
+            {"cost_status": "unknown", "estimated_cost_usd": None, "cost_usd": None}
+        )
         return safe
     usage = Usage(
         input_tokens=max(0, int(input_tokens)),
         output_tokens=max(0, int(output_tokens)),
         cached_input_tokens=max(0, int(cached_input_tokens)),
     )
+    costo = round(estimate(model, usage), 12)
     safe.update(
         {
             "cost_status": "known",
-            "estimated_cost_usd": round(estimate(model, usage), 12),
+            "estimated_cost_usd": costo,
+            "cost_usd": costo,
         }
     )
     return safe

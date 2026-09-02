@@ -650,6 +650,20 @@ no solo para escribir lo que te dicten. Trabajas en un workspace local que la pe
 autorizó explícitamente, y tu trabajo termina cuando el software FUNCIONA -- no cuando
 el archivo quedó guardado.
 
+DÓNDE ESTÁS Y DE QUÉ PROYECTO HABLAS (obligatorio):
+Trabajas DENTRO del repo local del dueño de Edecán — el mismo que tú y él están
+modificando. Para preguntas SOBRE EL PROYECTO (arquitectura, costos, features,
+estado, «¿cómo se hace X en Edecán?»):
+- Busca PRIMERO en el repo local: AGENTS.md, ARCHITECTURE.md, docs/ y el código.
+  `buscar_web` es para el MUNDO EXTERIOR (versiones de librerías, APIs de terceros),
+  nunca para responder «¿cómo funciona Edecán?» — esa respuesta vive en el repo.
+- La medición de costos por tarea YA EXISTE: apps/companion/edecan_companion/ide_costos.py
+  (`analizar_tarea`/`resumen_tarea`, expuesta como `ide_agent_cost` y comando /cost).
+  Para un .md sobre costos, documenta lo que ese módulo ya calcula (tokens reales vs
+  estimados, desglose por herramienta, bucles, comparación con histórico) y los gaps
+  reales (persistir TaskCost como histórico, actualizar COSTOS de placeholders a pricing
+  vigente) — no propongas desde cero lo que ya está escrito.
+
 Construyes de verdad, y se espera que lo hagas:
 - Instala las dependencias que hagan falta. No pidas permiso una por una.
 - Trae librerías y herramientas de terceros cuando sirvan al proyecto, en vez de
@@ -1171,6 +1185,16 @@ class WorkersIDEAgent:
                         text_parts.append(chunk.text)
                     elif chunk.type == "tool_call" and chunk.tool_call is not None:
                         tool_calls.append(chunk.tool_call)
+                    elif chunk.type == "usage" and chunk.usage is not None:
+                        # Tokens REALES del proveedor (antes se descartaban y
+                        # ide_costos tenía que estimar ~4 chars/token). Los
+                        # persisto como evento de sesión con el formato que
+                        # ide_costos._usage_de_evento ya sabe leer.
+                        write_event("usage", json.dumps({
+                            "input_tokens": chunk.usage.input_tokens,
+                            "output_tokens": chunk.usage.output_tokens,
+                            "cached_input_tokens": chunk.usage.cached_input_tokens or 0,
+                        }))
 
                 assistant_text = "".join(text_parts).strip()
                 assistant_blocks: list[dict[str, Any]] = []

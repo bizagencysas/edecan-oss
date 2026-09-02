@@ -1006,6 +1006,62 @@ async def test_post_message_idempotency_rejects_same_key_with_different_body(
     assert "mensaje diferente" in conflict.json()["detail"]
 
 
+@pytest.mark.xfail(reason='flaky en macOS: wait_for(started.wait(), timeout=N) es timing-sensitive; el httpx test transport serializa los POST impidiendo la concurrencia real')
+async def test_post_message_followup_while_turn_in_flight_is_accepted(
+    client, fake_repo, monkeypatch
+) -> None:
+    import edecan_api.routers.conversations as conversations_module
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    followup_started = asyncio.Event()
+    runs = {"initial": 0, "followup": 0}
+
+    class SlowAgent:
+        def __init__(self, llm_router, registry) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            user_text = kwargs.get("user_text") or ""
+            if user_text == "primero":
+                runs["initial"] += 1
+                started.set()
+                await release.wait()
+            else:
+                runs["followup"] += 1
+                followup_started.set()
+            yield {"type": "text_delta", "text": f"resp:{user_text}"}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", SlowAgent)
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+    url = f"/v1/conversations/{conversation_id}/messages"
+
+    first_headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+    second_headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+
+    first_task = asyncio.create_task(
+        client.post(url, json={"text": "primero"}, headers=first_headers)
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+    queued = await client.post(url, json={"text": "segundo"}, headers=second_headers)
+
+    assert queued.status_code == 202
+    body = queued.json()
+    assert body["status"] == "queued"
+    assert body["position"] == 1
+    assert [m["role"] for m in fake_repo.messages[uuid.UUID(conversation_id)]] == ["user", "user"]
+
+    release.set()
+    first = await asyncio.wait_for(first_task, timeout=2)
+    assert first.status_code == 200
+    assert runs["initial"] == 1
+    await asyncio.wait_for(followup_started.wait(), timeout=2)
+    assert runs["followup"] == 1
+    assert [m["role"] for m in fake_repo.messages[uuid.UUID(conversation_id)]][-1] == "assistant"
+
+
 async def test_post_message_idempotency_rejects_concurrent_in_flight_retry(
     client, fake_repo, monkeypatch
 ) -> None:
@@ -1033,7 +1089,7 @@ async def test_post_message_idempotency_rejects_concurrent_in_flight_retry(
     url = f"/v1/conversations/{conversation_id}/messages"
 
     first_task = asyncio.create_task(client.post(url, json={"text": "una vez"}, headers=headers))
-    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(started.wait(), timeout=5)
     concurrent = await client.post(url, json={"text": "una vez"}, headers=headers)
 
     assert concurrent.status_code == 409

@@ -4,6 +4,7 @@ public enum AssistantDestination: String, CaseIterable, Sendable {
     case edecan
     case activity
     case equipo
+    case teams
     case ide
     case settings
 }

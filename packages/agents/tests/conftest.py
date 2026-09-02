@@ -319,15 +319,23 @@ class FakeResult:
 class FakeSession:
     llamadas: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     scalar_results: list[Any] = field(default_factory=list)
+    row_results: list[dict[str, Any] | None] = field(default_factory=list)
     """Cola de valores que `execute()` va devolviendo vía `.scalar()`, uno
     por llamada (`.pop(0)`); `None` si se agota o nunca se cargó (mismo
     default que antes de agregar este campo, no rompe ningún test previo que
-    no lo usa)."""
+    no lo usa). `row_results`: filas para `.mappings().first()`, solo se
+    consumen en consultas contra `persistent_agents`."""
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> FakeResult:
         self.llamadas.append((str(stmt), dict(params or {})))
         scalar_value = self.scalar_results.pop(0) if self.scalar_results else None
-        return FakeResult(scalar_value=scalar_value)
+        sql = str(stmt)
+        row = (
+            self.row_results.pop(0)
+            if self.row_results and "FROM persistent_agents" in sql
+            else None
+        )
+        return FakeResult(rows=[row] if row is not None else None, scalar_value=scalar_value)
 
 
 @pytest.fixture

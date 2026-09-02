@@ -65,6 +65,25 @@ struct InteractionStateTests {
         #expect(defaults.string(forKey: "edecan.appearance.theme") == "conservar")
     }
 
+    @Test func lastReadSePersistePorConversacion() throws {
+        let suiteName = "InteractionStateTests.lastRead.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ChatLocalStateStore(defaults: defaults)
+        let fecha = Date(timeIntervalSince1970: 1_700_000_000)
+
+        #expect(store.lastReadAt(conversationId: "conv-a") == nil)
+
+        store.markRead(conversationId: "conv-a", at: fecha)
+        store.markRead(conversationId: "conv-b", at: fecha.addingTimeInterval(60))
+
+        #expect(store.lastReadAt(conversationId: "conv-a") == fecha)
+        #expect(store.lastReadAt(conversationId: "conv-b") == fecha.addingTimeInterval(60))
+
+        store.clearAll()
+        #expect(store.lastReadAt(conversationId: "conv-a") == nil)
+    }
+
     @Test func intentoPendienteSePersisteSinPromptCrudoYSeEliminaAlCompletar() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingChatAttemptStore.\(UUID().uuidString)", isDirectory: true)

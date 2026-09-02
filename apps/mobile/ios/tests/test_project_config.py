@@ -36,3 +36,24 @@ def test_instalador_fisico_exige_identidad_del_operador() -> None:
     assert "group.cc.edecan.app" in script
     assert "EDECAN_ALLOW_PROFILE_FETCH:-0" in script
     assert "no hay un provisioning profile local" in script
+
+
+def test_watch_registra_gym_checkin_y_router_notificaciones() -> None:
+    """El reloj debe registrar GYM_CHECKIN y enrutar GYM_YES/GYM_NO fuera de AguaStore."""
+    router = (
+        Path(__file__).resolve().parents[1]
+        / "EdecanWatchExtension"
+        / "WatchNotificationRouter.swift"
+    ).read_text(encoding="utf-8")
+    agua = (
+        Path(__file__).resolve().parents[1]
+        / "EdecanWatchExtension"
+        / "AguaStore.swift"
+    ).read_text(encoding="utf-8")
+
+    assert 'categoriaGym = "GYM_CHECKIN"' in router
+    assert 'accionSi = "GYM_YES"' in router
+    assert 'accionNo = "GYM_NO"' in router
+    assert "confirmarCheckin(respuesta:" in router
+    assert "UNUserNotificationCenterDelegate" in router
+    assert "UNUserNotificationCenterDelegate" not in agua

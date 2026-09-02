@@ -12,7 +12,7 @@
 # clic" salvo que el cliente ya lo tenga instalado aparte.
 #
 # Adaptación propia (bring-your-own binary, cero llave/servicio compartido
-# de la plataforma) del script equivalente de open-jarvis/OpenJarvis
+# de la plataforma) del script equivalente de open-reference implementation/OpenJarvis
 # (Apache-2.0, frontend/src-tauri/scripts/download-ollama.sh) -- ver NOTICE
 # para la atribución completa.
 #

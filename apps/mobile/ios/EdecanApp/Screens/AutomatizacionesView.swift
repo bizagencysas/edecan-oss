@@ -20,9 +20,9 @@ struct AutomatizacionesView: View {
 
     var body: some View {
         Group {
-            if viewModel.cargando && viewModel.automatizaciones.isEmpty {
+            if viewModel.cargando && viewModel.automatizaciones.isEmpty && viewModel.sugerencias.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if viewModel.automatizaciones.isEmpty {
+            } else if viewModel.automatizaciones.isEmpty && viewModel.sugerencias.isEmpty {
                 EmptyStateView(
                     icono: "bolt.badge.clock.fill",
                     titulo: "Sin automatizaciones todavía",
@@ -45,8 +45,14 @@ struct AutomatizacionesView: View {
                 }
             }
         }
-        .task { await viewModel.cargar(client: session.client) }
-        .refreshable { await viewModel.cargar(client: session.client) }
+        .task {
+            await viewModel.cargar(client: session.client)
+            await viewModel.cargarSugerencias(client: session.client)
+        }
+        .refreshable {
+            await viewModel.cargar(client: session.client)
+            await viewModel.cargarSugerencias(client: session.client)
+        }
         .sheet(isPresented: $mostrarCrear) {
             NuevaAutomatizacionSheet(viewModel: viewModel)
                 .environment(session)
@@ -58,6 +64,20 @@ struct AutomatizacionesView: View {
 
     private var lista: some View {
         List {
+            if let error = viewModel.errorSugerencias {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            if !viewModel.sugerencias.isEmpty {
+                Section("Sugerencias") {
+                    ForEach(viewModel.sugerencias) { sugerencia in
+                        FilaSugerencia(sugerencia: sugerencia)
+                    }
+                }
+            }
             if let error = viewModel.errorLista {
                 Text(error)
                     .font(.footnote)
@@ -65,46 +85,46 @@ struct AutomatizacionesView: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            ForEach(viewModel.automatizaciones) { automatizacion in
-                NavigationLink(value: automatizacion.id) {
-                    HStack(spacing: 12) {
-                        InfoAutomatizacion(automatizacion: automatizacion)
-                        Spacer()
-                        // El `Binding` se arma AQUÍ, con un closure literal
-                        // capturando `automatizacion`/`viewModel`/`session`
-                        // directo en su sitio de uso (MainActor, el cuerpo de
-                        // esta vista) — en vez de reenviar un closure
-                        // guardado como propiedad `let` de una vista hija.
-                        // `Binding.init(get:set:)` exige `@Sendable` en
-                        // Swift 6; un closure LITERAL pasado directo infiere
-                        // eso solo, un valor de closure reenviado no.
-                        Toggle(
-                            "",
-                            isOn: Binding(
-                                get: { automatizacion.enabled },
-                                set: { habilitada in
-                                    Task {
-                                        await viewModel.alternar(
-                                            id: automatizacion.id, enabled: habilitada, client: session.client
-                                        )
-                                    }
-                                }
-                            )
-                        )
-                        .labelsHidden()
-                        .disabled(viewModel.idEnToggle == automatizacion.id)
-                        .tint(EdecanTheme.morado)
+            if !viewModel.automatizaciones.isEmpty {
+                Section("Rutinas") {
+                    ForEach(viewModel.automatizaciones) { automatizacion in
+                        filaAutomatizacion(automatizacion)
                     }
-                    .padding(14)
-                    .tarjetaVidrio(esquina: 14)
-                    .padding(.vertical, 3)
                 }
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+    }
+
+    private func filaAutomatizacion(_ automatizacion: AutomationOut) -> some View {
+        NavigationLink(value: automatizacion.id) {
+            HStack(spacing: 12) {
+                InfoAutomatizacion(automatizacion: automatizacion)
+                Spacer()
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { automatizacion.enabled },
+                        set: { habilitada in
+                            Task {
+                                await viewModel.alternar(
+                                    id: automatizacion.id, enabled: habilitada, client: session.client
+                                )
+                            }
+                        }
+                    )
+                )
+                .labelsHidden()
+                .disabled(viewModel.idEnToggle == automatizacion.id)
+                .tint(EdecanTheme.morado)
+            }
+            .padding(14)
+            .tarjetaVidrio(esquina: 14)
+            .padding(.vertical, 3)
+        }
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 }
 
@@ -114,15 +134,82 @@ private struct InfoAutomatizacion: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(automatizacion.nombre).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-            // `resumen` ya viene en cristiano desde el servidor ("Todos los
-            // días a las 4:00 UTC") — acá no se traduce ni se convierte hora
-            // alguna, ver `AutomationTrigger.schedule`. Dos líneas porque una
-            // agenda honesta a veces necesita más de una ("Los lunes,
-            // miércoles y viernes a las 8:00 UTC").
             Text(automatizacion.trigger.resumen)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+        }
+    }
+}
+
+private struct FilaSugerencia: View {
+    let sugerencia: AutomationSuggestion
+
+    private var estilo: EstiloEtapa { EstiloEtapa.de(SuggestionStage(sugerencia.stage)) }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: estilo.icono)
+                .foregroundStyle(estilo.color)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(sugerencia.titulo)
+                        .font(.subheadline.weight(.medium))
+                    Text(estilo.etiqueta)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(estilo.color.opacity(0.14), in: Capsule())
+                        .foregroundStyle(estilo.color)
+                }
+                Text(subtitulo)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(14)
+        .tarjetaVidrio(esquina: 14)
+        .padding(.vertical, 3)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var subtitulo: String {
+        var partes: [String] = []
+        if let count = sugerencia.failureCount {
+            partes.append("Falló \(count) veces consecutivas.")
+        }
+        if let reps = sugerencia.repetitions {
+            partes.append("La has repetido \(reps) veces.")
+        }
+        if let reason = sugerencia.reason, !reason.isEmpty {
+            partes.append(reason)
+        }
+        if partes.isEmpty { return "Sugerencia para convertir en rutina." }
+        return partes.joined(separator: " ")
+    }
+}
+
+/// Icono/color/etiqueta por `stage` de una sugerencia: la observación es
+/// sutil, la acción llama la atención. Nunca crea ni activa nada por su cuenta.
+private struct EstiloEtapa {
+    let icono: String
+    let color: Color
+    let etiqueta: String
+
+    static func de(_ etapa: SuggestionStage) -> EstiloEtapa {
+        switch etapa {
+        case .observation:
+            return EstiloEtapa(icono: "eye.fill", color: .secondary, etiqueta: "Observación")
+        case .suggestion:
+            return EstiloEtapa(icono: "lightbulb.fill", color: EdecanTheme.azul, etiqueta: "Sugerencia")
+        case .draft:
+            return EstiloEtapa(icono: "doc.text.fill", color: EdecanTheme.morado, etiqueta: "Borrador")
+        case .action:
+            return EstiloEtapa(icono: "flag.fill", color: .orange, etiqueta: "Requiere acción")
         }
     }
 }

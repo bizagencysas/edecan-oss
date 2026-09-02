@@ -64,6 +64,24 @@ public struct GymSerie: Codable, Sendable, Equatable {
     }
 }
 
+/// Respuesta de `POST /v1/gym/plan/swap-ejercicio`: el ejercicio que la IA
+/// propone para reemplazar el pedido, más alternativas para escojer de lista.
+public struct GymSwapOut: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public let interpreto: String?
+    public let plan: GymPlan?
+    public let ejercicioActual: GymEjercicio?
+    public let ejercicioPropuesto: GymEjercicio?
+    public let alternativas: [GymEjercicio]?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, plan, alternativas
+        case interpreto
+        case ejercicioActual = "ejercicio_actual"
+        case ejercicioPropuesto = "ejercicio_nuevo"
+    }
+}
+
 /// Un elemento de `GymProgreso.exercises`.
 public struct GymProgresoEjercicio: Codable, Sendable, Equatable {
     public let index: Int
@@ -86,6 +104,37 @@ public struct GymProgreso: Codable, Sendable, Equatable {
     }
 }
 
+/// Lo último registrado por ejercicio en la sesión PREVIA (sobrecarga
+/// progresiva): para mostrar "la semana pasada: 40kg × 10" y sugerir el
+/// siguiente paso. `fecha` es "YYYY-MM-DD" de esa sesión.
+public struct GymPrevioEjercicio: Codable, Sendable, Equatable {
+    public let idx: Int
+    public let weightKg: Double?
+    public let repetitions: Int?
+    public let fecha: String?
+
+    enum CodingKeys: String, CodingKey {
+        case idx
+        case weightKg = "peso_kg"
+        case repetitions = "repeticiones"
+        case fecha
+    }
+}
+
+/// Meta de sobrecarga progresiva por ejercicio (sugerida por el backend a
+/// partir del `previo`): qué peso/reps intentar hoy.
+public struct GymMetaEjercicio: Codable, Sendable, Equatable {
+    public let idx: Int
+    public let pesoObjetivo: Double?
+    public let repeticionesObjetivo: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case idx
+        case pesoObjetivo = "peso_objetivo"
+        case repeticionesObjetivo = "repeticiones_objetivo"
+    }
+}
+
 /// Sesión de entrenamiento activa (o histórica en `gymHistorial`).
 /// `status`/`estado` queda como `String` crudo (no un enum cerrado) — mismo
 /// criterio que `MissionOut.status`: si el backend suma un estado nuevo,
@@ -97,6 +146,10 @@ public struct GymSession: Codable, Sendable, Equatable, Identifiable {
     public let startedAt: String?
     public let series: [GymSerie]
     public let progress: GymProgreso
+    /// Registros de la sesión anterior por `idx` de ejercicio (opcional).
+    public let previo: [GymPrevioEjercicio]?
+    /// Meta de sobrecarga progresiva por `idx` (opcional).
+    public let meta: [GymMetaEjercicio]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -105,6 +158,8 @@ public struct GymSession: Codable, Sendable, Equatable, Identifiable {
         case startedAt = "started_at"
         case series
         case progress = "progreso"
+        case previo
+        case meta
     }
 }
 
@@ -137,23 +192,70 @@ public struct GymCheckinOut: Codable, Sendable, Equatable {
 public struct GymSetLogOut: Codable, Sendable, Equatable {
     public let session: GymSession
     public let message: String
+    /// Resumen con IA de la sesión al terminarla (opcional, best-effort).
+    public let resumen: String?
 
     enum CodingKeys: String, CodingKey {
         case session
         case message = "mensaje"
+        case resumen
+    }
+}
+
+/// Respuesta de `GET /v1/gym/history`: sesiones pasadas + racha en semanas.
+public struct GymHistorialOut: Codable, Sendable, Equatable {
+    public let sessions: [GymSession]
+    public let streak: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sessions
+        case streak
+    }
+}
+
+/// Respuesta de `GET /v1/gym/reporte_semanal`: resumen con IA de la semana.
+public struct GymReporteSemanalOut: Codable, Sendable, Equatable {
+    public let reporte: String
+
+    enum CodingKeys: String, CodingKey {
+        case reporte
+    }
+}
+
+/// Respuesta de `POST /v1/gym/form/analizar`: feedback de técnica con IA.
+public struct GymFormaOut: Codable, Sendable, Equatable {
+    public let feedback: String
+
+    enum CodingKeys: String, CodingKey {
+        case feedback
+    }
+}
+
+/// Respuesta de `POST /v1/gym/coach_voz`: una línea de coach con IA (el TTS lo
+/// hace el cliente).
+public struct GymCoachVozOut: Codable, Sendable, Equatable {
+    public let linea: String?
+
+    enum CodingKeys: String, CodingKey {
+        case linea
     }
 }
 
 /// Body de `POST /v1/gym/checkin`.
 public struct GymCheckinIn: Encodable, Sendable, Equatable {
     public let answer: String
+    /// Estado de recuperación del usuario (readiness de HealthKit) para que el
+    /// entrenador ajuste la rutina del día. Opcional.
+    public let readiness: String?
 
     enum CodingKeys: String, CodingKey {
         case answer = "respuesta"
+        case readiness
     }
 
-    public init(answer: String) {
+    public init(answer: String, readiness: String? = nil) {
         self.answer = answer
+        self.readiness = readiness
     }
 }
 

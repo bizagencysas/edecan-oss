@@ -51,6 +51,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from edecan_companion import audit, linux_session
 from edecan_companion.config import CompanionConfig
@@ -211,32 +212,40 @@ ActionHandler = Callable[[dict[str, Any], CompanionConfig], dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 
-def _resolve_in_sandbox(config: CompanionConfig, raw_path: str | None) -> Path:
-    """Resuelve `raw_path` dentro de `config.sandbox_dir`; lanza `ActionError` si escapa.
+def _resolve_in_sandbox(
+    config: CompanionConfig, raw_path: str | None, root: Path | None = None
+) -> Path:
+    """Resuelve `raw_path` dentro de `root` (default: `config.sandbox_dir`);
+    lanza `ActionError` si escapa.
 
-    `raw_path` siempre se trata como relativo al sandbox (se descarta
+    `root` es la carpeta efectiva de confinamiento: `config.sandbox_dir` para
+    el uso histórico, o la carpeta `workspace_scope` de un agente cuando la
+    tool `usar_computadora` la inyecta como `params["workspace_root"]`. En
+    ambos casos `raw_path` se trata como relativo a esa raíz (se descarta
     cualquier apariencia de ruta absoluta) y se resuelve siguiendo enlaces
     simbólicos (`Path.resolve`), así que tanto un "../.." como un symlink
-    que apunte fuera del sandbox terminan rechazados por el chequeo final
-    de `relative_to`.
+    que apunte fuera terminan rechazados por el chequeo final de
+    `relative_to`.
     """
+    root = root if root is not None else config.sandbox_dir
     raw_path = (raw_path or ".").strip() or "."
 
     # Nunca interpretar el path del usuario como absoluto: siempre relativo
-    # al sandbox, aunque venga con "/" al inicio.
+    # al root, aunque venga con "/" al inicio.
     relative = raw_path.replace("\\", "/").lstrip("/")
-    candidate = (config.sandbox_dir / relative).resolve()
+    candidate = (root / relative).resolve()
 
     try:
-        candidate.relative_to(config.sandbox_dir)
+        candidate.relative_to(root)
     except ValueError:
         raise ActionError(f"ruta fuera del sandbox permitido: {raw_path!r}") from None
 
     return candidate
 
 
-def _is_within_sandbox(path: Path, config: CompanionConfig) -> bool:
-    """`True` si `path` (resolviendo symlinks) sigue dentro de `config.sandbox_dir`.
+def _is_within_sandbox(path: Path, config: CompanionConfig, root: Path | None = None) -> bool:
+    """`True` si `path` (resolviendo symlinks) sigue dentro de `root` (default:
+    `config.sandbox_dir`).
 
     A diferencia de `_resolve_in_sandbox` (que valida una ruta *pedida* por
     el asistente, y lanza `ActionError` si escapa), esto valida en silencio
@@ -246,13 +255,28 @@ def _is_within_sandbox(path: Path, config: CompanionConfig) -> bool:
     (mismo comportamiento que `read_dir`, que nunca revisó esto para sus
     entradas directas).
     """
+    root = root if root is not None else config.sandbox_dir
     try:
-        path.resolve().relative_to(config.sandbox_dir)
+        path.resolve().relative_to(root)
     except (OSError, RuntimeError, ValueError):
         # ValueError: resuelve pero cae fuera del sandbox. OSError/RuntimeError:
         # símlink roto o loop de símlinks -- en cualquier caso, no es seguro.
         return False
     return True
+
+
+def _sandbox_root(config: CompanionConfig, params: dict[str, Any]) -> Path:
+    """Raíz de confinamiento efectiva para acciones de archivos/terminal.
+
+    `params["workspace_root"]` es el `workspace_scope` del agente, inyectado
+    por la tool `usar_computadora` (que lo fija server-side y descarta
+    cualquier valor del modelo). Si no viene, se conserva el comportamiento
+    histórico: `config.sandbox_dir` (la máquina del dueño).
+    """
+    override = params.get("workspace_root")
+    if isinstance(override, str) and override.strip():
+        return Path(os.path.realpath(os.path.expanduser(override.strip())))
+    return config.sandbox_dir
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +489,38 @@ def _open_app(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]
     return {"app": app, "launched": True}
 
 
+_APPLESCRIPT_REUTILIZAR_TAB = """
+on run argv
+    set theURL to item 1 of argv
+    set theHost to item 2 of argv
+    tell application "Google Chrome"
+        if (count of windows) is 0 then
+            make new window
+            set URL of active tab of front window to theURL
+            return "new-window"
+        end if
+        set wi to 0
+        repeat with w in windows
+            set wi to wi + 1
+            set ti to 0
+            repeat with t in tabs of w
+                set ti to ti + 1
+                if (URL of t) contains theHost then
+                    set URL of t to theURL
+                    set index of w to 1
+                    set active tab index of w to ti
+                    return "reused"
+                end if
+            end repeat
+        end repeat
+        tell front window to make new tab with properties {URL:theURL}
+        set index of front window to 1
+        return "new-tab"
+    end tell
+end run
+"""
+
+
 def _open_url(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
     url = params.get("url")
     if not isinstance(url, str) or not url.strip():
@@ -474,6 +530,29 @@ def _open_url(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]
         raise ActionError("solo abro URLs http(s), mailto o tel")
 
     if sys.platform == "darwin":
+        # Chrome acumulaba UNA PESTAÑA NUEVA por cada visita (el scan de vida
+        # digital deja 20+ pestañas de LinkedIn). Reutilizar: si ya hay una
+        # pestaña del MISMO sitio, navegarla a la URL y traerla al frente.
+        # Si AppleScript falla (sin Chrome, permiso de automatización negado),
+        # cae al `open` clásico — comportamiento viejo, nunca peor.
+        try:
+            host = urlparse(url).netloc.removeprefix("www.")
+            if host and url.startswith("http"):
+                resultado_tab = subprocess.run(
+                    ["osascript", "-", url, host],
+                    input=_APPLESCRIPT_REUTILIZAR_TAB,
+                    check=False,
+                    timeout=HELPER_SUBPROCESS_TIMEOUT_SECONDS,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if resultado_tab.returncode == 0 and resultado_tab.stdout.strip():
+                    return {"url": url, "launched": True, "modo": resultado_tab.stdout.strip()}
+                raise ActionError(resultado_tab.stderr.strip()[:200] or "osascript falló")
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ActionError):
+            pass  # cae al `open` clásico
         argv = ["open", url]
     elif sys.platform.startswith("linux"):
         argv = ["xdg-open", url]
@@ -501,11 +580,12 @@ def _open_url(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]
 
 
 def _read_dir(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
-    target = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
     if not target.exists():
-        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe: {target.relative_to(root)}")
     if not target.is_dir():
-        raise ActionError(f"no es una carpeta: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no es una carpeta: {target.relative_to(root)}")
 
     entries: list[dict[str, Any]] = []
     for entry in sorted(target.iterdir(), key=lambda p: p.name):
@@ -516,13 +596,14 @@ def _read_dir(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]
             continue  # entrada ilegible (p. ej. symlink roto): se omite, no se aborta el listado
         entries.append({"name": entry.name, "is_dir": is_dir, "size_bytes": size})
 
-    return {"path": str(target.relative_to(config.sandbox_dir)), "entries": entries}
+    return {"path": str(target.relative_to(root)), "entries": entries}
 
 
 def _read_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
-    target = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
     if not target.exists() or not target.is_file():
-        raise ActionError(f"no existe el archivo: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe el archivo: {target.relative_to(root)}")
 
     size = target.stat().st_size
     if size > MAX_READ_FILE_BYTES:
@@ -535,7 +616,7 @@ def _read_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
         content, encoding = base64.b64encode(raw).decode("ascii"), "base64"
 
     return {
-        "path": str(target.relative_to(config.sandbox_dir)),
+        "path": str(target.relative_to(root)),
         "content": content,
         "encoding": encoding,
         "size_bytes": size,
@@ -558,27 +639,29 @@ def _write_file(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
     else:
         raise ActionError(f"'encoding' no soportado: {encoding!r} (usa 'utf-8' o 'base64')")
 
-    target = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
 
-    return {"path": str(target.relative_to(config.sandbox_dir)), "bytes_written": len(data)}
+    return {"path": str(target.relative_to(root)), "bytes_written": len(data)}
 
 
 def _trash_path(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
     """Mueve una ruta del sandbox a la papelera recuperable."""
-    target = _resolve_in_sandbox(config, params.get("path"))
-    if target == config.sandbox_dir:
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
+    if target == root:
         raise ActionError("no se puede enviar a la papelera la raíz completa del sandbox")
     if not target.exists():
-        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe: {target.relative_to(root)}")
     try:
         from send2trash import send2trash
 
         send2trash(str(target))
     except OSError as exc:
         raise ActionError(f"no se pudo mover a la papelera: {exc}") from exc
-    return {"path": str(target.relative_to(config.sandbox_dir)), "trashed": True}
+    return {"path": str(target.relative_to(root)), "trashed": True}
 
 
 # ---------------------------------------------------------------------------
@@ -995,7 +1078,14 @@ def _run_command(params: dict[str, Any], config: CompanionConfig) -> dict[str, A
     # la ruta resuelta que arma _argv_para_windows (p.ej. "...\npm.cmd"),
     # para que la lista de permitidos siga siendo la que el dueño escribió.
     executable = argv[0]
-    if executable not in config.allowed_commands:
+    # Máquina de UN DUEÑO (desktop local): el dueño pidió acceso TOTAL a la
+    # terminal (incl. sudo); se salta el allowlist de ejecutables. En hosted
+    # (multi-tenant) `allow_all_commands` es False por defecto y el allowlist
+    # sigue mandando.
+    if (
+        not getattr(config, "allow_all_commands", False)
+        and executable not in config.allowed_commands
+    ):
         raise ActionError(
             f"comando no permitido (agrega {executable!r} a allowed_commands en companion.yaml)"
         )
@@ -1003,7 +1093,7 @@ def _run_command(params: dict[str, Any], config: CompanionConfig) -> dict[str, A
     try:
         proc = subprocess.run(
             _argv_para_windows(argv),
-            cwd=config.sandbox_dir,
+            cwd=_sandbox_root(config, params),
             shell=False,
             timeout=COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
@@ -1079,11 +1169,12 @@ def _list_tree(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
     (`_is_within_sandbox`), se lista como hoja (`children: None`) en vez de
     expandirse.
     """
-    target = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
     if not target.exists():
-        raise ActionError(f"no existe: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe: {target.relative_to(root)}")
     if not target.is_dir():
-        raise ActionError(f"no es una carpeta: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no es una carpeta: {target.relative_to(root)}")
 
     max_depth = _clamp_int(
         params.get("max_depth"), default=MAX_TREE_DEPTH, minimum=1, maximum=MAX_TREE_DEPTH
@@ -1106,7 +1197,7 @@ def _list_tree(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
             child_path = dir_path / name
             node: dict[str, Any] = {"name": name, "is_dir": is_dir}
             if is_dir:
-                can_descend = depth + 1 < max_depth and _is_within_sandbox(child_path, config)
+                can_descend = depth + 1 < max_depth and _is_within_sandbox(child_path, config, root)
                 node["children"] = _walk(child_path, depth + 1) if can_descend else None
             else:
                 try:
@@ -1118,7 +1209,7 @@ def _list_tree(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any
 
     entries = _walk(target, depth=0)
     return {
-        "path": str(target.relative_to(config.sandbox_dir)),
+        "path": str(target.relative_to(root)),
         "entries": entries,
         "truncated": state["truncated"],
     }
@@ -1162,9 +1253,10 @@ def _search_files(params: dict[str, Any], config: CompanionConfig) -> dict[str, 
         raise ActionError("falta el parámetro 'query' (texto)")
     needle = query.lower()
 
-    base = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    base = _resolve_in_sandbox(config, params.get("path"), root)
     if not base.exists():
-        raise ActionError(f"no existe: {base.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe: {base.relative_to(root)}")
 
     matches: list[dict[str, Any]] = []
     files_scanned = 0
@@ -1176,7 +1268,7 @@ def _search_files(params: dict[str, Any], config: CompanionConfig) -> dict[str, 
             break
         files_scanned += 1
 
-        if not _is_within_sandbox(file_path, config):
+        if not _is_within_sandbox(file_path, config, root):
             continue
         try:
             if file_path.stat().st_size > MAX_SEARCH_FILE_BYTES:
@@ -1189,7 +1281,7 @@ def _search_files(params: dict[str, Any], config: CompanionConfig) -> dict[str, 
         except UnicodeDecodeError:
             continue  # binario: no es un archivo de texto, se omite
 
-        rel = str(file_path.relative_to(config.sandbox_dir))
+        rel = str(file_path.relative_to(root))
         for lineno, line in enumerate(text.splitlines(), start=1):
             if len(matches) >= MAX_SEARCH_MATCHES:
                 truncated = True
@@ -1220,9 +1312,10 @@ def _apply_edit(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
         raise ActionError("falta el parámetro 'new_string' (texto)")
     replace_all = bool(params.get("replace_all", False))
 
-    target = _resolve_in_sandbox(config, params.get("path"))
+    root = _sandbox_root(config, params)
+    target = _resolve_in_sandbox(config, params.get("path"), root)
     if not target.exists() or not target.is_file():
-        raise ActionError(f"no existe el archivo: {target.relative_to(config.sandbox_dir)}")
+        raise ActionError(f"no existe el archivo: {target.relative_to(root)}")
 
     size = target.stat().st_size
     if size > MAX_READ_FILE_BYTES:
@@ -1262,7 +1355,7 @@ def _apply_edit(params: dict[str, Any], config: CompanionConfig) -> dict[str, An
         raise
 
     return {
-        "path": str(target.relative_to(config.sandbox_dir)),
+        "path": str(target.relative_to(root)),
         "replacements": replacements,
         "bytes_written": len(new_content.encode("utf-8")),
     }
@@ -1471,7 +1564,7 @@ def _screenshot_via_screencapture(
     en versiones recientes de macOS aunque TCC informe que el permiso existe.
     La utilidad del sistema ``screencapture`` usa el pipeline moderno que sí
     incluye ventanas, barra de menú y Dock. Es el mismo enfoque probado por
-    Referencia, pero aquí se ejecuta sin shell, con timeout, archivo temporal
+    reference implementation, pero aquí se ejecuta sin shell, con timeout, archivo temporal
     aislado y la identidad firmada estable de ``edecan-local``.
     """
 
@@ -1480,36 +1573,17 @@ def _screenshot_via_screencapture(
     if not isinstance(include_cursor, bool):
         raise ActionError("'include_cursor' debe ser true o false")
 
-    # El visor movil solicita cuadros de forma continua. Invocar
-    # ``screencapture`` mientras TCC esta desactivado hace que macOS vuelva a
-    # mostrar su modal por cada intento, lo que deja al usuario atrapado en
-    # una sucesion de avisos. Referencia evita ese bucle porque su proceso ya
-    # tiene el permiso antes de servir capturas. Edecan hace lo mismo de forma
-    # explicita: comprueba TCC sin solicitar nada y solo ejecuta la captura
-    # cuando el permiso ya esta concedido.
-    helper_allowed = _macos_screen_capture_allowed()
-    if not helper_allowed:
-        # El permiso de macOS pertenece a una identidad ejecutable concreta.
-        # Si la identidad estable de ``edecan-local`` no está autorizada,
-        # probamos el proceso principal de la app. Nunca hacemos lo contrario:
-        # en instalaciones reales el helper puede estar autorizado mientras
-        # TCC rechaza al proceso Tauri, y priorizar el bridge provoca un modal
-        # infinito aunque el usuario ya concedió el permiso correcto.
+    bridge_params = {"display": display_index, "include_cursor": include_cursor}
+    if os.environ.get("EDECAN_DESKTOP_BRIDGE_SOCKET", "").strip():
+        # El sidecar no debe tocar TCC ni ``screencapture``: macOS concede
+        # Grabación de pantalla al proceso principal (`cc.edecan.desktop`) y
+        # un cdhash nuevo tras ditto deja el preflight del helper en falso
+        # aunque tccd siga mostrando el interruptor encendido.
         bridge_error: str | None = None
         try:
-            bridge_result = _desktop_bridge_call(
-                "screenshot",
-                {"display": display_index, "include_cursor": include_cursor},
-            )
+            bridge_result = _desktop_bridge_call("screenshot", bridge_params)
         except ActionError as exc:
-            # El motivo del puente (p. ej. "no esta autorizada para el proceso
-            # principal") se conserva para el error final: sin él, la única
-            # pista real quedaba en un logger.info que nadie ve.
             bridge_error = str(exc)
-            logger.info(
-                "El proceso principal tampoco puede capturar; no se invocará screencapture.",
-                exc_info=True,
-            )
             bridge_result = None
         if bridge_result is not None:
             encoded = bridge_result.get("image_b64")
@@ -1525,18 +1599,28 @@ def _screenshot_via_screencapture(
                 raise ActionError(f"el puente nativo devolvio una captura invalida: {exc}") from exc
             return image_bytes, int(width), int(height), origin_x, origin_y
         mensaje = (
+            "El proceso principal de Edecán no pudo capturar la pantalla. "
+            "Abre Configuracion del Sistema > Privacidad y seguridad > "
+            "Grabacion de pantalla, activa Edecán y reinicia la app. "
+            "Tras una actualizacion, apaga y vuelve a encender su interruptor "
+            "o reinicia la Mac si el permiso ya estaba activo pero el Remoto "
+            "sigue en negro."
+        )
+        if bridge_error:
+            mensaje += f" Detalle: {bridge_error[:200]}"
+        raise ActionError(mensaje)
+
+    # CLI/desarrollo sin puente: el helper estable solo captura si TCC ya lo
+    # autoriza, para no repetir el modal en cada frame del teléfono.
+    helper_allowed = _macos_screen_capture_allowed()
+    if not helper_allowed:
+        raise ActionError(
             "Grabacion de pantalla esta desactivada para Edecan. Abre "
             "Configuracion del Sistema > Privacidad y seguridad > "
             "Grabacion de audio del sistema y pantalla, activa Edecan en la "
             "lista superior (no en 'Solo grabacion de audio del sistema') y "
-            "vuelve a abrir Edecan. Si Edecan ya aparece activado, apaga y "
-            "vuelve a encender su interruptor (una actualizacion de Edecan "
-            "invalida el permiso anterior) y despues sal de Edecan por "
-            "completo y abrelo de nuevo."
+            "vuelve a abrir Edecan."
         )
-        if bridge_error:
-            mensaje += f" Detalle del puente nativo: {bridge_error[:200]}"
-        raise ActionError(mensaje)
 
     fd, temporary_name = tempfile.mkstemp(prefix="edecan-screen-", suffix=".png")
     os.close(fd)
@@ -1816,7 +1900,8 @@ def _macos_ventanas_crudas() -> list[dict[str, Any]]:
         return []
     try:
         crudo = Quartz.CGWindowListCopyWindowInfo(
-            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGWindowListOptionOnScreenOnly
+            | Quartz.kCGWindowListExcludeDesktopElements,
             Quartz.kCGNullWindowID,
         )
     except Exception:  # noqa: BLE001 - la foto ya salió; la lista es extra
@@ -2237,7 +2322,9 @@ class _PynputInputBackend:
                 # el segundo caso ($DISPLAY=:99 inválido SÍ estaba puesta).
                 display_actual = os.environ.get("DISPLAY")
                 if display_actual:
-                    detalle_display = f"$DISPLAY está puesta ({display_actual!r}) pero no responde"
+                    detalle_display = (
+                        f"$DISPLAY está puesta ({display_actual!r}) pero no responde"
+                    )
                 else:
                     detalle_display = (
                         "no tiene $DISPLAY puesta ni pudo descubrirla de una sesión activa"
@@ -2353,7 +2440,7 @@ def _get_input_backend() -> InputBackend:
 # cada clic aterrice al 77.8% del camino hacia la esquina superior izquierda:
 # el Dock y la franja derecha de la pantalla quedaban inalcanzables.
 #
-# La solución (la misma que usa Referencia): el teléfono manda una FRACCIÓN
+# La solución (la misma que usa reference implementation): el teléfono manda una FRACCIÓN
 # `nx`/`ny` en 0.0..1.0 y es el companion —el único que conoce la geometría
 # real del escritorio— quien la multiplica por el tamaño del display en las
 # unidades que de verdad consume su backend de input. Así da igual a qué

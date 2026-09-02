@@ -364,7 +364,7 @@ class Persona(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`conversations(tenant_id, user_id, title, channel: web|voice|phone|api, is_main)`.
 
-    `is_main` (`0026_conversations_main`, frente 5 de paridad REFERENCIA): a lo
+    `is_main` (`0026_conversations_main`, frente 5 de paridad reference implementation): a lo
     sumo una fila `is_main = true` por tenant+usuario -- la conversación
     donde aterrizan los eventos automáticos que el dueño no pidió. Mismo
     patrón de índice único parcial que `uq_personas_tenant_id_default`
@@ -434,6 +434,12 @@ class Message(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     tool_calls: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # Hilo: mensajes que responden a otro mensaje (product design). NULL = mensaje raíz.
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=True,
+    )
 
 
 class MemoryItem(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -453,7 +459,10 @@ class MemoryItem(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     recomiende lo que el usuario rechazó explícitamente."""
 
     __tablename__ = "memory_items"
-    __table_args__ = (_enum_check("kind", ("fact", "preference", "event", "entity", "negation")),)
+    __table_args__ = (
+        _enum_check("kind", ("fact", "preference", "event", "entity", "negation")),
+        _enum_check("source_trust", ("trusted", "untrusted", "quarantined")),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -467,6 +476,15 @@ class MemoryItem(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     importance: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"))
     confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.8"))
     source: Mapped[str] = mapped_column(String, nullable=False)
+    # Namespace de memoria (migración `0052_memory_namespaces`,
+    # directiva §50-54): 'user' es el espacio plano histórico (default, para no
+    # romper lo existente); 'agent:<id>'/'workspace:<id>'/'conversation'/
+    # 'organization' son espacios alternos. La búsqueda del agente sigue por
+    # defecto en 'user'.
+    namespace: Mapped[str] = mapped_column(String, nullable=False, server_default="user")
+    # Confianza de procedencia (misma migración): 'trusted' (default) |
+    # 'untrusted' | 'quarantined' (CHECK arriba).
+    source_trust: Mapped[str] = mapped_column(String, nullable=False, server_default="trusted")
     superseded_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -759,7 +777,12 @@ class Job(IDMixin, TimestampMixin, Base):
                 "notify_incoming_phone_call",
                 "notify_important_event",
                 "create_linkedin_post",
-                "create_organization_linkedin_post",
+                "create_organization_social_post",
+                "run_persistent_agent",
+                "persistent_agent_scan",
+                "proactive_scan",
+                "run_companion_turn",
+                "companion_wake_scan",
             ),
         ),
     )
@@ -796,6 +819,11 @@ class UsageEvent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     meta: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    # Costo en USD reconstruido al escribir el evento (migración
+    # `0051_usage_cost_usd`, directiva §62/§149). NULLABLE a propósito:
+    # NULL = "no se pudo estimar precio para este modelo" (honesto), en vez de
+    # un `0.0` que confundiría "gratis" con "desconocido".
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 12), nullable=True)
 
 
 class AuditLog(IDMixin, TimestampMixin, Base):
@@ -866,6 +894,27 @@ class PersistentAgent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
     workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # --- Identidad rica de primer nivel (product designmigración 0048) ---------
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    avatar: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    role_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    role_short: Mapped[str | None] = mapped_column(String, nullable=True)
+    job_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    personality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    communication_style: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    constraints: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approval_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    autonomy_level: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="ask"
+    )
+    model_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     tools: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
@@ -885,6 +934,41 @@ class PersistentAgent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     last_checkpoint: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class AgentDirectChat(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Sala 1:1 entre dos bots persistentes con hilo conversacional compartido."""
+
+    __tablename__ = "agent_direct_chats"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "agent_a_id",
+            "agent_b_id",
+            name="uq_agent_direct_chats_pair",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_a_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_b_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
     )
 
 
@@ -912,9 +996,297 @@ class PersistentAgentHandoff(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
+class PendingApproval(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`pending_approvals(...)` — respaldo durable de una confirmación
+    `dangerous` del chat (migración `0049_pending_approvals`, directiva §30-32).
+
+    Mientras que `conversations.py` guarda el `PendingAgentTurn` en Redis con
+    TTL (caché rápido), esta tabla conserva `agent_snapshot` — el mismo
+    `{name, args, pending_turn}` que consume `_resume_approved_turn` — para que
+    una aprobación sobreviva un reload y `POST /v1/approvals/{id}/approve`
+    reanude el turno. `decided_by` queda `NULL` hasta que el humano decide
+    (aprueba/niega); `expired` lo deja disponible para una purga futura.
+    """
+
+    __tablename__ = "pending_approvals"
+    __table_args__ = (
+        _enum_check("status", ("pending", "approved", "denied", "expired")),
+        UniqueConstraint(
+            "tenant_id",
+            "conversation_id",
+            "tool_call_id",
+            name="uq_pending_approvals_tenant_conversation_tool",
+        ),
+        Index("ix_pending_approvals_tenant_status", "tenant_id", "status"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    tool_call_id: Mapped[str] = mapped_column(String, nullable=False)
+    agent_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="pending")
+    decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+
+class ComputerSession(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`computer_sessions(tenant_id, user_id, agent_id nullable, kind:
+    browser|desktop|terminal|files default 'desktop', mode:
+    agent|user|paused default 'agent', ephemeral default false, status:
+    active|paused|ended default 'active', workspace_scope jsonb default '{}')`
+    — plano de control durable de "toma de control / pausa" por agente y por
+    superficie (directiva §18-24, §144-145; migración `0054_agent_takeover`).
+
+    `mode` es quién maneja la superficie AHORA: `agent` (el agente puede),
+    `user` (un humano tomó el control) o `paused` (congelada). La tool
+    `usar_computadora` lo lee antes de reenviar cualquier acción al companion
+    y se niega si no es `agent` (enforcement tool-side, directiva §123).
+    `status` es el ciclo de vida (`pause` fija `mode='paused'`+
+    `status='paused'`; `resume`/`return` vuelven a `agent`/`active`; `end`
+    la cierra). `workspace_scope` con la forma `{"root": "/ruta"}` confina
+    al agente a esa carpeta para acciones de archivos/terminal; `{}` = sin
+    confinamiento (máquina del dueño)."""
+
+    __tablename__ = "computer_sessions"
+    __table_args__ = (
+        _enum_check("kind", ("browser", "desktop", "terminal", "files")),
+        _enum_check("mode", ("agent", "user", "paused")),
+        _enum_check("status", ("active", "paused", "ended")),
+        Index("ix_computer_sessions_tenant_agent_kind", "tenant_id", "agent_id", "kind"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False, server_default="desktop")
+    mode: Mapped[str] = mapped_column(String, nullable=False, server_default="agent")
+    ephemeral: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
+    workspace_scope: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
+class Team(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Equipo (product design): un grupo de agentes con un coordinador."""
+
+    __tablename__ = "teams"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "name", name="uq_teams_owner_name"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    avatar: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class TeamMember(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    __tablename__ = "team_members"
+    __table_args__ = (
+        UniqueConstraint("team_id", "agent_id", name="uq_team_members_team_agent"),
+        _enum_check("role", ("coordinator", "member")),
+    )
+
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False, server_default="member")
+
+
+class Workspace(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Workspace (product design): contexto operativo que agrupa agentes."""
+
+    __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "name", name="uq_workspaces_owner_name"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    knowledge: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
+class WorkspaceAgent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    __tablename__ = "workspace_agents"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "agent_id", name="uq_workspace_agents_ws_agent"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+
+class Reaction(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Reacción ligera a un mensaje (product design)."""
+
+    __tablename__ = "reactions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "message_id", "emoji", name="uq_reactions_user_message_emoji"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    emoji: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class McpServerHealth(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`mcp_server_health(tenant_id, server_name, health, last_latency_ms,
+    last_error, last_checked_at)` — salud por-servidor MCP (directiva §27,
+    migración `0056_mcp_server_health`).
+
+    `health` es 'operational'|'degraded'|'auth_required'|'unavailable'.
+    Keyeada por `(tenant_id, server_name)` (el `external_account_id`/slug), sin
+    FK a `connector_accounts` a propósito: `PUT /v1/mcp/servers` emula upsert
+    borrando y recreando la cuenta, así que una FK `ON DELETE CASCADE`
+    resetearía la salud en cada reconfiguración. Es una cache derivada que se
+    limpia explícitamente desde `DELETE /v1/mcp/servers/{nombre}`.
+    """
+
+    __tablename__ = "mcp_server_health"
+    __table_args__ = (
+        _enum_check("health", ("operational", "degraded", "auth_required", "unavailable")),
+        UniqueConstraint(
+            "tenant_id", "server_name", name="uq_mcp_server_health_tenant_server"
+        ),
+        Index("ix_mcp_server_health_tenant_server", "tenant_id", "server_name"),
+    )
+
+    server_name: Mapped[str] = mapped_column(String, nullable=False)
+    health: Mapped[str] = mapped_column(String, nullable=False, server_default="unavailable")
+    last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
+class AgentMessage(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`agent_messages(...)` — mensaje durable del protocolo inter-agente
+    (product designmigración `0057_agent_messages`).
+
+    `message_type` es `task|question|result|blocker|review_request|handoff|
+    status|cancel`. `sender_agent_id`/`receiver_agent_id` son NULLABLE y con
+    `ondelete="SET NULL"`: `NULL` significa "el asistente principal / el
+    usuario" (ese extremo no es un worker persistente) — mismo criterio que
+    `agent_missions.owner_agent_id`. `task_id`/`parent_task_id` son texto
+    libre (IDs de tarea del dominio, p. ej. un `mission_id`), no FKs.
+
+    **Context packaging (§12):** `context_refs`/`artifact_refs` guardan SOLO
+    REFERENCIAS (`{"kind": "message", "id": "<uuid>"}`,
+    `{"kind": "file", "id": "<uuid>"}`, etc.), NUNCA el transcript completo.
+    El receptor resuelve esas referencias con sus propias consultas (scoped
+    por tenant vía RLS); volcar el transcript aquí duplicaría contexto
+    sensible y rompería "el receptor solo recibe lo necesario". Ver
+    `edecan_agents.agent_bus.enviar_mensaje_agente`.
+    """
+
+    __tablename__ = "agent_messages"
+    __table_args__ = (
+        _enum_check(
+            "message_type",
+            (
+                "task",
+                "question",
+                "result",
+                "blocker",
+                "review_request",
+                "handoff",
+                "status",
+                "cancel",
+            ),
+        ),
+        _enum_check("status", ("pending", "delivered", "acknowledged", "done", "error")),
+        Index(
+            "ix_agent_messages_tenant_receiver_status",
+            "tenant_id",
+            "receiver_agent_id",
+            "status",
+        ),
+    )
+
+    sender_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    receiver_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    message_type: Mapped[str] = mapped_column(String, nullable=False)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[str | None] = mapped_column(String, nullable=True)
+    deadline: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    dependencies: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    allowed_tools: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    approval_boundary: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    artifact_refs: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    context_refs: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="pending")
+
+
 class AgentMission(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`agent_missions(user_id, objetivo, status, plan nullable, resultado
-    nullable, presupuesto, error nullable)` — misión por objetivo (WP-V2-06)."""
+    nullable, presupuesto, error nullable)` — misión por objetivo (WP-V2-06).
+
+    `owner_agent_id` (migración `0049_pending_approvals`, directiva §11-13):
+    enlaza tarea → agente marcando qué worker persistente es dueño de la
+    misión cuando `DelegarMisionTool` delega a otro worker (`destino_worker_id`).
+    `nullable=True` + `ondelete="SET NULL"`: las misiones creadas por el chat
+    principal (sin worker) no lo llevan, y borrar un worker no borra misiones.
+    """
 
     __tablename__ = "agent_missions"
     __table_args__ = (
@@ -934,6 +1306,11 @@ class AgentMission(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     objetivo: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, server_default="planning")
@@ -1053,6 +1430,13 @@ class Automation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
         Integer, nullable=False, server_default=text("0")
     )
     disabled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # Arriendo durable del barrido de agenda (migración `0050_automation_lease`,
+    # directiva §36/§67-68): `automation_scan` reclama con un
+    # `UPDATE ... WHERE (lease_until IS NULL OR lease_until < now())` antes de
+    # encolar; `run_automation` limpia ambas al persistir el estado terminal.
+    # NULL = sin arriendo activo = el estado de toda fila ya existente.
+    lease_owner: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
 
 class AutomationRun(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -1425,6 +1809,10 @@ class SocialDraft(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     # existiera no tiene forma de saber si se verificó, y suponer que sí sería
     # repetir el defecto que esta columna vino a cerrar. Ver migración `0030`.
     verification: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    generation_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intent_lock: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    fact_ledger: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSONB, nullable=True)
+    editorial_feedback: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     # OJO: esta columna se llama `text` y por tanto SOMBREA, dentro del cuerpo
     # de esta clase, al `text()` de SQLAlchemy importado arriba. Va de ÚLTIMA a
     # propósito: cualquier columna que se agregue después y necesite
@@ -1558,7 +1946,10 @@ class Skill(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     `'[]'` hasta que se parsea."""
 
     __tablename__ = "skills"
-    __table_args__ = (UniqueConstraint("tenant_id", "slug", name="uq_skills_tenant_id_slug"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="uq_skills_tenant_id_slug"),
+        _enum_check("status", ("draft", "active")),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -1573,9 +1964,44 @@ class Skill(IDMixin, TenantScopedMixin, TimestampMixin, Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    # Estado del ciclo de vida (migración `0053_skill_teach_sessions`, directiva
+    # §38-41): las skills del marketplace nacen 'active'; la skill generada por
+    # "enseñar una tarea" nace 'draft' + `enabled=false` (NUNCA auto-activa) y
+    # `POST /v1/skills/{id}/approve` la promueve a 'active'.
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     trust_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default="sin_revisar")
     capabilities: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+
+
+class SkillTeachSession(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`skill_teach_sessions(tenant_id, user_id, nombre, descripcion default '',
+    status: open|finished|discarded default 'open', pasos jsonb default '[]',
+    draft_skill_id nullable FK a skills.id)` — sesión de captura de pasos de
+    "enseñar una tarea" (directiva §38-41, migración `0053_skill_teach_sessions`).
+
+    `pasos` es la lista cruda de pasos capturados por el usuario
+    (`{action, selector, decision, input, output}`), acumulada con
+    `POST /v1/skills/teach/{id}/step`. `finish` la compila en una skill
+    `status='draft'` + `enabled=false` (NUNCA auto-activa) y enlaza la fila
+    generada en `draft_skill_id`; `POST /v1/skills/{id}/approve` promueve la
+    skill draft a 'active'."""
+
+    __tablename__ = "skill_teach_sessions"
+    __table_args__ = (_enum_check("status", ("open", "finished", "discarded")),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    nombre: Mapped[str] = mapped_column(String, nullable=False)
+    descripcion: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="open")
+    pasos: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    draft_skill_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("skills.id", ondelete="SET NULL"), nullable=True
     )
 
 
@@ -1977,6 +2403,7 @@ class PhoneCall(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     agent_operating_profile: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="twilio")
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_call_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
@@ -2099,6 +2526,16 @@ ALL_MODELS: tuple[type[Base], ...] = (
     AgentMission,
     PersistentAgent,
     PersistentAgentHandoff,
+    PendingApproval,
+    ComputerSession,
+    Team,
+    TeamMember,
+    Workspace,
+    WorkspaceAgent,
+    Reaction,
+    McpServerHealth,
+    AgentMessage,
+    AgentDirectChat,
     AgentStep,
     UnifiedSession,
     Automation,
@@ -2121,6 +2558,7 @@ ALL_MODELS: tuple[type[Base], ...] = (
     GymCheckin,
     # --- v3 (ARCHITECTURE.md §12e) -------------------------------------------
     Skill,
+    SkillTeachSession,
     # --- v4 (ARCHITECTURE.md §13) --------------------------------------------
     Product,
     StockMove,

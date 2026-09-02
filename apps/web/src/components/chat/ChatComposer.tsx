@@ -19,12 +19,69 @@ import { Button, Spinner, Textarea } from "@/components/ui";
 import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
 import { captureCameraPhoto, captureDisplayFrame } from "@/lib/desktop-capture";
 import type { ChatAttachmentDraft } from "@/lib/types";
+import { listSkills, type SkillSummary } from "@/lib/api-skills";
+import { collectMentionTargets, type MentionableItem } from "@/lib/mentions";
+
+type MenuKind = "mention" | "command";
+
+interface CommandItem {
+  label: string;
+  hint?: string;
+  insert: string;
+}
+
+interface TriggerState {
+  kind: MenuKind;
+  query: string;
+  start: number;
+  end: number;
+}
+
+/** Localiza el gatillo activo (si lo hay) justo antes del cursor. */
+function detectTrigger(text: string, cursor: number): TriggerState | null {
+  const before = text.slice(0, cursor);
+  const match = /(?:^|[\s\n])([@/])([^\s\n]*)$/.exec(before);
+  if (!match) return null;
+  const trigger = match[1] as "@" | "/";
+  const query = match[2] ?? "";
+  const start = cursor - query.length - 1;
+  return { kind: trigger === "@" ? "mention" : "command", query, start, end: cursor };
+}
+
+const BUILTIN_COMMANDS: CommandItem[] = [
+  { label: "Limpiar contexto", hint: "Reinicia la memoria de esta conversación", insert: "/clear " },
+  { label: "Ramificar", hint: "Abre una rama desde este punto", insert: "/branch " },
+  { label: "Rebobinar", hint: "Vuelve al estado anterior de la conversación", insert: "/rewind " },
+];
+
+function commandsFromSkills(skills: SkillSummary[]): CommandItem[] {
+  return skills.map((skill) => ({
+    label: skill.nombre,
+    hint: skill.descripcion || "Skill instalada",
+    insert: `/${skill.slug} `,
+  }));
+}
+
+/** Pinta el token de una mención como chip dentro de un elemento del menú. */
+function mentionBadge(item: MentionableItem): string {
+  switch (item.kind) {
+    case "agente":
+      return "Compañero";
+    case "team":
+      return "Equipo";
+    case "workspace":
+      return "Workspace";
+    case "conector":
+      return "Conector";
+  }
+}
 
 export function ChatComposer({
   value,
   onChange,
   onSend,
   sending,
+  streaming = false,
   canVoice,
   voiceFlagEnabled,
   recording,
@@ -49,7 +106,10 @@ export function ChatComposer({
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
+  /** Bloquea envío (p. ej. confirmación de tool peligrosa pendiente). */
   sending: boolean;
+  /** Hay un turno del agente en curso; el composer sigue usable para encolar. */
+  streaming?: boolean;
   /** Puede grabar ahora: la voz está configurada y el navegador soporta MediaRecorder. */
   canVoice: boolean;
   /** La instalación tiene voz web habilitada, independiente del soporte del navegador. */
@@ -84,6 +144,16 @@ export function ChatComposer({
   const [attachOpen, setAttachOpen] = useState(false);
   const [capturing, setCapturing] = useState<"camera" | "screen" | null>(null);
   const [localCaptureError, setLocalCaptureError] = useState<string | null>(null);
+  // Autocompletado de @menciones y /comandos.
+  const [menuKind, setMenuKind] = useState<MenuKind | null>(null);
+  const [menuQuery, setMenuQuery] = useState("");
+  const [menuActiveIndex, setMenuActiveIndex] = useState(0);
+  const [mentionItems, setMentionItems] = useState<MentionableItem[]>([]);
+  const [commandItems, setCommandItems] = useState<CommandItem[]>(BUILTIN_COMMANDS);
+  const triggerRef = useRef<TriggerState | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+  const mentionCacheRef = useRef<MentionableItem[] | null>(null);
+  const skillsCacheRef = useRef<SkillSummary[] | null>(null);
   const canSubmit = canSubmitChat(value, attachments, sending);
   const visibleAttachmentError =
     attachmentError ??
@@ -92,7 +162,102 @@ export function ChatComposer({
     attachments.find((attachment) => attachment.status === "error")?.error ??
     null;
 
+  function updateMenu(trigger: TriggerState | null) {
+    triggerRef.current = trigger;
+    if (!trigger) {
+      setMenuKind(null);
+      return;
+    }
+    if (trigger.kind === "mention") {
+      setMenuKind("mention");
+      setMenuQuery(trigger.query);
+      setMenuActiveIndex(0);
+      if (mentionCacheRef.current) return;
+      collectMentionTargets()
+        .then((items) => {
+          mentionCacheRef.current = items;
+          if (triggerRef.current?.kind === "mention") setMentionItems(items);
+        })
+        .catch(() => undefined);
+    } else {
+      setMenuKind("command");
+      setMenuQuery(trigger.query);
+      setMenuActiveIndex(0);
+      if (skillsCacheRef.current) return;
+      listSkills()
+        .then((skills) => {
+          skillsCacheRef.current = skills;
+          if (triggerRef.current?.kind === "command") {
+            setCommandItems([...BUILTIN_COMMANDS, ...commandsFromSkills(skills)]);
+          }
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  function handleTextareaChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
+    const next = event.target.value;
+    onChange(next);
+    const cursor = event.target.selectionStart ?? next.length;
+    updateMenu(detectTrigger(next, cursor));
+  }
+
+  function visibleItems(): Array<MentionableItem | CommandItem> {
+    if (menuKind === "mention") {
+      const q = menuQuery.toLowerCase();
+      return mentionItems
+        .filter((item) => item.label.toLowerCase().includes(q) || item.token.includes(q))
+        .slice(0, 6);
+    }
+    if (menuKind === "command") {
+      const q = menuQuery.toLowerCase();
+      return commandItems
+        .filter((item) => item.label.toLowerCase().includes(q) || item.insert.includes(q))
+        .slice(0, 6);
+    }
+    return [];
+  }
+
+  function applyMenuSelection(index: number) {
+    const trigger = triggerRef.current;
+    const items = visibleItems();
+    if (!trigger || !menuKind || index < 0 || index >= items.length) return;
+    const item = items[index];
+    const insert = menuKind === "mention" ? `@${(item as MentionableItem).token} ` : (item as CommandItem).insert;
+    const next = value.slice(0, trigger.start) + insert + value.slice(trigger.end);
+    pendingCaretRef.current = trigger.start + insert.length;
+    onChange(next);
+    setMenuKind(null);
+    triggerRef.current = null;
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (menuKind !== null) {
+      const items = visibleItems();
+      if (items.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setMenuActiveIndex((current) => (current + 1) % items.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setMenuActiveIndex((current) => (current - 1 + items.length) % items.length);
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          applyMenuSelection(menuActiveIndex);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setMenuKind(null);
+          triggerRef.current = null;
+          return;
+        }
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (canSubmit) onSend();
@@ -112,6 +277,12 @@ export function ChatComposer({
     if (!textarea) return;
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 192)}px`;
+    if (pendingCaretRef.current !== null) {
+      const position = pendingCaretRef.current;
+      pendingCaretRef.current = null;
+      textarea.focus();
+      textarea.setSelectionRange(position, position);
+    }
   }, [value]);
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -143,6 +314,9 @@ export function ChatComposer({
     }
   }
 
+  const menuItems = visibleItems();
+  const menuOpen = menuKind !== null && menuItems.length > 0;
+
   return (
     <div className="shrink-0 border-t border-slate-200 bg-slate-50/90 px-3 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/70">
       <input
@@ -159,7 +333,7 @@ export function ChatComposer({
       />
       <div className="mx-auto w-full max-w-4xl">
         <div
-          className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] transition-colors focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-500/10 dark:border-slate-700 dark:bg-slate-900"
+          className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] transition-colors focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-500/10 dark:border-slate-700 dark:bg-slate-900"
           onDragOver={(event) => event.preventDefault()}
           onDrop={handleDrop}
         >
@@ -247,13 +421,56 @@ export function ChatComposer({
               ) : null}
             </div>
           )}
+          {menuOpen && (
+            <div
+              className="absolute left-2 right-2 top-2 z-30 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
+              role="listbox"
+              aria-label={menuKind === "mention" ? "Mencionar" : "Comandos"}
+            >
+              {menuItems.map((item, index) => {
+                const isMention = menuKind === "mention";
+                const label = item.label;
+                const sublabel = isMention
+                  ? mentionBadge(item as MentionableItem)
+                  : (item as CommandItem).hint;
+                return (
+                  <button
+                    key={isMention ? (item as MentionableItem).token : (item as CommandItem).insert}
+                    type="button"
+                    role="option"
+                    aria-selected={index === menuActiveIndex}
+                    onMouseEnter={() => setMenuActiveIndex(index)}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyMenuSelection(index);
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm ${
+                      index === menuActiveIndex
+                        ? "bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                        : "text-slate-700 dark:text-slate-200"
+                    }`}
+                  >
+                    <span className="min-w-0 truncate">
+                      {isMention ? "@" : ""}
+                      {label}
+                    </span>
+                    {sublabel && (
+                      <span className="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">
+                        {sublabel}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <Textarea
             ref={textareaRef}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
             rows={1}
-            placeholder={workMode ? "Describe el trabajo que Edecan debe terminar…" : "Pídele cualquier cosa a Edecan…"}
+            placeholder={workMode ? "Describe el trabajo que Edecan debe terminar…" : "Escríbele a Edecán…"}
             className="min-h-12 max-h-48 resize-none border-0 bg-transparent px-4 py-3 text-[15px] shadow-none focus:border-transparent focus:ring-0 dark:bg-transparent"
             disabled={sending}
           />
@@ -354,7 +571,7 @@ export function ChatComposer({
               type="button"
               onClick={onSend}
               disabled={!canSubmit}
-              loading={sending}
+              loading={sending && !streaming}
               aria-label="Enviar"
               className="h-9 w-9 rounded-full px-0"
             >

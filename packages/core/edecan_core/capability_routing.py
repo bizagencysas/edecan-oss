@@ -69,6 +69,18 @@ _ALWAYS_AVAILABLE = frozenset(
         # Esta Mac es del dueño. Controlarla no es un dominio especial: es
         # cómo Edecán termina el trabajo (abrir Safari, reservar, mandar mail).
         "usar_computadora",
+        # Delegar ingeniería real al IDE de Edecán es una capacidad universal
+        # del equipo (igual que hablar entre bots): no la gobierna una familia
+        # de keywords, gobierna el pedido del dueño.
+        "delegar_al_ide",
+        # El canal entre bots es una capacidad universal del equipo: hablar con
+        # otro bot nace de "dile a X...", "pregúntale a Y...", "coordina con..."
+        # — ninguna familia de keywords lo cubre y por eso el modelo decía "no
+        # tengo habilitado el canal" (la tool estaba en el registry pero el
+        # router nunca la seleccionaba con catálogo grande). Igual que
+        # preguntar_al_usuario: siempre disponible.
+        "enviar_mensaje_bot",
+        "listar_bots",
     }
 )
 
@@ -295,6 +307,22 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         frozenset({"delegar_mision"}),
     ),
     (
+        # Gym: cambiar la rutina del día por chat («hazme otra de pierna»).
+        frozenset(
+            {
+                "gym",
+                "gimnasio",
+                "rutina",
+                "entrenamiento",
+                "entrenar",
+                "ejercicio",
+                "ejercicios",
+                "pesas",
+            }
+        ),
+        frozenset({"cambiar_rutina_gym"}),
+    ),
+    (
         frozenset(
             {
                 "archivo",
@@ -347,9 +375,24 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "configurar_perfil_social",
                 "crear_contenido_social",
                 "crear_post_linkedin",
+                "capturar_senal_editorial",
                 "generar_imagen",
             }
         ),
+    ),
+    (
+        frozenset(
+            {
+                "aprobaron",
+                "aprobo",
+                "rechazaron",
+                "conseguimos",
+                "logramos",
+                "cerramos",
+                "ganamos",
+            }
+        ),
+        frozenset({"capturar_senal_editorial"}),
     ),
     (
         frozenset({"video", "videos"}),
@@ -789,7 +832,22 @@ def select_tool_specs(
     # LinkedIn tiene creador multimodal y conector OAuth de primera parte.
     # Preparar contenido sigue seleccionando el creador; publicar explícito
     # puede usar `publicar_social`, que ya conserva el gate de confirmación.
-    if publish_intent and "linkedin" in tokens:
+    # BLINDAJE (30-ago): el discard de `usar_computadora` SOLO aplica cuando
+    # el pedido es un intent de publicación SIN señal de lectura. La
+    # instrucción de vida digital menciona «publica» de pasada («gente que
+    # publica») + «linkedin» y el router le QUITABA el control de la Mac al
+    # modelo — que decía la verdad: «no está expuesto el control de la Mac»
+    # (turnos del 30-ago 17:28-21:10). Lectura (abre/lee/mira/screenshot) y
+    # usar_computadora JAMÁS se descartan.
+    senales_lectura = bool(
+        tokens.intersection(
+            {
+                "abre", "abrir", "lee", "leer", "mira", "mirar",
+                "screenshot", "captura", "capturar", "feed",
+            }
+        )
+    )
+    if publish_intent and "linkedin" in tokens and not senales_lectura:
         selected_names.discard("usar_computadora")
         selected_names.update({"crear_contenido_social", "generar_imagen", "publicar_social"})
 

@@ -734,7 +734,7 @@ class CheckpointStore:
     def prune_expired(self) -> dict[str, Any]:
         """Barre checkpoints vencidos y los blobs que ya nadie pinea. Pensado
         para llamarse periódicamente (p. ej. al arrancar el companion, igual
-        que la limpieza de imágenes mencionada en ``JARVIS_DESIGN_DIR``) —
+        que la limpieza de imágenes mencionada en ``reference implementation_DESIGN_DIR``) —
         este módulo no se agenda solo."""
 
         now = _now_us()

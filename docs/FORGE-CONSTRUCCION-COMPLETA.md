@@ -65,7 +65,7 @@ Esta es la decisión visual más importante y hay que respetarla al pie de la le
 │  ▸ organization         │      │  / para acciones                         │   │
 │    · migrar pagos ● │      │                                          │   │
 │    · voseo      2mo │      │  ＋   GLM-5.2 ⌄   ⚠ 2 aprobaciones   🎙 ➜ │   │
-│  ▸ bizagency        │      └──────────────────────────────────────────┘   │
+│  ▸ example-org      │      └──────────────────────────────────────────┘   │
 │    · rebuild      ● │              ▫ Local ⌄                              │
 │                     │                                                      │
 │  ⚙ Ajustes          │                                                      │

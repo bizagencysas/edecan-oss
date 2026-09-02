@@ -162,10 +162,11 @@ def cargar_configuracion_modelos(ruta_yaml: Path | str | None = None) -> dict[st
 
 
 def modelo_para_perfil(perfil: str, ruta_yaml: Path | str | None = None) -> str:
-    if perfil == "chat_rapido" and azure_activo():
-        # Con Azure activo, el "modelo" es el nombre del deployment; el primero
-        # ("Sol" por default) es el default del chat.
-        return _azure_deployments()[0]
+    if azure_activo() and perfil in ("chat_rapido", "profundo"):
+        # Con Azure activo, "chat_rapido" y "profundo" (el ESCRITOR de posts de
+        # LinkedIn) usan el id real del primer deployment; el primero
+        # ("gpt-5.6-sol-2" por default) es el default del chat y del escritor.
+        return _azure_deployments()[0]["id"]
     config = cargar_configuracion_modelos(ruta_yaml)
     perfiles = config.get("perfiles") or {}
     if perfil in perfiles and isinstance(perfiles[perfil], dict):
@@ -264,7 +265,11 @@ def modelos_chat_disponibles(
     return clean
 
 
-_AZURE_DEFAULT_DEPLOYMENTS = ("Sol", "Terra", "Luna")
+_AZURE_DEFAULT_DEPLOYMENTS: tuple[dict[str, Any], ...] = (
+    {"id": "gpt-5.6-sol-2", "nombre": "Sol", "ve_imagenes": True},
+    {"id": "gpt-5.6-terra", "nombre": "Terra", "ve_imagenes": True},
+    {"id": "gpt-5.6-luna", "nombre": "Luna", "ve_imagenes": True},
+)
 
 
 def azure_activo() -> bool:
@@ -272,39 +277,90 @@ def azure_activo() -> bool:
     return str(os.getenv("LLM_PROVIDER") or "").strip().lower() == "azure_openai"
 
 
-def _azure_deployments() -> list[str]:
-    """Deployments de Azure AI Foundry, leídos de `AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS`
-    (JSON list) o el default `["Sol", "Terra", "Luna"]`. Tolerante a JSON roto."""
+def _azure_deployments() -> list[dict[str, Any]]:
+    """Deployments de Azure, leídos de `AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS`.
+
+    Acepta dos formas (tolerante a JSON roto):
+    - lista de strings `["gpt-5.6-sol", ...]` → el nombre visible es el id y
+      la fila sale con visión (`ve_imagenes=True`).
+    - lista de objetos `[{"id": ..., "nombre": ..., "ve_imagenes": bool}]` →
+      `ve_imagenes` es opcional y por default `True` (los gpt-5.6* aceptan
+      imagen+texto; se puede apagar por deployment sin recompilar).
+
+    Default: `gpt-5.6-sol/terra/luna` con nombres "Sol"/"Terra"/"Luna" (los
+    deployments reales de una instalación en Azure OpenAI)."""
     raw = os.getenv("AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS")
     if raw:
         try:
             data = json.loads(raw)
-            if isinstance(data, list):
-                names = [str(d).strip() for d in data if str(d).strip()]
-                if names:
-                    return names
+            if isinstance(data, list) and data:
+                parsed: list[dict[str, Any]] = []
+                for item in data:
+                    if isinstance(item, str) and item.strip():
+                        parsed.append(
+                            {
+                                "id": item.strip(),
+                                "nombre": item.strip(),
+                                "ve_imagenes": True,
+                            }
+                        )
+                    elif isinstance(item, dict):
+                        id_ = str(item.get("id") or "").strip()
+                        if id_:
+                            nombre = str(
+                                item.get("nombre") or item.get("name") or id_
+                            ).strip()
+                            parsed.append(
+                                {
+                                    "id": id_,
+                                    "nombre": nombre or id_,
+                                    "ve_imagenes": bool(item.get("ve_imagenes", True)),
+                                }
+                            )
+                if parsed:
+                    return parsed
         except json.JSONDecodeError:
             pass
     return list(_AZURE_DEFAULT_DEPLOYMENTS)
 
 
+def modelo_nombrada(nombre: str) -> str | None:
+    """Id del deployment de Azure cuyo nombre visible es `nombre`."""
+    objetivo = str(nombre or "").strip().lower()
+    for dep in _azure_deployments():
+        if str(dep.get("nombre") or "").strip().lower() == objetivo:
+            return str(dep.get("id") or "") or None
+    return None
+
+
+def modelo_luna_configurada() -> str | None:
+    """Id del deployment llamado "Luna" (tier económico), si está configurado."""
+    return modelo_nombrada("luna")
+
+
+def modelo_sol_configurada() -> str | None:
+    """Id del deployment llamado "Sol" (tier estándar), si está configurado."""
+    return modelo_nombrada("sol")
+
+
 def modelos_chat_azure() -> list[dict[str, Any]]:
     """Catálogo del selector cuando Azure está activo: una fila por deployment.
 
-    El `id` ES el nombre del deployment (p. ej. "Sol"), que es exactamente lo
-    que el adaptador `openai_compat` envía como `model` a Azure. Todos salen
-    `principal=True` (portada) y `ve_imagenes=False` por defecto (no se asume
-    multimodal sin medirlo)."""
+    El `id` ES el modelo real que se envía a Azure (p. ej. `gpt-5.6-sol`); el
+    `nombre` es el texto que ve la persona ("Sol"). Todos salen
+    `principal=True` (portada) y `ve_imagenes=True` (los gpt-5.6* de Azure
+    AI Foundry aceptan entrada multimodal), salvo que el deployment lo apague
+    explícitamente en `AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS`."""
     rows: list[dict[str, Any]] = []
-    for i, nombre in enumerate(_azure_deployments(), start=1):
+    for i, dep in enumerate(_azure_deployments(), start=1):
         rows.append(
             {
-                "id": nombre,
-                "nombre": nombre,
+                "id": dep["id"],
+                "nombre": dep["nombre"],
                 "descripcion": "Modelo de Azure AI Foundry",
                 "orden": i,
                 "principal": True,
-                "ve_imagenes": False,
+                "ve_imagenes": bool(dep.get("ve_imagenes", True)),
                 "soporta_esfuerzo": False,
                 "contexto_ventana": 0,
             }

@@ -3,15 +3,18 @@ import {
   BoxIcon,
   BrainIcon,
   BriefcaseIcon,
+  BubblesIcon,
   CartIcon,
   ChartBarIcon,
   ChatIcon,
   CodeIcon,
+  ComputerIcon,
   CreditCardIcon,
   FileIcon,
   IdCardIcon,
   InboxIcon,
   KeyIcon,
+  LayersIcon,
   MicIcon,
   MonitorIcon,
   PlaneIcon,
@@ -21,6 +24,7 @@ import {
   RocketIcon,
   SendIcon,
   SettingsIcon,
+  ShieldIcon,
   SparklesIcon,
   TeamIcon,
   UsersIcon,
@@ -36,6 +40,8 @@ export interface NavItem {
   icon: (props: { className?: string }) => React.ReactElement;
   requiredFlag?: string;
   assistantIntent?: AssistantIntentKey;
+  /** Conteo en vivo en la barra lateral (Teams / Workspaces). */
+  badge?: "teams" | "workspaces";
 }
 
 export interface NavGroup {
@@ -52,8 +58,9 @@ export const PRIMARY_NAV_ITEMS: NavItem[] = [
   { href: "/app", label: "Edecan", icon: ChatIcon },
   { href: "/app/actividad", label: "Actividad", icon: BellIcon },
   { href: "/app/memoria", label: "Memoria", icon: BrainIcon },
-      { href: "/app/misiones", label: "Misiones", icon: RocketIcon, requiredFlag: "agents.missions" },
-      { href: "/app/workers", label: "Equipo", icon: TeamIcon, requiredFlag: "agents.missions" },
+  { href: "/app/bots", label: "Bots", icon: SparklesIcon, requiredFlag: "agents.missions", badge: "teams" },
+  { href: "/app/misiones", label: "Misiones", icon: RocketIcon, requiredFlag: "agents.missions" },
+  { href: "/app/workspaces", label: "Workspaces", icon: LayersIcon, badge: "workspaces" },
   { href: "/app/voz", label: "Voz", icon: MicIcon },
   { href: "/app/ajustes", label: "Ajustes", icon: SettingsIcon },
 ];
@@ -74,6 +81,7 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
   {
     label: "Trabajo",
     items: [
+      { href: "/app/workers", label: "Compañeros (roster)", icon: TeamIcon, requiredFlag: "agents.missions" },
       {
         href: "/app/automatizaciones",
         label: "Automatizaciones",
@@ -130,9 +138,11 @@ export const ADVANCED_NAV_GROUPS: NavGroup[] = [
     label: "Herramientas técnicas",
     items: [
       { href: "/app/ajustes#conexiones", label: "Conexiones", icon: KeyIcon },
+      { href: "/app/seguridad", label: "Seguridad", icon: ShieldIcon },
       { href: "/app/skills", label: "Skills", icon: PuzzleIcon },
       { href: "/app/ide", label: "IDE", icon: CodeIcon },
       { href: "/app/remoto", label: "Control remoto", icon: MonitorIcon },
+      { href: "/app/computer", label: "Computadora", icon: ComputerIcon },
       { href: "/app/facturacion", label: "Facturación", icon: CreditCardIcon },
     ],
   },

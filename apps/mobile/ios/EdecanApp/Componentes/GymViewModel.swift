@@ -11,17 +11,34 @@ import Observation
 @MainActor
 @Observable
 final class GymViewModel {
-    let health = HealthKitManager()
+    let health = HealthKitManager.compartido
     private let liveActivity = GymLiveActivityController()
+    /// Puente al Apple Watch: manda el estado REAL de la sesión (generada por
+    /// IA en el backend) y las métricas REALES de HealthKit. Cero mocks.
+    let watchBridge = PhoneWatchBridge.compartido
 
     private(set) var sesion: GymSession?
     private(set) var plan: GymPlan?
     private(set) var cargando = false
     private(set) var terminada = false
+    /// La sesión de HOY ya está `completed`. `/plan/today` sigue devolviendo
+    /// el plan aunque ya se entrenó (no sabe de sesiones), así que se averigua
+    /// contra el historial — sin esto, la pantalla ofrecía "Iniciar
+    /// entrenamiento" otra vez después de haber terminado.
+    private(set) var sesionCompletadaHoy: GymSession?
+    /// Racha en días (la manda `/history` junto al historial).
+    private(set) var rachaDias = 0
+    var yaEntrenoHoy: Bool { sesionCompletadaHoy != nil }
     var errorMensaje: String?
     /// Mensaje de seguimiento que devuelve el backend (`gymRegistrarSerie`/
     /// `gymTerminarSesion`). Se muestra tal cual, sin interpretarse.
     var mensajeBackend: String?
+    /// Resumen con IA de la sesión que devuelve `gymTerminarSesion`
+    /// (opcional, best-effort). Se muestra en la vista de sesión terminada.
+    private(set) var resumenIA: String?
+
+    /// Sondeo del collage cuando el backend aún no escribió `imagen_file_id`.
+    private var tareaPollingCollage: Task<Void, Never>?
 
     /// Campos de texto por ejercicio (índice del plan → valor editable).
     /// `pesos` es el campo opcional de kilos; `repeticiones` viene prefijado
@@ -33,7 +50,20 @@ final class GymViewModel {
     /// backend; si falta o no parsea, usamos el momento en que se cargó.
     private(set) var fechaInicio: Date?
 
-    private static let iso = ISO8601DateFormatter()
+    private static let iso: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        // El backend manda `started_at` con microsegundos
+        // ("2026-08-24T17:03:23.113017+00:00"); sin `.withFractionalSeconds`
+        // el parseo devuelve `nil` y `fechaInicio` cae a `Date()`, así que el
+        // cronómetro se REINICIABA en cada `.task`/refresco al volver a la
+        // pantalla. Este es el fix de "minimizo la app / salgo al chat y el
+        // tiempo vuelve a cero".
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// Fallback sin fracción de segundo (algunos orígenes mandan el ISO pelado).
+    private static let isoSimple = ISO8601DateFormatter()
 
     var tieneSesion: Bool { sesion != nil }
 
@@ -70,20 +100,54 @@ final class GymViewModel {
             errorMensaje = "No hay sesión activa."
             return
         }
-        cargando = true
+        tareaPollingCollage?.cancel()
+        let yaTeniaContenido = sesion != nil || plan != nil
+        cargando = !yaTeniaContenido
         defer { cargando = false }
         do {
             if let sesion = try await client.gymSesionActual() {
+                sesionCompletadaHoy = nil
                 await aplicarSesion(sesion)
+                errorMensaje = nil
+                if sesion.plan.imageFileID == nil {
+                    iniciarPollingCollage(client: client, origenSesion: true)
+                }
             } else if let plan = try await client.gymPlanDeHoy() {
+                self.sesion = nil
                 self.plan = plan
                 prefijarCampos(plan)
+                errorMensaje = nil
+                (sesionCompletadaHoy, rachaDias) = await Self.sesionCompletadaDeHoy(client: client)
+                if plan.imageFileID == nil {
+                    iniciarPollingCollage(client: client, origenSesion: false)
+                }
             } else {
-                errorMensaje = "No hay plan de entrenamiento para hoy."
+                sesionCompletadaHoy = nil
+                if !yaTeniaContenido {
+                    errorMensaje = "No hay plan de entrenamiento para hoy."
+                } else {
+                    errorMensaje = nil
+                }
             }
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
+    }
+
+    /// La sesión `completed` iniciada HOY (si existe) y la racha en días.
+    /// Busca en el historial porque el backend no cruza "plan de hoy" con
+    /// "sesión completada": `/plan/today` y `/session` no lo dicen.
+    private static func sesionCompletadaDeHoy(client: APIClient) async -> (GymSession?, Int) {
+        guard let historial = try? await client.gymHistorial(limit: 5) else { return (nil, 0) }
+        let calendario = Calendar.current
+        for sesion in historial.sessions where sesion.status == "completed" {
+            if let raw = sesion.startedAt,
+                let fecha = Self.iso.date(from: raw) ?? Self.isoSimple.date(from: raw),
+                calendario.isDateInToday(fecha) {
+                return (sesion, historial.streak)
+            }
+        }
+        return (nil, historial.streak)
     }
 
     /// Botón "Empezar" cuando no hay sesión: responde "sí" al checkin y el
@@ -94,16 +158,25 @@ final class GymViewModel {
         cargando = true
         defer { cargando = false }
         do {
-            let out = try await client.gymCheckin(respuesta: "si")
+            let readiness = await health.readinessResumen()
+            let out = try await client.gymCheckin(respuesta: "si", readiness: readiness)
             if let sesion = out.session {
                 await aplicarSesion(sesion)
+                if sesion.plan.imageFileID == nil {
+                    iniciarPollingCollage(client: client, origenSesion: true)
+                }
             } else if let plan = out.plan {
+                self.sesion = nil
                 self.plan = plan
                 prefijarCampos(plan)
+                if plan.imageFileID == nil {
+                    iniciarPollingCollage(client: client, origenSesion: false)
+                }
             }
             if !out.message.isEmpty { mensajeBackend = out.message }
+            errorMensaje = nil
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
@@ -120,8 +193,9 @@ final class GymViewModel {
             )
             await aplicarSesion(out.session)
             mensajeBackend = out.message.isEmpty ? nil : out.message
+            await coachVoz(tipo: "serie_completada", ejercicio: ejercicio.name, client: client)
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
@@ -129,44 +203,62 @@ final class GymViewModel {
         guard let client, let sesion else { return }
         do {
             await aplicarSesion(try await client.gymIniciarSesion(sessionId: sesion.id))
+            if PhoneWatchBridge.compartido.relojAlcanzable {
+                health.abandonarSeguimientoSinGuardar()
+            } else {
+                // Inicio real de la sesión (backend), no el instante del tap:
+                // si el seguimiento arranca tarde, el workout guardado en
+                // Salud conserva la duración verdadera del entrenamiento.
+                health.iniciarSeguimiento(inicio: fechaInicio ?? Date())
+            }
+            await coachVoz(tipo: "sesion_inicio", client: client)
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
     func pausar(client: APIClient?) async {
         guard let client, let sesion else { return }
         do {
+            if !PhoneWatchBridge.compartido.relojAlcanzable {
+                health.pausarSeguimiento()
+            }
             await aplicarSesion(try await client.gymPausarSesion(sessionId: sesion.id))
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
     func reanudar(client: APIClient?) async {
         guard let client, let sesion else { return }
         do {
+            if !PhoneWatchBridge.compartido.relojAlcanzable {
+                health.reanudarSeguimiento()
+            }
             await aplicarSesion(try await client.gymReanudarSesion(sessionId: sesion.id))
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
     func terminar(client: APIClient?) async {
         guard let client, let sesion else { return }
+        errorMensaje = nil
+        tareaPollingCollage?.cancel()
         do {
             let out = try await client.gymTerminarSesion(sessionId: sesion.id)
             mensajeBackend = out.message.isEmpty ? nil : out.message
+            resumenIA = out.resumen
             plan = sesion.plan
             terminada = true
             self.sesion = nil
             await liveActivity.terminar()
-            // HealthKit: guardar el workout de la sesión que acaba de cerrar.
-            if let inicio = fechaInicio {
-                await health.guardarWorkout(inicio: inicio, fin: Date())
-            }
+            // HealthKit: cierra el seguimiento en vivo y guarda el workout con
+            // las muestras reales (frecuencia + calorías) que se recolectaron.
+            await health.detenerSeguimiento(fin: Date())
+            enviarEstadoAlWatch()
         } catch {
-            errorMensaje = error.localizedDescription
+            registrarError(error)
         }
     }
 
@@ -176,12 +268,52 @@ final class GymViewModel {
         sesion?.progress.exercises.first(where: { $0.index == indice })
     }
 
+    private func registrarError(_ error: Error) {
+        GymRefreshSupport.asignarError(error, a: &errorMensaje)
+    }
+
+    private func iniciarPollingCollage(client: APIClient, origenSesion: Bool) {
+        tareaPollingCollage?.cancel()
+        tareaPollingCollage = Task { [weak self] in
+            let poller = GymCollagePoller()
+            let fileId = await poller.poll {
+                if origenSesion {
+                    try await client.gymSesionActual()?.plan.imageFileID
+                } else {
+                    try await client.gymPlanDeHoy()?.imageFileID
+                }
+            }
+            guard !Task.isCancelled, fileId != nil, let self else { return }
+            await self.refrescarCollage(client: client, origenSesion: origenSesion)
+        }
+    }
+
+    private func refrescarCollage(client: APIClient, origenSesion: Bool) async {
+        do {
+            if origenSesion, let sesion = try await client.gymSesionActual() {
+                await aplicarSesion(sesion)
+            } else if let plan = try await client.gymPlanDeHoy() {
+                self.plan = plan
+                prefijarCampos(plan)
+            }
+        } catch {
+            registrarError(error)
+        }
+    }
+
     private func aplicarSesion(_ nueva: GymSession) async {
         sesion = nueva
+        // Si la sesión ya está en curso (p. ej. se reabre la app a mitad del
+        // entrenamiento), arranca el seguimiento en vivo de HealthKit si no
+        // estaba corriendo. El reloj es dueño de la sesión cuando está reachable.
+        if nueva.status == "active" && !health.siguiendo && !PhoneWatchBridge.compartido.relojAlcanzable {
+            health.iniciarSeguimiento(inicio: fechaInicio ?? Date())
+        }
         // El cronómetro solo corre cuando el backend devuelve `started_at`
         // (sesión active/paused). Una sesión "planned" todavía no lo tiene:
         // no hay contador hasta tocar "Iniciar".
-        if let raw = nueva.startedAt, let fecha = Self.iso.date(from: raw) {
+        if let raw = nueva.startedAt,
+            let fecha = Self.iso.date(from: raw) ?? Self.isoSimple.date(from: raw) {
             fechaInicio = fecha
         } else if nueva.status != "planned" {
             fechaInicio = Date()
@@ -190,6 +322,116 @@ final class GymViewModel {
         }
         prefijarCampos(nueva.plan)
         await actualizarLiveActivity()
+        enviarEstadoAlWatch()
+    }
+
+    // MARK: - Apple Watch (datos reales, cero mocks)
+
+    /// Manda al reloj el estado REAL de la sesión: título del plan (del
+    /// backend/IA), segundos transcurridos desde `started_at` y las métricas
+    /// de HealthKit en vivo. Sin sesión, manda "no activo".
+    func enviarEstadoAlWatch() {
+        let titulo = sesion?.plan.title ?? plan?.title
+        let cronometro: TimeInterval? = fechaInicio.map { Date().timeIntervalSince($0) }
+        watchBridge.enviar(
+            sesionActiva: sesion?.status == "active",
+            titulo: sesion == nil && plan == nil ? nil : titulo,
+            cronometro: cronometro,
+            frecuenciaCardiaca: health.frecuenciaCardiaca,
+            calorias: health.caloriasActivas,
+            tienePlan: sesion != nil || plan != nil,
+        )
+        var extra: [String: Any] = ["pausada": sesion?.status == "paused"]
+        if let sesion {
+            let (ejercicio, hechas, totales) = ejercicioActual(sesion)
+            extra["ejercicioActual"] = ejercicio
+            extra["seriesHechas"] = hechas
+            extra["seriesTotales"] = totales
+        }
+        watchBridge.enviarTablero(extra)
+    }
+
+    /// Solo las métricas en vivo (cuando la UI detecta un cambio de frecuencia
+    /// o calorías), sin tocar el estado de la sesión.
+    func enviarMetricasAlWatch() {
+        guard sesion?.status == "active" || sesion?.status == "paused" else { return }
+        watchBridge.enviar(
+            titulo: sesion?.plan.title ?? plan?.title,
+            frecuenciaCardiaca: health.frecuenciaCardiaca,
+            calorias: health.caloriasActivas
+        )
+    }
+
+    /// El reloj tocó "Entrenar"/"Pausar": inicia, pausa o reanuda según el
+    /// estado real del backend (nunca un toggle local).
+    func alternarDesdeWatch(client: APIClient?) async {
+        if esPlaneada {
+            await iniciar(client: client)
+        } else if pausada {
+            await reanudar(client: client)
+        } else {
+            await pausar(client: client)
+        }
+    }
+
+    /// Manda al reloj el descanso en curso (segundos restantes + ejercicio).
+    func enviarDescansoAlWatch(restante: Int?, ejercicio: String?) {
+        watchBridge.enviarDescanso(restante: restante, ejercicio: ejercicio)
+    }
+
+    /// Índice cuyo nombre se tocó: GymView abre la hoja de cambio.
+    var swapIndice: Int?
+
+    func swapIndicePedir(_ indice: Int) {
+        swapIndice = indice
+    }
+
+    /// Reemplaza el plan en memoria con el que devuelve el swap (la IA ya
+    /// aplicó el cambio en el backend). La sesión activa conserva series hechas.
+    /// Round-trip JSON en vez de memberwise init: GymSession se decodifica a
+    /// mano y su init explícito no acepta reconstrucción por parámetros.
+    func aplicarPlan(_ planNuevo: GymPlan) {
+        plan = planNuevo
+        guard let sesionViva = sesion else { return }
+        do {
+            let dataViva = try JSONEncoder().encode(sesionViva)
+            var obj = try JSONSerialization.jsonObject(with: dataViva) as? [String: Any] ?? [:]
+            obj["plan"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(planNuevo))
+            let dataNueva = try JSONSerialization.data(withJSONObject: obj)
+            sesion = try JSONDecoder().decode(GymSession.self, from: dataNueva)
+        } catch {
+            // Best-effort: el plan ya quedó actualizado en `plan`; si la
+            // reconstrucción de la sesión falla, el refresh del backend la
+            // traerá igual en el próximo cargar().
+        }
+    }
+
+    // MARK: - Coach de voz (línea de Sol + voz de Edecán, cero mocks)
+
+    private let coachPlayer = ReproductorMPEGStream()
+    // Misma voz que el altavoz del chat (ElevenLabs turbo v2.5).
+    private let coachVoiceId = "0uHpKhb0ymsdvmCtPV8y"
+    private let coachModelId = "eleven_turbo_v2_5"
+    /// Single-flight: si una línea ya está hablando, la siguiente se ignora.
+    /// Antes 4 toques de «+1 serie» lanzaban 4 voces superpuestas a la vez.
+    private var vozCoachActiva = false
+
+    /// Pide una línea de coach a Sol (xhigh) y la reproduce con la voz de
+    /// Edecán. Best-effort: un fallo nunca bloquea el entrenamiento.
+    func coachVoz(tipo: String, ejercicio: String? = nil, client: APIClient?) async {
+        guard let client, !vozCoachActiva else { return }
+        vozCoachActiva = true
+        defer { vozCoachActiva = false }
+        do {
+            let out = try await client.gymCoachVoz(tipo: tipo, ejercicio: ejercicio)
+            guard let linea = out.linea, !linea.isEmpty else { return }
+            let stream = try await client.hablarStream(
+                texto: linea, voiceId: coachVoiceId, modelId: coachModelId
+            )
+            try await coachPlayer.reproducir(stream: stream)
+        } catch {
+            // Best-effort: el coach de voz es un extra, nunca tumba la sesión.
+        }
     }
 
     private func actualizarLiveActivity() async {

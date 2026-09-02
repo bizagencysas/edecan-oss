@@ -173,7 +173,7 @@ que existe un Postgres embebido donde el proveedor no distribuye binarios.
 
 ## 9. Ollama embebido (opcional, fase v4)
 
-Patrón de auto-provisioning adaptado de `open-jarvis/OpenJarvis` (Apache-2.0, ver `NOTICE`) — detalle de producto/UX en [`desktop.md`](./desktop.md) §10 ("Ollama embebido (opcional)"); acá va el detalle técnico de este runner.
+Patrón de auto-provisioning adaptado de `open-reference implementation/OpenJarvis` (Apache-2.0, ver `NOTICE`) — detalle de producto/UX en [`desktop.md`](./desktop.md) §10 ("Ollama embebido (opcional)"); acá va el detalle técnico de este runner.
 
 **Env vars nuevas** (ninguna pinned en `ARCHITECTURE.md` §12.g — son propias de esta pieza opcional, mismo criterio que `EDECAN_LOCAL_DEV_CMD` en `apps/desktop/src-tauri/src/backend.rs`):
 

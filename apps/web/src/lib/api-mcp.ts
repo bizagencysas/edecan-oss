@@ -34,6 +34,13 @@ export interface MCPServerOut {
   comando: string | null;
   estado: string;
   autenticacion_configurada: boolean;
+  /** Salud del servidor según el backend (`GET /v1/mcp/servers` v2) —
+   * `undefined` si el backend es anterior a este campo. */
+  health?: string | null;
+  /** Latencia en milisegundos del último handshake; `undefined` si no aplica. */
+  latency_ms?: number | null;
+  /** Último error de conexión reportado por el backend; `null` si no hubo. */
+  last_error?: string | null;
 }
 
 /** Forma exacta de `PUT /v1/mcp/servers` (`MCPServerIn`). */

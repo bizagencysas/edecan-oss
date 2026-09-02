@@ -5,6 +5,6 @@ import Testing
 struct AssistantDestinationTests {
     @Test("expone asistente, actividad, IDE y perfil")
     func primaryDestinations() {
-        #expect(AssistantDestination.allCases == [.edecan, .activity, .equipo, .ide, .settings])
+        #expect(AssistantDestination.allCases == [.edecan, .activity, .equipo, .teams, .ide, .settings])
     }
 }

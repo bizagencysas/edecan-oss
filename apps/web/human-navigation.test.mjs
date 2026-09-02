@@ -20,9 +20,10 @@ test("la navegación normal mantiene al chat como puerta principal", () => {
   assert.match(primarySection, /label: "Memoria"/);
   assert.match(primarySection, /label: "Misiones"/);
   assert.match(primarySection, /label: "Voz"/);
-  assert.match(primarySection, /label: "Equipo"/);
+  assert.match(primarySection, /label: "Bots"/);
   assert.match(primarySection, /label: "Ajustes"/);
-  assert.doesNotMatch(primarySection, /Panel|Ads|RRHH|Studio/);
+  assert.doesNotMatch(primarySection, /Panel|Ads|RRHH|Studio|Equipos/);
+  assert.doesNotMatch(primarySection, /href: "\/app\/teams"/);
 });
 
 test("las superficies incompletas no abren una falsa consola operativa", () => {

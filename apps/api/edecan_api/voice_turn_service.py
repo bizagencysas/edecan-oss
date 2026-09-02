@@ -22,10 +22,15 @@ from edecan_core.tools import ToolContext
 from edecan_llm.router import LLMRouter
 
 from edecan_api.chat_context import ChatContextLimits, build_contextual_history
+from edecan_api.chat_delegation import (
+    build_delegation_prefix,
+    ejecutar_delegaciones,
+)
 from edecan_api.config import Settings
 from edecan_api.deps import CurrentUser
 from edecan_api.llm_attribution import build_llm_usage_meta
 from edecan_api.repo import Repo
+from edecan_api.voice_orchestration import route_voice_intent
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,14 @@ def _agent_for_request(request: Any, llm_router: Any, registry: Any) -> Agent:
         supports_health = False
     if supports_health:
         kwargs["provider_health"] = getattr(request.app.state, "provider_health", None)
+    # Bots (chats con nombre y turnos por encargo): razonamiento profundo Sol
+    # Xhigh. El Agent lo aplica SOLO a los modelos gpt-5.6 de Azure — los
+    # turnos de voz (modelo de baja latencia @cf/...) quedan intactos.
+    try:
+        if "reasoning_effort" in inspect.signature(Agent).parameters:
+            kwargs["reasoning_effort"] = "xhigh"
+    except (TypeError, ValueError):
+        pass
     return Agent(llm_router, registry, **kwargs)
 
 
@@ -91,6 +104,8 @@ async def execute_voice_text_turn(
     clean_text = redact(str(user_text or "")).strip()
     if not clean_text:
         raise ValueError("La transcripción de voz quedó vacía.")
+
+    orchestration = route_voice_intent(clean_text)
 
     history_rows = await repo.list_messages(
         tenant_id=current_user.tenant_id,
@@ -167,34 +182,52 @@ async def execute_voice_text_turn(
     )
     extra_tools = await _extra_conversation_tools(request, current_user)
     agent = _agent_for_request(request, llm_router, request.app.state.tool_registry)
+
+    confirmaciones: list[str] = []
+    pendientes: list[str] = []
+    effective_text = clean_text
+    if orchestration is not None and orchestration.delegated:
+        confirmaciones, pendientes = await ejecutar_delegaciones(ctx, orchestration)
+        if not confirmaciones and not pendientes:
+            # Ninguna delegación se encoló ni quedó pendiente de aprobar:
+            # fail-open, el turno responde el pedido original normalmente.
+            effective_text = clean_text
+        else:
+            effective_text = orchestration.reply_text.strip()
+
     result = VoiceAgentTurnResult(text="")
-    async for raw_event in agent.run_turn(
-        ctx=ctx,
-        persona=persona,
-        history=history,
-        user_text=clean_text,
-        flags=current_user.tenant.flags,
-        extra_tools=extra_tools,
-    ):
-        event = _event_to_dict(raw_event)
-        result.events.append(event)
-        event_type = event.get("type")
-        if event_type == "text_delta":
-            result.text += str(event.get("text") or "")
-        elif event_type == "done":
-            usage = event.get("usage") or {}
-            result.attribution = build_llm_usage_meta(
-                attribution=event.get("attribution"),
-                input_tokens=int(usage.get("input_tokens", 0) or 0),
-                output_tokens=int(usage.get("output_tokens", 0) or 0),
-                cached_input_tokens=int(usage.get("cached_input_tokens", 0) or 0),
-            )
-            result.usage = {
-                "input_tokens": int(usage.get("input_tokens", 0) or 0),
-                "output_tokens": int(usage.get("output_tokens", 0) or 0),
-            }
-        elif event_type == "confirmation_required":
-            result.confirmation_required = event
+    if effective_text:
+        async for raw_event in agent.run_turn(
+            ctx=ctx,
+            persona=persona,
+            history=history,
+            user_text=effective_text,
+            flags=current_user.tenant.flags,
+            extra_tools=extra_tools,
+        ):
+            event = _event_to_dict(raw_event)
+            result.events.append(event)
+            event_type = event.get("type")
+            if event_type == "text_delta":
+                result.text += str(event.get("text") or "")
+            elif event_type == "done":
+                usage = event.get("usage") or {}
+                result.attribution = build_llm_usage_meta(
+                    attribution=event.get("attribution"),
+                    input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    cached_input_tokens=int(usage.get("cached_input_tokens", 0) or 0),
+                )
+                result.usage = {
+                    "input_tokens": int(usage.get("input_tokens", 0) or 0),
+                    "output_tokens": int(usage.get("output_tokens", 0) or 0),
+                }
+            elif event_type == "confirmation_required":
+                result.confirmation_required = event
+
+    prefix = build_delegation_prefix(confirmaciones, pendientes)
+    if prefix:
+        result.text = (prefix + ". " + result.text) if result.text.strip() else prefix
 
     tool_log = [event for event in result.events if event.get("type") in {"tool_start", "tool_end"}]
     await repo.add_message(
@@ -213,6 +246,7 @@ async def execute_voice_text_turn(
             kind="llm_tokens",
             quantity=float(total_tokens),
             meta={"conversation_id": str(conversation_id), **result.attribution},
+            cost_usd=result.attribution.get("cost_usd"),
         )
     await repo.add_usage_event(
         tenant_id=current_user.tenant_id,

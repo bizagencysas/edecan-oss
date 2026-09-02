@@ -205,6 +205,46 @@ def _strip_markdown_for_speech(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
+# Límite conservador bajo el tope típico de ElevenLabs (~5k–10k chars/request).
+_TTS_CHUNK_MAX_CHARS = 4_000
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_text_for_tts(text: str, max_chars: int = _TTS_CHUNK_MAX_CHARS) -> list[str]:
+    """Parte texto largo en trozos por oraciones para no chocar con límites del
+    proveedor TTS cuando ``voice_rewrite=False`` (reproducción íntegra del chat)."""
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for sentence in _SENTENCE_BOUNDARY_RE.split(text):
+        if not sentence:
+            continue
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        if len(sentence) <= max_chars:
+            current = sentence
+            continue
+        # Oración única más larga que el límite: partir por palabras.
+        words = sentence.split()
+        current = ""
+        for word in words:
+            piece = f"{current} {word}".strip() if current else word
+            if len(piece) <= max_chars:
+                current = piece
+            else:
+                if current:
+                    chunks.append(current)
+                current = word
+    if current:
+        chunks.append(current)
+    return chunks or [text[:max_chars]]
+
+
 # ---------------------------------------------------------------------------
 # Resolución de proveedor por tenant (ver docstring del módulo)
 # ---------------------------------------------------------------------------
@@ -413,7 +453,11 @@ async def speak(
         tts._model_id = body.model_id
         if body.model_id == "eleven_v3" and hasattr(tts, "_expressive"):
             tts._expressive = True
-    audio_bytes = await tts.synthesize(spoken_text, voice_id=body.voice_id)
+    text_chunks = _split_text_for_tts(spoken_text) if not body.voice_rewrite else [spoken_text]
+    audio_parts: list[bytes] = []
+    for chunk_text in text_chunks:
+        audio_parts.append(await tts.synthesize(chunk_text, voice_id=body.voice_id))
+    audio_bytes = b"".join(audio_parts)
     logger.info(
         "[/speak] latency_ms first_audio=%.1f total=%.1f tts_provider=%s audio_bytes=%d",
         (time.perf_counter() - t_start) * 1000.0,
@@ -490,17 +534,19 @@ async def speak_stream(
 
     async def _audio_stream() -> AsyncIterator[bytes]:
         first_chunk = True
-        async for chunk in tts.synthesize_stream(
-            spoken_text, voice_id=body.voice_id, model_id=model_id, mime=media_type
-        ):
-            if first_chunk:
-                logger.info(
-                    "[/speak/stream] latency_ms first_audio=%.1f tts_provider=%s",
-                    (time.perf_counter() - t_start) * 1000.0,
-                    type(tts).__name__,
-                )
-                first_chunk = False
-            yield chunk
+        text_chunks = _split_text_for_tts(spoken_text) if not body.voice_rewrite else [spoken_text]
+        for chunk_text in text_chunks:
+            async for chunk in tts.synthesize_stream(
+                chunk_text, voice_id=body.voice_id, model_id=model_id, mime=media_type
+            ):
+                if first_chunk:
+                    logger.info(
+                        "[/speak/stream] latency_ms first_audio=%.1f tts_provider=%s",
+                        (time.perf_counter() - t_start) * 1000.0,
+                        type(tts).__name__,
+                    )
+                    first_chunk = False
+                yield chunk
         logger.info(
             "[/speak/stream] latency_ms total=%.1f tts_provider=%s",
             (time.perf_counter() - t_start) * 1000.0,

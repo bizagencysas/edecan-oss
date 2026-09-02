@@ -39,7 +39,7 @@ def test_la_skill_es_vasta_y_tiene_sus_piezas() -> None:
         assert seccion in FABLE_ESCRITURA, f"la skill perdió la sección {seccion!r}"
 
 
-def test_el_escritor_la_recibe_en_el_orden_de_jarvis() -> None:
+def test_el_escritor_la_recibe_en_el_orden_de_referencia() -> None:
     # Método primero, reglas duras después (las reglas ganan), salida JSON al final.
     pos_fable = _SISTEMA_ESCRITOR.index("MÉTODO FABLE DE ESCRITURA")
     pos_reglas = _SISTEMA_ESCRITOR.index("REGLAS DURAS DE VOZ PARA LINKEDIN")

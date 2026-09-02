@@ -211,6 +211,140 @@ def suggest_automation_from_event(event: Mapping[str, Any]) -> dict[str, Any] | 
     }
 
 
+def _normalizar_clave(label: str) -> str:
+    """Clave estable para agrupar tareas repetidas: minúsculas + espacios
+    colapsados. Mismo proxy de "es la misma tarea" que
+    `memory_consolidate._normalizar_contenido`."""
+    return " ".join(label.casefold().split())
+
+
+def detect_routine_suggestions(
+    entries: list[Mapping[str, Any]],
+    *,
+    min_repetitions: int = 3,
+    max_suggestions: int = 5,
+) -> list[dict[str, Any]]:
+    """Minería pasiva determinista (directiva §38-41): detecta tareas que el
+    usuario repite y propone convertirlas en rutina, SIN crear ni activar nada.
+
+    `entries` es una lista de tareas recientes, cada una con:
+    - `label` (str): texto de la tarea (p. ej. el `objetivo` de una misión).
+    - `occurred_at` (datetime|None): cuándo se ejecutó (se usa solo para el
+      llamador, no para el conteo; este detector recibe la ventana ya
+      recortada).
+    - `agent_id` (str|None, opcional): el agente que detectó/ejecutó la tarea;
+      se copia al primer `agent_id` no nulo del grupo para que la UI pueda
+      decir "Elena detectó X".
+
+    Agrupa por clave normalizada (`label`), cuenta ocurrencias y devuelve las
+    que superan `min_repetitions`, ordenadas por conteo descendente, con tope
+    `max_suggestions`. Aritmética pura, mismo criterio transparente que el
+    resto del filtro proactivo: mismo `entries` → misma salida.
+    """
+    conteo: dict[str, list[Mapping[str, Any]]] = {}
+    for entry in entries:
+        label = str(entry.get("label") or "").strip()
+        if not label:
+            continue
+        clave = _normalizar_clave(label)
+        if clave not in conteo:
+            conteo[clave] = []
+        conteo[clave].append(entry)
+
+    sugerencias: list[dict[str, Any]] = []
+    for _clave, grupo in sorted(
+        conteo.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        if len(grupo) < min_repetitions:
+            continue
+        label = str(grupo[0].get("label") or "").strip()
+        agent_id = next(
+            (str(g["agent_id"]) for g in grupo if g.get("agent_id") is not None),
+            None,
+        )
+        sugerencias.append(
+            {
+                "kind": "routine_suggestion",
+                "action": "create_routine",
+                "task": label[:160],
+                "repetitions": len(grupo),
+                "requires_user_confirmation": True,
+                "agent_id": agent_id,
+                "reason": (
+                    "Has repetido esta tarea varias veces; considera convertirla "
+                    "en una rutina para que se ejecute sola."
+                ),
+            }
+        )
+        if len(sugerencias) >= max_suggestions:
+            break
+    return sugerencias
+
+
+# Etapas del ladder proactivo (product design): Observation → Suggestion →
+# Draft → Action. La etapa por defecto de un tipo conocido: la más permisiva
+# que el tipo justifica sin confirmación explícita. Todo lo que no aparece en
+# esta tabla cae a OBSERVATION (fail-closed: sin evidencia de que el agente
+# puede hacer más que leer/analizar, se queda en lo menos privilegiado).
+_ETAPA_POR_TIPO: dict[str, str] = {
+    "automation_suggestion": "suggestion",
+    "routine_suggestion": "suggestion",
+    "automation_failed": "suggestion",
+    "work_failed": "suggestion",
+    "reminder_triggered": "suggestion",
+    "phone_call_incoming": "suggestion",
+    "automation_due": "action",
+    "routine_due": "action",
+    "self_repair_completed": "observation",
+    "automation_completed": "observation",
+    "work_completed": "observation",
+    "content_created": "observation",
+    "content_published": "observation",
+    "file_ready": "observation",
+    "pdf_ready": "observation",
+    "design_ready": "observation",
+    "design_export_ready": "observation",
+    "push_test": "observation",
+}
+
+_ETAPAS = ("observation", "suggestion", "draft", "action")
+
+
+def clasificar_proactividad(signal: Mapping[str, Any]) -> str:
+    """Clasifica una señal detectada en el ladder Observation→Suggestion→Draft→
+    Action (product design). Determinista: misma señal → misma etapa.
+
+    Precedencia (de lo más explícito a lo menos; fail-closed a OBSERVATION):
+
+    1. ``stage``/``etapa`` explícito si es una de las cuatro etapas válidas.
+    2. ``draft_ready``/``is_draft`` → DRAFT (hay borrador preparado; falta
+       preguntar antes de actuar).
+    3. ``requires_user_confirmation`` → SUGGESTION (se propone, el usuario
+       confirma).
+    4. ``may_act`` → ACTION (puede actuar dentro de la política).
+    5. El tipo (``kind``/``type``) contra ``_ETAPA_POR_TIPO``.
+    6. Sin evidencia → OBSERVATION (solo leer/analizar automáticamente).
+
+    La ordenación es deliberadamente conservadora: una señal que a la vez pide
+    confirmación y declara borrador se queda en DRAFT (no actúa sola), y una
+    que pide confirmación jamás sube a ACTION aunque traiga ``may_act``.
+    """
+    etapa_explicita = signal.get("stage", signal.get("etapa"))
+    if etapa_explicita in _ETAPAS:
+        return str(etapa_explicita)
+
+    if signal.get("draft_ready") is True or signal.get("is_draft") is True:
+        return "draft"
+
+    if signal.get("requires_user_confirmation") is True:
+        return "suggestion"
+
+    if signal.get("may_act") is True:
+        return "action"
+
+    return _ETAPA_POR_TIPO.get(_tipo(signal), "observation")
+
+
 def suprimir_duplicado(
     historial: dict[str, datetime],
     event: Mapping[str, Any],
@@ -252,8 +386,10 @@ __all__ = [
     "le_importa_al_usuario",
     "requiere_accion",
     "score_event",
+    "clasificar_proactividad",
     "should_notify",
     "suggest_automation_from_event",
+    "detect_routine_suggestions",
     "suprimir_duplicado",
     "ya_reportado",
 ]

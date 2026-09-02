@@ -26,6 +26,9 @@ from .correo import BuscarCorreoTool, EnviarCorreoTool
 from .creator import CrearArtefactosTool
 from .documentos import ConsultarDocumentosTool
 from .finanzas import RegistrarTransaccionTool, ResumenFinanzasTool
+from .gym import CambiarRutinaGymTool
+from .ide_delegacion import DelegarAlIDETool
+from .memoria import GuardarMemoriaTool
 from .notificaciones import ProbarNotificacionesPushTool
 from .preguntar import PreguntarAlUsuarioTool
 from .recordatorios import CrearRecordatorioTool, ListarRecordatoriosTool
@@ -56,6 +59,7 @@ __all__ = [
     "ConsultarDocumentosTool",
     "CrearEventoTool",
     "CrearArtefactosTool",
+    "DelegarAlIDETool",
     "CrearRecordatorioTool",
     "EnviarMensajePersonalTool",
     "EnviarCorreoTool",
@@ -63,6 +67,7 @@ __all__ = [
     "GenerarContenidoTool",
     "GestionarContactoTool",
     "GestionarAutorreparacionLocalTool",
+    "GuardarMemoriaTool",
     "HoraActualTool",
     "ListarRecordatoriosTool",
     "LeerMensajesPersonalesTool",
@@ -85,6 +90,8 @@ def get_all_tools() -> list[Tool]:
     return [
         CrearRecordatorioTool(),
         ListarRecordatoriosTool(),
+        GuardarMemoriaTool(),
+        CambiarRutinaGymTool(),
         AgendaEventosTool(),
         CrearEventoTool(),
         BuscarCorreoTool(),
@@ -106,6 +113,7 @@ def get_all_tools() -> list[Tool]:
         CalculadoraTool(),
         ConfigurarCredencialTool(),
         AccederCodigoLocalTool(),
+        DelegarAlIDETool(),
         DiagnosticarAutorreparacionLocalTool(),
         GestionarAutorreparacionLocalTool(),
         AuditarSeguridadProyectoTool(),

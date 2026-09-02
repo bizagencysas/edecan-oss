@@ -39,6 +39,11 @@ class OpenAICompatProvider(LLMProvider):
     `key_auth_mode` (default `"bearer"`) cambia el header de auth:
     - `"bearer"` → `authorization: Bearer <key>` (OpenAI, Groq, Together, vLLM).
     - `"api-key"` → `api-key: <key>` (Azure AI Foundry / Azure OpenAI).
+
+    `use_max_completion_tokens` (default `False`) manda `max_completion_tokens`
+    en vez de `max_tokens` — los modelos de razonamiento de Azure (gpt-5.6-*)
+    rechazan `max_tokens` con "Unsupported parameter" y exigen
+    `max_completion_tokens`.
     """
 
     name = "openai_compat"
@@ -54,9 +59,11 @@ class OpenAICompatProvider(LLMProvider):
         http_client: httpx.AsyncClient | None = None,
         extra_body: dict | None = None,
         key_auth_mode: str = "bearer",
+        use_max_completion_tokens: bool = False,
     ) -> None:
         self._api_key = api_key
         self._key_auth_mode = "api-key" if key_auth_mode == "api-key" else "bearer"
+        self._use_max_completion_tokens = use_max_completion_tokens
         self._max_retries = max(1, max_retries)
         self._retry_base_delay = retry_base_delay
         self._extra_body = dict(extra_body or {})
@@ -77,10 +84,16 @@ class OpenAICompatProvider(LLMProvider):
         body: dict = {
             "model": req.model,
             "messages": _to_openai_messages(req),
-            "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
             "stream": stream,
         }
+        if self._use_max_completion_tokens:
+            # Modelos de razonamiento de Azure (gpt-5.6-*): usan
+            # `max_completion_tokens` y NO aceptan `temperature` distinto de 1
+            # (lo rechazan con "Unsupported value"). Se omite temperature.
+            body["max_completion_tokens"] = req.max_tokens
+        else:
+            body["max_tokens"] = req.max_tokens
+            body["temperature"] = req.temperature
         if stream:
             # Sin este flag, la API real de OpenAI (y la mayoría de endpoints
             # OpenAI-compatible que siguen ese estándar) NO incluye `usage` en
@@ -218,10 +231,21 @@ def _to_openai_messages(req: CompletionRequest) -> list[dict]:
 
 
 def _user_blocks_to_openai(blocks: list[dict]) -> list[dict]:
+    """Traduce los bloques de un mensaje `user` al formato de Chat Completions.
+
+    Acepta dos formas y las pasa a la API tal cual llegan en el formato de
+    OpenAI (visión): ``{"type": "text", ...}`` y
+    ``{"type": "image_url", "image_url": {...}}``. Mantiene además la forma
+    común de Edecán (``{"type": "image", "source": {...}}``), que se convierte
+    a un `image_url` con `data:` URL.
+    """
     content: list[dict] = []
     for block in blocks:
         if block.get("type") == "text" and block.get("text"):
             content.append({"type": "text", "text": str(block["text"])})
+            continue
+        if block.get("type") == "image_url" and isinstance(block.get("image_url"), dict):
+            content.append({"type": "image_url", "image_url": block["image_url"]})
             continue
         source = image_source(block)
         if source is not None:

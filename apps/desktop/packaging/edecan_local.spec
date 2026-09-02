@@ -47,6 +47,19 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata, get_package_paths
 
+# Hook de PyInstaller de Playwright: empaqueta `playwright/driver` (node + package)
+# como DATA (no reprocesa el binario `driver/node`) y los módulos del paquete.
+# Sin esto, PyInstaller intenta procesar `driver/node` y aborta el freeze.
+# Playwright lo trae en `playwright/_impl/__pyinstaller/`.
+try:
+    import playwright as _playwright_pkg
+
+    _PLAYWRIGHT_HOOK_DIR = os.path.join(
+        os.path.dirname(_playwright_pkg.__file__), "_impl", "__pyinstaller"
+    )
+except Exception:  # noqa: BLE001 - playwright opcional; si no está, no hay hook
+    _PLAYWRIGHT_HOOK_DIR = None
+
 # ---------------------------------------------------------------------------
 # Rutas. PyInstaller inyecta `SPECPATH` en el namespace de este archivo ANTES
 # de ejecutarlo — es la carpeta que contiene el .spec (`os.path.split(SPEC)`,
@@ -456,9 +469,12 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=[_PLAYWRIGHT_HOOK_DIR] if _PLAYWRIGHT_HOOK_DIR else [],
     hooksconfig={},
     runtime_hooks=[],
+    # Playwright se empaqueta con su PROPIO hook (hookspath), que copia el
+    # driver como DATA; por eso NO se excluye. NO excluir `greenlet`/`_greenlet`
+    # (asyncpg/SQLAlchemy async lo necesitan en runtime).
     excludes=[],
     noarchive=False,
 )

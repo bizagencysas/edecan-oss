@@ -34,6 +34,22 @@ struct BurbujaMensaje: View {
     var onTogglePin: (() -> Void)? = nil
     var onToggleBookmark: (() -> Void)? = nil
     var onReply: (() -> Void)? = nil
+    /// Tocar un emoji del menú "Reaccionar" (mensaje persistido: `createdAt`
+    /// no es `nil`). `nil` cuando no corresponde ofrecer reacciones.
+    var onReaccionar: ((String) -> Void)? = nil
+    /// "Responder en hilo" desde el menú contextual de la burbuja.
+    var onResponderEnHilo: (() -> Void)? = nil
+    /// Nombre visible del agente para la fila «{Nombre} está trabajando».
+    var nombreAgente: String = "Edecán"
+
+    /// Emojis de reacción disponibles (contrato de reacciones del backend).
+    private static let emojisReaccion = ["👍", "👎", "✅", "👀", "❤️", "🔥"]
+
+    /// `true` si el mensaje tiene id persistido del servidor y acepta
+    /// reacciones/hilo. Un globo optimista (local) haría 404 en el backend.
+    private var admiteReacciones: Bool {
+        mensaje.createdAt != nil && !mensaje.falloEnvio && !mensaje.enProgreso
+    }
 
     var body: some View {
         if mensaje.rol == .sistema {
@@ -61,12 +77,38 @@ struct BurbujaMensaje: View {
         }
     }
 
+    private var mostrarFilaTrabajando: Bool {
+        EstadoTrabajandoChat.debeMostrarFila(
+            enProgreso: mensaje.enProgreso,
+            rolEsAsistente: mensaje.rol == .asistente
+        )
+    }
+
+    /// Hay algo que pintar dentro del vidrio/degradado — no una burbuja vacía
+    /// mientras solo late la fila silenciosa de trabajo.
+    private var tieneContenidoEnBurbuja: Bool {
+        if !mensaje.texto.isEmpty { return true }
+        if mensaje.rol == .asistente, !mensaje.enProgreso, !mensaje.textoApertura.isEmpty { return true }
+        if !mensaje.adjuntos.isEmpty { return true }
+        if mensaje.rol == .asistente, !mensaje.bloques.isEmpty { return true }
+        if mensaje.rol == .asistente, !mensaje.artefactos.isEmpty { return true }
+        if mensaje.rol == .asistente, !mensaje.fuentes.isEmpty { return true }
+        if mensaje.rol == .usuario, mensaje.falloEnvio { return true }
+        if !mensaje.reactions.isEmpty { return true }
+        return false
+    }
+
     private var burbuja: some View {
         HStack(alignment: .top, spacing: 0) {
-            if mensaje.rol == .usuario { Spacer(minLength: 56) }
+            if mensaje.rol == .usuario { Spacer(minLength: 48) }
 
-            VStack(alignment: mensaje.rol == .usuario ? .trailing : .leading, spacing: 6) {
-                contenidoBurbuja
+            VStack(alignment: mensaje.rol == .usuario ? .trailing : .leading, spacing: 8) {
+                if mostrarFilaTrabajando {
+                    FilaEstadoTrabajandoView(nombreAgente: nombreAgente)
+                }
+                if tieneContenidoEnBurbuja {
+                    contenidoBurbuja
+                }
                 if !textoParaAcciones.isEmpty {
                     BarraAccionesMensaje(
                         texto: textoParaAcciones,
@@ -82,9 +124,9 @@ struct BurbujaMensaje: View {
                     .padding(mensaje.rol == .usuario ? .trailing : .leading, 4)
                 }
             }
-            .frame(maxWidth: 340, alignment: mensaje.rol == .usuario ? .trailing : .leading)
+            .frame(maxWidth: 300, alignment: mensaje.rol == .usuario ? .trailing : .leading)
 
-            if mensaje.rol == .asistente { Spacer(minLength: 56) }
+            if mensaje.rol == .asistente { Spacer(minLength: 48) }
         }
         .frame(maxWidth: .infinity, alignment: mensaje.rol == .usuario ? .trailing : .leading)
     }
@@ -100,13 +142,16 @@ struct BurbujaMensaje: View {
         )
     }
 
-    /// El hilo de pasos es solo para un turno con `trabajo` (tools). Un
-    /// "sí, claro" de tres frases no es un trabajo y se queda en burbuja.
+    /// El hilo de pasos es solo para el relato de trabajo (`campo == "apertura"`,
+    /// la narración previa a/entre herramientas), nunca para la respuesta final
+    /// (`campo == "texto"`). Tras una búsqueda la respuesta es prosa normal y
+    /// debe leerse completa en una sola burbuja, no troceada en "N pasos".
     @ViewBuilder
     private func vistaTextoAsistente(campo: String, texto: String) -> some View {
         let tarjetas = SegmentadorNarracion.tarjetas(texto)
+        let esRelatoDeTrabajo = campo == "apertura" && !mensaje.enProgreso
         if mensaje.rol == .asistente,
-           !mensaje.enProgreso,
+           esRelatoDeTrabajo,
            mensaje.trabajo != nil,
            SegmentadorNarracion.debeMostrarHilo(tarjetas: tarjetas) {
             NarracionEnPasosView(
@@ -127,25 +172,18 @@ struct BurbujaMensaje: View {
 
     private var contenidoBurbuja: some View {
         VStack(alignment: .leading, spacing: 9) {
-                // Orden deliberado: acuse breve -> resumen de trabajo plegado -> respuesta.
-                // Antes el bloque de herramientas iba PRIMERO y toda la narración se pegaba
-                // en un solo párrafo, así que la respuesta real quedaba enterrada al final
-                // de un muro de texto.
-                if !mensaje.textoApertura.isEmpty {
+                // Orden deliberado: acuse breve -> respuesta. La fila silenciosa
+                // «está trabajando» vive FUERA del vidrio; la apertura en vivo no
+                // se pinta para no competir con ese latido — al terminar, el hilo
+                // colapsable de narración sigue igual que antes.
+                if !mensaje.enProgreso, !mensaje.textoApertura.isEmpty {
                     vistaTextoAsistente(
                         campo: "apertura",
                         texto: sinSpeechTags(mensaje.textoApertura)
                     )
                 }
 
-                if let trabajo = mensaje.trabajo {
-                    ProgresoTrabajoView(trabajo: trabajo, mensajeEnCurso: mensaje.enProgreso)
-                }
-
-                if mensaje.texto.isEmpty && mensaje.enProgreso && mensaje.trabajo == nil {
-                    ProgressView()
-                        .tint(mensaje.rol == .usuario ? .white : .primary)
-                } else if !mensaje.texto.isEmpty {
+                if !mensaje.texto.isEmpty {
                     vistaTextoAsistente(
                         campo: "texto",
                         texto: sinSpeechTags(mensaje.texto)
@@ -189,7 +227,7 @@ struct BurbujaMensaje: View {
                 if mensaje.rol == .asistente && !mensaje.bloques.isEmpty {
                     BloquesChatView(
                         onAbrirArtefacto: onAbrirArtefacto,
-                        bloques: mensaje.bloques,
+                        bloques: bloquesSinFuentesDuplicadas(mensaje.bloques, fuentes: mensaje.fuentes),
                         client: client,
                         onAction: onAction,
                         onResponder: onResponder,
@@ -208,11 +246,17 @@ struct BurbujaMensaje: View {
                                 } else {
                                     Image(systemName: "doc.text.magnifyingglass")
                                 }
-                                Text(artefacto.filename)
-                                    .lineLimit(1)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(artefacto.filename)
+                                        .lineLimit(1)
+                                    Text("Abrir")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(EdecanTheme.morado)
+                                }
                                 Spacer(minLength: 0)
-                                Image(systemName: "eye")
-                                    .font(.caption)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
                             }
                             .font(.footnote.weight(.medium))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -237,9 +281,21 @@ struct BurbujaMensaje: View {
                     .tint(.white)
                     .accessibilityHint("Vuelve a enviar esta misma solicitud")
                 }
+
+                if !mensaje.reactions.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(mensaje.reactions, id: \.self) { emoji in
+                            Text(emoji)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.quaternary.opacity(0.35), in: Capsule())
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .foregroundStyle(mensaje.rol == .usuario ? .white : .primary)
             // Copiar cuelga de la BURBUJA entera, no del `Text` de adentro. Antes
             // colgaba del texto y dejaba de responder en cuanto el mensaje traía
@@ -248,6 +304,27 @@ struct BurbujaMensaje: View {
             // saludo de apertura tampoco ofrecía nada. Desde acá cubre todo lo
             // que se ve como una burbuja, que es lo que la persona aprieta.
             .contextMenu {
+                if admiteReacciones, let onReaccionar {
+                    Menu {
+                        ForEach(Self.emojisReaccion, id: \.self) { emoji in
+                            Button {
+                                onReaccionar(emoji)
+                            } label: {
+                                Text(emoji)
+                            }
+                        }
+                    } label: {
+                        Label("Reaccionar", systemImage: "face.smiling")
+                    }
+                    .accessibilityHint("Elige un emoji para reaccionar")
+                }
+                if admiteReacciones, let onResponderEnHilo {
+                    Button {
+                        onResponderEnHilo()
+                    } label: {
+                        Label("Responder en hilo", systemImage: "bubble.left.and.text.bubble.right")
+                    }
+                }
                 if mensaje.rol == .usuario, let onEditar {
                     Button {
                         onEditar(mensaje.textoEnviado)
@@ -271,13 +348,29 @@ struct BurbujaMensaje: View {
             }
             .background {
                 if mensaje.rol == .usuario {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    formaBurbuja(esquinaPequena: .bottomTrailing)
                         .fill(EdecanTheme.degradado)
                 } else {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    formaBurbuja(esquinaPequena: .bottomLeading)
                         .fill(.ultraThinMaterial)
                 }
             }
+    }
+
+    private func formaBurbuja(esquinaPequena: Corner) -> UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(
+                topLeading: 18,
+                bottomLeading: esquinaPequena == .bottomLeading ? 4 : 18,
+                bottomTrailing: esquinaPequena == .bottomTrailing ? 4 : 18,
+                topTrailing: 18
+            ),
+            style: .continuous
+        )
+    }
+
+    private enum Corner {
+        case bottomLeading, bottomTrailing
     }
 
     private func iconoAdjunto(_ mime: String?) -> String {
@@ -394,6 +487,50 @@ private struct VistaPreviaImagenAdjunta: View {
             }
         }
         .accessibilityLabel("Imagen adjunta: \(attachment.filename)")
+    }
+}
+
+/// Avatar circular del agente en el hilo (~28–32 pt). Identidad Edecán:
+/// degradado de marca + sparkles — no imita mascotas de terceros.
+private struct AvatarAgenteChat: View {
+    var tamanio: CGFloat = 30
+
+    var body: some View {
+        Image(systemName: "sparkles")
+            .font(.system(size: tamanio * 0.38, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: tamanio, height: tamanio)
+            .background(EdecanTheme.degradado, in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+/// Una sola fila silenciosa: avatar + «{Nombre} está trabajando». Sin tarjeta,
+/// sin spinner aparte, sin contador de comandos.
+private struct FilaEstadoTrabajandoView: View {
+    let nombreAgente: String
+
+    private var nombreVisible: String {
+        let limpio = nombreAgente.trimmingCharacters(in: .whitespacesAndNewlines)
+        return limpio.isEmpty ? "Edecán" : limpio
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            AvatarAgenteChat()
+            HStack(spacing: 0) {
+                Text("\(nombreVisible) está ")
+                    .foregroundStyle(.secondary)
+                Text("trabajando")
+                    .foregroundStyle(.primary.opacity(0.88))
+                    .fontWeight(.medium)
+            }
+            .font(.subheadline)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(EstadoTrabajandoChat.etiquetaAccesibilidad(nombreAgente: nombreVisible))
     }
 }
 
@@ -529,145 +666,6 @@ private func cgImagePreviaAcotada(source: CGImageSource, maxPixelSize: CGFloat) 
     return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 }
 
-/// Progreso verificable de una ejecución larga. Solo muestra eventos
-/// operativos públicos (`tool_start/progress/end`), nunca el razonamiento
-/// privado del modelo.
-private struct ProgresoTrabajoView: View {
-    let trabajo: ChatViewModel.Trabajo
-    var mensajeEnCurso: Bool = false
-
-    /// Plegado por defecto UNA VEZ TERMINADO: el detalle de las herramientas es auditoría,
-    /// no la respuesta. Mientras trabaja se queda abierto para que se vea el avance en vivo.
-    @State private var desplegadoManualmente: Bool?
-
-    /// El reloj solo corre si el asistente sigue generando o si hay una
-    /// misión de verdad en planning/running. Un turno ya escrito con el
-    /// check verde no puede seguir sumando.
-    private var relojVivo: Bool {
-        if trabajo.misionEnCurso { return true }
-        return mensajeEnCurso && trabajo.estaActivo
-    }
-
-    private var desplegado: Bool { desplegadoManualmente ?? relojVivo }
-
-    /// "Ejecutó 3 comandos" — el resumen de una línea del modo plegado.
-    private var resumenCorto: String {
-        let n = trabajo.pasos.count
-        if n == 0 { return trabajo.tituloEstado }
-        return n == 1 ? "Ejecutó 1 comando" : "Ejecutó \(n) comandos"
-    }
-
-    var body: some View {
-        Group {
-            if relojVivo {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    contenido
-                }
-            } else {
-                contenido
-            }
-        }
-    }
-
-    private var segundosAMostrar: Int {
-        if relojVivo {
-            return max(0, Int(Date().timeIntervalSince(trabajo.iniciadoEn)))
-        }
-        return trabajo.segundosTranscurridos
-    }
-
-    private var contenido: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    desplegadoManualmente = !desplegado
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if relojVivo {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                    }
-                    Text(desplegado ? trabajo.tituloEstado : resumenCorto)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    if segundosAMostrar > 0 {
-                        Text(duracion(segundosAMostrar))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(desplegado ? 90 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(resumenCorto)
-            .accessibilityHint(desplegado ? "Toca para ocultar el detalle" : "Toca para ver qué hizo")
-
-            if desplegado {
-                ForEach(trabajo.pasos) { paso in
-                    HStack(alignment: .top, spacing: 9) {
-                        icono(paso.estado)
-                            .frame(width: 16, height: 18)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(nombreVisible(paso.nombre))
-                                .font(.caption.weight(.semibold))
-                            if let detalle = paso.detalle, !detalle.isEmpty {
-                                Text(detalle)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(paso.estado == .ejecutando ? 1 : 2)
-                            }
-                        }
-                    }
-                }
-                if let error = trabajo.errorMision, !error.isEmpty {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        .padding(desplegado ? 10 : 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            EdecanTheme.morado.opacity(desplegado ? 0.08 : 0.05),
-            in: RoundedRectangle(cornerRadius: desplegado ? 12 : 10, style: .continuous)
-        )
-    }
-
-    @ViewBuilder
-    private func icono(_ estado: ChatViewModel.Trabajo.Paso.Estado) -> some View {
-        switch estado {
-        case .ejecutando:
-            ProgressView().controlSize(.mini)
-        case .completado:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .error:
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-        }
-    }
-
-    private func nombreVisible(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-            .capitalized
-    }
-
-    private func duracion(_ seconds: Int) -> String {
-        let minutes = seconds / 60
-        let remainder = seconds % 60
-        return minutes > 0 ? "\(minutes)m \(remainder)s" : "\(remainder)s"
-    }
-}
-
 /// Caché de Markdown ya parseado, memoizado por `(id de mensaje, campo,
 /// longitud del texto)`. Sin esto, `BurbujaMensaje` reparseaba el mismo
 /// texto en CADA evaluación de `body` -- y `body` se re-evalúa por razones
@@ -772,6 +770,20 @@ private func textoPlanoParaCopiar(_ texto: String) -> String {
 /// Van al audio; en el párrafo no deben verse — de ninguna, no solo de una lista.
 private func sinSpeechTags(_ texto: String) -> String {
     SpeechTags.ocultar(texto)
+}
+
+/// Evita pintar `link_preview` y la sección «Fuentes» a la vez: `VistaFuentes`
+/// ya consolida todos los hits de `buscar_web`.
+private func bloquesSinFuentesDuplicadas(
+    _ bloques: [ChatBlock],
+    fuentes: [ChatViewModel.Fuente]
+) -> [ChatBlock] {
+    guard !fuentes.isEmpty else { return bloques }
+    let urls = Set(fuentes.map(\.url))
+    return bloques.filter { bloque in
+        guard case .linkPreview(let link) = bloque else { return true }
+        return !urls.contains(link.url)
+    }
 }
 
 /// Render allowlisted de los bloques del contrato v1. Ningun bloque decide
@@ -1976,79 +1988,17 @@ private struct BloqueCodigoView: View {
 
 // MARK: - Fuentes (citas de búsqueda web)
 
-/// Layout de flujo (wrapping) para los chips de fuentes: los coloca uno al
-/// lado del otro y salta de línea cuando no cabe más en el ancho disponible.
-/// iOS 16+ trae el protocolo `Layout`; el deployment target del proyecto es
-/// 26.0, así que no hace falta un fallback.
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        return result.size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrange(
-            proposal: ProposedViewSize(width: bounds.width, height: nil),
-            subviews: subviews
-        )
-        for (index, subview) in subviews.enumerated() {
-            subview.place(
-                at: CGPoint(x: bounds.minX + result.positions[index].x,
-                            y: bounds.minY + result.positions[index].y),
-                proposal: ProposedViewSize(result.sizes[index])
-            )
-        }
-    }
-
-    private struct ArrangeResult {
-        let positions: [CGPoint]
-        let sizes: [CGSize]
-        let size: CGSize
-    }
-
-    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> ArrangeResult {
-        let maxWidth = proposal.width ?? .infinity
-        var positions: [CGPoint] = []
-        var sizes: [CGSize] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var lineHeight: CGFloat = 0
-        var maxX: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            sizes.append(size)
-            if x + size.width > maxWidth && x > 0 {
-                x = 0
-                y += lineHeight + spacing
-                lineHeight = 0
-            }
-            positions.append(CGPoint(x: x, y: y))
-            x += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
-            maxX = max(maxX, x - spacing)
-        }
-        return ArrangeResult(
-            positions: positions,
-            sizes: sizes,
-            size: CGSize(width: min(maxWidth, maxX), height: y + lineHeight)
-        )
-    }
-}
-
-/// Chips discretos de fuentes debajo de la respuesta. "Fuentes · N" como
-/// etiqueta, y cada fuente es un chip tappable que abre el navegador interno
-/// (``NavegadorEnApp``). Con más de 4 fuentes se colapsa y se expande al toque.
+/// Filas tappables de fuentes debajo de la respuesta. Con más de 2 fuentes se
+/// colapsa a una sola fila y un control «Ver N más»; con 2 o menos se muestran
+/// todas sin chrome extra.
 private struct VistaFuentes: View {
     let fuentes: [ChatViewModel.Fuente]
     @State private var expandido = false
     @State private var destinoNavegador: DestinoNavegador?
 
-    private var limiteColapsado: Int { 4 }
     private var fuentesVisibles: [ChatViewModel.Fuente] {
-        expandido ? fuentes : Array(fuentes.prefix(limiteColapsado))
+        let limite = FuentesColapso.cantidadVisible(total: fuentes.count, expandido: expandido)
+        return Array(fuentes.prefix(limite))
     }
 
     var body: some View {
@@ -2056,43 +2006,56 @@ private struct VistaFuentes: View {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 5) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.caption2)
-                    Text("Fuentes · \(fuentes.count)")
-                        .font(.caption2.weight(.semibold))
-                    if fuentes.count > limiteColapsado {
+                if FuentesColapso.debeColapsar(total: fuentes.count) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.caption2)
+                        Text("Fuentes · \(fuentes.count)")
+                            .font(.caption2.weight(.semibold))
                         Spacer(minLength: 0)
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { expandido.toggle() }
-                        } label: {
-                            Text(expandido ? "Ver menos" : "Ver \(fuentes.count - limiteColapsado) más")
+                        if let etiqueta = FuentesColapso.etiquetaExpansion(
+                            total: fuentes.count,
+                            expandido: expandido
+                        ) {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) { expandido.toggle() }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text(etiqueta)
+                                    Image(systemName: expandido ? "chevron.up" : "chevron.down")
+                                        .font(.caption2.weight(.semibold))
+                                }
                                 .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(expandido ? "Contraer fuentes" : "Expandir fuentes")
                         }
-                        .buttonStyle(.plain)
                     }
+                    .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
 
-                FlowLayout(spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     ForEach(fuentesVisibles) { fuente in
                         Button {
                             Haptico.ligero()
                             destinoNavegador = DestinoNavegador(fuente.url)
                         } label: {
-                            HStack(spacing: 5) {
+                            HStack(spacing: 7) {
                                 Image(systemName: "globe")
-                                    .font(.system(size: 10))
-                                Text(fuente.dominio)
+                                Text(tituloVisible(fuente))
                                     .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.bold))
                             }
-                            .font(.caption2)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .tarjetaVidrio(esquina: 8)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(EdecanTheme.morado)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Abrir \(fuente.dominio)")
+                        .accessibilityLabel("Abrir \(tituloVisible(fuente))")
+                        .accessibilityHint("Abre la fuente en el navegador interno")
                     }
                 }
             }
@@ -2100,5 +2063,11 @@ private struct VistaFuentes: View {
                 NavegadorEnApp(url: destino.url)
             }
         }
+    }
+
+    private func tituloVisible(_ fuente: ChatViewModel.Fuente) -> String {
+        let titulo = fuente.titulo.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !titulo.isEmpty { return titulo }
+        return fuente.dominio
     }
 }

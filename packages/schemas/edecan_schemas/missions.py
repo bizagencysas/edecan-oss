@@ -56,6 +56,7 @@ class MissionOut(BaseModel):
     id: UUID
     tenant_id: UUID
     user_id: UUID
+    owner_agent_id: UUID | None = None
     objetivo: str
     status: MissionStatus = "planning"
     plan: list[dict[str, Any]] | None = None

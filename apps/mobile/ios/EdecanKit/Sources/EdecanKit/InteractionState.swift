@@ -175,6 +175,7 @@ public struct ChatLocalStateStore {
     private enum Key {
         static let currentConversation = "\(ChatLocalStateStore.storagePrefix)currentConversationId"
         static let draftPrefix = "\(ChatLocalStateStore.storagePrefix)draft."
+        static let lastReadPrefix = "\(ChatLocalStateStore.storagePrefix)lastRead."
     }
 
     private let defaults: UserDefaults
@@ -207,6 +208,16 @@ public struct ChatLocalStateStore {
         defaults.string(forKey: draftKey(conversationId)) ?? ""
     }
 
+    /// Marca de lectura local por conversación. Los avisos proactivos del
+    /// compañero comparan `createdAt` del mensaje contra este valor.
+    public func lastReadAt(conversationId: String) -> Date? {
+        defaults.object(forKey: lastReadKey(conversationId)) as? Date
+    }
+
+    public func markRead(conversationId: String, at date: Date = Date()) {
+        defaults.set(date, forKey: lastReadKey(conversationId))
+    }
+
     public func clearAll() {
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.storagePrefix) {
             defaults.removeObject(forKey: key)
@@ -215,5 +226,9 @@ public struct ChatLocalStateStore {
 
     private func draftKey(_ conversationId: String?) -> String {
         "\(Key.draftPrefix)\(conversationId ?? "new")"
+    }
+
+    private func lastReadKey(_ conversationId: String) -> String {
+        "\(Key.lastReadPrefix)\(conversationId)"
     }
 }

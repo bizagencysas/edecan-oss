@@ -30,6 +30,21 @@ def test_app_intent_abre_deep_link_sin_auto_enviar() -> None:
     assert "SearchEdecanConversationsIntent" in source
 
 
+def test_app_intents_ejecutan_agua_serie_y_aprobar_con_confirmacion() -> None:
+    acciones = (ROOT / "EdecanApp/EdecanAccionesIntents.swift").read_text(encoding="utf-8")
+    shortcuts = (ROOT / "EdecanApp/EdecanAppIntents.swift").read_text(encoding="utf-8")
+    assert "RegistrarAguaEdecanIntent" in acciones
+    assert "RegistrarSerieEdecanIntent" in acciones
+    assert "AprobarPendienteEdecanIntent" in acciones
+    assert "openAppWhenRun = false" in acciones
+    assert "requestConfirmation" in acciones
+    assert "requiresAuthentication" in acciones
+    assert "pendienteParaAprobar" in acciones
+    assert "Di que sí" not in shortcuts
+    assert "RegistrarAguaEdecanIntent" in shortcuts
+    assert "AprobarPendienteEdecanIntent" in shortcuts
+
+
 def test_widget_muestra_payloads_compartidos_y_abre_deep_link() -> None:
     source = (ROOT / "EdecanWidgets/EdecanWidgetsBundle.swift").read_text(encoding="utf-8")
 

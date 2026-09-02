@@ -16,6 +16,7 @@ importen paquetes hermanos.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -27,8 +28,16 @@ from edecan_core import Tool, ToolContext, ToolResult
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_toolkit.research import get_tenant_search_provider
 
+from ._chromium_bootstrap import asegurar_chromium_instalado
+from ._driver_macos import asegurar_driver_playwright_macos
 from .extract import ExtractedPage, extract_page, render_markdown
-from .fetch import get_fetcher
+from .fetch import (
+    _cadena_de_redirects,
+    _error_navegacion_bloqueada,
+    _manejar_ruta_playwright,
+    _validar_navegacion,
+    get_fetcher,
+)
 from .policy import check_navigation
 
 logger = logging.getLogger(__name__)
@@ -391,3 +400,373 @@ def _tabla_markdown(filas: list[dict[str, Any]]) -> str:
         disponible = "Sí" if f.get("disponible") else "No"
         lineas.append(f"| {f['tienda']} | {precio} | {disponible} | {f['url']} |")
     return "\n".join(lineas)
+
+
+# ---------------------------------------------------------------------------
+# `navegar_web_interactivo` (product design"BROWSER USE")
+# ---------------------------------------------------------------------------
+#
+# La única herramienta del navegador que ESCRIBE (clics/teclado/selección)
+# sobre una página real, vía Playwright/Chromium. Es `dangerous=True` y exige
+# el flag `tools.browser` (igual que las de solo lectura), pero además:
+#
+# - Respeta el MISMO guardrail de navegación que las tools de solo lectura:
+#   `check_navigation` sobre la URL pedida (checkout/pago/login y SSRF se
+#   rechazan antes de levantar nada) y, durante la ejecución, revalida CADA
+#   navegación del frame principal con el handler de `page.route`
+#   (`_manejar_ruta_playwright`) más la revalidación final de
+#   `_cadena_de_redirects` — exactamente la misma defensa que
+#   `PlaywrightFetcher.fetch()`.
+# - Si Playwright (extra opcional) no está instalado, devuelve un error claro
+#   — nunca un éxito falso (`AGENTS.md` §13.1: sin fabricar resultados).
+#
+# Cada `run()` levanta su propio Chromium y ejecuta UNA acción, con el mismo
+# criterio de "sin sesión persistente" que `HttpxFetcher`: el navegador se
+# cierra al final del turno, no queda estado entre llamadas.
+
+_ACCIONES_INTERACTIVAS = frozenset(
+    {"click", "type", "select", "scroll", "screenshot", "search_page"}
+)
+
+_MAX_RESULTADOS_SEARCH_PAGE = 20
+
+
+def _validar_args_accion(
+    accion: str, *, selector: str, texto: str, opcion: str
+) -> str | None:
+    """Valida los argumentos de una acción interactiva ANTES de tocar
+    Playwright. Devuelve `None` si están completos, o un mensaje de error
+    listo para el usuario (mismo criterio "problema de negocio → resultado,
+    no excepción" del resto del módulo)."""
+    if accion == "click" and not selector:
+        return "La acción «click» necesita un `selector`."
+    if accion == "type":
+        if not selector:
+            return "La acción «type» necesita un `selector`."
+        if not texto:
+            return "La acción «type» necesita `texto` (qué escribir)."
+    if accion == "select":
+        if not selector:
+            return "La acción «select» necesita un `selector`."
+        if not opcion:
+            return "La acción «select» necesita `opcion` (valor a elegir)."
+    if accion == "search_page" and not selector and not texto:
+        return "La acción «search_page» necesita `selector` o `texto` (qué buscar)."
+    return None
+
+
+async def _accion_playwright(
+    page: Any, accion: str, *, selector: str, texto: str, opcion: str
+) -> dict[str, Any]:  # pragma: no cover - requiere el extra opcional Playwright
+    """Ejecuta UNA acción sobre `page` ya navegada y devuelve `{content, data}`."""
+    if accion == "click":
+        await page.click(selector)
+        return {"content": f"Hice click en «{selector}».", "data": {}}
+    if accion == "type":
+        await page.fill(selector, texto)
+        return {"content": f"Escribí en «{selector}».", "data": {}}
+    if accion == "select":
+        await page.select_option(selector, opcion)
+        return {"content": f"Seleccioné «{opcion}» en «{selector}».", "data": {}}
+    if accion == "scroll":
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        return {"content": "Hice scroll al final de la página.", "data": {}}
+    if accion == "screenshot":
+        png = await page.screenshot(full_page=True)
+        if not png:
+            # La Ley de la Sección 5 de AGENTS.md: una captura de 0 bytes NO es
+            # una captura — se reporta el fallo, nunca un éxito vacío.
+            raise RuntimeError("la captura devolvió 0 bytes")
+        return {
+            "content": "Captura de pantalla tomada.",
+            "data": {
+                "screenshot_b64": base64.b64encode(png).decode("ascii"),
+                "mime": "image/png",
+            },
+        }
+    # search_page
+    if selector:
+        elementos = await page.query_selector_all(selector)
+        textos: list[str] = []
+        for elemento in elementos[:_MAX_RESULTADOS_SEARCH_PAGE]:
+            textos.append((await elemento.inner_text()).strip())
+        return {
+            "content": f"Encontré {len(elementos)} elemento(s) para «{selector}».",
+            "data": {"coincidencias": len(elementos), "textos": textos},
+        }
+    cuerpo = await page.inner_text("body")
+    presente = texto in cuerpo
+    return {
+        "content": f"El texto «{texto}» {'aparece' if presente else 'NO aparece'} en la página.",
+        "data": {"encontrado": presente},
+    }
+
+
+async def _ejecutar_interaccion(
+    ctx: ToolContext,
+    async_playwright: Any,
+    url: str,
+    accion: str,
+    *,
+    selector: str,
+    texto: str,
+    opcion: str,
+) -> dict[str, Any]:  # pragma: no cover - requiere el extra opcional Playwright
+    """Navega a `url` y ejecuta `accion` con Playwright/Chromium real.
+
+    Replica el guardrail SSRF/checkout de `PlaywrightFetcher.fetch()`: registra
+    `page.route("**/*", ...)` ANTES de `goto()`, revalida cada navegación del
+    frame principal vía `_manejar_ruta_playwright`, y como defensa en
+    profundidad revalida `page.url` + `_cadena_de_redirects` tras `goto()` y
+    tras la acción. Cualquier bloqueo lanza `httpx.HTTPError`
+    (`_error_navegacion_bloqueada`), el mismo tipo que atrapa `run()`.
+    """
+    user_agent = str(getattr(ctx.settings, "BROWSER_USER_AGENT", "EdecanBot/1.0"))
+    timeout_seg = float(getattr(ctx.settings, "BROWSER_TIMEOUT_SECONDS", 20.0))
+    motivos_bloqueo: list[str] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page(user_agent=user_agent)
+
+            async def _handler(route: Any) -> None:
+                motivo = await _manejar_ruta_playwright(
+                    route, main_frame=page.main_frame, settings=ctx.settings
+                )
+                if motivo is not None:
+                    motivos_bloqueo.append(motivo)
+
+            await page.route("**/*", _handler)
+
+            try:
+                response = await page.goto(url, timeout=timeout_seg * 1000)
+            except Exception as exc:
+                if motivos_bloqueo:
+                    raise _error_navegacion_bloqueada(url, motivos_bloqueo[0]) from exc
+                raise
+
+            if motivos_bloqueo:
+                raise _error_navegacion_bloqueada(url, motivos_bloqueo[0])
+
+            for candidata in _cadena_de_redirects(page.url, response):
+                motivo = await _validar_navegacion(candidata, ctx.settings)
+                if motivo is not None:
+                    raise _error_navegacion_bloqueada(candidata, motivo)
+
+            resultado = await _accion_playwright(
+                page, accion, selector=selector, texto=texto, opcion=opcion
+            )
+
+            if motivos_bloqueo:
+                raise _error_navegacion_bloqueada(page.url, motivos_bloqueo[-1])
+
+            resultado["data"]["url_final"] = page.url
+            return resultado
+        finally:
+            await browser.close()
+
+
+async def _intentar_accion(
+    ctx: ToolContext,
+    url: str,
+    accion: str,
+    *,
+    selector: str,
+    texto: str,
+    opcion: str,
+) -> tuple[ToolResult, bool, str]:
+    """Ejecuta la acción interactiva y devuelve `(resultado, exito, causa)`.
+
+    Extraído de `NavegarWebInteractivoTool.run` para que el capturador de
+    enseñanza decida, con el MISMO veredicto, si registra una «Acción» o una
+    «Decisión» — nunca se fabrica éxito (AGENTS.md §13.1). `exito` es `True`
+    solo si la acción se ejecutó; `causa` (no vacía si `exito` es `False`) es
+    el motivo del fallo, listo para mostrar o persistir.
+    """
+    # Guardrail de navegación ANTES de levantar Chromium (mismo portero que
+    # las tools de solo lectura): checkout/pago/login y SSRF se rechazan acá.
+    veredicto = await check_navigation(url, ctx.settings)
+    if not veredicto.allowed:
+        causa = veredicto.reason or f"No puedo navegar «{url}»."
+        return ToolResult(content=causa), False, causa
+
+    # Import diferido y honesto: sin el extra opcional de Playwright se
+    # devuelve un error claro — nunca un éxito falso.
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        causa = (
+            "La navegación interactiva necesita Playwright, que no está instalado. "
+            "Instálalo con `uv pip install 'edecan-browser[playwright]'` y luego "
+            "`playwright install chromium` (ver docs/navegador.md)."
+        )
+        return ToolResult(content=causa), False, causa
+
+    # En la app congelada el driver node extraído pierde sus entitlements de
+    # JIT y V8 muere antes de arrancar; se re-firma una vez, best-effort
+    # (`_driver_macos` documenta la causa completa).
+    asegurar_driver_playwright_macos()
+    asegurar_chromium_instalado()
+
+    try:
+        resultado = await _ejecutar_interaccion(
+            ctx,
+            async_playwright,
+            url,
+            accion,
+            selector=selector,
+            texto=texto,
+            opcion=opcion,
+        )
+    except httpx.HTTPError as exc:
+        causa = f"No pude navegar «{url}»: {exc}."
+        return ToolResult(content=causa), False, causa
+    except Exception as exc:  # pragma: no cover - fallas de Playwright/red
+        logger.exception("Falla en navegación interactiva de %s", url)
+        causa = f"La acción «{accion}» sobre «{url}» falló: {exc}."
+        return ToolResult(content=causa), False, causa
+
+    return ToolResult(content=resultado["content"], data=resultado["data"]), True, ""
+
+
+def _recorder_teach() -> Any:
+    """Resuelve `capturar_paso_navegacion` de forma diferida y best-effort.
+
+    `edecan_companion` (la app que captura pasos de enseñanza) NO es una
+    dependencia de `edecan_browser`; el recorder solo existe cuando el
+    navegador corre dentro del companion. Import diferido y guardeado: si el
+    paquete no es importable (p. ej. `navegar_web_interactivo` hospedado en la
+    API), se devuelve `None` y la captura se omite sin tocar la acción.
+    """
+    try:
+        from edecan_companion.teach_capture import capturar_paso_navegacion
+
+        return capturar_paso_navegacion
+    except ImportError:
+        logger.debug("Recorder de enseñanza no disponible (edecan_companion no importable).")
+        return None
+
+
+async def _capturar_teach_step(
+    teach_session_id: str,
+    *,
+    accion: str,
+    url: str,
+    selector: str,
+    decision: str,
+    output: str,
+) -> None:
+    """Registra el resultado de `navegar_web_interactivo` en la sesión de
+    enseñanza activa (product design), best-effort: si el recorder no está
+    disponible o el POST falla, la acción del navegador YA terminó y su
+    resultado se devuelve igual — la captura jamás falla la navegación.
+    """
+    recorder = _recorder_teach()
+    if recorder is None:
+        return
+    try:
+        await recorder(
+            teach_session_id,
+            accion=accion,
+            url=url,
+            selector=selector,
+            decision=decision,
+            output=output,
+        )
+    except Exception as exc:  # pragma: no cover - red/API abajo
+        logger.warning(
+            "No se pudo registrar el paso de enseñanza en «%s»: %s", teach_session_id, exc
+        )
+
+
+class NavegarWebInteractivoTool(Tool):
+    name = "navegar_web_interactivo"
+    description = (
+        "Abre una URL pública con un navegador real (Playwright/Chromium) y ejecuta UNA "
+        "acción interactiva: click, type, select, scroll, screenshot o search_page. "
+        "Escribe/clics sobre la página, por eso es peligrosa y exige confirmación. "
+        "Respeta los mismos guardrails que las tools de solo lectura: NUNCA navega "
+        "checkouts, pagos, inicios de sesión ni direcciones privadas (SSRF)."
+    )
+    category = "browser"
+    risk_level = "high"
+    latency_class = "slow"
+    dangerous = True
+    requires_flags = frozenset({_FLAG_BROWSER})
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL http(s) a abrir antes de la acción."},
+            "accion": {
+                "type": "string",
+                "enum": sorted(_ACCIONES_INTERACTIVAS),
+                "description": "Acción a ejecutar sobre la página ya abierta.",
+            },
+            "selector": {
+                "type": "string",
+                "description": "Selector CSS del elemento (click/type/select/search_page).",
+            },
+            "texto": {
+                "type": "string",
+                "description": "Texto a escribir (type) o a buscar en la página (search_page).",
+            },
+            "opcion": {
+                "type": "string",
+                "description": "Valor de la opción a elegir (select).",
+            },
+            "teach_session_id": {
+                "type": "string",
+                "description": (
+                    "Opcional: si estás enseñando una tarea (product design), el id de la "
+                    "sesión de enseñanza donde registrar este paso al terminar la acción."
+                ),
+            },
+        },
+        "required": ["url", "accion"],
+    }
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        url = str(args.get("url", "")).strip()
+        teach_session_id = str(args.get("teach_session_id", "") or "").strip()
+        if not url:
+            return ToolResult(content="Dime qué URL quieres que abra.")
+
+        accion = str(args.get("accion", "")).strip().lower()
+        if accion not in _ACCIONES_INTERACTIVAS:
+            return ToolResult(
+                content=(
+                    f"Acción «{accion}» no soportada. Acciones disponibles: "
+                    f"{', '.join(sorted(_ACCIONES_INTERACTIVAS))}."
+                )
+            )
+
+        selector = str(args.get("selector", "") or "").strip()
+        texto = str(args.get("texto", "") or "").strip()
+        opcion = str(args.get("opcion", "") or "").strip()
+
+        error_args = _validar_args_accion(accion, selector=selector, texto=texto, opcion=opcion)
+        if error_args is not None:
+            return ToolResult(content=error_args)
+
+        resultado, exito, causa = await _intentar_accion(
+            ctx, url, accion, selector=selector, texto=texto, opcion=opcion
+        )
+
+        # Enseñar-haciendo (product design): si la acción corre dentro de una
+        # sesión de enseñanza activa, se registra su resultado como paso
+        # estructurado. Éxito → «Acción»; fracaso → «Decisión» (`accion=""`,
+        # `decision=causa`) — nunca se fabrica un éxito. La captura es
+        # best-effort: si falla, la acción del navegador ya terminó y su
+        # resultado se devuelve igual.
+        if teach_session_id:
+            await _capturar_teach_step(
+                teach_session_id,
+                accion=accion if exito else "",
+                url=url,
+                selector=selector if exito else "",
+                decision="" if exito else causa,
+                output=resultado.content if exito else "",
+            )
+
+        return resultado

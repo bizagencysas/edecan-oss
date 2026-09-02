@@ -20,7 +20,10 @@ async def test_reasoning_budget_retry_on_empty_content_length() -> None:
         max_tokens_vistos.append(body.get("max_tokens"))
 
         if intentos == 1:
-            # Content vacío y finish_reason length
+            # Content y reasoning_content vacíos + finish_reason length: el
+            # razonamiento se comió todo el presupuesto y no quedó texto útil.
+            # (Si viniera reasoning_content, el rescate de Scout lo trataría
+            # como texto y el reintento no aplicaría.)
             return httpx.Response(
                 200,
                 json={
@@ -29,7 +32,7 @@ async def test_reasoning_budget_retry_on_empty_content_length() -> None:
                             {
                                 "message": {
                                     "content": "",
-                                    "reasoning_content": "Pensando demasiado tiempo...",
+                                    "reasoning_content": "",
                                 },
                                 "finish_reason": "length",
                             }

@@ -208,6 +208,14 @@ class Repo(Protocol):
     async def resolve_main_conversation(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
     ) -> Row: ...
+    async def list_messages(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        limit: int = 50,
+        after: datetime | None = None,
+    ) -> list[Row]: ...
     async def add_message(
         self,
         *,
@@ -228,6 +236,49 @@ class Repo(Protocol):
     async def has_phone_call_event(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str
     ) -> bool: ...
+
+    async def get_local_owner(self) -> Row | None: ...
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> Row | None: ...
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        recipient_name: str | None = None,
+        status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
+        provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
+        voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
+    ) -> Row: ...
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
+    ) -> Row | None: ...
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Row: ...
 
     # -- conectores / oauth (`sync_connector`) ---------------------------------------
     async def list_expiring_oauth_tokens(
@@ -544,6 +595,35 @@ class SqlRepo:
         assert existing is not None
         return existing
 
+    async def list_messages(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        limit: int = 50,
+        after: datetime | None = None,
+    ) -> list[Row]:
+        # Espeja `apps/api/edecan_api/repo.py::list_messages` (ver comentario
+        # allí sobre desempate por `id` y filtro `after` dentro del subselect).
+        after_clause = "AND created_at > :after" if after is not None else ""
+        return await self._all(
+            f"""
+            SELECT * FROM (
+                SELECT * FROM messages
+                WHERE tenant_id = :tenant_id AND conversation_id = :conversation_id {after_clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT :limit
+            ) recientes
+            ORDER BY created_at ASC, id ASC
+            """,
+            {
+                "tenant_id": tenant_id,
+                "conversation_id": conversation_id,
+                "limit": limit,
+                "after": after,
+            },
+        )
+
     async def add_message(
         self,
         *,
@@ -627,6 +707,152 @@ class SqlRepo:
             },
         )
         return row is not None
+
+    async def get_local_owner(self) -> Row | None:
+        return await self._first(
+            """
+            SELECT u.id AS user_id, u.email, t.id AS tenant_id, t.plan_key
+            FROM local_installation li
+            JOIN users u ON u.id = li.owner_user_id
+            JOIN tenants t ON t.id = li.owner_tenant_id
+            JOIN memberships m
+              ON m.user_id = li.owner_user_id
+             AND m.tenant_id = li.owner_tenant_id
+             AND m.role = 'owner'
+            WHERE li.installation_key = 'local' AND t.status = 'active'
+            """,
+            {},
+        )
+
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM phone_calls
+            WHERE provider = :provider AND external_id = :external_id
+            """,
+            {"provider": provider, "external_id": external_id},
+        )
+
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        recipient_name: str | None = None,
+        status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
+        provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
+        voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO phone_calls (
+                id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
+                recipient_name, goal, agent_template_id, agent_template_name, agent_name,
+                agent_prompt, opening_message, voice_id, agent_operating_profile,
+                status, provider, external_id, provider_call_sid, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
+                :to_e164, :recipient_name, :goal, :agent_template_id, :agent_template_name,
+                :agent_name, :agent_prompt, :opening_message, :voice_id,
+                CAST(:agent_operating_profile AS jsonb), :status, :provider, :external_id,
+                :provider_call_sid, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": new_uuid(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "direction": direction,
+                "from_e164": from_e164,
+                "to_e164": to_e164,
+                "recipient_name": recipient_name,
+                "goal": goal,
+                "agent_template_id": agent_template_id,
+                "agent_template_name": agent_template_name,
+                "agent_name": agent_name,
+                "agent_prompt": agent_prompt,
+                "opening_message": opening_message,
+                "voice_id": voice_id,
+                "agent_operating_profile": to_jsonb(agent_operating_profile),
+                "status": status,
+                "provider": provider,
+                "external_id": external_id,
+                "provider_call_sid": provider_call_sid,
+                "now": utcnow(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
+    ) -> Row | None:
+        return await self._first(
+            """
+            UPDATE phone_calls
+            SET summary = :summary ::jsonb, summary_generated_at = :now, updated_at = :now
+            WHERE tenant_id = :tenant_id AND id = :id
+              AND (
+                summary IS NULL
+                OR COALESCE(summary->'transcript'->>'available', 'false') <> 'true'
+              )
+            RETURNING *
+            """,
+            {
+                "tenant_id": tenant_id,
+                "id": call_id,
+                "summary": to_jsonb(summary),
+                "now": utcnow(),
+            },
+        )
+
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO phone_call_events (
+                id, tenant_id, call_id, event_type, payload, occurred_at, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :call_id, :event_type, :payload ::jsonb, :now, :now, :now
+            ) RETURNING *
+            """,
+            {
+                "id": new_uuid(),
+                "tenant_id": tenant_id,
+                "call_id": call_id,
+                "event_type": event_type,
+                "payload": to_jsonb(payload or {}),
+                "now": utcnow(),
+            },
+        )
+        assert row is not None
+        return row
 
     # -- conectores / oauth -----------------------------------------------------------------
 
@@ -821,20 +1047,27 @@ class SqlRepo:
         embedding: list[float] | None,
         confidence: float = 0.8,
         expires_at: datetime | None = None,
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> Row:
         """Inserta un `memory_item` nuevo (mismas columnas que
         `edecan_api.repo.SqlRepo.add_memory`), con un `embedding` YA calculado
         por el llamador -a diferencia de `add_memory`, que lo calcula uno por
         uno, `memory_consolidate` embebe todos los ítems extraídos en un solo
-        batch (`Embedder.embed`), así que aquí solo se inserta."""
+        batch (`Embedder.embed`), así que aquí solo se inserta.
+
+        `namespace`/`source_trust` (migración `0052_memory_namespaces`,
+        directiva §50-54) nacen en 'user'/'trusted': la consolidación etiqueta
+        la memoria del usuario plano, no la de un agente."""
         row = await self._first(
             """
             INSERT INTO memory_items (
                 id, tenant_id, user_id, kind, content, embedding, importance,
-                confidence, source, expires_at, created_at, updated_at
+                confidence, source, namespace, source_trust, expires_at, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :kind, :content, :embedding ::vector,
-                :importance, :confidence, :source, :expires_at, :now, :now
+                :importance, :confidence, :source, :namespace, :source_trust,
+                :expires_at, :now, :now
             )
             RETURNING *
             """,
@@ -848,6 +1081,8 @@ class SqlRepo:
                 "importance": importance,
                 "confidence": confidence,
                 "source": source,
+                "namespace": namespace,
+                "source_trust": source_trust,
                 "expires_at": expires_at,
                 "now": utcnow(),
             },

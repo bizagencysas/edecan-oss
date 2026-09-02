@@ -821,6 +821,7 @@ def revisar(
     banco_privado: str = "",
     banco_es_identidad_privada: bool = True,
     prohibir_numeros_extensos: bool = False,
+    primera_persona_autorizada: bool = False,
 ) -> list[str]:
     """Devuelve las violaciones encontradas en ``texto``; vacía significa que pasa.
 
@@ -870,6 +871,12 @@ def revisar(
     """
     clases_visibles = {"dura"} if permisivo else {"dura", "mecanica", "estilo"}
     encontradas = list(_violaciones_clasificadas(texto, plataforma))
+    if primera_persona_autorizada:
+        encontradas = [
+            (clase, mensaje)
+            for clase, mensaje in encontradas
+            if mensaje != _MENSAJE_PRIMERA_PERSONA
+        ]
     nombre_filtrado = (
         _menciona_nombre_del_banco(texto, _nombres_propios_del_banco(banco_privado))
         if banco_es_identidad_privada

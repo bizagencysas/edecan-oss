@@ -235,20 +235,28 @@ def test_accion_def_discrimina_agent_instruction_y_create_linkedin_post():
     assert isinstance(accion, AgentInstructionAccion)
     assert accion.agente is None
 
-    # Segunda variante (paridad REFERENCIA, ver docstring del módulo): encola
+    # Segunda variante (paridad reference implementation, ver docstring del módulo): encola
     # `create_linkedin_post` directo, sin turno de agente.
     post = AccionDefAdapter.validate_python(
-        {
-            "kind": "create_linkedin_post",
-            "destino": "organization",
-            "seed_id": "li_organization_09h",
-        }
+        {"kind": "create_linkedin_post", "destino": "acme", "seed_id": "li_acme_09h"}
     )
     assert isinstance(post, CreateLinkedinPostAccion)
-    assert post.destino == "organization"
+    assert post.destino == "acme"
     assert post.tema is None
     assert post.con_imagen is True
-    assert post.seed_id == "li_organization_09h"
+    assert post.seed_id == "li_acme_09h"
+    assert post.fase is None
+
+    scout = AccionDefAdapter.validate_python(
+        {
+            "kind": "create_linkedin_post",
+            "destino": "personal",
+            "seed_id": "li_personal_11h",
+            "fase": "scout",
+        }
+    )
+    assert isinstance(scout, CreateLinkedinPostAccion)
+    assert scout.fase == "scout"
 
 
 def test_accion_def_kind_faltante_ya_no_infiere_agent_instruction():

@@ -52,7 +52,7 @@ struct SecurePreviewSheet: View {
     }
 }
 
-private struct ImagenConZoom: View {
+fileprivate struct ImagenConZoom: View {
     let image: UIImage
     @State private var escala: CGFloat = 1
     @State private var escalaBase: CGFloat = 1
@@ -116,8 +116,11 @@ private struct ImagenConZoom: View {
     }
 }
 
-private struct ArtifactPreview: View {
-    enum State {
+fileprivate struct ArtifactPreview: View {
+    // "Estado" y no "State": un `enum State` local sombrea el wrapper `@State`
+    // de SwiftUI y Swift 6 lo rechaza ("enum 'State' cannot be used as an
+    // attribute").
+    enum Estado {
         case loading
         case ready(DownloadedArtifact)
         case failed(String)
@@ -125,7 +128,7 @@ private struct ArtifactPreview: View {
 
     let artifact: ArtifactRef
     let client: APIClient?
-    @State private var state: State = .loading
+    @State private var state: Estado = .loading
     @State private var shareURL: URL?
 
     var body: some View {
@@ -229,7 +232,7 @@ private struct ArtifactPreview: View {
     }
 }
 
-private struct PDFPreview: UIViewRepresentable {
+fileprivate struct PDFPreview: UIViewRepresentable {
     let data: Data
 
     func makeUIView(context: Context) -> PDFView {
@@ -247,7 +250,7 @@ private struct PDFPreview: UIViewRepresentable {
 /// Renderiza un artefacto HTML ya descargado sin darle acceso al dispositivo
 /// ni a Internet. CSS e imágenes ``data:`` funcionan; scripts, enlaces,
 /// iframes y recursos remotos quedan bloqueados.
-private struct LocalHTMLPreview: UIViewRepresentable {
+fileprivate struct LocalHTMLPreview: UIViewRepresentable {
     let data: Data
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -304,7 +307,7 @@ private struct LocalHTMLPreview: UIViewRepresentable {
     }
 }
 
-private struct SafeWebPreview: UIViewRepresentable {
+fileprivate struct SafeWebPreview: UIViewRepresentable {
     let url: URL
 
     func makeCoordinator() -> Coordinator { Coordinator() }

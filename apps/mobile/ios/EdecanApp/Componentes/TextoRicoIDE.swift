@@ -48,6 +48,7 @@ struct TextoRicoIDE: View {
                 case .texto(_, let contenido):
                     Text(textoMarkdown(contenido))
                         .font(.subheadline)
+                        .foregroundStyle(IDETheme.texto)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 case .tabla(_, let tabla):
@@ -91,6 +92,7 @@ struct TablaRicaView: View {
             if let titulo, !titulo.isEmpty {
                 Text(titulo)
                     .font(.subheadline.bold())
+                    .foregroundStyle(IDETheme.texto)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -128,10 +130,10 @@ struct TablaRicaView: View {
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .background(IDETheme.superficie, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.primary.opacity(0.07))
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(IDETheme.superficieBorde)
         )
     }
 
@@ -139,7 +141,7 @@ struct TablaRicaView: View {
         HStack(spacing: 8) {
             Text("\(tabla.filas.count) \(tabla.filas.count == 1 ? "fila" : "filas") · \(tabla.encabezados.count) columnas")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(IDETheme.textoSuave)
             Spacer(minLength: 6)
             Picker("Cómo ver la tabla", selection: $vista) {
                 ForEach(VistaDeTabla.allCases, id: \.self) { opcion in
@@ -178,7 +180,7 @@ struct TablaRicaView: View {
     private func celda(_ valor: String, columna: Int, esEncabezado: Bool, fila: Int) -> some View {
         Text(valor.isEmpty ? "—" : valor)
             .font(esEncabezado ? .caption.bold() : .caption)
-            .foregroundStyle(esEncabezado ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+            .foregroundStyle(esEncabezado ? IDETheme.textoSuave : IDETheme.texto)
             .multilineTextAlignment(alineacionTexto(columna))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
@@ -188,8 +190,8 @@ struct TablaRicaView: View {
     }
 
     private func fondo(esEncabezado: Bool, fila: Int) -> Color {
-        if esEncabezado { return Color.primary.opacity(0.06) }
-        return fila.isMultiple(of: 2) ? Color.primary.opacity(0.025) : .clear
+        if esEncabezado { return IDETheme.superficieBorde.opacity(0.75) }
+        return fila.isMultiple(of: 2) ? IDETheme.superficieBorde.opacity(0.35) : .clear
     }
 
     private func alineacionTexto(_ columna: Int) -> TextAlignment {
@@ -215,7 +217,7 @@ struct TablaRicaView: View {
     private func aviso(_ texto: String, destacado: Bool = false) -> some View {
         Text(texto)
             .font(.caption2)
-            .foregroundStyle(destacado ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
+            .foregroundStyle(destacado ? AnyShapeStyle(IDETheme.naranja) : AnyShapeStyle(IDETheme.textoSuave))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -352,6 +354,7 @@ private struct GraficaIDEView: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(bloque.title)
                 .font(.subheadline.bold())
+                .foregroundStyle(IDETheme.texto)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let grafica = bloque.grafica {
@@ -372,7 +375,7 @@ private struct GraficaIDEView: View {
                 // equivalente, nunca a un hueco en blanco.
                 Text(bloque.fallbackText)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(IDETheme.textoSuave)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -382,10 +385,10 @@ private struct GraficaIDEView: View {
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .background(IDETheme.superficie, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.primary.opacity(0.07))
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(IDETheme.superficieBorde)
         )
     }
 
@@ -398,7 +401,7 @@ private struct GraficaIDEView: View {
     private func pie(_ texto: String, destacado: Bool = false) -> some View {
         Text(texto)
             .font(.caption2)
-            .foregroundStyle(destacado ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
+            .foregroundStyle(destacado ? AnyShapeStyle(IDETheme.naranja) : AnyShapeStyle(IDETheme.textoSuave))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

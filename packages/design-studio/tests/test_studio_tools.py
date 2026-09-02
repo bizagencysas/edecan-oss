@@ -307,11 +307,18 @@ def test_registry_and_cost_boundary_are_complete() -> None:
 
 def test_premium_schema_contains_paid_generation() -> None:
     schema = UsarEstudioCreativoPremiumTool.input_schema
-    natural, expert = schema["oneOf"]
-    assert natural["required"] == ["pedido"]
-    assert natural["properties"]["archivos"]["type"] == "array"
-    assert "fydesign_video_ad" in expert["properties"]["capacidad"]["enum"]
-    assert "fydesign_train_face" in expert["properties"]["capacidad"]["enum"]
+    # OpenAI-compatible: schema plano `type: object`, SIN oneOf al nivel
+    # superior (un `oneOf` arriba hace que el proveedor devuelva 400).
+    assert schema["type"] == "object"
+    assert "oneOf" not in schema
+    assert "anyOf" not in schema
+    properties = schema["properties"]
+    assert "fydesign_video_ad" in properties["capacidad"]["enum"]
+    assert "fydesign_train_face" in properties["capacidad"]["enum"]
+    # `archivos` admite lista (petición natural) u objeto (vía experta) vía
+    # `anyOf` anidado, que sí es válido para los proveedores compatibles.
+    assert properties["archivos"]["anyOf"][0]["type"] == "array"
+    assert properties["archivos"]["anyOf"][1]["type"] == "object"
 
 
 def test_project_schema_exposes_mockup_recreation_inputs() -> None:

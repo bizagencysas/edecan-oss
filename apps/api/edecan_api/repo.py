@@ -309,6 +309,8 @@ class Repo(Protocol):
         goal: str,
         recipient_name: str | None = None,
         status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
         agent_template_name: str | None = None,
@@ -323,6 +325,9 @@ class Repo(Protocol):
     ) -> list[Row]: ...
     async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None: ...
     async def get_phone_call_by_provider_sid(self, *, provider_call_sid: str) -> Row | None: ...
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> Row | None: ...
     async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None: ...
     async def update_phone_call(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, fields: dict[str, Any]
@@ -365,6 +370,7 @@ class Repo(Protocol):
         kind: str,
         quantity: float,
         meta: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
     ) -> None: ...
     async def sum_usage_since(
         self, *, tenant_id: uuid.UUID, kind: str, since: datetime
@@ -372,12 +378,19 @@ class Repo(Protocol):
     async def sum_usage_by_kind_since(
         self, *, tenant_id: uuid.UUID, since: datetime
     ) -> dict[str, float]: ...
+    async def sum_cost_usd_since(self, *, tenant_id: uuid.UUID, since: datetime) -> float: ...
     async def sum_usage_all_tenants_since(self, *, since: datetime) -> list[Row]: ...
     async def quality_snapshot_all_tenants_since(self, *, since: datetime) -> Row: ...
 
     # -- memoria --------------------------------------------------------------
     async def list_memory(
-        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, q: str | None, k: int
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        q: str | None,
+        k: int,
+        namespace: str = "user",
     ) -> list[Row]: ...
     async def add_memory(
         self,
@@ -390,7 +403,12 @@ class Repo(Protocol):
         source: str,
         confidence: float = 0.8,
         expires_at: datetime | None = None,
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> Row: ...
+    async def get_agent_memory(
+        self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID
+    ) -> Row | None: ...
     async def delete_memory(self, *, tenant_id: uuid.UUID, memory_id: uuid.UUID) -> bool: ...
     async def delete_all_memory(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> int: ...
 
@@ -1525,6 +1543,8 @@ class SqlRepo:
         goal: str,
         recipient_name: str | None = None,
         status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
         provider_call_sid: str | None = None,
         agent_template_id: uuid.UUID | None = None,
         agent_template_name: str | None = None,
@@ -1540,12 +1560,12 @@ class SqlRepo:
                 id, tenant_id, user_id, conversation_id, direction, from_e164, to_e164,
                 recipient_name, goal, agent_template_id, agent_template_name, agent_name,
                 agent_prompt, opening_message, voice_id, agent_operating_profile,
-                status, provider, provider_call_sid, created_at, updated_at
+                status, provider, external_id, provider_call_sid, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :conversation_id, :direction, :from_e164,
                 :to_e164, :recipient_name, :goal, :agent_template_id, :agent_template_name,
                 :agent_name, :agent_prompt, :opening_message, :voice_id,
-                CAST(:agent_operating_profile AS jsonb), :status, 'twilio',
+                CAST(:agent_operating_profile AS jsonb), :status, :provider, :external_id,
                 :provider_call_sid, :now, :now
             ) RETURNING *
             """,
@@ -1567,6 +1587,8 @@ class SqlRepo:
                 "voice_id": voice_id,
                 "agent_operating_profile": _j(agent_operating_profile),
                 "status": status,
+                "provider": provider,
+                "external_id": external_id,
                 "provider_call_sid": provider_call_sid,
                 "now": _now(),
             },
@@ -1596,6 +1618,17 @@ class SqlRepo:
         return await self._first(
             "SELECT * FROM phone_calls WHERE provider_call_sid = :provider_call_sid",
             {"provider_call_sid": provider_call_sid},
+        )
+
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM phone_calls
+            WHERE provider = :provider AND external_id = :external_id
+            """,
+            {"provider": provider, "external_id": external_id},
         )
 
     async def get_phone_call_global(self, *, call_id: uuid.UUID) -> Row | None:
@@ -1777,11 +1810,14 @@ class SqlRepo:
         kind: str,
         quantity: float,
         meta: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         await self._exec(
             """
-            INSERT INTO usage_events (id, tenant_id, kind, quantity, meta, created_at, updated_at)
-            VALUES (:id, :tenant_id, :kind, :quantity, :meta ::jsonb, :now, :now)
+            INSERT INTO usage_events (
+                id, tenant_id, kind, quantity, meta, cost_usd, created_at, updated_at
+            )
+            VALUES (:id, :tenant_id, :kind, :quantity, :meta ::jsonb, :cost_usd, :now, :now)
             """,
             {
                 "id": _uuid(),
@@ -1789,6 +1825,7 @@ class SqlRepo:
                 "kind": kind,
                 "quantity": quantity,
                 "meta": _j(meta or {}),
+                "cost_usd": cost_usd,
                 "now": _now(),
             },
         )
@@ -1815,6 +1852,16 @@ class SqlRepo:
             {"tenant_id": tenant_id, "since": since},
         )
         return {row["kind"]: float(row["total"]) for row in rows}
+
+    async def sum_cost_usd_since(self, *, tenant_id: uuid.UUID, since: datetime) -> float:
+        row = await self._first(
+            """
+            SELECT COALESCE(SUM(cost_usd), 0) AS total FROM usage_events
+            WHERE tenant_id = :tenant_id AND created_at >= :since
+            """,
+            {"tenant_id": tenant_id, "since": since},
+        )
+        return float(row["total"]) if row else 0.0
 
     async def sum_usage_all_tenants_since(self, *, since: datetime) -> list[Row]:
         return await self._all(
@@ -1958,28 +2005,37 @@ class SqlRepo:
     # -- memoria ------------------------------------------------------------------
 
     async def list_memory(
-        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, q: str | None, k: int
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, q: str | None, k: int,
+        namespace: str = "user"
     ) -> list[Row]:
         if q:
             return await self._all(
                 """
                 SELECT * FROM memory_items
                 WHERE tenant_id = :tenant_id AND user_id = :user_id
+                  AND namespace = :namespace
                   AND superseded_at IS NULL AND content ILIKE :q
                 ORDER BY importance DESC, created_at DESC
                 LIMIT :k
                 """,
-                {"tenant_id": tenant_id, "user_id": user_id, "q": f"%{q}%", "k": k},
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "namespace": namespace,
+                    "q": f"%{q}%",
+                    "k": k,
+                },
             )
         return await self._all(
             """
             SELECT * FROM memory_items
             WHERE tenant_id = :tenant_id AND user_id = :user_id
+              AND namespace = :namespace
               AND superseded_at IS NULL
             ORDER BY importance DESC, created_at DESC
             LIMIT :k
             """,
-            {"tenant_id": tenant_id, "user_id": user_id, "k": k},
+            {"tenant_id": tenant_id, "user_id": user_id, "namespace": namespace, "k": k},
         )
 
     async def add_memory(
@@ -1993,6 +2049,8 @@ class SqlRepo:
         source: str,
         confidence: float = 0.8,
         expires_at: datetime | None = None,
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> Row:
         # Antes se insertaba con `embedding=NULL`: `PgMemoryStore.search` filtra
         # `embedding IS NOT NULL` en su rama vectorial, así que un recuerdo
@@ -2006,11 +2064,11 @@ class SqlRepo:
             """
             INSERT INTO memory_items (
                 id, tenant_id, user_id, kind, content, embedding, importance, confidence, source,
-                expires_at,
+                namespace, source_trust, expires_at,
                 created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :user_id, :kind, :content, :embedding ::vector, :importance,
-                :confidence, :source, :expires_at, :now, :now
+                :confidence, :source, :namespace, :source_trust, :expires_at, :now, :now
             )
             RETURNING *
             """,
@@ -2024,12 +2082,23 @@ class SqlRepo:
                 "importance": importance,
                 "confidence": confidence,
                 "source": source,
+                "namespace": namespace,
+                "source_trust": source_trust,
                 "expires_at": expires_at,
                 "now": _now(),
             },
         )
         assert row is not None
         return row
+
+    async def get_agent_memory(self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Row | None:
+        """Memoria JSONB de un worker persistente (`persistent_agents.memory`),
+        para `GET /v1/memory?namespace=agent:<id>` (directiva §50-54): la memoria
+        del agente vive en su fila, no en `memory_items`."""
+        return await self._first(
+            "SELECT id, memory FROM persistent_agents WHERE tenant_id = :tenant_id AND id = :id",
+            {"tenant_id": tenant_id, "id": agent_id},
+        )
 
     async def delete_memory(self, *, tenant_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
         deleted = await self._exec(

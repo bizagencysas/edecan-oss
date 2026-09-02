@@ -2,6 +2,8 @@
 
 import { Fragment, type ReactNode } from "react";
 
+import { MENTION_RE } from "@/lib/mentions";
+
 import { stripSpeechTags } from "./utils";
 
 /** Render de Markdown minimalista sin dependencias nuevas: negritas,
@@ -14,7 +16,7 @@ import { stripSpeechTags } from "./utils";
 const INLINE_RE =
   /(`[^`]+`)|(\[[^\]]+\]\([^)]+\))|(\*\*[^*]+\*\*)|(__[^_]+__)|(~~[^~]+~~)|(\*[^*]+\*)|(?<!\w)(_[^_]+_)(?!\w)/g;
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
   let i = 0;
@@ -38,7 +40,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
         linkMatch ? (
           <a
             key={key}
-            href={linkMatch[2]}
+            href={linkMatch[2].startsWith("http") || linkMatch[2].startsWith("/") ? linkMatch[2] : "#"}
             target="_blank"
             rel="noreferrer"
             className="underline underline-offset-2 hover:text-brand-600"
@@ -59,6 +61,38 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     lastIndex = index + token.length;
   }
   if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+/** Envuelve el inline de Markdown y, antes, pinta los `@token` como "chips".
+ * Las menciones son texto plano (portable); esto solo les da el acento visual. */
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let i = 0;
+  let found = false;
+  const mentionRe = new RegExp(MENTION_RE.source, "gu");
+  for (const match of text.matchAll(mentionRe)) {
+    found = true;
+    const index = match.index ?? 0;
+    const token = match[0];
+    if (index > lastIndex) {
+      nodes.push(...renderInlineMarkdown(text.slice(lastIndex, index), `${keyPrefix}-m${i}-`));
+    }
+    nodes.push(
+      <span
+        key={`${keyPrefix}-chip-${i++}`}
+        className="mx-0.5 inline-flex items-center rounded-md bg-brand-50 px-1.5 py-0.5 text-[0.85em] font-medium text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+      >
+        {token}
+      </span>,
+    );
+    lastIndex = index + token.length;
+  }
+  if (!found) return renderInlineMarkdown(text, keyPrefix);
+  if (lastIndex < text.length) {
+    nodes.push(...renderInlineMarkdown(text.slice(lastIndex), `${keyPrefix}-m${i}-`));
+  }
   return nodes;
 }
 

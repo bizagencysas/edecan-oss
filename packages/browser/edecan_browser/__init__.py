@@ -16,7 +16,12 @@ from edecan_core import Tool
 from .extract import ExtractedPage, extract_page, render_markdown
 from .fetch import FetchedPage, HttpxFetcher, PageFetcher, PlaywrightFetcher, get_fetcher
 from .policy import PolicyResult, RobotsCache, check_navigation
-from .tools import CompararPreciosTool, ExtraerDatosWebTool, NavegarWebTool
+from .tools import (
+    CompararPreciosTool,
+    ExtraerDatosWebTool,
+    NavegarWebInteractivoTool,
+    NavegarWebTool,
+)
 
 __all__ = [
     "CompararPreciosTool",
@@ -24,6 +29,7 @@ __all__ = [
     "ExtraerDatosWebTool",
     "FetchedPage",
     "HttpxFetcher",
+    "NavegarWebInteractivoTool",
     "NavegarWebTool",
     "PageFetcher",
     "PlaywrightFetcher",
@@ -38,5 +44,11 @@ __all__ = [
 
 
 def get_all_tools() -> list[Tool]:
-    """Instancia las 3 herramientas del navegador (nombres exactos: `ROADMAP_V2.md` §7.7)."""
-    return [NavegarWebTool(), ExtraerDatosWebTool(), CompararPreciosTool()]
+    """Instancia las 4 herramientas del navegador: las 3 de solo lectura
+    (`ROADMAP_V2.md` §7.7) + `navegar_web_interactivo` (product design)."""
+    return [
+        NavegarWebTool(),
+        ExtraerDatosWebTool(),
+        CompararPreciosTool(),
+        NavegarWebInteractivoTool(),
+    ]

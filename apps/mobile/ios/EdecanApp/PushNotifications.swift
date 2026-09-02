@@ -19,30 +19,77 @@ extension Notification.Name {
 /// `APIClient` que `PushNotificationCoordinator` ya tiene en cada `configurar`.
 @MainActor
 enum GymCheckinNotifications {
-    static let categoriaIdentifier = "GYM_CHECKIN"
-    static let accionSi = "GYM_YES"
-    static let accionNo = "GYM_NO"
-
     static var client: APIClient?
 
     /// Registra la categoría ANTES de que pueda llegar un aviso. Se llama en
     /// `didFinishLaunchingWithOptions`, junto al `delegate = self`.
     static func registrar() {
-        let si = UNNotificationAction(identifier: accionSi, title: "Sí", options: [.foreground])
-        let no = UNNotificationAction(identifier: accionNo, title: "No", options: [.foreground])
-        let categoria = UNNotificationCategory(
-            identifier: categoriaIdentifier,
+        let si = UNNotificationAction(
+            identifier: GymCheckinNotificationSupport.accionSi,
+            title: "Sí"
+        )
+        let no = UNNotificationAction(
+            identifier: GymCheckinNotificationSupport.accionNo,
+            title: "No"
+        )
+        let gym = UNNotificationCategory(
+            identifier: GymCheckinNotificationSupport.categoriaIdentifier,
             actions: [si, no],
             intentIdentifiers: [],
             options: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([categoria])
+        let hecho = UNNotificationAction(identifier: "AVISO_HECHO", title: "Hecho")
+        let aviso = UNNotificationCategory(
+            identifier: "EDECAN_AVISO",
+            actions: [hecho],
+            intentIdentifiers: []
+        )
+        let aprobarSi = UNNotificationAction(
+            identifier: "APROBAR_SI",
+            title: "Sí",
+            options: [.authenticationRequired]
+        )
+        let aprobarNo = UNNotificationAction(
+            identifier: "APROBAR_NO",
+            title: "No",
+            options: [.authenticationRequired]
+        )
+        let aprobar = UNNotificationCategory(
+            identifier: "EDECAN_APROBAR",
+            actions: [aprobarSi, aprobarNo],
+            intentIdentifiers: []
+        )
+        let serie = UNNotificationAction(identifier: "GYM_SERIE", title: "Serie hecha")
+        let gymSerie = UNNotificationCategory(
+            identifier: "EDECAN_SERIE",
+            actions: [serie],
+            intentIdentifiers: []
+        )
+        let agua = UNNotificationAction(identifier: "AGUA_250", title: "Ya tomé 250 ml")
+        let aguaCat = UNNotificationCategory(
+            identifier: "AGUA",
+            actions: [agua],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([
+            gym, aviso, aprobar, gymSerie, aguaCat,
+        ])
     }
 
-    /// Ejecuta el checkin correspondiente. Best-effort: un fallo de red no
-    /// debe tumbar el manejo de la notificación.
+    /// Ejecuta el checkin. Si la respuesta es «si», también inicia la sesión gym
+    /// y sincroniza el reloj (HK + UI viva). Best-effort ante fallos de red.
     static func responder(respuesta: String) async {
-        _ = try? await client?.gymCheckin(respuesta: respuesta)
+        if respuesta == "si" {
+            await WatchCompanion.compartido.accionCheckinConEntrenamiento(respuesta: respuesta)
+            return
+        }
+        if client != nil {
+            _ = try? await client?.gymCheckin(respuesta: respuesta)
+            await WatchCompanion.compartido.sincronizar()
+            return
+        }
+        await WatchCompanion.compartido.accionCheckin(respuesta)
+        await WatchCompanion.compartido.sincronizar()
     }
 }
 
@@ -106,16 +153,38 @@ final class EdecanAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         let userInfo = response.notification.request.content.userInfo
         let destino = NotificationDestino.parse(userInfo: userInfo)
         let accion = response.actionIdentifier
+        let reminderId = userInfo["reminderId"] as? String
+        let approvalId = userInfo["approvalId"] as? String
         Task { @MainActor in
-            // Acciones Sí/No del checkin de gimnasio: ejecutan el checkin y,
-            // como el tap normal (default), abren el chat donde vive la
-            // conversación del checkin.
-            if accion == GymCheckinNotifications.accionSi {
+            var ejecutoAccion = false
+            if accion == GymCheckinNotificationSupport.accionSi {
                 await GymCheckinNotifications.responder(respuesta: "si")
-            } else if accion == GymCheckinNotifications.accionNo {
+                ejecutoAccion = true
+            } else if accion == GymCheckinNotificationSupport.accionNo {
                 await GymCheckinNotifications.responder(respuesta: "no")
+                ejecutoAccion = true
+            } else if accion == "AVISO_HECHO", let id = reminderId {
+                await WatchCompanion.compartido.accionCompletarAviso(id)
+                ejecutoAccion = true
+            } else if accion == "APROBAR_SI", let id = approvalId {
+                _ = await WatchCompanion.compartido.accionDecidirAprobacion(id: id, ok: true)
+                ejecutoAccion = true
+            } else if accion == "APROBAR_NO", let id = approvalId {
+                _ = await WatchCompanion.compartido.accionDecidirAprobacion(id: id, ok: false)
+                ejecutoAccion = true
+            } else if accion == "GYM_SERIE" {
+                await WatchCompanion.compartido.accionSerie()
+                ejecutoAccion = true
+            } else if accion == "AGUA_250" {
+                await WatchCompanion.compartido.accionAgua(250)
+                ejecutoAccion = true
             }
-            publicarRuta(destino)
+            if !ejecutoAccion {
+                publicarRuta(destino)
+            } else if accion != GymCheckinNotificationSupport.accionSi
+                && accion != GymCheckinNotificationSupport.accionNo {
+                await WatchCompanion.compartido.sincronizar()
+            }
         }
         completionHandler()
     }
@@ -267,7 +336,11 @@ enum LocalNotificationScheduler {
         content.title = "Recordatorio de Edecán"
         content.body = message
         content.sound = .default
-        content.userInfo = ["route": NotificationRoute.activity.rawValue]
+        content.categoryIdentifier = "EDECAN_AVISO"
+        content.userInfo = [
+            "route": NotificationRoute.activity.rawValue,
+            "reminderId": id,
+        ]
 
         let delay = max(dueAt.timeIntervalSinceNow, 1)
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false)
@@ -287,5 +360,34 @@ enum LocalNotificationScheduler {
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         )
         try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    static func approval(id: String, nombre: String, detalle: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Edecán pide tu sí"
+        content.body = detalle.isEmpty ? nombre : "\(nombre): \(detalle)"
+        content.sound = .default
+        content.categoryIdentifier = "EDECAN_APROBAR"
+        content.userInfo = ["approvalId": id]
+        let request = UNNotificationRequest(
+            identifier: "aprobar-\(id)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    static func gymSerieLista(ejercicio: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = "Descanso listo"
+        content.body = ejercicio.map { "Siguiente: \($0). Marca la serie." } ?? "Marca la serie."
+        content.sound = .default
+        content.categoryIdentifier = "EDECAN_SERIE"
+        let request = UNNotificationRequest(
+            identifier: "gym-serie",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 }

@@ -170,6 +170,11 @@ test("recupera bloques de tool_calls persistidos, deduplica y respeta blocks_ver
   assert.equal(blocks[0].type, "flight");
 });
 
+test("parsea follow_up_turn para encadenar turnos en el mismo SSE", () => {
+  const event = parseAgentEvent({ type: "follow_up_turn", pending: 3 });
+  assert.deepEqual(event, { type: "follow_up_turn", pending: 3 });
+});
+
 test("valida frames SSE y neutraliza bloques de una versión futura", () => {
   const event = parseAgentEvent({
     type: "tool_end",

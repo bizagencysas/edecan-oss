@@ -31,6 +31,7 @@ async def get_usage(
     used_by_kind = await repo.sum_usage_by_kind_since(
         tenant_id=tenant.tenant_id, since=period_start
     )
+    cost_usd = await repo.sum_cost_usd_since(tenant_id=tenant.tenant_id, since=period_start)
 
     limits = {
         LIMIT_MESSAGES_PER_DAY: tenant.flags.get(LIMIT_MESSAGES_PER_DAY, UNLIMITED),
@@ -45,6 +46,7 @@ async def get_usage(
         "plan_key": tenant.plan_key,
         "period_start": period_start.date().isoformat(),
         "usage": used_by_kind,
+        "cost_usd": cost_usd,
         "limits": limits,
         "flags": flags,
     }

@@ -32,6 +32,41 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+@dataclass
+class CompanionWakeCapture:
+    """Captura llamadas a `enqueue_companion_wake` / `edecan_core.queue.enqueue`."""
+
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def companion_wakes(self) -> list[dict[str, Any]]:
+        return [
+            call
+            for call in self.calls
+            if call.get("job_type") == "run_companion_turn"
+        ]
+
+
+def install_companion_wake_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> CompanionWakeCapture:
+    """Registra fake queue y captura jobs `run_companion_turn` con su payload."""
+    capture = CompanionWakeCapture()
+
+    async def _enqueue(settings, job_type: str, payload: dict[str, Any], tenant_id):
+        capture.calls.append(
+            {
+                "settings": settings,
+                "job_type": job_type,
+                "payload": dict(payload),
+                "tenant_id": tenant_id,
+            }
+        )
+        return uuid.uuid4()
+
+    install_fake_edecan_core_queue(monkeypatch, _enqueue)
+    return capture
+
+
 def install_fake_edecan_core_queue(
     monkeypatch: pytest.MonkeyPatch, enqueue_fn: Callable[..., Awaitable[uuid.UUID]]
 ) -> None:
@@ -86,6 +121,7 @@ class FakeRepo:
     personas: dict[tuple[uuid.UUID, uuid.UUID], dict[str, Any]] = field(default_factory=dict)
     phone_calls: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
     phone_call_events: list[dict[str, Any]] = field(default_factory=list)
+    local_owner: dict[str, Any] | None = None
 
     # -- archivos / ingesta ---------------------------------------------------
 
@@ -240,6 +276,24 @@ class FakeRepo:
             self.conversations[conversation_id]["updated_at"] = utcnow()
         return dict(row)
 
+    async def list_messages(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        limit: int = 50,
+        after: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in self.messages
+            if row["tenant_id"] == tenant_id and row["conversation_id"] == conversation_id
+        ]
+        if after is not None:
+            rows = [row for row in rows if row.get("created_at", utcnow()) > after]
+        rows.sort(key=lambda row: (row.get("created_at", utcnow()), row.get("id", uuid.uuid4())))
+        return [dict(row) for row in rows[-limit:]]
+
     # -- push de resumen de llamada -------------------------------------------
 
     async def get_phone_call(
@@ -273,6 +327,108 @@ class FakeRepo:
             and event.get("event_type") == event_type
             for event in self.phone_call_events
         )
+
+    async def get_local_owner(self) -> dict[str, Any] | None:
+        return dict(self.local_owner) if self.local_owner else None
+
+    async def get_phone_call_by_external_id(
+        self, *, provider: str, external_id: str
+    ) -> dict[str, Any] | None:
+        for row in self.phone_calls.values():
+            if row.get("provider") == provider and row.get("external_id") == external_id:
+                return dict(row)
+        return None
+
+    async def create_phone_call(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        direction: str,
+        from_e164: str,
+        to_e164: str,
+        goal: str,
+        recipient_name: str | None = None,
+        status: str = "draft",
+        provider: str = "twilio",
+        external_id: str | None = None,
+        provider_call_sid: str | None = None,
+        agent_template_id: uuid.UUID | None = None,
+        agent_template_name: str | None = None,
+        agent_name: str | None = None,
+        agent_prompt: str | None = None,
+        opening_message: str | None = None,
+        voice_id: str | None = None,
+        agent_operating_profile: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "direction": direction,
+            "from_e164": from_e164,
+            "to_e164": to_e164,
+            "recipient_name": recipient_name,
+            "goal": goal,
+            "agent_template_id": agent_template_id,
+            "agent_template_name": agent_template_name,
+            "agent_name": agent_name,
+            "agent_prompt": agent_prompt,
+            "opening_message": opening_message,
+            "voice_id": voice_id,
+            "agent_operating_profile": agent_operating_profile,
+            "status": status,
+            "provider": provider,
+            "external_id": external_id,
+            "provider_call_sid": provider_call_sid,
+            "summary": None,
+            "summary_generated_at": None,
+            "summary_push_attempted_at": None,
+            "created_at": utcnow(),
+            "updated_at": utcnow(),
+        }
+        self.phone_calls[row["id"]] = row
+        return dict(row)
+
+    async def set_phone_call_summary_if_absent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        summary: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        row = self.phone_calls.get(call_id)
+        if row is None or row["tenant_id"] != tenant_id:
+            return None
+        existing = row.get("summary")
+        if existing is not None and bool((existing.get("transcript") or {}).get("available")):
+            return None
+        now = utcnow()
+        row["summary"] = summary
+        row["summary_generated_at"] = now
+        row["updated_at"] = now
+        return dict(row)
+
+    async def add_phone_call_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "call_id": call_id,
+            "event_type": event_type,
+            "payload": payload or {},
+            "occurred_at": utcnow(),
+        }
+        self.phone_call_events.append(row)
+        return dict(row)
 
     # -- conectores / oauth -------------------------------------------------------------
 
@@ -413,6 +569,8 @@ class FakeRepo:
         embedding: list[float] | None,
         confidence: float = 0.8,
         expires_at: datetime | None = None,
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> dict[str, Any]:
         row = {
             "id": uuid.uuid4(),
@@ -423,6 +581,8 @@ class FakeRepo:
             "importance": importance,
             "confidence": confidence,
             "source": source,
+            "namespace": namespace,
+            "source_trust": source_trust,
             "expires_at": expires_at,
             "embedding": embedding,
             "created_at": utcnow(),

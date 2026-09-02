@@ -616,7 +616,16 @@ def test_construir_sesion_sin_motor_factory_nunca_falla_aunque_playwright_no_est
     assert sesion is not None
 
 
-def test_abrir_sin_playwright_instalado_da_error_claro_no_traceback_criptico(tmp_path):
+def test_abrir_sin_playwright_instalado_da_error_claro_no_traceback_criptico(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    # Fuerza la ausencia de Playwright sin depender del entorno (Playwright
+    # puede estar instalado, p. ej. para el smoke test real del navegador):
+    # `sys.modules["playwright"] = None` hace que `from playwright.sync_api
+    # import ...` lance `ImportError`, que es justo el guard que se prueba.
+    monkeypatch.setitem(sys.modules, "playwright", None)
     sesion = SesionNavegador(capturas=AlmacenCapturas(tmp_path / "capturas"))
     with pytest.raises(NavegadorNoDisponibleError, match="playwright"):
         sesion.abrir("http://localhost:3000")

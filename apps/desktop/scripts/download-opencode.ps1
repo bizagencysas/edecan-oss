@@ -26,7 +26,7 @@
     que cambie el motor del IDE sin que nadie lo note.
 
     Estructura adaptada de download-ollama.ps1 (a su vez adaptado de
-    open-jarvis/OpenJarvis, Apache-2.0 -- ver NOTICE) y de download-opencode.sh
+    open-reference implementation/OpenJarvis, Apache-2.0 -- ver NOTICE) y de download-opencode.sh
     (mismo script, version bash/macOS/Linux). Diferencias: la tabla de
     version/SHA-256 es la de opencode (docs/opencode-empaquetado.md S2.2), y
     no hace falta preservar DLLs adicionales -- el asset de opencode es un

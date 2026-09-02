@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { AlwaysListenMode } from "@/components/chat/AlwaysListenMode";
 import { ChatComposer } from "@/components/chat/ChatComposer";
@@ -13,7 +14,8 @@ import {
   etiquetaSeleccion,
   modeloConVisionPorDefecto,
 } from "@/components/chat/ModelSelector";
-import { ToolTimeline, type ToolEvent } from "@/components/chat/ToolTimeline";
+import { type ToolEvent } from "@/components/chat/ToolTimeline";
+import { WorkingStatusRow } from "@/components/chat/WorkingStatusRow";
 import { messageText } from "@/components/chat/utils";
 import { ChatIcon, MenuIcon, MicIcon, PlusIcon, UndoIcon } from "@/components/icons";
 import { Alert, Button, EmptyState, Spinner } from "@/components/ui";
@@ -31,6 +33,7 @@ import {
   listConversations,
   renameConversation,
   sendMessageStream,
+  queueChatMessage,
   submitFeedback,
   setConversationModel,
   API_BASE_URL,
@@ -234,6 +237,7 @@ function MiniAskPage() {
 /** Chat principal (ARCHITECTURE.md §9, §10.7): conversaciones + streaming SSE + voz. */
 function ChatPage() {
   const { me } = useAuth();
+  const router = useRouter();
   const canVoice = Boolean(me?.flags?.[FLAG_VOICE_WEB]);
   const canRecordAudio =
     canVoice &&
@@ -696,6 +700,28 @@ function ChatPage() {
         case "confirmation_required":
           setPendingConfirmation({ tool_call_id: event.tool_call_id, name: event.name, args: event.args });
           break;
+        case "follow_up_turn":
+          if (text || toolLog.length > 0) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: assistantMessageId ?? `local-${Date.now()}`,
+                role: "assistant",
+                content: { text, ...(explanation ? { explanation } : {}) },
+                tool_calls: toolLog.length > 0 ? toolLog : null,
+                tokens_in: 0,
+                tokens_out: 0,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
+          text = "";
+          explanation = null;
+          toolLog.length = 0;
+          events = [];
+          setStreamingText("");
+          setToolEvents([]);
+          break;
         case "done":
           explanation = event.explanation ?? null;
           if (text || toolLog.length > 0) {
@@ -731,7 +757,8 @@ function ChatPage() {
     outgoingAttachments: ChatAttachmentDraft[] = [],
     idempotencyKey: string = crypto.randomUUID(),
   ): Promise<boolean> {
-    if ((!text.trim() && outgoingAttachments.length === 0) || !activeId || sending) return false;
+    if ((!text.trim() && outgoingAttachments.length === 0) || !activeId) return false;
+    if (pendingConfirmation !== null) return false;
     const quoted = replyTo?.text.trim()
       ? `> ${replyTo.text.trim().slice(0, 280)}\n\n${text}`
       : text;
@@ -757,13 +784,28 @@ function ChatPage() {
       },
     ]);
     const assistantMessageId = `local-assistant-${localId}`;
+    const attachmentIds = outgoingAttachments.flatMap((attachment) =>
+      attachment.fileId ? [attachment.fileId] : [],
+    );
+
+    if (sending) {
+      try {
+        await queueChatMessage(activeId, quoted, attachmentIds, idempotencyKey);
+        return true;
+      } catch (err) {
+        setMessages((prev) => prev.filter((message) => message.id !== localId));
+        setError(err instanceof Error ? err.message : "No se pudo encolar el mensaje.");
+        return false;
+      }
+    }
+
     const succeeded = await runStream(() =>
       sendMessageStream(
         activeId,
         quoted,
         makeEventHandler(assistantMessageId),
         undefined,
-        outgoingAttachments.flatMap((attachment) => (attachment.fileId ? [attachment.fileId] : [])),
+        attachmentIds,
         idempotencyKey,
       ),
     );
@@ -804,7 +846,7 @@ function ChatPage() {
   }
 
   async function handleSend() {
-    if (!canSubmitChat(input, attachments, sending)) return;
+    if (!canSubmitChat(input, attachments, pendingConfirmation !== null)) return;
     if (input.trim() === "/clear" && activeId) {
       setSending(true);
       setError(null);
@@ -1227,13 +1269,17 @@ function ChatPage() {
     const abort = new AbortController();
     speakAbortRef.current = abort;
     const voice = voiceId ?? "0uHpKhb0ymsdvmCtPV8y";
-    let nextStream = speakTextStream(sentences[0], voice, abort.signal);
+    let nextStream: ReturnType<typeof speakTextStream> | null = speakTextStream(
+      sentences[0],
+      voice,
+      abort.signal,
+    );
     for (let i = 0; i < sentences.length; i++) {
       if (speakSessionRef.current !== session || abort.signal.aborted) return;
       const stream = nextStream;
-      if (i + 1 < sentences.length) {
-        nextStream = speakTextStream(sentences[i + 1], voice, abort.signal);
-      }
+      if (!stream) return;
+      nextStream =
+        i + 1 < sentences.length ? speakTextStream(sentences[i + 1], voice, abort.signal) : null;
 
       const finished = player.beginSession();
       try {
@@ -1264,7 +1310,7 @@ function ChatPage() {
     }
   }
 
-  const turnBlocked = sending || pendingConfirmation !== null;
+  const composerBlocked = pendingConfirmation !== null;
   const modelLabel = modelCatalog ? etiquetaSeleccion(modelCatalog, chatModel, chatEffort) : null;
   // Aviso de degradación: el backend atiende ESE turno con el modelo con visión
   // por defecto y deja la selección intacta, así que se anuncia antes de enviar
@@ -1276,7 +1322,7 @@ function ChatPage() {
           modeloActivoInfo.nombre
         } no ve imágenes.`
       : null;
-  const showStreamingBubble = sending && (streamingText.length > 0 || toolEvents.length === 0);
+  const showStreamingBubble = sending && streamingText.length > 0;
   const activeConversationTitle =
     conversations.find((conversation) => conversation.id === activeId)?.title || "Conversación nueva";
 
@@ -1410,11 +1456,11 @@ function ChatPage() {
         {!activeId && !convLoading ? (
           <div className="flex min-h-0 flex-1 items-center justify-center p-6">
             <EmptyState
-              title="Aún no tienes conversaciones"
-              description='Pulsa "Nueva conversación" para empezar a hablar con tu asistente.'
+              title="Escríbele a Edecán"
+              description="Como un chat con alguien de confianza. También puede escribirte primero con avisos o resultados."
               action={
                 <Button onClick={handleCreate} loading={creating}>
-                  Nueva conversación
+                  Empezar conversación
                 </Button>
               }
             />
@@ -1458,6 +1504,7 @@ function ChatPage() {
                         />
                       );
                     })}
+                    {sending && <WorkingStatusRow />}
                     {showStreamingBubble && (
                       <MessageBubble
                         message={{
@@ -1518,13 +1565,17 @@ function ChatPage() {
                         )}
                       </div>
                     )}
-                    {toolEvents.length > 0 && <ToolTimeline events={toolEvents} />}
                     {pendingConfirmation && (
                       <ConfirmationCard
                         name={pendingConfirmation.name}
                         args={pendingConfirmation.args}
                         onApprove={() => handleConfirm(true)}
                         onDeny={() => handleConfirm(false)}
+                        onViewComputer={
+                          pendingConfirmation.name === "usar_computadora"
+                            ? () => router.push("/app/remoto")
+                            : undefined
+                        }
                         loading={sending}
                       />
                     )}
@@ -1544,7 +1595,8 @@ function ChatPage() {
               value={input}
               onChange={setInput}
               onSend={handleSend}
-              sending={turnBlocked}
+              sending={composerBlocked}
+              streaming={sending}
               canVoice={canRecordAudio}
               voiceFlagEnabled={canVoice}
               recording={recording}

@@ -194,6 +194,19 @@ struct MisionDetalleView: View {
                 HStack {
                     EtiquetaEstadoMision(status: detalle.mission.status)
                     Spacer()
+                    if detalle.mission.status == "paused" {
+                        Button("Reanudar") {
+                            Task { await viewModel.reanudar(client: session.client) }
+                        }
+                        .font(.caption)
+                        .disabled(viewModel.accionEnCurso)
+                    } else if ["planning", "running", "waiting_confirmation"].contains(detalle.mission.status) {
+                        Button("Pausar") {
+                            Task { await viewModel.pausar(client: session.client) }
+                        }
+                        .font(.caption)
+                        .disabled(viewModel.accionEnCurso)
+                    }
                     if !detalle.mission.esTerminal {
                         Button("Cancelar misión", role: .destructive) {
                             Task { await viewModel.cancelar(client: session.client) }
@@ -333,6 +346,7 @@ private struct EtiquetaEstadoMision: View {
 
     private var etiqueta: String {
         switch status {
+        case "paused": return "Pausada"
         case "planning": return "Planificando"
         case "running": return "En curso"
         case "waiting_confirmation": return "Esperando confirmación"
@@ -347,6 +361,7 @@ private struct EtiquetaEstadoMision: View {
         switch status {
         case "running": return EdecanTheme.azul
         case "waiting_confirmation": return .orange
+        case "paused": return .yellow
         case "done": return .green
         case "error": return .red
         default: return .secondary

@@ -25,7 +25,8 @@ import edecan_worker.handlers.run_gym_checkin as run_gym_checkin_module
 import edecan_worker.push as push_module
 import pytest
 from edecan_schemas import JobEnvelope
-from fakes import FakeRepo, make_deps
+from fakes import FakeRepo, install_companion_wake_capture, make_deps
+from edecan_core.companion_wake_enqueue import RUN_COMPANION_TURN_JOB
 
 # ---------------------------------------------------------------------------
 # FakeSession para el despacho de `run_automation` (ramo gym_checkin)
@@ -195,7 +196,7 @@ async def test_run_automation_gym_checkin_despacha_a_run_gym_checkin(
         ),
     )
     session.seed_tenant(tenant_id, "hosted_pro")
-    session.seed_persona(user_id, nombre_asistente="Referencia")
+    session.seed_persona(user_id, nombre_asistente="reference implementation")
 
     llamadas: list[dict[str, Any]] = []
 
@@ -203,7 +204,9 @@ async def test_run_automation_gym_checkin_despacha_a_run_gym_checkin(
         llamadas.append({"ctx": ctx, "save_run": save_run})
         await save_run("done", {"enviados": 1, "fallidos": 0})
 
-    monkeypatch.setattr(run_gym_checkin_module, "run_gym_checkin", fake_run_gym_checkin)
+    monkeypatch.setattr(
+        run_gym_checkin_module, "run_gym_checkin", fake_run_gym_checkin
+    )
     deps = make_deps(session_factory=_session_factory(session))
 
     await run_automation_module.handle(_envelope(automation_id, tenant_id), deps)
@@ -228,9 +231,7 @@ async def test_run_automation_gym_checkin_no_corre_el_turno_de_agente(
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
     session.seed_automation(
-        automation_id,
-        tenant_id,
-        user_id=str(user_id),
+        automation_id, tenant_id, user_id=str(user_id),
         accion=json.dumps({"kind": "gym_checkin"}),
     )
     session.seed_tenant(tenant_id, "hosted_pro")
@@ -252,84 +253,59 @@ async def test_run_automation_gym_checkin_no_corre_el_turno_de_agente(
 # ---------------------------------------------------------------------------
 
 
-async def test_run_gym_checkin_publica_card_y_push_con_category(
+async def test_run_gym_checkin_encola_wake_con_card_y_push_en_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_repo = FakeRepo()
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps()
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     ctx = types.SimpleNamespace(
         tenant_id=tenant_id, user_id=user_id, extras={"deps": deps, "flags": {}}
     )
     saved: list[tuple[str, dict[str, Any]]] = []
-    pushes: list[dict[str, Any]] = []
 
     async def fake_save_run(status, detalle):
         saved.append((status, detalle))
 
-    async def fake_push(deps, *, tenant_id, user_id, titulo, cuerpo, data=None, category=None):
-        pushes.append({"titulo": titulo, "cuerpo": cuerpo, "data": data, "category": category})
-        return push_module.ResultadoEnvioPush(1, 0)
-
     monkeypatch.setattr(run_gym_checkin_module, "SqlRepo", lambda session: fake_repo)
-    monkeypatch.setattr(run_gym_checkin_module.push, "enviar_push_a_usuario", fake_push)
 
     await run_gym_checkin_module.run_gym_checkin(ctx, fake_save_run)
 
-    assert len(fake_repo.messages) == 1
-    msg = fake_repo.messages[0]
-    assert msg["role"] == "assistant"
-    [card] = msg["content"]["presentation"]
+    assert fake_repo.messages == []
+    assert len(capture.companion_wakes()) == 1
+    wake = capture.companion_wakes()[0]
+    assert wake["job_type"] == RUN_COMPANION_TURN_JOB
+    payload = wake["payload"]
+    assert payload["require_message"] is True
+    assert payload["source"] == "gym_checkin"
+    assert payload["wake_key"].startswith("gym_checkin:")
+
+    [card] = payload["message_presentation"]
     assert card["type"] == "gym_checkin"
-    assert card["titulo"] == "¿Vas a ir al gym hoy?"
+    assert card["titulo"] == "Check-in de gym"
     assert card["botones"] == [
         {"label": "Sí", "accion": "gym_yes"},
         {"label": "No", "accion": "gym_no"},
     ]
-    [tool] = msg["tool_calls"]
+    [tool] = payload["message_tool_calls"]
     assert tool["blocks_version"] == 1
     assert tool["blocks"][0]["type"] == "gym_checkin"
 
-    assert len(pushes) == 1
-    assert pushes[0]["titulo"] == "Edecán"
-    assert pushes[0]["cuerpo"] == "¿Vas a ir al gym hoy?"
-    assert pushes[0]["category"] == "GYM_CHECKIN"
-    assert pushes[0]["data"]["route"] == "activity"
-    assert pushes[0]["data"]["chat_id"] == str(msg["conversation_id"])
+    push = payload["push"]
+    assert push["title"] == "Edecán"
+    assert push["category"] == "GYM_CHECKIN"
+    assert push["data"]["route"] == "activity"
+    assert "chat_id" in push["data"]
 
-    assert saved == [("done", {"enviados": 1, "fallidos": 0})]
-
-
-async def test_run_gym_checkin_push_falla_no_es_error_y_la_card_queda(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_repo = FakeRepo()
-    deps = make_deps()
-    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
-    ctx = types.SimpleNamespace(
-        tenant_id=tenant_id, user_id=user_id, extras={"deps": deps, "flags": {}}
-    )
-    saved: list[tuple[str, dict[str, Any]]] = []
-
-    async def fake_save_run(status, detalle):
-        saved.append((status, detalle))
-
-    async def fake_push_fallido(deps, **kwargs):
-        raise RuntimeError("APNs caído")
-
-    monkeypatch.setattr(run_gym_checkin_module, "SqlRepo", lambda session: fake_repo)
-    monkeypatch.setattr(run_gym_checkin_module.push, "enviar_push_a_usuario", fake_push_fallido)
-
-    await run_gym_checkin_module.run_gym_checkin(ctx, fake_save_run)
-
-    assert len(fake_repo.messages) == 1  # la card quedó guardada
-    assert saved == [("done", {"enviados": 0, "fallidos": 0})]
+    assert saved == [("done", {"wake_key": payload["wake_key"], "encolado": True})]
 
 
-async def test_run_gym_checkin_sin_poder_publicar_card_es_error(
+async def test_run_gym_checkin_falla_si_no_resuelve_conversacion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     deps = make_deps()
+    install_companion_wake_capture(monkeypatch)
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     ctx = types.SimpleNamespace(
         tenant_id=tenant_id, user_id=user_id, extras={"deps": deps, "flags": {}}
@@ -344,14 +320,7 @@ async def test_run_gym_checkin_sin_poder_publicar_card_es_error(
             raise RuntimeError("base caída")
 
     monkeypatch.setattr(run_gym_checkin_module, "SqlRepo", lambda session: _RepoRoto())
-    pushed = []
-    monkeypatch.setattr(
-        run_gym_checkin_module.push,
-        "enviar_push_a_usuario",
-        lambda *a, **k: pushed.append(1) or push_module.ResultadoEnvioPush(0, 0),
-    )
 
     await run_gym_checkin_module.run_gym_checkin(ctx, fake_save_run)
 
-    assert saved == [("error", {"error": "no se pudo publicar la card del gym_checkin"})]
-    assert pushed == []  # sin card, no hay push
+    assert saved == [("error", {"error": "no se pudo encolar gym_checkin"})]

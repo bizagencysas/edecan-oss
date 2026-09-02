@@ -338,6 +338,7 @@ export type AgentEvent =
       args: Record<string, unknown>;
     }
   | { type: "done"; usage: Record<string, number>; explanation?: string | null }
+  | { type: "follow_up_turn"; pending: number }
   | { type: "error"; message: string };
 
 /** Nombre de evento SSE -> se ignora, el `type` embebido en `data` ya basta. */
@@ -348,6 +349,7 @@ export const SSE_EVENT_NAMES = [
   "tool.end",
   "confirmation.required",
   "message.done",
+  "follow_up_turn",
   "error",
 ] as const;
 
@@ -360,6 +362,11 @@ export interface MemoryItem {
   importance: number;
   confidence?: number;
   source: string;
+  /** Espacio de memoria (`routers/memory.py`): 'user' por defecto; 'agent:<id>'/
+   * 'workspace:<id>'/'conversation'/'organization' son espacios alternos. */
+  namespace?: string;
+  /** `trusted` | `untrusted` | `quarantined` — grado de confianza del origen. */
+  source_trust?: string;
   expires_at?: string | null;
   created_at: string;
 }

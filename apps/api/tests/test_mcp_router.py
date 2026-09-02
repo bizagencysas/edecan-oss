@@ -53,6 +53,23 @@ FLAG = mcp_router.FLAG_TOOLS_MCP
 _URL = "https://mcp.ejemplo.com/rpc"
 
 
+@pytest.fixture(autouse=True)
+def _dns_determinista(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DNS determinista en tests: `mcp.ejemplo.com` no existe de verdad y la
+    resolución real (o su ausencia) haría flaky el SSRF fail-closed del
+    router (`edecan_mcp.seguridad.resolve_hostname_ips` documenta
+    explícitamente este monkeypatch como el camino para probar). Todo
+    hostname resuelve a una IP pública; los literales y los nombres
+    bloqueados por lista siguen bloqueándose (los tests de SSRF con IP
+    privada dependen de eso y siguen verdes)."""
+    import edecan_mcp.seguridad as seguridad
+
+    async def _resolver_publico(_hostname: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(seguridad, "resolve_hostname_ips", _resolver_publico)
+
+
 class FakeVault:
     """Doble de `edecan_db.vault.TokenVault` con `put`/`get` en memoria
     (mismo patrón que `test_credentials_router.py::FakeVault`)."""
@@ -216,6 +233,9 @@ async def test_get_servers_nunca_incluye_headers(client: AsyncClient, _mounted_a
         "comando": None,
         "estado": "active",
         "autenticacion_configurada": True,
+        "health": "unavailable",
+        "latency_ms": None,
+        "last_error": None,
     }
     del cu  # solo para dejar explícito que no se usa más allá del override
 
@@ -565,6 +585,9 @@ async def test_put_repetido_mismo_nombre_reemplaza_sin_duplicar(
             "comando": None,
             "estado": "active",
             "autenticacion_configurada": True,
+            "health": "unavailable",
+            "latency_ms": None,
+            "last_error": None,
         }
     ]
 
@@ -656,6 +679,277 @@ async def test_get_tools_400_si_falla_la_conexion(client: AsyncClient, _mounted_
 
     response = await client.get("/v1/mcp/servers/acme/tools")
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Salud por-servidor (`mcp_server_health`, directiva §27)
+# ---------------------------------------------------------------------------
+
+
+class _SaludRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeHealthSession:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, Any]] = {}
+
+    async def execute(self, clause: Any, params: dict | None = None) -> _SaludRows:
+        sql = str(clause)
+        if "INSERT INTO mcp_server_health" in sql:
+            nombre = str(params["server_name"])
+            self.rows[nombre] = {
+                "server_name": nombre,
+                "health": params["health"],
+                "last_latency_ms": params["latency"],
+                "last_error": params["error"],
+            }
+            return _SaludRows([])
+        if "DELETE FROM mcp_server_health" in sql:
+            self.rows.pop(str(params["server_name"]), None)
+            return _SaludRows([])
+        if "FROM mcp_server_health" in sql:
+            return _SaludRows(list(self.rows.values()))
+        return _SaludRows([])
+
+
+@pytest.fixture
+def health_session() -> _FakeHealthSession:
+    return _FakeHealthSession()
+
+
+@pytest.fixture
+def _mounted_app_salud(_mounted_app: Any, health_session: _FakeHealthSession):
+    _mounted_app.dependency_overrides[edecan_deps.get_tenant_session] = lambda: health_session
+    return _mounted_app
+
+
+@pytest.fixture
+async def client_salud(_mounted_app_salud: Any) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=_mounted_app_salud)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+@respx.mock
+async def test_get_servers_proyecta_salud_de_la_tabla(
+    client_salud: AsyncClient, _mounted_app_salud: Any, health_session: _FakeHealthSession
+) -> None:
+    _con_flag_mcp(_mounted_app_salud)
+    health_session.rows["acme"] = {
+        "server_name": "acme",
+        "health": "operational",
+        "last_latency_ms": 42,
+        "last_error": None,
+    }
+    await client_salud.put(
+        "/v1/mcp/servers",
+        json={"nombre": "acme", "transporte": "http", "url": _URL, "validate": False},
+    )
+    response = await client_salud.get("/v1/mcp/servers")
+    assert response.status_code == 200
+    servidor = response.json()[0]
+    assert servidor["health"] == "operational"
+    assert servidor["latency_ms"] == 42
+    assert servidor["last_error"] is None
+
+
+@respx.mock
+async def test_put_validate_true_graba_operational(
+    client_salud: AsyncClient, _mounted_app_salud: Any, health_session: _FakeHealthSession
+) -> None:
+    respx.post(_URL).mock(side_effect=_mcp_handshake_responder())
+    _con_flag_mcp(_mounted_app_salud)
+    response = await client_salud.put(
+        "/v1/mcp/servers",
+        json={"nombre": "acme", "transporte": "http", "url": _URL, "validate": True},
+    )
+    assert response.status_code == 204
+    assert health_session.rows["acme"]["health"] == "operational"
+    assert isinstance(health_session.rows["acme"]["last_latency_ms"], int)
+
+
+@respx.mock
+async def test_delete_borra_salud(
+    client_salud: AsyncClient, _mounted_app_salud: Any, health_session: _FakeHealthSession
+) -> None:
+    respx.post(_URL).mock(side_effect=_mcp_handshake_responder())
+    _con_flag_mcp(_mounted_app_salud)
+    await client_salud.put(
+        "/v1/mcp/servers",
+        json={"nombre": "acme", "transporte": "http", "url": _URL, "validate": True},
+    )
+    assert "acme" in health_session.rows
+
+    response = await client_salud.delete("/v1/mcp/servers/acme")
+    assert response.status_code == 204
+    assert "acme" not in health_session.rows
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/mcp/health — resumen agregado de `mcp_server_health` (directiva §27)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_health_sin_autenticacion_401(client: AsyncClient) -> None:
+    response = await client.get("/v1/mcp/health")
+    assert response.status_code == 401
+
+
+@respx.mock
+async def test_health_sin_flag_tools_mcp_403(client: AsyncClient, _mounted_app: Any) -> None:
+    _sin_flag_mcp(_mounted_app)
+    response = await client.get("/v1/mcp/health")
+    assert response.status_code == 403
+
+
+@respx.mock
+async def test_health_vacio_devuelve_ceros(
+    client_salud: AsyncClient, _mounted_app_salud: Any
+) -> None:
+    _con_flag_mcp(_mounted_app_salud)
+    response = await client_salud.get("/v1/mcp/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["format"] == "edecan-mcp-health.v1"
+    assert body["status"] == "operational"
+    assert body["configured"] == 0
+    assert body["checked"] == 0
+    assert body["unchecked"] == 0
+    assert body["by_status"] == {
+        "operational": 0,
+        "degraded": 0,
+        "auth_required": 0,
+        "unavailable": 0,
+        "unknown": 0,
+    }
+    assert body["operational_rate"] is None
+    assert body["avg_latency_ms"] is None
+    assert body["max_latency_ms"] is None
+    assert body["servers"] == []
+
+
+@respx.mock
+async def test_health_agrega_por_estado(
+    client_salud: AsyncClient,
+    _mounted_app_salud: Any,
+    health_session: _FakeHealthSession,
+) -> None:
+    _con_flag_mcp(_mounted_app_salud)
+    health_session.rows.update(
+        {
+            "alpha": {
+                "server_name": "alpha",
+                "health": "operational",
+                "last_latency_ms": 10,
+                "last_error": None,
+            },
+            "beta": {
+                "server_name": "beta",
+                "health": "operational",
+                "last_latency_ms": 30,
+                "last_error": None,
+            },
+            "delta": {
+                "server_name": "delta",
+                "health": "degraded",
+                "last_latency_ms": 120,
+                "last_error": "responde lento",
+            },
+            "gamma": {
+                "server_name": "gamma",
+                "health": "unavailable",
+                "last_latency_ms": None,
+                "last_error": "timeout",
+            },
+        }
+    )
+    response = await client_salud.get("/v1/mcp/health")
+    assert response.status_code == 200
+    body = response.json()
+    # Sin filas de `connector_accounts`, solo cuenta la salud leída de la tabla.
+    assert body["configured"] == 0
+    assert body["checked"] == 4
+    assert body["unchecked"] == 0
+    assert body["by_status"] == {
+        "operational": 2,
+        "degraded": 1,
+        "auth_required": 0,
+        "unavailable": 1,
+        "unknown": 0,
+    }
+    assert body["status"] == "unavailable"
+    assert body["operational_rate"] == 0.5
+    assert body["avg_latency_ms"] == 53.3  # (10 + 30 + 120) / 3, redondeado a 1 decimal
+    assert body["max_latency_ms"] == 120
+    nombres = {s["server_name"] for s in body["servers"]}
+    assert nombres == {"alpha", "beta", "delta", "gamma"}
+
+
+@respx.mock
+async def test_health_no_checados_degradan_el_resumen(
+    client_salud: AsyncClient, _mounted_app_salud: Any
+) -> None:
+    _con_flag_mcp(_mounted_app_salud)
+    await client_salud.put(
+        "/v1/mcp/servers",
+        json={"nombre": "nunca-validado", "transporte": "http", "url": _URL, "validate": False},
+    )
+    assert (await client_salud.get("/v1/mcp/health")).status_code == 200
+    body = (await client_salud.get("/v1/mcp/health")).json()
+    assert body["configured"] == 1
+    assert body["checked"] == 0
+    assert body["unchecked"] == 1
+    assert body["status"] == "degraded"
+
+
+@respx.mock
+async def test_health_session_none_solo_devuelve_configurados(
+    client: AsyncClient, _mounted_app: Any
+) -> None:
+    """Sin sesión (get_tenant_session → None), `_leer_salud` degrada a vacío y
+    el resumen solo refleja los servidores configurados (todos `unchecked`)."""
+    _con_flag_mcp(_mounted_app)
+    await client.put(
+        "/v1/mcp/servers",
+        json={"nombre": "acme", "transporte": "http", "url": _URL, "validate": False},
+    )
+    response = await client.get("/v1/mcp/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] == 1
+    assert body["checked"] == 0
+    assert body["unchecked"] == 1
+    assert body["status"] == "degraded"
+    assert body["avg_latency_ms"] is None
+
+
+def test_health_summary_puro_contiene_estado_desconocido() -> None:
+    """Casos borde de la función pura: una fila con `health` fuera del
+    vocabulario pinned se cuenta como `unknown` (nunca revienta) y la latencia
+    no numérica no se agrega."""
+    resumen = mcp_router._mcp_health_summary(  # noqa: SLF001 - whitebox a propósito
+        {
+            "raro": {"server_name": "raro", "health": "not_a_real_state", "last_latency_ms": "n/a"},
+            "sano": {"server_name": "sano", "health": "operational", "last_latency_ms": 7},
+        },
+        configured_names=["raro", "sano"],
+    )
+    assert resumen["by_status"]["unknown"] == 1
+    assert resumen["by_status"]["operational"] == 1
+    assert resumen["checked"] == 2
+    assert resumen["unchecked"] == 0
+    assert resumen["avg_latency_ms"] == 7.0
+    assert resumen["max_latency_ms"] == 7
+    assert resumen["status"] == "degraded"
 
 
 # ---------------------------------------------------------------------------

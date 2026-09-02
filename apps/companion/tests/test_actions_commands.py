@@ -29,17 +29,49 @@ def test_run_command_runs_allowed_executable(companion_config):
 
 
 def test_open_url_abre_http_en_macos(companion_config, monkeypatch):
+    """En macOS la URL se abre REUTILIZANDO la pestaña del mismo sitio
+    (AppleScript a Chrome): sin esto, cada visita del scan de vida digital
+    dejaba UNA PESTAÑA NUEVA de LinkedIn (20+ tabs acumuladas, 30-ago)."""
     seen: list[list[str]] = []
 
     def fake_run(argv, **kwargs):
         seen.append(list(argv))
+        if argv[0] == "osascript":
+            return subprocess.CompletedProcess(argv, 0, "reused\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(actions.sys, "platform", "darwin")
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    result = actions._open_url({"url": "https://www.booking.com/hotel/x"}, companion_config)
+    assert result == {
+        "url": "https://www.booking.com/hotel/x",
+        "launched": True,
+        "modo": "reused",
+    }
+    assert seen == [
+        ["osascript", "-", "https://www.booking.com/hotel/x", "booking.com"],
+    ]
+
+
+def test_open_url_cae_a_open_si_osascript_falla(companion_config, monkeypatch):
+    """AppleScript falla (sin Chrome, permiso negado): el `open` clásico
+    sigue siendo el fallback — nunca peor que antes."""
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        if argv[0] == "osascript":
+            return subprocess.CompletedProcess(argv, 1, "", "not allowed")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(actions.sys, "platform", "darwin")
     monkeypatch.setattr(actions.subprocess, "run", fake_run)
     result = actions._open_url({"url": "https://www.booking.com/hotel/x"}, companion_config)
     assert result == {"url": "https://www.booking.com/hotel/x", "launched": True}
-    assert seen == [["open", "https://www.booking.com/hotel/x"]]
+    assert seen == [
+        ["osascript", "-", "https://www.booking.com/hotel/x", "booking.com"],
+        ["open", "https://www.booking.com/hotel/x"],
+    ]
 
 
 def test_open_url_rechaza_esquemas_locales(companion_config):

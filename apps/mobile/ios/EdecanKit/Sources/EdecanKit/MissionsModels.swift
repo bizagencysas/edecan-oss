@@ -66,6 +66,12 @@ public struct MissionOut: Codable, Sendable, Equatable, Identifiable {
     /// `apps/web/src/lib/api-misiones.ts`.
     public var estaActiva: Bool { status == "planning" || status == "running" }
 
+    /// `true` si la misión sigue pidiendo atención en el Watch: en curso,
+    /// esperando confirmación o pausada.
+    public var visibleEnWatch: Bool {
+        estaActiva || status == "waiting_confirmation" || status == "paused"
+    }
+
     /// `true` si la misión ya terminó — no admite `confirm`/`cancel`.
     public var esTerminal: Bool { status == "done" || status == "error" || status == "cancelled" }
 }
@@ -138,8 +144,34 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
     public let workspace: String?
     public let updatedAt: Date?
 
+    // Perfil rico (migración 0048, `persistent_agents.py`). Todos opcionales:
+    // un worker viejo (o una respuesta incompleta) no debe romper el decode.
+    public let displayName: String?
+    /// `avatar` es un jsonb libre (`dict[str, Any]`). El cliente escribe
+    /// `{"accent": "#RRGGBB"}`; se decodifica como objeto para tolerar
+    /// cualquier forma que el backend devuelva.
+    public let avatar: [String: JSONValue]?
+    public let roleTitle: String?
+    public let roleShort: String?
+    public let jobDescription: String?
+    public let personality: String?
+    public let communicationStyle: String?
+    public let instructions: String?
+    public let constraints: String?
+    public let approvalPolicy: [String: JSONValue]?
+    public let autonomyLevel: String?
+    public let modelPolicy: [String: JSONValue]?
+
     enum CodingKeys: String, CodingKey {
-        case id, name, purpose, status, enabled, workspace
+        case id, name, purpose, status, enabled, workspace, avatar, personality, instructions, constraints
+        case displayName = "display_name"
+        case roleTitle = "role_title"
+        case roleShort = "role_short"
+        case jobDescription = "job_description"
+        case communicationStyle = "communication_style"
+        case approvalPolicy = "approval_policy"
+        case autonomyLevel = "autonomy_level"
+        case modelPolicy = "model_policy"
         case updatedAt = "updated_at"
     }
 
@@ -152,6 +184,95 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         workspace = try container.decodeIfPresent(String.self, forKey: .workspace)
         updatedAt = Self.decodeFecha(container, key: .updatedAt)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        avatar = try container.decodeIfPresent([String: JSONValue].self, forKey: .avatar)
+        roleTitle = try container.decodeIfPresent(String.self, forKey: .roleTitle)
+        roleShort = try container.decodeIfPresent(String.self, forKey: .roleShort)
+        jobDescription = try container.decodeIfPresent(String.self, forKey: .jobDescription)
+        personality = try container.decodeIfPresent(String.self, forKey: .personality)
+        communicationStyle = try container.decodeIfPresent(String.self, forKey: .communicationStyle)
+        instructions = try container.decodeIfPresent(String.self, forKey: .instructions)
+        constraints = try container.decodeIfPresent(String.self, forKey: .constraints)
+        approvalPolicy = try container.decodeIfPresent([String: JSONValue].self, forKey: .approvalPolicy)
+        autonomyLevel = try container.decodeIfPresent(String.self, forKey: .autonomyLevel)
+        modelPolicy = try container.decodeIfPresent([String: JSONValue].self, forKey: .modelPolicy)
+    }
+
+    /// Nombre para mostrar en el roster: `display_name` si existe y no está
+    /// vacío; si no, `name`.
+    public var nombreVisible: String {
+        let candidato = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let candidato, !candidato.isEmpty { return candidato }
+        return name
+    }
+
+    /// Cargo para mostrar: `role_title` si existe; si no, cae a `purpose`.
+    public var cargoVisible: String {
+        let candidato = roleTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let candidato, !candidato.isEmpty { return candidato }
+        return purpose
+    }
+
+    /// Hex (`#RRGGBB`) del acento del avatar, si el backend lo trae.
+    public var avatarAccentHex: String? {
+        if let avatar, case .string(let hex)? = avatar["fill"] { return hex }
+        guard let avatar, case .string(let hex)? = avatar["accent"] else { return nil }
+        return hex
+    }
+
+    /// Estilo del descriptor (`grok_face`, `geometric`, …).
+    public var avatarStyle: String? {
+        guard let avatar, case .string(let style)? = avatar["style"] else { return nil }
+        return style
+    }
+
+    /// Forma geométrica (`circle`, `rounded_square`, `oval`, …) para `grok_face`.
+    public var avatarShape: String? {
+        guard let avatar, case .string(let shape)? = avatar["shape"] else { return nil }
+        return shape
+    }
+
+    /// Relleno sólido del avatar Grok Bot.
+    public var avatarFillHex: String? {
+        guard let avatar, case .string(let hex)? = avatar["fill"] else { return nil }
+        return hex
+    }
+
+    /// Ojos inclinados del descriptor `grok_face`.
+    public struct AvatarEye: Sendable, Equatable {
+        public let x: Double
+        public let y: Double
+        public let rx: Double
+        public let ry: Double
+        public let rotation: Double
+    }
+
+    public var avatarEyes: (left: AvatarEye?, right: AvatarEye?) {
+        guard let avatar, case .object(let eyes)? = avatar["eyes"] else {
+            return (nil, nil)
+        }
+        func parseEye(_ key: String) -> AvatarEye? {
+            guard case .object(let eye)? = eyes[key] else { return nil }
+            func num(_ k: String, default d: Double) -> Double {
+                if case .number(let v)? = eye[k] { return v }
+                return d
+            }
+            return AvatarEye(
+                x: num("x", default: 0.5),
+                y: num("y", default: 0.4),
+                rx: num("rx", default: 0.055),
+                ry: num("ry", default: 0.075),
+                rotation: num("rotation", default: -22)
+            )
+        }
+        return (parseEye("left"), parseEye("right"))
+    }
+
+    /// Iniciales explícitas del avatar (`avatar.initials`), si el backend las
+    /// trae; `nil` si hay que derivarlas del nombre.
+    public var avatarInitials: String? {
+        guard let avatar, case .string(let letras)? = avatar["initials"] else { return nil }
+        return letras
     }
 
     private static func decodeIdentificador(_ container: KeyedDecodingContainer<CodingKeys>, key: CodingKeys) throws -> String {

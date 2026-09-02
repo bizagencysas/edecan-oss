@@ -266,6 +266,9 @@ printf '%s\n' \
 "$TOOLS_DIR/yt-dlp" --version >/dev/null
 
 echo "==> [Studio 4/5] Descargando Chromium fijado por Playwright..."
+# TODO(remoto-macos): mover playwright-browsers fuera del bundle firmado
+# (p. ej. Application Support) para que `codesign --verify --deep --strict`
+# no falle cuando Chromium se actualiza dentro de studio-engine/.
 PLAYWRIGHT_BROWSERS_PATH="$STAGED_ENGINE/playwright-browsers" \
   "$NODE_RUNTIME" "$STAGED_ENGINE/node_modules/playwright/cli.js" install --only-shell chromium
 (

@@ -70,6 +70,11 @@ allowed_apps: []
 # pidas. No habilita comandos, shell ni teclado/mouse remoto.
 allow_all_apps: false
 
+# Máquina de UN DUEÑO (escritorio local): deja correr CUALQUIER comando en
+# "run_command" -- incluido sudo. FALSO por defecto (hosted multi-tenant);
+# el shell de escritorio lo enciende para el dueño en su propia Mac.
+allow_all_commands: false
+
 # Ejecutables que el companion puede correr con la acción "run_command".
 # Se compara solo el primer token del comando (el ejecutable en sí), nunca
 # sus argumentos, y siempre se corre sin shell (nada de "&&", ";", tuberías
@@ -143,6 +148,7 @@ class CompanionConfig:
     )
     allowed_apps: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
+    allow_all_commands: bool = False
     auto_approve: list[str] = field(default_factory=list)
     remember_approvals_minutes: int = 0
     ide_enabled: bool = True
@@ -252,6 +258,12 @@ def load_config(path: Path | str | None = None) -> CompanionConfig:
 
     allowed_apps = _coerce_str_list(data.get("allowed_apps"), field_name="allowed_apps")
     auto_approve = _coerce_str_list(data.get("auto_approve"), field_name="auto_approve")
+    allow_all_commands = _coerce_bool(
+        data.get("allow_all_commands"), field_name="allow_all_commands", default=False
+    )
+    if allow_all_commands:
+        if "run_command" not in auto_approve:
+            auto_approve.append("run_command")
     allow_all_apps = _coerce_bool(
         data.get("allow_all_apps"), field_name="allow_all_apps", default=False
     ) or os.environ.get(ALLOW_ALL_APPS_ENV, "").strip().lower() in {

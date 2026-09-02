@@ -65,6 +65,10 @@ export interface Automation {
   enabled: boolean;
   next_run_at: string | null;
   last_run_at: string | null;
+  /** Fallos consecutivos (0 si ninguno) — los calcula el backend
+   * (`routers/automations.py::_public_automation`). Útil para pintar el estado. */
+  consecutive_failures?: number;
+  disabled_at?: string | null;
   created_at: string;
   updated_at: string;
   /** Solo presente en la respuesta del `POST`/`PATCH` que ACABA de generarlo. */
@@ -81,7 +85,7 @@ export interface AutomationRun {
   finished_at: string | null;
 }
 
-export interface AutomationSuggestion {
+export interface AutomationReviewSuggestion {
   kind: "automation_suggestion";
   action: "review_automation";
   automation_id: string;
@@ -90,7 +94,33 @@ export interface AutomationSuggestion {
   enabled: boolean;
   requires_user_confirmation: true;
   reason: string;
+  /** Nueva etapa del flujo proactivo (`observation`|`suggestion`|`draft`|
+   * `action`); ausente en backends anteriores a este campo. */
+  stage?: AutomationSuggestionStage;
+  /** Compañero que produjo la sugerencia, si el backend lo expone. */
+  agent_id?: string | null;
 }
+
+/** Sugerencia de "convertir en rutina" de la minería pasiva
+ * (`edecan_automations.proactive.detect_routine_suggestions`): detecta tareas
+ * repetidas. Solo sugiere, nunca crea ni activa nada. */
+export interface RoutineSuggestion {
+  kind: "routine_suggestion";
+  action: "create_routine";
+  task: string;
+  repetitions: number;
+  requires_user_confirmation: true;
+  reason: string;
+  stage?: AutomationSuggestionStage;
+  agent_id?: string | null;
+}
+
+/** Etapa del flujo proactivo: `observation` (sutil), `suggestion` (accionable),
+ * `draft` (borrador/preview) y `action` (requiere tu atención). */
+export type AutomationSuggestionStage = "observation" | "suggestion" | "draft" | "action";
+
+/** `GET /v1/automations/suggestions` devuelve una MEZCLA de ambos tipos. */
+export type AutomationSuggestion = AutomationReviewSuggestion | RoutineSuggestion;
 
 export interface AutomationTriggerIn {
   kind: "schedule" | "webhook";

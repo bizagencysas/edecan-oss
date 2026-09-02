@@ -31,14 +31,19 @@ es quien de verdad lo verifica en cada llamada entrante.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from edecan_automations import engine
 from edecan_automations.describe import describe_rrule
-from edecan_automations.proactive import suggest_automation_from_event
+from edecan_automations.proactive import (
+    clasificar_proactividad,
+    detect_routine_suggestions,
+    suggest_automation_from_event,
+)
 from edecan_core.queue import enqueue
 from edecan_core.safety import redact
 from edecan_schemas import FLAG_AUTOMATIONS_RULES, LIMIT_AUTOMATIONS_ACTIVE
@@ -49,6 +54,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, rate_limit
+
+logger = logging.getLogger(__name__)
 
 _UNLIMITED = -1
 _RUNS_LIMIT_DEFAULT = 50
@@ -396,6 +403,49 @@ async def list_automation_suggestions(
             suggestion["nombre"] = row.get("nombre") or "Automatización"
             suggestion["enabled"] = bool(row.get("enabled"))
             suggestions.append(suggestion)
+
+    # Minería pasiva (directiva §38-41): detecta tareas repetidas en las
+    # misiones recientes y sugiere convertirlas en rutina. Solo sugiere, nunca
+    # crea. Best-effort: una tabla `agent_missions` ausente no debe tumbar la
+    # respuesta de sugerencias.
+    try:
+        missions = await session.execute(
+            text(
+                "SELECT objetivo, owner_agent_id, created_at FROM agent_missions "
+                "WHERE tenant_id = :tenant_id AND created_at >= :since "
+                "ORDER BY created_at DESC LIMIT 100"
+            ),
+            {
+                "tenant_id": current_user.tenant_id,
+                "since": datetime.now(UTC) - timedelta(days=30),
+            },
+        )
+        suggestions.extend(
+            detect_routine_suggestions(
+                [
+                    {
+                        "label": str(row.get("objetivo") or ""),
+                        "agent_id": str(row["owner_agent_id"])
+                        if row.get("owner_agent_id") is not None
+                        else None,
+                        "occurred_at": row.get("created_at"),
+                    }
+                    for row in missions.mappings().all()
+                ]
+            )
+        )
+    except Exception:  # noqa: BLE001 - la minería pasiva es un extra best-effort
+        logger.info(
+            "automations: minería pasiva no disponible para tenant %s",
+            current_user.tenant_id,
+        )
+
+    # Ladder proactivo (product design): cada sugerencia lleva su `stage` y el
+    # `agent_id` (nullable) que la detectó, para que la UI pueda mostrar
+    # "Elena detectó X; ¿quieres que lo haga?". Nunca se crea ni se activa nada.
+    for suggestion in suggestions:
+        suggestion["stage"] = clasificar_proactividad(suggestion)
+        suggestion.setdefault("agent_id", None)
     return suggestions
 
 

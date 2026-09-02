@@ -40,6 +40,36 @@ function mensajeError(err: unknown): string {
   return "No se pudo conectar con el servidor MCP.";
 }
 
+/** Badge de salud según `GET /v1/mcp/servers` v2 (`health`). Si el backend es
+ * anterior a ese campo, no pinta nada. */
+function HealthBadge({ health }: { health?: string | null }) {
+  if (!health) return null;
+  const normalized = health.toLowerCase();
+  const variant =
+    normalized === "healthy" || normalized === "ok" || normalized === "active"
+      ? "success"
+      : normalized === "degraded" || normalized === "warning"
+        ? "warning"
+        : normalized === "down" || normalized === "error" || normalized === "unhealthy"
+          ? "danger"
+          : "neutral";
+  const label =
+    variant === "success"
+      ? "Saludable"
+      : variant === "warning"
+        ? "Degradado"
+        : variant === "danger"
+          ? "Caído"
+          : health;
+  return <Badge variant={variant}>{label}</Badge>;
+}
+
+/** Latencia del último handshake, humanizada; vacío si no hay dato. */
+function latencyLabel(latency: number | null | undefined): string {
+  if (typeof latency !== "number" || !Number.isFinite(latency)) return "";
+  return `${Math.round(latency)} ms`;
+}
+
 interface HeaderPar {
   clave: string;
   valor: string;
@@ -212,6 +242,7 @@ function FilaServidor({
           <Badge variant={comprobado ? (errorHerramientas ? "warning" : "success") : "neutral"}>
             {comprobado ? (errorHerramientas ? "No disponible" : "Disponible ahora") : "Guardado"}
           </Badge>
+          <HealthBadge health={servidor.health} />
           {servidor.autenticacion_configurada && <Badge variant="neutral">Acceso cifrado</Badge>}
           {servidor.estado !== "active" && <Badge variant="warning">{servidor.estado}</Badge>}
         </span>
@@ -240,6 +271,10 @@ function FilaServidor({
         </div>
       </div>
       <p className="mt-1 truncate text-xs text-slate-400">{servidor.url ?? servidor.comando ?? ""}</p>
+      <p className="mt-0.5 text-xs text-slate-400">
+        {latencyLabel(servidor.latency_ms)}
+        {servidor.last_error ? ` · ${servidor.last_error}` : ""}
+      </p>
       {errorHerramientas && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{errorHerramientas}</p>}
       {herramientas !== null && (
         <ul className="mt-2 space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800">

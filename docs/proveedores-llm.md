@@ -106,7 +106,7 @@ A diferencia de los CLIs, Ollama sí soporta tool-calling nativo (`POST /api/cha
 
 ### Ollama embebido en la app de escritorio (todavía más cero-fricción)
 
-Lo de arriba asume que el cliente ya instaló Ollama por su cuenta. La app de escritorio (`apps/desktop`) va un paso más allá y puede **traer el binario de Ollama empaquetado adentro del instalador** (patrón adaptado de `open-jarvis/OpenJarvis`, Apache-2.0, ver `NOTICE`), arrancándolo sola en segundo plano — cero instalación aparte, cero paso manual más allá de activarlo. Es 100% opcional (para quien empaqueta y para quien usa la app) y no cambia nada de lo de arriba: sigue siendo el mismo `OllamaProvider`/`kind="ollama"` hablando con `http://localhost:11434`, la única diferencia es QUIÉN arrancó ese proceso. Detalle completo (cómo empaquetarlo, cómo activarlo, arquitectura interna): [`desktop.md`](./desktop.md) §10 y [`desktop-local.md`](./desktop-local.md) §9.
+Lo de arriba asume que el cliente ya instaló Ollama por su cuenta. La app de escritorio (`apps/desktop`) va un paso más allá y puede **traer el binario de Ollama empaquetado adentro del instalador** (patrón adaptado de `open-reference implementation/OpenJarvis`, Apache-2.0, ver `NOTICE`), arrancándolo sola en segundo plano — cero instalación aparte, cero paso manual más allá de activarlo. Es 100% opcional (para quien empaqueta y para quien usa la app) y no cambia nada de lo de arriba: sigue siendo el mismo `OllamaProvider`/`kind="ollama"` hablando con `http://localhost:11434`, la única diferencia es QUIÉN arrancó ese proceso. Detalle completo (cómo empaquetarlo, cómo activarlo, arquitectura interna): [`desktop.md`](./desktop.md) §10 y [`desktop-local.md`](./desktop-local.md) §9.
 
 ## Vertex AI / Gemini
 

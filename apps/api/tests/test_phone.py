@@ -1829,7 +1829,7 @@ async def test_queue_call_whisper_requires_ownership_and_active_call(client, fak
     assert empty.status_code == 422
 
 
-async def test_phone_reply_injects_pending_whisper_once_with_jarvis_prefix(
+async def test_phone_reply_injects_pending_whisper_once_with_reference_prefix(
     app, fake_repo, monkeypatch
 ) -> None:
     """Frente 6a: el susurro se inyecta como mensaje de usuario en el SIGUIENTE turno

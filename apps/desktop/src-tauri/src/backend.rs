@@ -202,47 +202,85 @@ pub async fn start_backend(app: AppHandle) {
     let app_for_task = app.clone();
     let recent_for_task = recent_lines.clone();
 
-    let outcome = tokio::time::timeout(READY_TIMEOUT, async move {
+    // El sidecar vive MÁS ALLÁ del arranque: su salida se drena de forma
+    // permanente a un archivo de log (`<data_dir>/backend-sidecar.log`).
+    // Antes se leía solo hasta `EDECAN_LOCAL_READY` y después se soltaba —
+    // los errores reales del backend (429 del rate limit, excepciones,
+    // fallos de pool) se perdían, y diagnosticar «a veces falla» era adivinar.
+    let drain_log_path = target_data_dir.join("backend-sidecar.log");
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<u16, String>>();
+    let mut ready_tx = Some(ready_tx);
+    let port_for_drain = port;
+    tokio::spawn(async move {
+        use std::io::Write;
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&drain_log_path)
+            .ok();
+        let mut listo = false;
         while let Some(event) = rx.recv().await {
-            match event {
+            let line = match event {
                 CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes).trim_end().to_string();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    push_line(&recent_for_task, &line);
-                    let _ = app_for_task.emit("edecan://backend-log", &line);
-                    if line.contains(READY_MARKER) {
-                        return Ok(parse_ready_port(&line).unwrap_or(port));
-                    }
+                    String::from_utf8_lossy(&bytes).trim_end().to_string()
                 }
                 CommandEvent::Stderr(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes).trim_end().to_string();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    push_line(&recent_for_task, &line);
-                    let _ = app_for_task.emit("edecan://backend-log", &line);
+                    String::from_utf8_lossy(&bytes).trim_end().to_string()
                 }
                 CommandEvent::Error(err) => {
-                    return Err(format!("Error del proceso del backend local: {err}"));
+                    if !listo {
+                        if let Some(sender) = ready_tx.take() {
+                            let _ = sender.send(Err(format!(
+                                "Error del proceso del backend local: {err}"
+                            )));
+                        }
+                    }
+                    break;
                 }
                 CommandEvent::Terminated(payload) => {
-                    return Err(format!(
-                        "El backend local se cerró antes de avisar que estaba listo \
-                         (código de salida: {:?}).",
-                        payload.code
-                    ));
+                    if !listo {
+                        if let Some(sender) = ready_tx.take() {
+                            let _ = sender.send(Err(format!(
+                                "El backend local se cerró antes de avisar que estaba listo \
+                                 (código de salida: {:?}).",
+                                payload.code
+                            )));
+                        }
+                    }
+                    break;
                 }
-                _ => {}
+                _ => continue,
+            };
+            if line.is_empty() {
+                continue;
+            }
+            push_line(&recent_for_task, &line);
+            let _ = app_for_task.emit("edecan://backend-log", &line);
+            if let Some(mut file) = log_file.as_ref() {
+                let _ = writeln!(file, "{line}");
+            }
+            if !listo && line.contains(READY_MARKER) {
+                listo = true;
+                if let Some(sender) = ready_tx.take() {
+                    let _ =
+                        sender.send(Ok(parse_ready_port(&line).unwrap_or(port_for_drain)));
+                }
             }
         }
-        Err("El backend local cerró su salida estándar sin avisar que estaba listo.".to_string())
-    })
-    .await;
+    });
+
+    let outcome = match tokio::time::timeout(READY_TIMEOUT, ready_rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_canal_cerrado)) => Err(
+            "El backend local cerró su salida estándar sin avisar que estaba listo.".to_string(),
+        ),
+        Err(_elapsed) => Err(
+            "El backend local tardó más de 60 segundos en avisar que estaba listo.".to_string(),
+        ),
+    };
 
     match outcome {
-        Ok(Ok(actual_port)) => {
+        Ok(actual_port) => {
             *app.state::<PortState>().0.lock().unwrap() = actual_port;
             if let Err(err) = show_main_window(&app, actual_port) {
                 emit_error(
@@ -252,12 +290,7 @@ pub async fn start_backend(app: AppHandle) {
                 );
             }
         }
-        Ok(Err(message)) => emit_error(&app, message, read_lines(&recent_lines)),
-        Err(_elapsed) => emit_error(
-            &app,
-            "El backend local tardó más de 60 segundos en avisar que estaba listo.".to_string(),
-            read_lines(&recent_lines),
-        ),
+        Err(message) => emit_error(&app, message, read_lines(&recent_lines)),
     }
 }
 
@@ -340,6 +373,16 @@ fn build_command(
             .map_err(|err| format!("No se pudo resolver el sidecar edecan-local: {err}"))?
             .args(backend_args)
     };
+
+    // SIEMPRE antes de cualquier `.env(...)` de la cadena: el sidecar hereda el
+    // entorno de quien lanzó la app. Si la app se abre desde un terminal del
+    // desktop de OpenCode.app, ese entorno trae `OPENCODE_SERVER_USERNAME`/
+    // `OPENCODE_SERVER_PASSWORD`, y opencode las lee para activar Basic Auth
+    // en `opencode serve` -> `/api/health` responde 401 y NINGÚN agente del
+    // IDE de Edecán arranca (verificado el 1-sep-2026). Aquí se reemplaza el
+    // entorno del hijo por el actual MENOS las variables de OpenCode.app
+    // (`EDECAN_OPENCODE_BIN` se conserva: la fija `with_opencode_env`).
+    let cmd = sin_env_de_desktop_opencode(cmd);
 
     let cmd = with_studio_env(cmd, app, source_command)?;
     let cmd = if let Some(bridge) = remote_bridge {
@@ -711,6 +754,22 @@ fn with_opencode_env(
         Some(bin) => cmd.env("EDECAN_OPENCODE_BIN", bin.to_string_lossy().to_string()),
         None => cmd,
     }
+}
+
+/// Quita del entorno del proceso hijo las variables que exporta OTRO producto
+/// (la app de escritorio OpenCode.app) y que el binario `opencode` empaquetado
+/// en Edecán NO debe heredar. La letal: `OPENCODE_SERVER_USERNAME`/
+/// `OPENCODE_SERVER_PASSWORD` activan Basic Auth en `opencode serve`, y el
+/// chequeo de salud del IDE (`GET /api/health`) espera 200 — con auth activa
+/// responde 401 y el IDE entero queda muerto. Se conserva solo
+/// `EDECAN_OPENCODE_BIN` (la fija `with_opencode_env` después).
+fn sin_env_de_desktop_opencode(
+    cmd: tauri_plugin_shell::process::Command,
+) -> tauri_plugin_shell::process::Command {
+    let filtradas: Vec<(String, String)> = std::env::vars()
+        .filter(|(clave, _)| !clave.starts_with("OPENCODE_") || clave == "EDECAN_OPENCODE_BIN")
+        .collect();
+    cmd.env_clear().envs(filtradas)
 }
 
 /// Resuelve la ruta del sidecar `opencode`, con el mismo criterio de dos

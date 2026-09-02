@@ -34,18 +34,34 @@ quedarse (uno o varios `POST /v1/memory` internamente, mismo `MemoryIn`).
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+from edecan_core.memory.corrections import (
+    propose_correction_candidates_from_messages,
+    propose_preference_candidates,
+)
 from edecan_llm.base import ChatMessage, CompletionRequest
 from edecan_llm.router import LLMRouter
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from edecan_api.deps import CurrentUser, get_current_user, get_llm_router, get_repo, rate_limit
+from edecan_api.deps import (
+    CurrentUser,
+    get_current_user,
+    get_llm_router,
+    get_repo,
+    get_tenant_session,
+    rate_limit,
+)
 from edecan_api.repo import Repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"], dependencies=[Depends(rate_limit)])
 
@@ -275,6 +291,11 @@ class MemoryIn(BaseModel):
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     source: str = "user"
     expires_at: datetime | None = None
+    # Namespace de memoria (directiva §50-54, migración `0052_memory_namespaces`):
+    # 'user' por defecto (espacio plano histórico). 'agent:<id>'/'workspace:<id>'/
+    # 'conversation'/'organization' son espacios alternos.
+    namespace: str = "user"
+    source_trust: Literal["trusted", "untrusted", "quarantined"] = "trusted"
 
 
 def _memory_out(row: dict[str, Any]) -> dict[str, Any]:
@@ -285,20 +306,131 @@ def _memory_out(row: dict[str, Any]) -> dict[str, Any]:
         "importance": row.get("importance"),
         "confidence": row.get("confidence", 0.8),
         "source": row.get("source"),
+        "namespace": row.get("namespace", "user"),
+        "source_trust": row.get("source_trust", "trusted"),
         "expires_at": row.get("expires_at"),
         "created_at": row.get("created_at"),
     }
+
+
+def _agent_id_de_namespace(namespace: str) -> uuid.UUID:
+    """Extrae el id de un namespace `agent:<id>`; `ValueError` si no es válido."""
+    return uuid.UUID(namespace[len("agent:") :])
+
+
+@router.get("/suggestions")
+async def list_memory_suggestions(
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> list[dict[str, Any]]:
+    """Propone candidatos a preferencia durable detectados por correcciones
+    repetidas del usuario (product design§172).
+
+    Solo PROPONE: no guarda nada en `memory_items`. Combina dos fuentes:
+
+    1. `memory_items` con `kind='preference'` re-afirmados varias veces
+       (`propose_preference_candidates`, `source="corrección repetida (Nx)"`).
+    2. Mensajes recientes del chat con patrones de corrección ("no vuelvas a",
+       "siempre haz", "primero dame"...) — `propose_correction_candidates_from_messages`,
+       `source="corrección en mensajes (Nx)"`.
+
+    La UI decide "Recordar esto" / "Solo esta vez" (§126). El barrido de
+    mensajes es best-effort: si la sesión no está disponible (p. ej. en tests
+    con dobles de sesión), simplemente no aporta candidatos.
+    """
+    preferences = await repo.list_memory(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        q=None,
+        k=200,
+        namespace="user",
+    )
+    candidatos = propose_preference_candidates(preferences)
+    candidatos.extend(
+        await _scan_correcciones_en_mensajes(
+            session, tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        )
+    )
+    return candidatos
+
+
+async def _scan_correcciones_en_mensajes(
+    session: AsyncSession | None,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Lee los mensajes recientes del usuario y devuelve candidatos a
+    preferencia desde patrones de corrección (product design).
+
+    SQL directo contra `messages`/`conversations` (no un método de `Repo`):
+    `repo.py` no está en el alcance de este trabajo. Best-effort y fail-open:
+    una sesión ausente o un error de base no debe tumbar `GET /suggestions`.
+    """
+    if session is None:
+        return []
+    try:
+        result = await session.execute(
+            text(
+                "SELECT m.content, m.role, m.created_at FROM messages m "
+                "JOIN conversations c ON c.id = m.conversation_id AND c.tenant_id = m.tenant_id "
+                "WHERE m.tenant_id = :tenant_id AND c.user_id = :user_id AND m.role = 'user' "
+                "ORDER BY m.created_at DESC, m.id DESC LIMIT :limit"
+            ),
+            {"tenant_id": str(tenant_id), "user_id": str(user_id), "limit": limit},
+        )
+    except Exception:  # noqa: BLE001 - el barrido de mensajes es un extra best-effort
+        logger.warning(
+            "memory/suggestions: no se pudo escanear mensajes para tenant=%s",
+            tenant_id,
+            exc_info=True,
+        )
+        return []
+    return propose_correction_candidates_from_messages(
+        [dict(row) for row in result.mappings().all()]
+    )
 
 
 @router.get("")
 async def list_memory(
     q: str | None = None,
     k: int = 20,
+    namespace: str = "user",
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
+    if namespace.startswith("agent:"):
+        # Memoria de un worker persistente (`persistent_agents.memory`), listada
+        # aparte del espacio plano 'user' (directiva §50-54).
+        try:
+            agent_id = _agent_id_de_namespace(namespace)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Namespace de agente inválido (esperado 'agent:<id>').",
+            ) from exc
+        row = await repo.get_agent_memory(
+            tenant_id=current_user.tenant_id, agent_id=agent_id
+        )
+        if row is None:
+            return []
+        memory = row.get("memory") or {}
+        if isinstance(memory, str):
+            memory = json.loads(memory or "{}")
+        if not isinstance(memory, dict):
+            memory = {}
+        return [
+            {"key": clave, "value": valor, "namespace": namespace}
+            for clave, valor in memory.items()
+        ]
     rows = await repo.list_memory(
-        tenant_id=current_user.tenant_id, user_id=current_user.user_id, q=q, k=k
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        q=q,
+        k=k,
+        namespace=namespace,
     )
     return [_memory_out(r) for r in rows]
 
@@ -318,6 +450,8 @@ async def add_memory(
         source=body.source,
         confidence=body.confidence,
         expires_at=body.expires_at,
+        namespace=body.namespace,
+        source_trust=body.source_trust,
     )
     return _memory_out(row)
 

@@ -54,9 +54,20 @@ class MemoryStore(Protocol):
     """
 
     async def search(
-        self, tenant_id: UUID, user_id: UUID, query: str, k: int = 8
+        self,
+        tenant_id: UUID,
+        user_id: UUID,
+        query: str,
+        k: int = 8,
+        include_neighbors: bool = True,
+        namespace: str = "user",
     ) -> list[MemoryHit]:
-        """Los `k` recuerdos más relevantes para `query`, del `tenant_id`/`user_id` dados."""
+        """Los `k` recuerdos más relevantes para `query`, del `tenant_id`/`user_id` dados.
+
+        `namespace` (default 'user') filtra el espacio de memoria; la búsqueda
+        del agente sigue en el espacio plano 'user' salvo que se pida otro
+        ('agent:<id>', 'workspace:<id>', etc.).
+        """
         ...
 
     async def add(
@@ -70,6 +81,8 @@ class MemoryStore(Protocol):
         confidence: float = 0.8,
         expires_at: datetime | None = None,
         source: str = "",
+        namespace: str = "user",
+        source_trust: str = "trusted",
     ) -> MemoryHit:
         """Guarda un nuevo recuerdo (tabla `memory_items`, ARCHITECTURE.md §10.3).
 
@@ -78,5 +91,7 @@ class MemoryStore(Protocol):
         `importance` = "qué tan útil es recordarlo"; `confidence` = "qué tan
         seguros estamos de que esto es cierto"; `expires_at` caduca el hecho
         temporal (las búsquedas ignoran las filas con `expires_at <= now()`).
+        `namespace` (default 'user') y `source_trust` (default 'trusted')
+        etiquetan el espacio y la confianza de procedencia (directiva §50-54).
         """
         ...

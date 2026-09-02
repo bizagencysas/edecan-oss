@@ -478,17 +478,34 @@ final class IDEViewModel {
 
             if terminalActivo == nil {
                 let preferido = estadoLocal.selectedSessionId(kind: "terminal", workspaceId: workspaceId)
-                if let terminal = terminales.first(where: { $0.id == preferido }) ?? terminales.first {
+                // Prioriza sesiones realmente activas; evita reabrir zombies del historial.
+                let terminal = terminales.first(where: { $0.id == preferido && $0.isActive })
+                    ?? terminales.first(where: \.isActive)
+                    ?? terminales.first(where: { $0.id == preferido })
+                if let terminal {
                     seleccionarTerminal(terminal)
                     _ = await leerTerminal(client: client, mostrarError: false)
                 }
+            } else if let activo = terminalActivo,
+                      !terminales.contains(where: { $0.id == activo.id }) {
+                terminalActivo = nil
+                eventosTerminal = []
+                cursorTerminal = 0
             }
             if agenteActivo == nil {
                 let preferido = estadoLocal.selectedSessionId(kind: "agent", workspaceId: workspaceId)
-                if let agente = agentes.first(where: { $0.id == preferido }) ?? agentes.first {
+                let agente = agentes.first(where: { $0.id == preferido && $0.isActive })
+                    ?? agentes.first(where: \.isActive)
+                    ?? agentes.first(where: { $0.id == preferido })
+                if let agente {
                     seleccionarAgente(agente)
                     _ = await leerAgente(client: client, mostrarError: false)
                 }
+            } else if let activo = agenteActivo,
+                      !agentes.contains(where: { $0.id == activo.id }) {
+                agenteActivo = nil
+                eventosAgente = []
+                cursorAgente = 0
             }
         } catch is CancellationError {
             return

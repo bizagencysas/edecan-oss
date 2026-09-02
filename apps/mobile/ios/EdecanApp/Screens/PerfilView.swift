@@ -310,6 +310,24 @@ struct PerfilView: View {
                 fila(icono: "sparkles.rectangle.stack.fill", titulo: "Capacidades", subtitulo: "Descubre todo lo que puede hacer")
             }
             .buttonStyle(.plain)
+
+            separador
+
+            NavigationLink {
+                SeguridadView()
+            } label: {
+                fila(icono: "lock.shield.fill", titulo: "Seguridad", subtitulo: "Cuentas, autonomía y freno de emergencia")
+            }
+            .buttonStyle(.plain)
+
+            separador
+
+            NavigationLink {
+                ConectoresView()
+            } label: {
+                fila(icono: "cable.connector", titulo: "Conectores", subtitulo: "Servicios externos y su estado")
+            }
+            .buttonStyle(.plain)
         }
         .padding(16)
         .tarjetaVidrio(esquina: 20)

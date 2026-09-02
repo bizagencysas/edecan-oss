@@ -43,6 +43,32 @@ struct EdecanAppShortcuts: AppShortcutsProvider {
             shortTitle: "Buscar conversaciones",
             systemImageName: "magnifyingglass"
         )
+        AppShortcut(
+            intent: RegistrarAguaEdecanIntent(),
+            phrases: [
+                "Registra agua en \(.applicationName)",
+                "Anota 250 de agua en \(.applicationName)",
+            ],
+            shortTitle: "Registrar agua",
+            systemImageName: "drop.fill"
+        )
+        AppShortcut(
+            intent: RegistrarSerieEdecanIntent(),
+            phrases: [
+                "Registra una serie en \(.applicationName)",
+                "Serie de gym en \(.applicationName)",
+            ],
+            shortTitle: "Serie de gym",
+            systemImageName: "figure.strengthtraining.traditional"
+        )
+        AppShortcut(
+            intent: AprobarPendienteEdecanIntent(),
+            phrases: [
+                "Aprueba lo pendiente en \(.applicationName)",
+            ],
+            shortTitle: "Aprobar pendiente",
+            systemImageName: "checkmark.shield.fill"
+        )
     }
 }
 

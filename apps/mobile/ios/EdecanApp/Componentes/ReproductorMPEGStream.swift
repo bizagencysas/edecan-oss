@@ -18,24 +18,32 @@ final class ReproductorMPEGStream: NSObject, AVAudioPlayerDelegate {
         continuacion = nil
     }
 
-    func reproducir(stream: AsyncThrowingStream<TrozoHablar, Error>) async throws {
+    func reproducir(stream: AsyncThrowingStream<TrozoHablar, Error>) async throws -> Data {
         cancelado = false
         var audio = Data()
         var mime = "audio/mpeg"
         for try await trozo in stream {
-            if cancelado { return }
+            if cancelado { return audio }
             audio.append(trozo.chunk)
             mime = trozo.mime
         }
-        if cancelado { return }
+        if cancelado { return audio }
         // StubTTS = WAV corto de silencio. MPEG real de ElevenLabs se toca
         // aunque la oración sea breve.
         if mime.contains("wav"), audio.count < 2_000 {
-            return
+            return audio
         }
-        guard audio.count > 64 else { return }
+        try await reproducir(data: audio)
+        return audio
+    }
+
+    /// Reproduce un audio ya completo (p. ej. desde el caché del mensaje) sin
+    /// volver a la API. Misma lógica que el stream acumulado.
+    func reproducir(data: Data) async throws {
+        cancelado = false
+        guard data.count > 64 else { return }
         configurarSesion()
-        let player = try AVAudioPlayer(data: audio)
+        let player = try AVAudioPlayer(data: data)
         player.delegate = self
         reproductor = player
         player.prepareToPlay()

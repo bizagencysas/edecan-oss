@@ -46,6 +46,10 @@ struct ChatView: View {
     /// enviar se limpia: editar NO reemplaza el historial, solo manda un
     /// mensaje nuevo con el texto corregido.
     @State private var editandoMensajeId: String?
+    /// Mensaje ancla del hilo abierto desde "Responder en hilo".
+    @State private var mensajeEnHilo: ChatViewModel.Mensaje?
+    /// Datos fuente del autocompletado `@`/`/` del composer, cargados una vez.
+    @State private var datosMenciones = DatosMenciones()
     private let estadoLocal = ChatLocalStateStore()
     private let anclaFinal = "chat-final"
     @FocusState private var campoEnfocado: Bool
@@ -97,6 +101,12 @@ struct ChatView: View {
             }
             .sheet(item: $previewTarget) { target in
                 SecurePreviewSheet(target: target, client: session.client)
+            }
+            .sheet(item: $mensajeEnHilo) { mensaje in
+                ThreadView(
+                    messageId: mensaje.id,
+                    resumen: mensaje.texto.isEmpty ? mensaje.textoApertura : mensaje.texto
+                )
             }
             .sheet(isPresented: $mostrandoCamara) {
                 CapturadorFotoChat { resultado in
@@ -187,6 +197,7 @@ struct ChatView: View {
             }
             .onChange(of: textoActual) { _, nuevo in
                 guardarBorrador(nuevo, conversationId: viewModel.conversacionId)
+                cargarDatosMenciones()
             }
             .onChange(of: viewModel.errorMensaje) { _, nuevo in
                 if nuevo != nil { Haptico.error() }
@@ -243,6 +254,10 @@ struct ChatView: View {
         }
     }
 
+    private var idUltimaRespuestaAsistente: String? {
+        viewModel.mensajes.last(where: { $0.rol == .asistente })?.id
+    }
+
     private var listaDeMensajes: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -253,84 +268,48 @@ struct ChatView: View {
                             .padding(.top, 60)
                     } else if viewModel.mensajes.isEmpty {
                         EmptyStateView(
-                            icono: "sparkles",
-                            titulo: "¿Que hacemos?",
-                            descripcion: "Escribe, habla o toca + para crear un documento, PDF, presentacion, sitio, app o post."
+                            icono: "bubble.left.and.bubble.right.fill",
+                            titulo: "Escríbele a Edecán",
+                            descripcion: "Como un chat con alguien de confianza. También puede escribirte primero con avisos o resultados."
                         )
-                        .padding(.top, 60)
+                        .padding(.top, 48)
+                        .accessibilityIdentifier("chat-empty-state")
                         MissionInboxChips(onOpenActivity: { tabRouter.seleccion = .activity })
                     }
                     // Una sola pasada por el hilo para todas las burbujas: qué
                     // tarjeta de pregunta ya se contestó sale del hilo, no de
                     // un `@State` que SwiftUI descarta al reciclar la vista.
                     let respuestas = viewModel.respuestasAPreguntas
-                    let idUltimaRespuesta = viewModel.mensajes.last(where: { $0.rol == .asistente })?.id
+                    let idUltimaRespuesta = idUltimaRespuestaAsistente
                     ForEach(viewModel.mensajes) { mensaje in
-                        BurbujaMensaje(
-                            mensaje: mensaje,
-                            client: session.client,
-                            artefactoDescargandoId: artefactoDescargandoId,
-                            onAbrirArtefacto: { previewTarget = .artifact($0) },
-                            onAction: ejecutarAccion,
-                            onRetry: reintentarMensaje,
-                            onResponder: responderPregunta,
+                        burbujaDelHilo(
+                            mensaje,
                             respuestaPosterior: respuestas[mensaje.id],
-                            esUltimaRespuesta: mensaje.id == idUltimaRespuesta,
-                            onRegenerar: regenerarRespuesta,
-                            onEditar: empezarEdicion,
-                            onTogglePin: {
-                                Task {
-                                    guard let client = session.client else { return }
-                                    await viewModel.marcarBanderas(
-                                        mensajeId: mensaje.id,
-                                        pinned: !mensaje.pinned,
-                                        client: client
-                                    )
-                                }
-                            },
-                            onToggleBookmark: {
-                                Task {
-                                    guard let client = session.client else { return }
-                                    await viewModel.marcarBanderas(
-                                        mensajeId: mensaje.id,
-                                        bookmark: !mensaje.bookmark,
-                                        client: client
-                                    )
-                                }
-                            },
-                            onReply: { textoActual = "> \(mensaje.texto)\n\n" }
+                            esUltimaRespuesta: mensaje.id == idUltimaRespuesta
                         )
-                        .id(mensaje.id)
                     }
                     if let mision = viewModel.misionViva {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Misión · \(mision.status)")
-                                .font(.caption.weight(.semibold))
-                            Text(mision.objetivo).font(.subheadline)
-                            if let resultado = mision.resultado {
-                                Text(resultado).font(.footnote)
-                            }
-                            if !mision.esTerminal {
-                                HStack {
-                                    TextField("Redirigir esta misión…", text: $steerMision)
-                                        .textFieldStyle(.roundedBorder)
-                                    Button("Enviar") {
-                                        let instruction = steerMision.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        guard let client = session.client, !instruction.isEmpty else { return }
-                                        Task {
-                                            await viewModel.redirigirMisionViva(instruction: instruction, client: client)
-                                            steerMision = ""
-                                        }
-                                    }
-                                    .disabled(steerMision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        TarjetaMisionEnHilo(
+                            mision: mision,
+                            steerMision: $steerMision,
+                            onSteer: { instruction in
+                                guard let client = session.client else { return }
+                                Task {
+                                    await viewModel.redirigirMisionViva(instruction: instruction, client: client)
+                                    steerMision = ""
                                 }
-                            }
-                        }
-                        .padding(12)
-                        .tarjetaVidrio(esquina: 14)
+                            },
+                            onOpenActivity: { tabRouter.seleccion = .activity }
+                        )
                     }
                     if let confirmacion = viewModel.confirmacionPendiente {
-                        TarjetaConfirmacion(confirmacion: confirmacion, deshabilitada: viewModel.enviando) { aprobado in
+                        TarjetaConfirmacion(
+                            confirmacion: confirmacion,
+                            deshabilitada: viewModel.enviando,
+                            onVerComputadora: confirmacion.nombre == "usar_computadora"
+                                ? { tabRouter.mostrarRemoto() }
+                                : nil
+                        ) { aprobado in
                             resolverConfirmacion(aprobado: aprobado)
                         }
                     }
@@ -351,6 +330,83 @@ struct ChatView: View {
             .onChange(of: viewModel.confirmacionPendiente?.id) { _, _ in
                 desplazarAlFinal(proxy)
             }
+            .onAppear { sincronizarLecturaYBadge() }
+            .onChange(of: viewModel.mensajes.count) { _, _ in sincronizarLecturaYBadge() }
+            .onChange(of: tabRouter.seleccion) { _, _ in sincronizarLecturaYBadge() }
+            .onChange(of: scenePhase) { _, _ in sincronizarLecturaYBadge() }
+        }
+    }
+
+
+    private func burbujaDelHilo(
+        _ mensaje: ChatViewModel.Mensaje,
+        respuestaPosterior: String?,
+        esUltimaRespuesta: Bool
+    ) -> some View {
+        BurbujaMensaje(
+            mensaje: mensaje,
+            client: session.client,
+            artefactoDescargandoId: artefactoDescargandoId,
+            onAbrirArtefacto: { previewTarget = .artifact($0) },
+            onAction: ejecutarAccion,
+            onRetry: reintentarMensaje,
+            onResponder: responderPregunta,
+            respuestaPosterior: respuestaPosterior,
+            esUltimaRespuesta: esUltimaRespuesta,
+            onRegenerar: regenerarRespuesta,
+            onEditar: empezarEdicion,
+            onTogglePin: {
+                Task {
+                    guard let client = session.client else { return }
+                    await viewModel.marcarBanderas(
+                        mensajeId: mensaje.id,
+                        pinned: !mensaje.pinned,
+                        client: client
+                    )
+                }
+            },
+            onToggleBookmark: {
+                Task {
+                    guard let client = session.client else { return }
+                    await viewModel.marcarBanderas(
+                        mensajeId: mensaje.id,
+                        bookmark: !mensaje.bookmark,
+                        client: client
+                    )
+                }
+            },
+            onReply: { textoActual = "> \(mensaje.texto)\n\n" },
+            onReaccionar: { emoji in
+                guard let client = session.client else { return }
+                Task {
+                    await viewModel.alternarReaccion(
+                        mensajeId: mensaje.id, emoji: emoji, client: client
+                    )
+                }
+            },
+            onResponderEnHilo: { mensajeEnHilo = mensaje },
+            nombreAgente: viewModel.tituloConversacionActual
+        )
+        .id(mensaje.id)
+    }
+
+    /// Marca como leído cuando la persona está en el chat; si no, actualiza
+    /// el badge de la pestaña Edecán con avisos del compañero.
+    private func sincronizarLecturaYBadge() {
+        guard let conversationId = viewModel.conversacionId else {
+            tabRouter.mensajesNoLeidosEnChat = 0
+            return
+        }
+        let lastRead = estadoLocal.lastReadAt(conversationId: conversationId)
+        let noLeidos = viewModel.contarNoLeidos(lastReadAt: lastRead)
+        let chatVisible = tabRouter.seleccion == .edecan && scenePhase == .active
+        if chatVisible {
+            if let ultimo = viewModel.instanteUltimoMensajeLeible() {
+                estadoLocal.markRead(conversationId: conversationId, at: ultimo)
+            }
+            tabRouter.mensajesNoLeidosEnChat = 0
+        } else {
+            tabRouter.mensajesNoLeidosEnChat = noLeidos
         }
     }
 
@@ -387,22 +443,32 @@ struct ChatView: View {
     @ViewBuilder
     private var cabeceraDeConversacion: some View {
         if let conversationId = viewModel.conversacionId {
-            Button {
-                UIPasteboard.general.string = conversationId
-            } label: {
-                VStack(spacing: 1) {
+            VStack(spacing: 2) {
+                HStack(spacing: 6) {
                     Text(viewModel.tituloConversacionActual)
                         .font(.headline)
-                        .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text("Chat \(conversationId.prefix(8).uppercased())")
-                        .font(.caption2.monospaced().weight(.medium))
+                    if tabRouter.mensajesNoLeidosEnChat > 0 {
+                        Text("\(tabRouter.mensajesNoLeidosEnChat)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(EdecanTheme.morado, in: Capsule())
+                            .accessibilityLabel("\(tabRouter.mensajesNoLeidosEnChat) mensajes nuevos")
+                    }
+                }
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                    Text("En línea")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(viewModel.tituloConversacionActual), ID de chat \(conversationId)")
-            .accessibilityHint("Toca para copiar el ID completo")
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(viewModel.tituloConversacionActual)
         } else {
             Text("Nuevo chat")
                 .font(.headline)
@@ -428,6 +494,18 @@ struct ChatView: View {
                         }
                     }
                     .padding(.horizontal, 2)
+                }
+            }
+
+            if let token = tokenActivo, campoEnfocado {
+                let sugerencias = AutocompletadoComposer.sugerencias(
+                    prefijo: token.prefijo, query: token.query, datos: datosMenciones
+                )
+                if !sugerencias.isEmpty {
+                    PanelMenciones(sugerencias: sugerencias) { elegida in
+                        insertar(sugerencia: elegida)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
 
@@ -477,7 +555,7 @@ struct ChatView: View {
                         .foregroundStyle(EdecanTheme.morado)
                         .tarjetaVidrio(esquina: 18)
                 }
-                .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
+                .disabled(viewModel.confirmacionPendiente != nil)
                 .accessibilityLabel("Crear o adjuntar")
 
                 TextField("Escríbele a Edecán…", text: $textoActual, axis: .vertical)
@@ -529,7 +607,9 @@ struct ChatView: View {
                             pulsandoDetener = false
                         }
                     }
-                } else if hayContenidoParaEnviar {
+                }
+
+                if hayContenidoParaEnviar {
                     Button(action: enviarMensajeActual) {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.system(size: 34))
@@ -537,7 +617,7 @@ struct ChatView: View {
                     }
                     .disabled(!botonHabilitado)
                     .accessibilityLabel("Enviar")
-                } else {
+                } else if !viewModel.estaGenerando {
                     Button { mostrandoVoz = true } label: {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 18, weight: .semibold))
@@ -545,7 +625,7 @@ struct ChatView: View {
                             .foregroundStyle(EdecanTheme.morado)
                             .tarjetaVidrio(esquina: 18)
                     }
-                    .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
+                    .disabled(viewModel.confirmacionPendiente != nil)
                     .accessibilityLabel("Hablar con Edecan")
                 }
             }
@@ -570,7 +650,7 @@ struct ChatView: View {
                 .foregroundStyle(EdecanTheme.degradado)
                 .tarjetaVidrio(esquina: 18)
         }
-        .disabled(viewModel.enviando || viewModel.confirmacionPendiente != nil)
+        .disabled(viewModel.confirmacionPendiente != nil)
         .accessibilityLabel("Modelo de IA: \(viewModel.etiquetaPastilla)")
         .accessibilityHint("Toca para elegir otro modelo o su esfuerzo")
     }
@@ -613,6 +693,36 @@ struct ChatView: View {
         campoEnfocado = false
     }
 
+    /// Token activo de autocompletado (`@` o `/`) al final del texto, si lo hay.
+    private var tokenActivo: (prefijo: String, query: String)? {
+        AutocompletadoComposer.tokenActivo(en: textoActual)
+    }
+
+    /// Reemplaza el segmento en curso con la mención/comando elegido.
+    private func insertar(sugerencia: SugerenciaComposer) {
+        textoActual.replaceSubrange(
+            AutocompletadoComposer.rangoUltimoSegmento(en: textoActual),
+            with: sugerencia.insercion
+        )
+        campoEnfocado = true
+    }
+
+    /// Carga de forma perezosa los datos del autocompletado (`@`/`/`).
+    private func cargarDatosMenciones() {
+        guard tokenActivo != nil, !datosMenciones.cargados,
+              let client = session.client else { return }
+        Task {
+            var datos = DatosMenciones()
+            datos.agentes = (try? await client.listWorkers()) ?? []
+            datos.equipos = (try? await client.listTeams()) ?? []
+            datos.workspaces = (try? await client.listWorkspaces()) ?? []
+            datos.conectores = (try? await client.listMCPServers()) ?? []
+            datos.skills = (try? await client.listSkills()) ?? []
+            datos.cargados = true
+            datosMenciones = datos
+        }
+    }
+
     private func regenerarRespuesta() {
         guard let client = session.client else {
             viewModel.errorMensaje = "No hay sesión activa."
@@ -630,7 +740,6 @@ struct ChatView: View {
         (textoActual.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             || adjuntosListos.isEmpty == false)
             && adjuntosPendientes.allSatisfy(\.estaListo)
-            && !viewModel.enviando
             && viewModel.confirmacionPendiente == nil
     }
 
@@ -1931,6 +2040,8 @@ private struct CapturadorFotoChat: UIViewControllerRepresentable {
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             picker.dismiss(animated: true)
+            // Sin binding aquí: el Coordinator no conoce mostrandoCamara; el
+            // dismiss cierra el picker y el sheet se actualiza por sí mismo.
         }
     }
 
@@ -1947,6 +2058,57 @@ private struct CapturadorFotoChat: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+}
+
+/// Tarjeta compacta de misión en el hilo — el detalle pesado vive en Actividad.
+private struct TarjetaMisionEnHilo: View {
+    let mision: MissionOut
+    @Binding var steerMision: String
+    let onSteer: (String) -> Void
+    let onOpenActivity: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "briefcase.fill")
+                    .foregroundStyle(EdecanTheme.morado)
+                Text("Trabajo en curso")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("Ver en Actividad", action: onOpenActivity)
+                    .font(.caption.weight(.semibold))
+            }
+            Text(mision.objetivo)
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            if let resultado = mision.resultado, !resultado.isEmpty {
+                Text(resultado)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            if !mision.esTerminal {
+                HStack(spacing: 8) {
+                    TextField("Redirigir…", text: $steerMision, axis: .vertical)
+                        .lineLimit(1...2)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Enviar") {
+                        let instruction = steerMision.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !instruction.isEmpty else { return }
+                        onSteer(instruction)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(EdecanTheme.morado)
+                    .controlSize(.small)
+                    .disabled(steerMision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 340, alignment: .leading)
+        .tarjetaVidrio(esquina: 14)
+    }
 }
 
 private struct MissionInboxChips: View {

@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { MemoryImportItem, MemoryItem } from "@/lib/types";
+import { MemorySuggestionsPanel } from "@/components/memoria/MemorySuggestionsPanel";
 
 const PROMPT_SUGERIDO =
   "Cuéntame todo lo que sabes de mí hasta ahora: mis preferencias, datos personales, " +
@@ -40,6 +41,18 @@ const KIND_VARIANT: Record<string, "brand" | "success" | "warning" | "neutral"> 
   entity: "neutral",
 };
 
+const TRUST_VARIANT: Record<string, "success" | "warning" | "danger" | "neutral"> = {
+  trusted: "success",
+  untrusted: "warning",
+  quarantined: "danger",
+};
+
+const TRUST_LABEL: Record<string, string> = {
+  trusted: "de confianza",
+  untrusted: "sin verificar",
+  quarantined: "en cuarentena",
+};
+
 export default function MemoriaPage() {
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +62,7 @@ export default function MemoriaPage() {
   const [content, setContent] = useState("");
   const [kind, setKind] = useState("fact");
   const [importance, setImportance] = useState(0.5);
+  const [sourceTrust, setSourceTrust] = useState("trusted");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -81,9 +95,16 @@ export default function MemoriaPage() {
     setSaving(true);
     setError(null);
     try {
-      await addMemory({ content: content.trim(), kind, importance, source: "user" });
+      await addMemory({
+        content: content.trim(),
+        kind,
+        importance,
+        source: "user",
+        source_trust: sourceTrust,
+      });
       setContent("");
       setImportance(0.5);
+      setSourceTrust("trusted");
       await load(query);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo guardar el recuerdo.");
@@ -170,42 +191,61 @@ export default function MemoriaPage() {
         </div>
       )}
 
+      <MemorySuggestionsPanel />
+
       <Card className="mb-6">
         <CardHeader title="Agregar un recuerdo manual" />
         <CardBody>
-          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_140px_120px_auto]">
-            <Field label="Contenido" htmlFor="content">
-              <Input
-                id="content"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Su hijo se llama Mateo"
-              />
-            </Field>
-            <Field label="Tipo" htmlFor="kind">
-              <Select id="kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-                <option value="fact">fact</option>
-                <option value="preference">preference</option>
-                <option value="event">event</option>
-                <option value="entity">entity</option>
+          <form onSubmit={handleAdd} className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_140px_120px_auto]">
+              <Field label="Contenido" htmlFor="content">
+                <Input
+                  id="content"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Su hijo se llama Mateo"
+                />
+              </Field>
+              <Field label="Tipo" htmlFor="kind">
+                <Select id="kind" value={kind} onChange={(e) => setKind(e.target.value)}>
+                  <option value="fact">fact</option>
+                  <option value="preference">preference</option>
+                  <option value="event">event</option>
+                  <option value="entity">entity</option>
+                </Select>
+              </Field>
+              <Field label="Importancia" htmlFor="importance">
+                <Input
+                  id="importance"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={importance}
+                  onChange={(e) => setImportance(Number(e.target.value))}
+                />
+              </Field>
+              <div className="flex items-end">
+                <Button type="submit" loading={saving} className="w-full sm:w-auto">
+                  Agregar
+                </Button>
+              </div>
+            </div>
+            <Field
+              label="Confianza del origen"
+              htmlFor="source_trust"
+              hint="Cuánto confías en la fuente de este recuerdo. Los recuerdos 'en cuarentena' no se usan en el chat."
+            >
+              <Select
+                id="source_trust"
+                value={sourceTrust}
+                onChange={(e) => setSourceTrust(e.target.value)}
+              >
+                <option value="trusted">De confianza</option>
+                <option value="untrusted">Sin verificar</option>
+                <option value="quarantined">En cuarentena</option>
               </Select>
             </Field>
-            <Field label="Importancia" htmlFor="importance">
-              <Input
-                id="importance"
-                type="number"
-                min={0}
-                max={1}
-                step={0.1}
-                value={importance}
-                onChange={(e) => setImportance(Number(e.target.value))}
-              />
-            </Field>
-            <div className="flex items-end">
-              <Button type="submit" loading={saving} className="w-full sm:w-auto">
-                Agregar
-              </Button>
-            </div>
           </form>
         </CardBody>
       </Card>
@@ -344,6 +384,11 @@ export default function MemoriaPage() {
                         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                           Origen: {item.source}
                         </span>
+                      )}
+                      {item.source_trust && (
+                        <Badge variant={TRUST_VARIANT[item.source_trust] ?? "neutral"}>
+                          {TRUST_LABEL[item.source_trust] ?? item.source_trust}
+                        </Badge>
                       )}
                       {typeof item.confidence === "number" && (
                         <span className="text-[10px] text-slate-400">

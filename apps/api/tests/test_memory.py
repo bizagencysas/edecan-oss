@@ -15,6 +15,7 @@ from typing import Any
 
 from conftest import auth_headers
 from edecan_llm.base import CompletionResponse, Usage
+from httpx import ASGITransport, AsyncClient
 
 from edecan_api import deps as edecan_deps
 from edecan_api.routers.memory import _parsear_items_extraidos
@@ -170,6 +171,172 @@ async def test_memory_is_scoped_per_tenant(client) -> None:
 
     response_b = await client.get("/v1/memory", headers=headers_b)
     assert response_b.json() == []
+
+
+async def test_add_memory_expone_namespace_y_source_trust(client) -> None:
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+
+    created = await client.post(
+        "/v1/memory", json={"content": "Dato con namespace"}, headers=headers
+    )
+
+    assert created.status_code == 201
+    assert created.json()["namespace"] == "user"
+    assert created.json()["source_trust"] == "trusted"
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/memory/suggestions (correcciones repetidas, product design§172)
+# ---------------------------------------------------------------------------
+
+
+async def test_memory_suggestions_propone_preferencias_repetidas_sin_guardar(client) -> None:
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    for _ in range(3):
+        await client.post(
+            "/v1/memory",
+            json={"kind": "preference", "content": "Siempre incluye fuentes primarias"},
+            headers=headers,
+        )
+    await client.post(
+        "/v1/memory",
+        json={"kind": "preference", "content": "Prefiere respuestas breves"},
+        headers=headers,
+    )
+
+    response = await client.get("/v1/memory/suggestions", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["text"] == "Siempre incluye fuentes primarias"
+    assert body[0]["source"] == "corrección repetida (3x)"
+    assert body[0]["scope"] == "user"
+    assert body[0]["confidence"] > 0.5
+
+    # Solo propone: no se guardó nada nuevo.
+    listed = await client.get("/v1/memory", headers=headers)
+    assert len(listed.json()) == 4
+
+
+async def test_memory_suggestions_vacio_sin_correcciones_repetidas(client) -> None:
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    await client.post(
+        "/v1/memory", json={"kind": "preference", "content": "Un gusto único"}, headers=headers
+    )
+
+    response = await client.get("/v1/memory/suggestions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/memory/suggestions — también escanea patrones de corrección en
+# mensajes del chat (product design), con `source` distinguible.
+# ---------------------------------------------------------------------------
+
+
+class _FakeMessagesSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, clause, params):
+        return _FakeResult(self._rows)
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+async def test_suggestions_incluye_correcciones_desde_mensajes_con_source_distinto(
+    app, fake_repo
+) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
+
+    # Fuente 1: memory_items con preferencia repetida.
+    for _ in range(3):
+        await fake_repo.add_memory(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            kind="preference",
+            content="Siempre incluye fuentes primarias",
+            importance=0.6,
+            source="user",
+        )
+
+    # Fuente 2: un mensaje de chat con patrón de corrección.
+    fake_session = _FakeMessagesSession(
+        [{"content": {"text": "No vuelvas a usar emojis"}, "role": "user", "created_at": None}]
+    )
+    app.dependency_overrides[edecan_deps.get_tenant_session] = lambda: fake_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/memory/suggestions", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    fuentes = {item["source"] for item in body}
+    textos = {item["text"] for item in body}
+    assert "corrección repetida (3x)" in fuentes
+    assert "corrección en mensajes (1x)" in fuentes
+    assert "Siempre incluye fuentes primarias" in textos
+    assert "No vuelvas a usar emojis" in textos
+
+
+async def test_suggestions_sin_sesion_no_escanea_mensajes_ni_falla(client) -> None:
+    # El `client` fixture trae `get_tenant_session -> None`: el barrido de
+    # mensajes se degrada a `[]` y solo cuenta la fuente de memory_items.
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    for _ in range(3):
+        await client.post(
+            "/v1/memory",
+            json={"kind": "preference", "content": "Siempre incluye fuentes primarias"},
+            headers=headers,
+        )
+
+    response = await client.get("/v1/memory/suggestions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["source"] == "corrección repetida (3x)"
+
+
+async def test_list_memory_agente_separa_memoria_del_worker(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    fake_repo.persistent_agents[agent_id] = {
+        "tenant_id": tenant_id,
+        "memory": {"proyecto": "Edecán", "nota": "revisar deploys"},
+    }
+
+    response = await client.get(
+        "/v1/memory", params={"namespace": f"agent:{agent_id}"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["key"] for item in body} == {"proyecto", "nota"}
+
+
+async def test_list_memory_agente_desconocido_devuelve_vacio(client) -> None:
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+
+    response = await client.get(
+        "/v1/memory", params={"namespace": f"agent:{uuid.uuid4()}"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 # ---------------------------------------------------------------------------

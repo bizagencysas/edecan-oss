@@ -233,8 +233,8 @@ async def _check_missions_quota(session: AsyncSession, tenant: TenantCtx) -> Non
 
 
 _MISSION_COLUMNS = (
-    "id, tenant_id, user_id, objetivo, status, plan, resultado, presupuesto, error, "
-    "archived_at, created_at, updated_at"
+    "id, tenant_id, user_id, owner_agent_id, objetivo, status, plan, resultado, "
+    "presupuesto, error, archived_at, created_at, updated_at"
 )
 _STEP_COLUMNS = (
     "id, tenant_id, mission_id, seq, agente, instruccion, status, resultado, usage, "
@@ -520,8 +520,8 @@ async def list_missions(
             f"SELECT {_MISSION_COLUMNS} FROM agent_missions "
             "WHERE tenant_id = :tenant_id AND user_id = :user_id "
             "AND (:include_archived OR archived_at IS NULL) "
-            "AND (:search IS NULL OR objetivo ILIKE :search) "
-            "AND (:status IS NULL OR status = :status) "
+            "AND (CAST(:search AS text) IS NULL OR objetivo ILIKE :search) "
+            "AND (CAST(:status AS text) IS NULL OR status = :status) "
             "ORDER BY created_at DESC"
         ),
         {

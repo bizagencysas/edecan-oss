@@ -84,5 +84,7 @@ async def test_eleven_v3_adds_expression_only_to_audio_payload():
 
     payload = json.loads(route.calls.last.request.content)
     assert payload["model_id"] == "eleven_v3"
-    assert payload["text"].startswith("[")
-    assert "Listo, quedó configurado." in payload["text"]
+    # Sin speech tags: desde el fix "Escuchar speaks full message without
+    # voice rewrite" el texto va tal cual (markdown limpio), sin prefijos
+    # tipo [calmly].
+    assert payload["text"] == "Listo, quedó configurado."

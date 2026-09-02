@@ -129,6 +129,29 @@ EXPECTED_TABLES_GYM = {"workout_plans", "workout_sessions", "gym_checkins"}
 # de arriba.
 EXPECTED_TABLES_ACTION_EFFECTS = {"action_effects"}
 
+# Respaldo durable de confirmaciones `dangerous` (migración
+# `0049_pending_approvals`, directiva §30-32).
+EXPECTED_TABLES_PENDING_APPROVALS = {"pending_approvals"}
+
+# Sesiones de "enseñar una tarea" (migración `0053_skill_teach_sessions`,
+# directiva §38-41).
+EXPECTED_TABLES_SKILL_TEACH = {"skill_teach_sessions"}
+
+# Sesiones de computadora por agente/superficie (migración
+# `0054_agent_takeover`, directiva §18-24, §144-145).
+EXPECTED_TABLES_COMPUTER_SESSIONS = {"computer_sessions"}
+
+# Colaboración de equipo (migración `0055_teams_workspaces_reactions`,
+# directiva §11-15, §81-82).
+EXPECTED_TABLES_TEAMS = {"teams", "team_members", "workspaces", "workspace_agents", "reactions"}
+
+# Salud por-servidor MCP (migración `0056_mcp_server_health`, directiva §27).
+EXPECTED_TABLES_MCP_HEALTH = {"mcp_server_health"}
+
+# Mensajes inter-agente (migración `0057_agent_messages`) y
+# chats directos con bots con nombre (routers/agent_direct_chats.py).
+EXPECTED_TABLES_AGENT_MESSAGES = {"agent_messages", "agent_direct_chats"}
+
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
     | EXPECTED_TABLES_V2
@@ -141,6 +164,12 @@ EXPECTED_TABLES = (
     | EXPECTED_TABLES_SOCIAL_DRAFTS
     | EXPECTED_TABLES_GYM
     | EXPECTED_TABLES_ACTION_EFFECTS
+    | EXPECTED_TABLES_PENDING_APPROVALS
+    | EXPECTED_TABLES_SKILL_TEACH
+    | EXPECTED_TABLES_COMPUTER_SESSIONS
+    | EXPECTED_TABLES_TEAMS
+    | EXPECTED_TABLES_MCP_HEALTH
+    | EXPECTED_TABLES_AGENT_MESSAGES
 )
 
 
@@ -148,10 +177,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 60
+    assert len(Base.metadata.tables) == 71
 
 
-def test_hay_exactamente_60_tablas_pinned():
+def test_hay_exactamente_71_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -171,9 +200,11 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     assert GLOBAL_TABLES.isdisjoint(RLS_TABLES)
     # 20 de v1 + 16 de v2 + 1 de v3 + 3 de v4 + 5 de v5 + 2 de v6 + 3 de
     # telefonía + 1 perfil editorial + 1 borrador social + 3 de gimnasio + 1
-    # action ledger + 1 sesión unificada (ninguna de las tablas nuevas es global: todas
-    # tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 57
+    # action ledger + 1 sesión unificada + 1 aprobaciones durables + 1 sesión
+    # de "enseñar una tarea" + 1 sesión de computadora + 1 mensajes inter-agente
+    # + 1 chats directos con bots (ninguna de las tablas nuevas es global:
+    # todas tenant-scoped, sin excepción declarada).
+    assert len(RLS_TABLES) == 68
 
 
 def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llamada():

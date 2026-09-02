@@ -77,6 +77,7 @@ from .guardrails import contains_secret
 from .llm_call_log import log_llm_call
 from .llm_types import ChatMessage, CompletionRequest
 from .persona import build_system_prompt
+from .product_context import product_live_fact_for_language
 from .provider_health import ProviderHealth
 from .query_rewrite import rewrite_query
 from .safety import public_error_message, redact
@@ -621,12 +622,30 @@ class Agent:
         model_alias: str | None = None,
         provider_health: ProviderHealth | None = None,
         event_bus: EventBus | None = None,
+        max_tool_iterations: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._llm_router = llm_router
         self._registry = registry
         self._model_alias = model_alias or _LLM_ALIAS
         self._provider_health = provider_health
         self._event_bus = event_bus
+        # Tope de iteraciones de herramientas de ESTA instancia (default:
+        # MAX_TOOL_ITERATIONS). Turnos largos multi-paso (p. ej. el companion
+        # explorando WhatsApp/LinkedIn con visión) necesitan uno mayor.
+        self._max_tool_iterations = max_tool_iterations or MAX_TOOL_ITERATIONS
+        # Esfuerzo de razonamiento para los despliegues de Azure (gpt-5.6-*):
+        # "xhigh" es el nivel profundo que el dueño pide para los bots. Se
+        # aplica SOLO cuando el modelo resuelto es de la familia gpt-5 — los
+        # modelos de Workers AI (@cf/...) no lo reciben y así ningún turno de
+        # voz/chat barato cambia de comportamiento.
+        # OJO: normalizar con `str(...) or None` convierte el `None` por
+        # defecto en el STRING "None" (truthy) y Azure lo rechaza con 400
+        # ("reasoning_effort does not support 'None'") — el default tiene que
+        # quedarse en None de verdad.
+        self._reasoning_effort = (
+            str(reasoning_effort).strip() if reasoning_effort is not None else None
+        ) or None
 
     def _resolver_proveedor(
         self, flags: dict[str, Any], seleccion: SeleccionDeModelo | None
@@ -1216,13 +1235,18 @@ class Agent:
         usage_totals.setdefault("input_tokens", 0)
         usage_totals.setdefault("output_tokens", 0)
         empty_retry_done = False
-        for iteration in range(start_iteration, MAX_TOOL_ITERATIONS):
+        for iteration in range(start_iteration, self._max_tool_iterations):
             request = CompletionRequest(
                 model=model,
                 system=system_prompt,
                 messages=list(messages),
                 tools=tool_specs,
                 max_tokens=max_tokens,
+                reasoning_effort=(
+                    self._reasoning_effort
+                    if (self._reasoning_effort and str(model or "").startswith("gpt-5"))
+                    else None
+                ),
             )
             text_parts: list[str] = []
             raw_tool_calls: list[Any] = []
@@ -1319,6 +1343,9 @@ class Agent:
                 duration_seconds=time.monotonic() - iteration_started,
                 input_tokens=iteration_input_tokens,
                 output_tokens=iteration_output_tokens,
+                reasoning_effort=(
+                    self._reasoning_effort if str(model or "").startswith("gpt-5") else None
+                ),
             )
 
             if not raw_tool_calls:
@@ -1606,22 +1633,28 @@ class Agent:
             # aviso. Cuando el proveedor es real (o la tool no declara
             # fidelidad), `aviso_fidelidad` es "" y el contenido no cambia.
             aviso_fidelidad = result.fidelidad.aviso_para_el_modelo() if result.fidelidad else ""
+            _max_citations = 20
+            _citations_seguras = []
+            for c in result.citations:
+                if not isinstance(c, dict) or "id" not in c or "url" not in c:
+                    continue
+                c_segura = dict(c)
+                c_segura.setdefault("title", c.get("url", "")[:200] or "Fuente")
+                _citations_seguras.append(c_segura)
+                if len(_citations_seguras) >= _max_citations:
+                    break
             end = ToolEndEvent(
                 tool_call_id=call.id,
                 name=call.name,
                 result_preview=result.content[:_RESULT_PREVIEW_LEN],
-                artifacts=visible_artifacts,
+                artifacts=visible_artifacts[:20],
                 blocks=rich_blocks_from_tool_data(
                     result.data,
                     presentation=result.presentation,
                     artifacts=artifacts,
                     tool_name=call.name,
                 ),
-                citations=[
-                    Citation(**c)
-                    for c in result.citations
-                    if isinstance(c, dict) and "id" in c and "url" in c
-                ],
+                citations=[Citation(**c) for c in _citations_seguras],
                 mission_id=mission_ref_from_tool_data(result.data),
                 fidelidad=result.fidelidad.fidelidad.value if result.fidelidad else None,
                 motivo_simulado=result.fidelidad.motivo_simulado if result.fidelidad else None,
@@ -1700,7 +1733,8 @@ class Agent:
         self, ctx: ToolContext, persona: PersonaConfig, user_text: str, *, skip_search: bool = False
     ) -> list[str]:
         profile_context = str(ctx.extras.get("profile_context") or "").strip()
-        stable_context = [profile_context] if profile_context else []
+        product_fact = product_live_fact_for_language(persona.idioma)
+        stable_context = [part for part in (profile_context, product_fact) if part]
         if not persona.memoria_activada or skip_search:
             return stable_context
         store = ctx.extras.get(_EXTRAS_MEMORY_STORE)
@@ -1929,7 +1963,9 @@ def _relato_de_la_mac(data: dict[str, Any] | None) -> str:
     return "\n".join(lineas) if len(lineas) > 1 else _RELATO_MAC_BASE
 
 
-def _mensaje_pantalla_mac(pantallas: list[dict[str, Any]], relato: list[str]) -> ChatMessage:
+def _mensaje_pantalla_mac(
+    pantallas: list[dict[str, Any]], relato: list[str]
+) -> ChatMessage:
     texto = relato[-1] if relato else _RELATO_MAC_BASE
     return ChatMessage(
         role="user",
@@ -2099,9 +2135,9 @@ def _resolve_entities(user_text: str) -> str:
     resolver = EntityResolver()
     resolver.register(
         Entity(
-            id="organization",
+            id="acme",
             canonical_name="Acme",
-            aliases=["Acme", "Acme"],
+            aliases=["Acme Inc", "Acme Corp"],
             entity_type="company",
         )
     )

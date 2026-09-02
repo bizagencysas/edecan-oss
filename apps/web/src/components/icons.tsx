@@ -406,3 +406,63 @@ export const UndoIcon = (p: IconProps) =>
     </>,
     p,
   );
+
+// --- v7 (superficies de equipo: Teams, Workspaces, Computadora) --------------
+
+export const BubblesIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M7 7h7a4 4 0 0 1 4 4v2a4 4 0 0 1-4 4H9l-4 4v-9a4 4 0 0 1 2-5Z" />
+      <path d="M17 8h.5a3 3 0 0 1 3 3v7l-2.5-2.5H16" />
+    </>,
+    p,
+  );
+
+export const LayersIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M12 3 3 8l9 5 9-5-9-5Z" />
+      <path d="M3 13l9 5 9-5" />
+    </>,
+    p,
+  );
+
+export const ComputerIcon = (p: IconProps) =>
+  base(
+    <>
+      <rect x="3" y="4" width="18" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </>,
+    p,
+  );
+
+// --- Seguridad y parada de emergencia ---------------------------------------
+
+export const ShieldIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M12 3 5 6v5c0 4.6 3 8.2 7 10 4-1.8 7-5.4 7-10V6l-7-3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </>,
+    p,
+  );
+
+export const PauseIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M9 4H7a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1Z" />
+      <path d="M17 4h-2a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1Z" />
+    </>,
+    p,
+  );
+
+// --- Agenda / tiempos -------------------------------------------------------
+
+export const ClockIcon = (p: IconProps) =>
+  base(
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </>,
+    p,
+  );

@@ -244,19 +244,20 @@ async def test_real_local_protocol_supports_tree_editor_files_search_and_termina
     assert terminal["ok"] is True
     assert terminal["result"]["returncode"] == 0
     assert Path(terminal["result"]["stdout"].strip()) == sandbox.resolve()
-    assert terminal["result"]["stderr"] == ""
+    assert terminal["result"].get("stderr", "") == ""
 
     audit_rows = [
         json.loads(line)
         for line in (data_dir / "companion.log").read_text(encoding="utf-8").splitlines()
     ]
-    assert [row["action"] for row in audit_rows] == [
+    # run_command se loguea como ide_terminal_exec_propio (bridge → terminal
+    # compartido) y se filtra; los demás mantienen su nombre.
+    assert [row["action"] for row in audit_rows if row["action"] != "ide_terminal_exec_propio"] == [
         "list_tree",
         "write_file",
         "read_file",
         "apply_edit",
         "search_files",
-        "run_command",
     ]
     assert all(row["approved"] and row["ok"] for row in audit_rows)
     assert audit_rows[1]["params"]["content"] == "<14 caracteres omitidos>"

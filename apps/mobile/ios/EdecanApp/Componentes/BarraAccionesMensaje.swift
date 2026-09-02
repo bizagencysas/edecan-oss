@@ -64,6 +64,17 @@ struct BarraAccionesMensaje: View {
                     .transition(.opacity)
                     .accessibilityHidden(true)
             }
+            if let errorVoz = voz.errorVoz {
+                Text(errorVoz)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .offset(y: -18)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
         }
         .sheet(isPresented: $mostrarShareSheet) {
             HojaCompartir(items: [textoSinTags])
@@ -243,9 +254,24 @@ struct BarraAccionesMensaje: View {
 @MainActor
 private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var hablando = false
+    /// Aviso cuando falla la voz de ElevenLabs (red/túnel/proveedor): el
+    /// botón muestra el error en vez de caer silenciosamente a la voz
+    /// robótica del dispositivo — el dueño interpretaba esa voz como que
+    /// ElevenLabs "se desconectó".
+    @Published var errorVoz: String?
     private let sintetizador = AVSpeechSynthesizer()
     private let streamPlayer = ReproductorMPEGStream()
     private var tarea: Task<Void, Never>?
+
+    /// Caché del audio TTS por texto del mensaje (compartido entre todas las
+    /// burbujas): reproducir otra vez NO vuelve a llamar a
+    /// `POST /v1/voice/speak/stream`. Acotado por recuento para no crecer sin
+    /// límite en memoria.
+    private static let cacheAudio: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.countLimit = 60
+        return cache
+    }()
 
     /// Voice ID de ElevenLabs para el altavoz del chat. Modelo eleven_turbo_v2_5.
     private let voiceId = "0uHpKhb0ymsdvmCtPV8y"
@@ -263,6 +289,7 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
     }
 
     func alternar(texto: String, client: APIClient?) {
+        errorVoz = nil
         if hablando {
             detener()
             return
@@ -274,20 +301,53 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
             hablarLocalmente(textoLimpio)
             return
         }
+        // Replay desde el caché: sin llamada a la API de TTS.
+        if let data = Self.cacheAudio.object(forKey: textoLimpio as NSString) {
+            reproducir(data: data as Data, texto: textoLimpio)
+            return
+        }
         hablando = true
         tarea = Task {
             defer {
                 if !Task.isCancelled { hablando = false }
             }
             do {
+                // Mensaje ya visible en pantalla: hablar íntegro, sin reescritura/resumen TTS.
                 let stream = try await client.hablarStream(
-                    texto: textoLimpio, voiceId: voiceId, modelId: modelId
+                    texto: textoLimpio,
+                    voiceId: voiceId,
+                    modelId: modelId,
+                    voiceRewrite: false
                 )
-                try await streamPlayer.reproducir(stream: stream)
+                let data = try await streamPlayer.reproducir(stream: stream)
+                if !Task.isCancelled, !data.isEmpty {
+                    Self.cacheAudio.setObject(data as NSData, forKey: textoLimpio as NSString)
+                }
             } catch is CancellationError {
                 return
             } catch {
-                hablarLocalmente(textoLimpio)
+                // La voz de ElevenLabs falló (red/túnel/proveedor): avisar,
+                // NO sustituir con la voz robótica del dispositivo — esa voz
+                // inesperada hacía creer que ElevenLabs se había desconectado.
+                errorVoz = "No pude conectar con la voz de Edecán. Revisa la conexión y vuelve a intentar."
+            }
+        }
+    }
+
+    private func reproducir(data: Data, texto: String) {
+        configurarSesionAudio()
+        hablando = true
+        tarea = Task {
+            defer {
+                if !Task.isCancelled { hablando = false }
+            }
+            do {
+                try await streamPlayer.reproducir(data: data)
+            } catch is CancellationError {
+                return
+            } catch {
+                // Mismo criterio que el stream en vivo: aviso, no voz robótica.
+                errorVoz = "No pude reproducir la voz de Edecán. Vuelve a intentar."
             }
         }
     }

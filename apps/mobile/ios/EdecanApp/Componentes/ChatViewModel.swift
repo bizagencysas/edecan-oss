@@ -209,7 +209,7 @@ final class ChatViewModel {
         var bloques: [ChatBlock] = []
         var adjuntos: [ChatAttachment] = []
         var trabajo: Trabajo?
-        /// Fuentes (citas) de `buscar_web` — chips discretos bajo la respuesta.
+        /// Fuentes (citas) de `buscar_web` — filas tappables bajo la respuesta.
         var fuentes: [Fuente] = []
         /// UUID estable del intento lógico. Solo sobrevive mientras el envío
         /// puede reintentarse; nunca se reconstruye para mensajes históricos.
@@ -224,6 +224,10 @@ final class ChatViewModel {
         var createdAt: Date?
         var pinned = false
         var bookmark = false
+        /// Reacciones del mensaje (emojis). Vive solo en memoria/sesión: el
+        /// `GET` de la conversación todavía no devuelve reacciones, así que no
+        /// se reconstruyen del historial (contrato en paralelo).
+        var reactions: [String] = []
 
         init(
             id: String = UUID().uuidString,
@@ -240,7 +244,8 @@ final class ChatViewModel {
             falloEnvio: Bool = false,
             createdAt: Date? = nil,
             pinned: Bool = false,
-            bookmark: Bool = false
+            bookmark: Bool = false,
+            reactions: [String] = []
         ) {
             self.id = id
             self.rol = rol
@@ -257,6 +262,7 @@ final class ChatViewModel {
             self.createdAt = createdAt
             self.pinned = pinned
             self.bookmark = bookmark
+            self.reactions = reactions
         }
 
         /// Lo que se mandó de verdad. `texto` viene redactado para la burbuja
@@ -327,6 +333,13 @@ final class ChatViewModel {
     private var seguimientoMisiones: [String: Task<Void, Never>] = [:]
     private var aplicacionActiva = true
     private var recuperacionEnCurso = false
+    /// Nº de polls de misiones que han arrancado en esta conversación. Al
+    /// abrir un hilo con N misiones activas, cada una espera ~600 ms más
+    /// que la anterior antes de su primer GET: así NO disparan todas a la
+    /// vez por el túnel (el pico de "carga muchas cosas a la vez" que
+    /// acompañaba al crash). El poll es de 3 s y una misión ya terminada
+    /// se queda en su turno sin tocar el servidor hasta salir de la fila.
+    private var misionesArrancadas = 0
 
     init(pendingAttemptStore: PendingChatAttemptStore = PendingChatAttemptStore()) {
         self.pendingAttemptStore = pendingAttemptStore
@@ -343,6 +356,26 @@ final class ChatViewModel {
         if conversation.isMain { return "Edecán" }
         let title = conversation.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return title.isEmpty ? "Conversación" : title
+    }
+
+    /// Mensajes del asistente posteriores a la última marca de lectura local.
+    func contarNoLeidos(lastReadAt: Date?) -> Int {
+        mensajes.filter { mensaje in
+            guard mensaje.rol == .asistente, !mensaje.enProgreso else { return false }
+            let tieneContenido = !mensaje.texto.isEmpty
+                || !mensaje.textoApertura.isEmpty
+                || !mensaje.bloques.isEmpty
+                || !mensaje.artefactos.isEmpty
+            guard tieneContenido else { return false }
+            guard let createdAt = mensaje.createdAt else { return lastReadAt == nil }
+            guard let lastReadAt else { return true }
+            return createdAt > lastReadAt
+        }.count
+    }
+
+    /// Marca como leídos todos los mensajes persistidos del hilo abierto.
+    func instanteUltimoMensajeLeible() -> Date? {
+        mensajes.compactMap(\.createdAt).max()
     }
 
     var ultimaRespuestaDelAsistente: String? {
@@ -652,7 +685,6 @@ final class ChatViewModel {
         guard (!textoLimpio.isEmpty || !adjuntos.isEmpty),
               textoLimpio.count <= 50_000,
               adjuntos.count <= 10,
-              !enviando,
               confirmacionPendiente == nil
         else {
             if textoLimpio.count > 50_000 { errorMensaje = "El mensaje es demasiado largo." }
@@ -820,6 +852,36 @@ final class ChatViewModel {
         }
     }
 
+    /// Alterna una reacción (👍👎✅👀❤️🔥) sobre un mensaje del chat. Optimista:
+    /// se aplica de inmediato y se revierte si el endpoint falla. El id debe
+    /// ser el persistido (`createdAt != nil`); un id local haría 404 y se
+    /// revertiría sin dejar la burbuja mintiendo.
+    func alternarReaccion(mensajeId: String, emoji: String, client: APIClient) async {
+        guard let index = mensajes.firstIndex(where: { $0.id == mensajeId }) else { return }
+        let previas = mensajes[index].reactions
+        let agregar = !previas.contains(emoji)
+        if agregar {
+            mensajes[index].reactions.append(emoji)
+        } else {
+            mensajes[index].reactions.removeAll { $0 == emoji }
+        }
+        do {
+            if agregar {
+                try await client.addReaction(messageId: mensajeId, emoji: emoji)
+            } else {
+                try await client.removeReaction(messageId: mensajeId, emoji: emoji)
+            }
+        } catch let apiError as APIClient.APIError {
+            mensajes[index].reactions = previas
+            errorMensaje = apiError.esProximamente
+                ? "Las reacciones están llegando al servidor."
+                : Self.mensajeErrorUsuario(apiError.localizedDescription)
+        } catch {
+            mensajes[index].reactions = previas
+            errorMensaje = Self.mensajeErrorUsuario(error.localizedDescription)
+        }
+    }
+
     private var tareaMisionViva: Task<Void, Never>?
 
     private func soltarMisionViva() {
@@ -873,6 +935,17 @@ final class ChatViewModel {
         alAceptar: (() -> Void)?,
         client: APIClient
     ) {
+        if estaGenerando {
+            Task { [weak self] in
+                _ = await self?.enviar(
+                    texto: texto,
+                    adjuntos: adjuntos,
+                    alAceptar: alAceptar,
+                    client: client
+                )
+            }
+            return
+        }
         tareaGeneracion?.cancel()
         let task = Task { [weak self] in
             _ = await self?.enviar(
@@ -954,8 +1027,7 @@ final class ChatViewModel {
     }
 
     private func ejecutarEnvio(mensajeId: String, client: APIClient) async -> Bool {
-        guard !enviando,
-              confirmacionPendiente == nil,
+        guard confirmacionPendiente == nil,
               let indiceUsuario = mensajes.firstIndex(where: { $0.id == mensajeId })
         else { return false }
         let texto = mensajes[indiceUsuario].textoTransporte ?? mensajes[indiceUsuario].texto
@@ -963,8 +1035,20 @@ final class ChatViewModel {
         let logicalAttempt = mensajes[indiceUsuario].logicalAttempt ?? LogicalChatAttempt()
         mensajes[indiceUsuario].logicalAttempt = logicalAttempt
 
-        enviando = true
         errorMensaje = nil
+
+        if estaGenerando {
+            return await encolarMensajeDuranteTurno(
+                mensajeId: mensajeId,
+                indiceUsuario: indiceUsuario,
+                texto: texto,
+                attachmentIds: attachmentIds,
+                logicalAttempt: logicalAttempt,
+                client: client
+            )
+        }
+
+        enviando = true
         herramientaActiva = nil
         defer {
             enviando = false
@@ -1189,6 +1273,78 @@ final class ChatViewModel {
         return request
     }
 
+    /// Encola un mensaje mientras el SSE del turno activo sigue abierto. El
+    /// backend responde `202` con `{status:"queued"}`; el follow-up corre al
+    /// cerrar el stream del turno en curso (evento `follow_up_turn`).
+    private func encolarMensajeDuranteTurno(
+        mensajeId: String,
+        indiceUsuario: Int,
+        texto: String,
+        attachmentIds: [String],
+        logicalAttempt: LogicalChatAttempt,
+        client: APIClient
+    ) async -> Bool {
+        do {
+            let conversationId = try await asegurarConversacion(client: client)
+            let pendingAttempt = PendingChatAttempt(
+                idempotencyKey: logicalAttempt.idempotencyKey,
+                conversationId: conversationId,
+                localMessageId: mensajeId
+            )
+            try? pendingAttemptStore.save(pendingAttempt)
+
+            struct Body: Encodable {
+                let text: String
+                let attachments: [String]
+            }
+            let body = Body(text: texto, attachments: attachmentIds)
+            let request = try await construirPeticionSSE(
+                client: client,
+                path: "/v1/conversations/\(conversationId)/messages",
+                body: body,
+                idempotencyKey: logicalAttempt.idempotencyKey
+            )
+            let encolado = try await postMensajeEncolado(request: request)
+            guard encolado else {
+                mensajes[indiceUsuario].falloEnvio = true
+                errorMensaje = "No se pudo encolar el mensaje."
+                return false
+            }
+            limpiarIntentoPendiente(siCoincide: logicalAttempt.idempotencyKey)
+            marcarIntentoCompletado(mensajeId: mensajeId)
+            return true
+        } catch {
+            mensajes[indiceUsuario].falloEnvio = true
+            mensajes[indiceUsuario].logicalAttempt = nil
+            errorMensaje = Self.mensajeErrorUsuario(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func postMensajeEncolado(request: URLRequest) async throws -> Bool {
+        var request = request
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw SSEClient.SSEError.respuestaInvalida
+        }
+        if http.statusCode == 202 {
+            struct Queued: Decodable { let status: String }
+            if let parsed = try? JSONDecoder().decode(Queued.self, from: data),
+               parsed.status == "queued" {
+                return true
+            }
+            return true
+        }
+        if http.statusCode == 409 {
+            throw SSEClient.SSEError.servidor(status: http.statusCode, retryAfter: nil)
+        }
+        throw SSEClient.SSEError.servidor(
+            status: http.statusCode,
+            retryAfter: http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+        )
+    }
+
     private func consumirStreamConRefresh<Cuerpo: Encodable>(
         client: APIClient,
         path: String,
@@ -1207,11 +1363,21 @@ final class ChatViewModel {
                 idempotencyKey: idempotencyKey
             )
             do {
+                var indiceActual = indiceRespuesta
                 for try await evento in sseClient.stream(request) {
-                    if let missionId = aplicar(evento, indiceRespuesta: indiceRespuesta) {
+                    if case .followUpTurn = evento {
+                        if mensajes.indices.contains(indiceActual) {
+                            cerrarBurbujaAsistente(indiceActual)
+                        }
+                        mensajes.append(Mensaje(rol: .asistente, texto: "", enProgreso: true))
+                        indiceActual = mensajes.count - 1
+                        herramientaActiva = nil
+                        continue
+                    }
+                    if let missionId = aplicar(evento, indiceRespuesta: indiceActual) {
                         iniciarSeguimientoMision(
                             missionId: missionId,
-                            mensajeId: mensajes[indiceRespuesta].id,
+                            mensajeId: mensajes[indiceActual].id,
                             client: client
                         )
                     }
@@ -1503,12 +1669,8 @@ final class ChatViewModel {
                     mensajes[indiceRespuesta].bloques.append(bloque)
                 }
             }
-            // Fuentes (citas) de `buscar_web`: los bloques `link_preview` ya
-            // se pintan como tarjetas completas en `BloquesChatView`, pero el
-            // dueño pidió además un resumen discreto de fuentes como chips
-            // tappables debajo del texto. Se extraen acá, no en la vista,
-            // para que sobrevivan al reciclado del `LazyVStack` igual que los
-            // bloques.
+            // Fuentes (citas) de `buscar_web`: `VistaFuentes` consolida todos los
+            // hits; los bloques `link_preview` duplicados se filtran en la vista.
             if nombre == "buscar_web" {
                 let nuevas = Self.fuentesDesdeToolEnd(resultado: resultado, bloques: bloques)
                 for fuente in nuevas
@@ -1543,6 +1705,8 @@ final class ChatViewModel {
             }
         case .error(let mensaje):
             errorMensaje = Self.mensajeErrorUsuario(mensaje)
+        case .followUpTurn:
+            break
         case .unknown:
             break
         }
@@ -1550,9 +1714,16 @@ final class ChatViewModel {
     }
 
     private func iniciarSeguimientosPersistidos(client: APIClient) {
-        for mensaje in mensajes {
-            guard let missionId = mensaje.trabajo?.missionId else { continue }
-            iniciarSeguimientoMision(missionId: missionId, mensajeId: mensaje.id, client: client)
+        // UN Task por misión, pero bajo la puerta de `limitadorMisionesChat`
+        // (máximo 2): un hilo con N misiones activas lanzaría N peticiones
+        // simultáneas por el túnel al abrir la conversación. Se acompañan en
+        // fila y cada Task espera 3s entre polls.
+        let pendientes = mensajes.compactMap { mensaje -> (String, String)? in
+            guard let missionId = mensaje.trabajo?.missionId else { return nil }
+            return (missionId, mensaje.id)
+        }
+        for (missionId, mensajeId) in pendientes {
+            iniciarSeguimientoMision(missionId: missionId, mensajeId: mensajeId, client: client)
         }
     }
 
@@ -1562,10 +1733,20 @@ final class ChatViewModel {
         client: APIClient
     ) {
         guard seguimientoMisiones[missionId] == nil else { return }
+        let miTurno = misionesArrancadas
+        misionesArrancadas += 1
         seguimientoMisiones[missionId] = Task { [weak self] in
             guard let self else { return }
-            defer { self.seguimientoMisiones[missionId] = nil }
-            var fallosConsecutivos = 0
+            // Momento frágil: un hilo con N misiones activas disparaba sus
+            // polls a la vez. Cada misión espera su turno en la fila
+            // (~600 ms por misión, máx 3 s de arranque): el pico de
+            // peticiones queda escalonado sin tocar el MainActor.
+            if miTurno > 0 {
+                try? await Task.sleep(
+                    for: .milliseconds(UInt64(miTurno) * 600)
+                )
+            }
+            var fallosConsecutivos: UInt8 = 0
             while !Task.isCancelled {
                 do {
                     let detail = try await client.getMission(id: missionId)
@@ -1590,6 +1771,9 @@ final class ChatViewModel {
                 }
                 try? await Task.sleep(for: .seconds(3))
             }
+            // El dict se limpia cuando la misión deja de ser activa, para
+            // que un id nuevo con el mismo missionId pueda re-suscribirse.
+            self.seguimientoMisiones[missionId] = nil
         }
     }
 

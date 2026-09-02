@@ -143,6 +143,7 @@ class CreateLinkedinPostAccion(BaseModel):
     tema: str | None = None
     con_imagen: bool = True
     seed_id: str | None = None
+    fase: Literal["write", "scout", "select"] | None = None
 
 
 class GymCheckinAccion(BaseModel):
@@ -162,12 +163,30 @@ class GymCheckinAccion(BaseModel):
     seed_id: str | None = None
 
 
+class DetectPostIdeaAccion(BaseModel):
+    """Cuarta variante (contenido proactivo): NO trae `tema` fijo. El handler
+    `run_automation` lee las conversaciones recientes del tenant, le pide al
+    modelo editorial (Sol, alias "profundo", xhigh) que identifique si hay una
+    idea publicable (puntaje >= 8/10 según los criterios de contenido proactivo:
+    observación no obvia, experiencia real, contradicción, aprendizaje costoso,
+    fracaso, dato sorprendente, historia con tensión, etc.), y si la hay, encola
+    `create_linkedin_post` con esa idea como `tema`. Si no hay nada
+    suficientemente bueno, NO crea nada (filtro de calidad: nunca basura
+    constante). El borrador que entrega el motor siempre es una card para que el
+    dueño la apruebe antes de publicar."""
+
+    kind: Literal["detect_post_idea"] = "detect_post_idea"
+    destino: str | None = "personal"
+    con_imagen: bool = True
+    seed_id: str | None = None
+
+
 AccionDef = Annotated[
-    AgentInstructionAccion | CreateLinkedinPostAccion | GymCheckinAccion,
+    AgentInstructionAccion | CreateLinkedinPostAccion | GymCheckinAccion | DetectPostIdeaAccion,
     Field(discriminator="kind"),
 ]
 """Unión discriminada por `kind`: `"agent_instruction"` | `"create_linkedin_post"`
-| `"gym_checkin"` (ver docstring del módulo, "Segunda variante" y la docstring
-de `GymCheckinAccion`)."""
+| `"gym_checkin"` | `"detect_post_idea"` (ver docstrings de `GymCheckinAccion` y
+`DetectPostIdeaAccion`)."""
 
 AccionDefAdapter: TypeAdapter[AccionDef] = TypeAdapter(AccionDef)

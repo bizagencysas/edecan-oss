@@ -47,6 +47,9 @@ export interface SkillDetail extends SkillSummary {
   recursos: Record<string, unknown>;
   /** Solo en el detalle (necesita `contenido`) — `[]` en `SkillSummary`/la lista. */
   hallazgos: SkillHallazgo[];
+  /** Estado del ciclo de vida (`routers/skills.py`): 'active' para las instaladas,
+   * 'draft' para las enseñadas aún no aprobadas. Solo viene en el detalle. */
+  status: string;
   updated_at: string;
 }
 
@@ -200,6 +203,59 @@ export async function setSkillEnabled(
 /** `DELETE /v1/skills/{id}` — desinstala. */
 export async function deleteSkill(id: string): Promise<void> {
   await apiJson<void>(`/v1/skills/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// "Enseñar una tarea" (`routers/skills.py`, directiva §38-41): captura de pasos
+// → skill DRAFT. Nada se auto-activa: `finish` produce `status='draft'` +
+// `enabled=false`, y solo `approve` la promueve a `active`.
+// ---------------------------------------------------------------------------
+
+/** Sesión de captura (`_session_out` del backend). */
+export interface TeachSession {
+  id: string;
+  nombre: string | null;
+  descripcion: string;
+  status: string;
+  pasos: TeachStep[];
+  draft_skill_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Un paso capturado (`TeachStepIn`), compilado luego en el `SKILL.md` del draft. */
+export interface TeachStep {
+  action: string;
+  selector: string;
+  decision: string;
+  input: string;
+  output: string;
+}
+
+/** `POST /v1/skills/teach` — abre una sesión de captura. */
+export async function teachSkillStart(input: {
+  nombre: string;
+  descripcion?: string;
+}): Promise<TeachSession> {
+  return apiJson<TeachSession>("/v1/skills/teach", { method: "POST", body: input });
+}
+
+/** `POST /v1/skills/teach/{id}/step` — agrega un paso a la sesión abierta. */
+export async function teachSkillStep(sessionId: string, step: TeachStep): Promise<TeachSession> {
+  return apiJson<TeachSession>(`/v1/skills/teach/${sessionId}/step`, {
+    method: "POST",
+    body: step,
+  });
+}
+
+/** `POST /v1/skills/teach/{id}/finish` — compila el borrador (skill `draft`). */
+export async function teachSkillFinish(sessionId: string): Promise<SkillDetail> {
+  return apiJson<SkillDetail>(`/v1/skills/teach/${sessionId}/finish`, { method: "POST" });
+}
+
+/** `POST /v1/skills/{id}/approve` — promueve el borrador a `active` + `enabled`. */
+export async function approveSkill(id: string): Promise<SkillDetail> {
+  return apiJson<SkillDetail>(`/v1/skills/${id}/approve`, { method: "POST" });
 }
 
 // Re-exporta `ApiError` para sus propios consumidores (`components/skills/*`,

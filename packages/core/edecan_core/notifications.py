@@ -35,6 +35,7 @@ NotificationEventKind = Literal[
     "automation_completed",
     "automation_failed",
     "reminder_triggered",
+    "agent_message",
 ]
 
 NOTIFICATION_CATEGORIES: tuple[NotificationCategory, ...] = (
@@ -135,6 +136,12 @@ _EVENT_DEFINITIONS: Mapping[NotificationEventKind, tuple[NotificationCategory, s
                 "Un recordatorio se activó. Ábrelo en Edecán.",
                 "activity",
             ),
+            "agent_message": (
+                "work",
+                "Mensaje de Edecán",
+                "Edecán tiene algo que decirte. Abre el chat para leerlo.",
+                "assistant",
+            ),
         }
     )
 )
@@ -166,6 +173,8 @@ class ImportantNotificationEvent:
     chat_id: UUID | None = None
     artifact_id: UUID | None = None
     resource_id: UUID | None = None
+    apns_title: str | None = None
+    apns_body: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _EVENT_DEFINITIONS:

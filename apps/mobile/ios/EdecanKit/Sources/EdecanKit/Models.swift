@@ -1538,6 +1538,7 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
     )
     case confirmationRequired(toolCallId: String, name: String, args: [String: JSONValue])
     case done(usage: Usage?)
+    case followUpTurn(pending: Int)
     case error(message: String)
     case unknown(type: String)
 
@@ -1548,6 +1549,7 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
         case toolCallId = "tool_call_id"
         case blocksVersion = "blocks_version"
         case missionId = "mission_id"
+        case pending
     }
 
     public init(from decoder: Decoder) throws {
@@ -1612,6 +1614,9 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
             )
         case "done":
             self = .done(usage: try? container.decode(Usage.self, forKey: .usage))
+        case "follow_up_turn":
+            let pending = (try? container.decode(Int.self, forKey: .pending)) ?? 0
+            self = .followUpTurn(pending: pending)
         case "error":
             guard let message = try? container.decode(String.self, forKey: .message) else {
                 self = .unknown(type: type)

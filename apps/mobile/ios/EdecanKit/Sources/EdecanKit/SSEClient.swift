@@ -186,6 +186,10 @@ struct SSETerminalState {
     private(set) var finalizado = false
 
     mutating func aceptar(_ evento: ChatEvent) -> Bool {
+        if case .followUpTurn = evento {
+            finalizado = false
+            return true
+        }
         guard !finalizado else { return false }
         switch evento {
         case .done, .error:

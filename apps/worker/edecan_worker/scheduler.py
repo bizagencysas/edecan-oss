@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 INTERVALO_SEGUNDOS = 30
 INTERVALO_SEGUNDOS_AUTOMATIONS = 60
 INTERVALO_SEGUNDOS_PERSISTENT_AGENTS = 60
+INTERVALO_SEGUNDOS_PROACTIVE = 300
+INTERVALO_SEGUNDOS_COMPANION_WAKE = 120
 
 # Jobs de sistema (sin tenant propio) que este loop encola periódicamente en
 # dev/self-host. OJO: en prod, `send_reminder_scan` y `automation_scan` ya
@@ -65,6 +67,8 @@ INTERVALO_SEGUNDOS_PERSISTENT_AGENTS = 60
 JOBS_PERIODICOS: tuple[str, ...] = ("send_reminder_scan", "sync_connector")
 JOBS_PERIODICOS_AUTOMATIONS: tuple[str, ...] = ("automation_scan",)
 JOBS_PERIODICOS_PERSISTENT_AGENTS: tuple[str, ...] = ("persistent_agent_scan",)
+JOBS_PERIODICOS_PROACTIVE: tuple[str, ...] = ("proactive_scan",)
+JOBS_PERIODICOS_COMPANION_WAKE: tuple[str, ...] = ("companion_wake_scan",)
 
 
 async def _enqueue_jobs(settings: Settings, job_types: tuple[str, ...]) -> None:
@@ -97,6 +101,12 @@ async def _tick_persistent_agents(settings: Settings) -> None:
     await _enqueue_jobs(settings, JOBS_PERIODICOS_PERSISTENT_AGENTS)
 
 
+async def _tick_proactive(settings: Settings) -> None:
+    await _enqueue_jobs(settings, JOBS_PERIODICOS_PROACTIVE)
+
+
+async def _tick_companion_wake(settings: Settings) -> None:
+    await _enqueue_jobs(settings, JOBS_PERIODICOS_COMPANION_WAKE)
 async def run_forever(
     settings: Settings | None = None, *, stop_event: asyncio.Event | None = None
 ) -> None:
@@ -116,6 +126,8 @@ async def run_forever(
     # docstring del módulo — el primer chequeo de abajo debe salir `False`.
     ultimo_tick_automations = time.monotonic()
     ultimo_tick_persistent_agents = time.monotonic()
+    ultimo_tick_proactive = time.monotonic()
+    ultimo_tick_companion_wake = time.monotonic()
     while not stop_event.is_set():
         try:
             await _tick(settings)
@@ -135,7 +147,18 @@ async def run_forever(
                 await _tick_persistent_agents(settings)
             except Exception:
                 logger.exception("fallo inesperado en el tick de workers persistentes")
-
+        if ahora - ultimo_tick_proactive >= INTERVALO_SEGUNDOS_PROACTIVE:
+            ultimo_tick_proactive = ahora
+            try:
+                await _tick_proactive(settings)
+            except Exception:
+                logger.exception("fallo inesperado en el tick proactivo del scheduler")
+        if ahora - ultimo_tick_companion_wake >= INTERVALO_SEGUNDOS_COMPANION_WAKE:
+            ultimo_tick_companion_wake = ahora
+            try:
+                await _tick_companion_wake(settings)
+            except Exception:
+                logger.exception("fallo inesperado en el tick de companion wake del scheduler")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=INTERVALO_SEGUNDOS)
         except TimeoutError:

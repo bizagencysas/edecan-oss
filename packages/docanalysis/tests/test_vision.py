@@ -25,12 +25,12 @@ async def test_archivo_no_encontrado(make_ctx, fake_s3):
 
 
 async def test_rechaza_archivo_demasiado_grande(make_ctx, fake_s3, make_archivo):
-    contenido = b"\x00" * (5 * 1024 * 1024 + 1)
+    contenido = b"\x00" * (8 * 1024 * 1024 + 1)
     fake_s3.archivo = make_archivo(contenido=contenido, filename="grande.png", mime="image/png")
 
     resultado = await AnalizarImagenTool().run(make_ctx(), {"file_id": str(uuid4())})
 
-    assert "5 MB" in resultado.content
+    assert "8 MB" in resultado.content
 
 
 async def test_rechaza_formato_no_soportado(make_ctx, fake_s3, make_archivo):

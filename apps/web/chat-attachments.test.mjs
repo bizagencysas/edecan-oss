@@ -29,6 +29,8 @@ test("permite texto, adjuntos listos o ambos, pero bloquea cargas incompletas", 
   assert.equal(canSubmitChat("No lo envíes aún", [attachment({ status: "uploading", fileId: null })], false), false);
   assert.equal(canSubmitChat("No lo envíes incompleto", [attachment({ status: "error", fileId: null })], false), false);
   assert.equal(canSubmitChat("Hola", [], true), false);
+  // El streaming activo no bloquea el composer; solo confirmación pendiente (tercer arg).
+  assert.equal(canSubmitChat("Seguimiento", [], false), true);
   assert.equal(attachmentsBlockSend([attachment()]), false);
 });
 

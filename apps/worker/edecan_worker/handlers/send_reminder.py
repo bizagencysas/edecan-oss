@@ -1,6 +1,6 @@
-"""Job `send_reminder`: marca el recordatorio como enviado e inserta un
-mensaje del asistente con su texto en la conversación "Recordatorios" del
-usuario — la crea si no existe, `channel="api"` (ARCHITECTURE.md §10.11).
+"""Job `send_reminder`: marca el recordatorio como enviado y despierta un turno
+vivo de Edecán en la conversación «Recordatorios» — la crea si no existe,
+`channel="api"`.
 
 El `channel` que trae el recordatorio (`web|voice|phone|api|mobile`, elegido
 al crearlo con `edecan_toolkit.recordatorios.CrearRecordatorioTool` o
@@ -134,13 +134,56 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 channel=CANAL_CONVERSACION,
             )
 
-        await repo.add_message(
+        conversation_id = conversation["id"]
+        reminder_message = str(reminder["message"] or "").strip()
+        due_at = str(reminder.get("due_at") or "")
+
+    instruction = "\n".join(
+        [
+            "[Edecán — turno proactivo interno, no visible para el usuario]",
+            "",
+            "Le toca entregar un recordatorio que el dueño programó. Escríbelo en el chat "
+            "«Recordatorios» en tus propias palabras, en español de Venezuela (tú, sin voseo).",
+            "",
+            "Reglas:",
+            "- Este despertar exige un mensaje: [NO_MESSAGE] y el silencio no son válidos.",
+            "- El contenido del recordatorio es un hecho; no lo copies literalmente como única "
+            "línea del mensaje — intégralo con naturalidad.",
+            "",
+            "Datos operativos (hechos, no texto para copiar):",
+            f"- reminder_id: {reminder_id}",
+            f"- due_at: {due_at}",
+            f"- channel: {channel}",
+            f"- message: {reminder_message}",
+        ]
+    )
+
+    try:
+        from edecan_core.companion_wake_enqueue import enqueue_companion_wake
+
+        await enqueue_companion_wake(
+            deps.settings,
             tenant_id=env.tenant_id,
-            conversation_id=conversation["id"],
-            role="assistant",
-            content={"text": f"Recordatorio: {reminder['message']}"},
+            payload={
+                "user_id": str(user_id),
+                "wake_key": f"reminder:{occurrence_id}",
+                "source": "reminder_triggered",
+                "urgent": True,
+                "require_message": True,
+                "instruction": instruction,
+                "conversation_id": str(conversation_id),
+                "notification": {"kind": "reminder_triggered", "event_id": str(occurrence_id)},
+            },
         )
         await repo.mark_reminder_sent(tenant_id=env.tenant_id, reminder_id=reminder_id)
+    except Exception:
+        logger.warning(
+            "send_reminder: recordatorio marcado sent pero falló el wake companion "
+            "reminder_id=%s tenant_id=%s",
+            reminder_id,
+            env.tenant_id,
+            exc_info=True,
+        )
 
     # El mensaje de chat de arriba YA está guardado (fuera de la transacción,
     # que cerró/comiteó al salir del `async with`) antes de intentar el push
@@ -177,21 +220,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 exc_info=True,
             )
     else:
-        # Ver docstring del módulo, "## Cobertura universal para los canales
-        # sin push dedicado": `web`/`api`/`voice`/`phone` no tenían ningún
-        # aviso fuera del mensaje de chat. `notify_important_event` ya es
-        # best-effort por diseño (nunca lanza, ver su docstring) — no hace
-        # falta un `try/except` propio acá, a diferencia del bloque `mobile`
-        # de arriba, que sí llama a `push.enviar_push_a_usuario` directo.
-        await notify_important_event(
-            deps,
-            ImportantNotificationEvent(
-                tenant_id=env.tenant_id,
-                user_id=user_id,
-                kind="reminder_triggered",
-                event_id=occurrence_id,
-                resource_id=reminder_id,
-            ),
-        )
+        # Push universal ya va en el payload del companion wake vía notification.
+        pass
 
     logger.info("send_reminder completado reminder_id=%s tenant_id=%s", reminder_id, env.tenant_id)

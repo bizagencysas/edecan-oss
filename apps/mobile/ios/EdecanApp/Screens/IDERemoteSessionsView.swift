@@ -51,6 +51,7 @@ struct IDERemoteSessionsView: View {
 
     @State private var viewModel = IDEConversationListViewModel()
     @State private var mostrandoNuevaSesion = false
+    @State private var abriendoEditor = false
     @State private var conversacionSeleccionada: IDEConversationReference?
     @State private var conversacionParaRenombrar: IDEConversationReference?
     @State private var busqueda = ""
@@ -113,6 +114,9 @@ struct IDERemoteSessionsView: View {
                 }
                 .presentationDetents([.height(230)])
             }
+            .fullScreenCover(isPresented: $abriendoEditor) {
+                IDEStudioSheet(section: .editor)
+            }
             .navigationDestination(item: $conversacionSeleccionada) { conversation in
                 IDEConversationDetailView(conversation: conversation)
             }
@@ -122,6 +126,8 @@ struct IDERemoteSessionsView: View {
     private var sessionsView: some View {
         ScrollView {
             LazyVStack(spacing: 18) {
+                editorCard
+
                 hero
 
                 if let error = viewModel.errorMessage {
@@ -157,6 +163,36 @@ struct IDERemoteSessionsView: View {
             .padding(.horizontal, 18)
             .padding(.bottom, 30)
         }
+    }
+
+    private var editorCard: some View {
+        Button {
+            abriendoEditor = true
+        } label: {
+            HStack(spacing: 15) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 54, height: 54)
+                    .background(EdecanTheme.degradado, in: RoundedRectangle(cornerRadius: 17))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Abrir editor")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("Archivos, código, Terminal y Agente en tu proyecto.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .tarjetaVidrio(esquina: 22)
+        }
+        .buttonStyle(.plain)
     }
 
     private var hero: some View {
@@ -201,7 +237,8 @@ struct IDERemoteSessionsView: View {
                 } label: {
                     IDEConversationCard(
                         conversation: conversation,
-                        session: viewModel.latestSession(for: conversation)
+                        session: viewModel.latestSession(for: conversation),
+                        enCurso: viewModel.isActive(conversation)
                     )
                 }
                 .buttonStyle(.plain)
@@ -448,7 +485,7 @@ private struct IDEConversationDetailView: View {
             }
 
             HStack(spacing: 9) {
-                toolButton("Archivos", icon: "folder", section: .archivos)
+                toolButton("Editor", icon: "chevron.left.forwardslash.chevron.right", section: .editor)
                 toolButton("Terminal", icon: "terminal", section: .terminal)
                 toolButton("Git", icon: "arrow.triangle.branch", section: .git)
             }
@@ -831,15 +868,16 @@ private struct IDEAttachmentChip: View {
 private struct IDEConversationCard: View {
     let conversation: IDEConversationReference
     let session: IDESession?
+    let enCurso: Bool
 
     var body: some View {
         HStack(spacing: 13) {
-            Image(systemName: session?.isActive == true ? "sparkles" : "chevron.left.forwardslash.chevron.right")
+            Image(systemName: enCurso ? "sparkles" : "chevron.left.forwardslash.chevron.right")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(session?.isActive == true ? .white : EdecanTheme.morado)
+                .foregroundStyle(enCurso ? .white : EdecanTheme.morado)
                 .frame(width: 42, height: 42)
                 .background(
-                    session?.isActive == true
+                    enCurso
                         ? AnyShapeStyle(EdecanTheme.degradado)
                         : AnyShapeStyle(EdecanTheme.morado.opacity(0.12)),
                     in: RoundedRectangle(cornerRadius: 13)
@@ -858,10 +896,15 @@ private struct IDEConversationCard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                if let session, !enCurso {
+                    Text(IDETheme.estadoEtiqueta(session))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(IDETheme.estadoColor(session))
+                }
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 6) {
-                if session?.isActive == true {
+                if enCurso {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "chevron.right")
@@ -877,6 +920,7 @@ private struct IDEConversationCard: View {
         }
         .padding(14)
         .tarjetaVidrio(esquina: 19)
+        .opacity(enCurso ? 1 : 0.92)
     }
 }
 
@@ -901,11 +945,11 @@ private struct IDEConversationTurnView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(turn.session.isActive ? .orange : turn.session.status == "completed" ? .green : .secondary)
+                        .fill(IDETheme.estadoColor(turn.session))
                         .frame(width: 8, height: 8)
                     Text(statusLabel(turn.session))
                         .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(IDETheme.estadoColor(turn.session))
                     Spacer()
                     Text(turn.session.startedAt, style: .time)
                         .font(.caption2)
@@ -1039,14 +1083,18 @@ private struct IDEStudioSheet: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.headline)
+                    .foregroundStyle(IDETheme.texto)
                     .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .background(IDETheme.superficie, in: Circle())
+                    .overlay(Circle().strokeBorder(IDETheme.superficieBorde, lineWidth: 1))
+                    .shadow(color: IDETheme.sombraSuave, radius: 4, y: 1)
             }
             .buttonStyle(.plain)
             .padding(.top, 10)
             .padding(.trailing, 12)
             .accessibilityLabel("Cerrar")
         }
+        .ideLightOnly()
     }
 }
 
@@ -1095,12 +1143,14 @@ private final class IDEConversationListViewModel {
 
     func latestSession(for conversation: IDEConversationReference) -> IDESession? {
         let sessionIds = Set(conversation.sessionIds)
-        return sessions
-            .filter { sessionIds.contains($0.id) }
-            .max { $0.startedAt < $1.startedAt }
+        let relacionadas = sessions.filter { sessionIds.contains($0.id) }
+        // Muestra la sesión activa si existe; si no, la más reciente del historial.
+        return relacionadas.first(where: \.isActive)
+            ?? relacionadas.max { $0.startedAt < $1.startedAt }
     }
 
     func isActive(_ conversation: IDEConversationReference) -> Bool {
+        guard connected else { return false }
         let sessionIds = Set(conversation.sessionIds)
         return sessions.contains { sessionIds.contains($0.id) && $0.isActive }
     }

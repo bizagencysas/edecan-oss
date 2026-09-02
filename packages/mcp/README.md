@@ -8,7 +8,7 @@ credenciales: TODO lo trae el cliente, siempre"). Ver [`docs/mcp.md`](../../docs
 para el flujo completo desde la UI.
 
 Adaptado (async, multi-tenant, español) del cliente MCP de referencia de
-[OpenJarvis](https://github.com/open-jarvis/OpenJarvis) (Apache-2.0, single-user/síncrono
+[OpenJarvis](https://github.com/open-reference implementation/OpenJarvis) (Apache-2.0, single-user/síncrono
 en origen) — ver `NOTICE` en la raíz del repo para la atribución completa. Ningún archivo
 se copió tal cual: el protocolo JSON-RPC 2.0/los tres transportes (in-process, stdio,
 Streamable HTTP) se reescribieron async y multi-tenant.

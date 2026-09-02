@@ -465,9 +465,9 @@ private final class SesionReconocimiento: @unchecked Sendable {
         let (task, continuation): (SFSpeechRecognitionTask?, CheckedContinuation<String, Error>?) = lock.withLock {
             guard !terminado else { return (nil, nil) }
             terminado = true
-            let values = (task, continuation)
-            task = nil
-            continuation = nil
+            let values = (self.task, self.continuation)
+            self.task = nil
+            self.continuation = nil
             return values
         }
         task?.cancel()

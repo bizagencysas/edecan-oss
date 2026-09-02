@@ -41,6 +41,5 @@ def plain_text_for_speech(text: str) -> str:
 
 
 def expressive_eleven_v3_text(text: str) -> str:
-    """Prepara texto limpio y añade una dirección estable para Eleven v3."""
-    plain = plain_text_for_speech(text)
-    return f"[calmly] {plain}" if plain else plain
+    """Prepara texto limpio para Eleven v3 sin inyectar etiquetas no solicitadas."""
+    return plain_text_for_speech(text)

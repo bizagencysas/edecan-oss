@@ -86,7 +86,7 @@ def test_flag_hardcodeado_en_router_mcp_coincide_con_el_flag_pinned_del_plan() -
 
 
 # ---------------------------------------------------------------------------
-# BARRIDO B.1 — los 4 endpoints de `/v1/mcp/*` exigen `_require_tools_mcp`,
+# BARRIDO B.1 — los 5 endpoints de `/v1/mcp/*` exigen `_require_tools_mcp`,
 # verificado por introspección REAL del grafo de dependencias de FastAPI (no
 # un doble/simulación) — si algún endpoint nuevo se agrega a `mcp.py` sin
 # pasar por ese gate, o sin agregarse a la lista pinned de abajo, este test
@@ -94,7 +94,7 @@ def test_flag_hardcodeado_en_router_mcp_coincide_con_el_flag_pinned_del_plan() -
 # ---------------------------------------------------------------------------
 
 
-def test_los_4_endpoints_de_mcp_exigen_require_tools_mcp() -> None:
+def test_los_5_endpoints_de_mcp_exigen_require_tools_mcp() -> None:
     from edecan_api.routers import mcp as mcp_router
 
     rutas_cubiertas: set[tuple[str, frozenset[str]]] = set()
@@ -110,6 +110,7 @@ def test_los_4_endpoints_de_mcp_exigen_require_tools_mcp() -> None:
     # explícitamente como parte de ESE cambio (mismo criterio de "romper en
     # vez de fallar en silencio" que el resto de tests pinned de este repo).
     assert rutas_cubiertas == {
+        ("/v1/mcp/health", frozenset({"GET"})),
         ("/v1/mcp/servers", frozenset({"GET"})),
         ("/v1/mcp/servers", frozenset({"PUT"})),
         ("/v1/mcp/servers/{nombre}", frozenset({"DELETE"})),

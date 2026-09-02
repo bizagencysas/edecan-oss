@@ -97,6 +97,12 @@ async def test_los_webhooks_de_twilio_pasan_sin_bearer() -> None:
         assert respuesta.status_code == 200, f"{ruta} quedó bloqueada: {respuesta.status_code}"
 
 
+async def test_los_webhooks_de_elevenlabs_pasan_sin_bearer() -> None:
+    """ConvAI post-call no es un dispositivo: HMAC es su autenticación."""
+    respuesta = await _request("/v1/phone/elevenlabs/post-call", method="POST")
+    assert respuesta.status_code == 200, respuesta.status_code
+
+
 async def test_el_resto_de_phone_sigue_exigiendo_bearer() -> None:
     # La excepción es SOLO para el prefijo de webhooks. Las rutas de teléfono que usa la app
     # (crear llamada, listar) siguen siendo de dispositivo autenticado.

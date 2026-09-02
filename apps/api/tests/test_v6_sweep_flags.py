@@ -694,6 +694,20 @@ _SUPERFICIES_DE_ENCOLADO: dict[str, str] = {
         "Solo el scheduler interno; barre schedules explícitos de persistent_agents "
         "y adelanta next_run_at antes de encolar por tenant."
     ),
+    "proactive_scan": (
+        "Solo el scheduler interno (JOBS_PERIODICOS_PROACTIVE); minería pasiva de tareas "
+        "repetidas que registra sugerencias como filas `automations` deshabilitadas, "
+        "sin auto-crear ninguna automatización activa."
+    ),
+    "run_companion_turn": (
+        "Solo `enqueue_companion_wake` (wake_key dedup) -- el turno proactivo del "
+        "compañero; exige mensaje según `require_message` y siempre escribe en el chat "
+        "principal del dueño. Nunca lo encola un cliente directo."
+    ),
+    "companion_wake_scan": (
+        "Solo el scheduler interno; drena los wakes encolados y despacha "
+        "`run_companion_turn` con su dedupe por wake_key."
+    ),
 }
 
 

@@ -336,6 +336,35 @@ export async function listDevices(): Promise<HostDevice[]> {
   return apiJson<HostDevice[]>("/v1/devices");
 }
 
+export type AutonomyLevel = "ask" | "read_only" | "draft" | "full";
+
+export interface WorkerAvatarEye {
+  x?: number;
+  y?: number;
+  rx?: number;
+  ry?: number;
+  rotation?: number;
+}
+
+export interface WorkerAvatarEyes {
+  style?: string | null;
+  color?: string | null;
+  left?: WorkerAvatarEye | null;
+  right?: WorkerAvatarEye | null;
+}
+
+/** Dict JSONB que acompaña al worker (`avatar` en `persistent_agents`). */
+export interface WorkerAvatar {
+  initials?: string | null;
+  accent?: string | null;
+  fill?: string | null;
+  shape?: string | null;
+  image_url?: string | null;
+  style?: string | null;
+  seed?: string | null;
+  eyes?: WorkerAvatarEyes | null;
+}
+
 export interface PersistentWorker {
   id: string;
   name: string;
@@ -343,7 +372,60 @@ export interface PersistentWorker {
   status: string;
   enabled: boolean;
   workspace: string | null;
+  display_name: string | null;
+  avatar: WorkerAvatar | null;
+  role_title: string | null;
+  role_short: string | null;
+  job_description: string | null;
+  personality: string | null;
+  communication_style: string | null;
+  instructions: string | null;
+  constraints: string | null;
+  approval_policy: Record<string, unknown> | null;
+  autonomy_level: AutonomyLevel | null;
+  relation: string | null;
+  model_policy: Record<string, unknown> | null;
+  /** Último checkpoint durado del worker (`run_persistent_agent._save_checkpoint`):
+   * `{ task_id, instruction_hash, status, started_at?, finished_at?, result?, error? }`.
+   * `null` si todavía no corrió ninguna tarea. */
+  last_checkpoint?: Record<string, unknown> | null;
   updated_at: string;
+}
+
+export interface WorkerCreateInput {
+  name: string;
+  purpose: string;
+  display_name?: string | null;
+  avatar?: WorkerAvatar;
+  role_title?: string | null;
+  role_short?: string | null;
+  job_description?: string | null;
+  personality?: string | null;
+  communication_style?: string | null;
+  instructions?: string | null;
+  constraints?: string | null;
+  approval_policy?: Record<string, unknown>;
+  autonomy_level?: AutonomyLevel;
+  relation?: string | null;
+  model_policy?: Record<string, unknown>;
+}
+
+export interface WorkerPatchInput {
+  enabled?: boolean;
+  status?: string;
+  display_name?: string | null;
+  avatar?: WorkerAvatar;
+  role_title?: string | null;
+  role_short?: string | null;
+  job_description?: string | null;
+  personality?: string | null;
+  communication_style?: string | null;
+  instructions?: string | null;
+  constraints?: string | null;
+  approval_policy?: Record<string, unknown>;
+  autonomy_level?: AutonomyLevel;
+  relation?: string | null;
+  model_policy?: Record<string, unknown>;
 }
 
 export interface WorkerHandoff {
@@ -360,8 +442,12 @@ export async function listWorkers(): Promise<PersistentWorker[]> {
   return apiJson<PersistentWorker[]>("/v1/agents/workers");
 }
 
-export async function createWorker(input: { name: string; purpose: string }): Promise<PersistentWorker> {
+export async function createWorker(input: WorkerCreateInput): Promise<PersistentWorker> {
   return apiJson<PersistentWorker>("/v1/agents/workers", { method: "POST", body: input });
+}
+
+export async function patchWorker(id: string, input: WorkerPatchInput): Promise<PersistentWorker> {
+  return apiJson<PersistentWorker>(`/v1/agents/workers/${id}`, { method: "PATCH", body: input });
 }
 
 export async function enqueueWorkerTask(id: string, instruction: string): Promise<{ task_id: string }> {
@@ -481,6 +567,27 @@ export function sendMessageStream(
   );
 }
 
+/** Encola un mensaje mientras el turno activo sigue en el servidor (`202`). */
+export async function queueChatMessage(
+  conversationId: string,
+  text: string,
+  attachments: string[] = [],
+  idempotencyKey?: string,
+): Promise<{ status: string; position: number; pending?: number }> {
+  const headers = new Headers({ Accept: "application/json" });
+  if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
+  const res = await authedFetch(`/v1/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(buildChatMessageInput(text, attachments)),
+  });
+  if (res.status === 202) {
+    return res.json() as Promise<{ status: string; position: number; pending?: number }>;
+  }
+  const { message, detail } = await extractErrorMessage(res);
+  throw new ApiError(res.status, message, detail);
+}
+
 /** `POST /v1/conversations/{id}/confirm` — aprueba/rechaza una tool pendiente. */
 export function confirmToolCallStream(
   conversationId: string,
@@ -499,12 +606,32 @@ export function confirmToolCallStream(
 
 // --- Memoria -----------------------------------------------------------------
 
-export async function listMemory(q?: string, k?: number): Promise<MemoryItem[]> {
+export async function listMemory(q?: string, k?: number, namespace?: string): Promise<MemoryItem[]> {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   if (k) params.set("k", String(k));
+  if (namespace) params.set("namespace", namespace);
   const qs = params.toString();
   return apiJson<MemoryItem[]>(`/v1/memory${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Entrada de la memoria de un worker persistente (`GET /v1/memory?namespace=
+ * agent:<id>`). A diferencia del espacio plano `user`, el backend devuelve pares
+ * `key`/`value` del dict JSONB `persistent_agents.memory` — no hay `id`, `kind`
+ * ni `source_trust`, y por eso tampoco hay un `DELETE /v1/memory/{id}` que la
+ * borre (ese endpoint apunta a la tabla `memory_items` por uuid).
+ */
+export interface AgentMemoryEntry {
+  key: string;
+  value: unknown;
+  namespace: string;
+}
+
+export async function listAgentMemory(agentId: string): Promise<AgentMemoryEntry[]> {
+  return apiJson<AgentMemoryEntry[]>(
+    `/v1/memory?namespace=${encodeURIComponent(`agent:${agentId}`)}`,
+  );
 }
 
 export async function addMemory(input: {
@@ -512,8 +639,26 @@ export async function addMemory(input: {
   content: string;
   importance?: number;
   source?: string;
+  namespace?: string;
+  source_trust?: string;
 }): Promise<MemoryItem> {
   return apiJson<MemoryItem>("/v1/memory", { method: "POST", body: input });
+}
+
+/**
+ * Sugerencia de memoria propuesta por el agente (`GET /v1/memory/suggestions`):
+ * el backend observa hábitos y propone guardarlos. Nada se persiste hasta que
+ * el usuario elige "Guardar" (que pasa por `addMemory`, arriba).
+ */
+export interface MemorySuggestion {
+  text: string;
+  source?: string | null;
+  scope?: string | null;
+  confidence?: number | null;
+}
+
+export async function listMemorySuggestions(): Promise<MemorySuggestion[]> {
+  return apiJson<MemorySuggestion[]>("/v1/memory/suggestions");
 }
 
 export async function deleteMemory(id: string): Promise<void> {
@@ -1129,18 +1274,65 @@ export function speakTextStream(
   voiceId?: string | null,
   signal?: AbortSignal,
 ): AsyncIterable<SpeakStreamChunk> {
+  const key = `${voiceId ?? ""}\u0001${text}`;
+  const cached = ttsAudioCache.get(key);
+  if (cached) {
+    // Replay desde el caché: sin llamada a `/v1/voice/speak/stream`. Se
+    // emiten los mismos trozos `{chunk, mime}` que el stream original, así
+    // que el player incremental los consume idéntico.
+    const parts = cached.parts;
+    const mime = cached.mime;
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<SpeakStreamChunk> {
+        return (async function* () {
+          for (const part of parts) yield { chunk: part, mime };
+        })();
+      },
+    };
+  }
   const responsePromise = authedFetch("/v1/voice/speak/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, voice_id: voiceId ?? null }),
     signal,
   });
+  const parts: Uint8Array[] = [];
+  let mime = "audio/mpeg";
   return {
     [Symbol.asyncIterator](): AsyncIterator<SpeakStreamChunk> {
-      return readSpeakStream(responsePromise);
+      const source = readSpeakStream(responsePromise);
+      return (async function* () {
+        for await (const chunk of source) {
+          parts.push(chunk.chunk);
+          mime = chunk.mime;
+          yield chunk;
+        }
+        // Caché solo si el stream terminó completo (no abortado a mitad):
+        // un audio parcial no debe reutilizarse como si fuera el entero.
+        if (!signal?.aborted) {
+          const bytes = parts.reduce((sum, part) => sum + part.byteLength, 0);
+          ttsAudioCache.set(key, { parts, mime });
+          ttsAudioCacheBytes += bytes;
+          while (ttsAudioCacheBytes > TTS_AUDIO_CACHE_MAX_BYTES && ttsAudioCache.size > 1) {
+            const oldestKey = ttsAudioCache.keys().next().value;
+            if (oldestKey === undefined || oldestKey === key) break;
+            const oldest = ttsAudioCache.get(oldestKey);
+            if (oldest) {
+              ttsAudioCacheBytes -= oldest.parts.reduce((sum, part) => sum + part.byteLength, 0);
+            }
+            ttsAudioCache.delete(oldestKey);
+          }
+        }
+      })();
     },
   };
 }
+
+// Caché en memoria del audio TTS por `voz+texto` (~60 MB tope): reproducir el
+// mismo mensaje otra vez NO vuelve a pedir el audio a la API.
+const ttsAudioCache = new Map<string, { parts: Uint8Array[]; mime: string }>();
+const TTS_AUDIO_CACHE_MAX_BYTES = 60 * 1024 * 1024;
+let ttsAudioCacheBytes = 0;
 
 async function* readSpeakStream(
   responsePromise: Promise<Response>,

@@ -47,6 +47,7 @@ import dataclasses
 import json
 import logging
 import os
+import subprocess
 import re
 import shutil
 import threading
@@ -105,7 +106,7 @@ from edecan_companion.ide_reparto import (
     rutas_desde_texto,
 )
 from edecan_companion.ide_workers_agent import WorkersIDEAgent, build_failure_final
-from edecan_companion.ide_workspaces import WorkspaceStore
+from edecan_companion.ide_workspaces import IDEWorkspaceError, WorkspaceStore
 from edecan_companion.platform_paths import reemplazar_con_reintentos
 
 logger = logging.getLogger(__name__)
@@ -268,6 +269,20 @@ class IDESessionError(ValueError):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _limpiar_eco_comando(buffer: str, command: str) -> str:
+    """Quita el eco del comando que hace la shell del buffer de salida.
+
+    Con `stty -echo` la shell no repite el comando, pero por robustez se quita
+    igual la primera línea si coincide (o el prefijo) con el comando pedido.
+    """
+    lineas = buffer.splitlines()
+    if lineas:
+        primera = lineas[0].strip()
+        if primera and (primera == command.strip() or command.strip().startswith(primera)):
+            return "\n".join(lineas[1:])
+    return buffer
 
 
 def _archivo_solicitado(prompt: str, workspace_root: Path) -> Path | None:
@@ -540,6 +555,73 @@ class _BucleOpencode:
         self._hilo.join(timeout=5.0)
 
 
+
+class _ShellPersistente:
+    """Shell vivo con pipes para el terminal compartido del proyecto.
+
+    `Popen([shell, -f], cwd=raiz)`: los comandos se escriben a stdin y la
+    salida se lee hasta un sentinel único. `cd` persiste (mismo proceso), no
+    hay eco/ANSI (pipes, no PTY) y no abre ventana. Un comando a la vez.
+    """
+
+    def __init__(self, cwd: str) -> None:
+        # Shell en modo lee-stdin (no interactivo): procesa comandos línea a
+        # línea sin prompt ni eco (las pipes no son una tty, y un shell
+        # interactivo tipo `zsh -f` se cuelga esperando input de tty). `cd`
+        # persiste en el MISMO proceso → cooperación real entre llamadas.
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        argv = [shell, "--noprofile", "--norc"] if shell.endswith("bash") else [shell]
+        self._proc = subprocess.Popen(
+            argv,
+            cwd=str(Path(cwd).expanduser().resolve()),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        self._lock = asyncio.Lock()
+
+    def muerto(self) -> bool:
+        return self._proc.poll() is not None
+
+    async def correr(self, command: str, *, timeout: float) -> dict[str, Any]:
+        async with self._lock:
+            sentinel = f"__EDECAN_END_{uuid.uuid4().hex}__".encode()
+            if self._proc.poll() is not None:
+                return {"ok": False, "error": "El shell compartido ya no está activo."}
+            try:
+                self._proc.stdin.write(command.encode() + b"\n")
+                self._proc.stdin.write(b"echo " + sentinel + b"\n")
+                self._proc.stdin.flush()
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"No se pudo escribir en el shell: {exc}"}
+            assert self._proc.stdout is not None
+            buffer = b""
+            loop = asyncio.get_running_loop()
+            import time as _time
+            inicio = _time.monotonic()
+            while sentinel not in buffer:
+                if _time.monotonic() - inicio > timeout:
+                    return {"ok": False, "error": f"El comando superó el tiempo límite de {int(timeout)}s.",
+                            "parcial": buffer.decode(errors="replace")}
+                try:
+                    # readline es SÍNCRONO y bloquea: se corre en un hilo para
+                    # no congelar el event loop (los pipes no hacen poll).
+                    chunk = await asyncio.wait_for(
+                        loop.run_in_executor(None, self._proc.stdout.readline),
+                        timeout=min(5.0, max(0.1, timeout - (_time.monotonic() - inicio))),
+                    )
+                except (asyncio.TimeoutError, ValueError, OSError):
+                    return {"ok": False, "error": "El comando no respondió a tiempo.",
+                            "parcial": buffer.decode(errors="replace")}
+                if not chunk:
+                    # EOF del stdout (shell murió) — no hay salida más.
+                    return {"ok": False, "error": "El shell compartido terminó inesperadamente.",
+                            "parcial": buffer.decode(errors="replace")}
+                buffer += chunk
+            texto = buffer.split(sentinel)[0].decode(errors="replace").strip()
+            return {"ok": True, "result": {"stdout": texto, "returncode": 0}}
+
+
 class SessionManager:
     def __init__(
         self, state_dir: Path, workspaces: WorkspaceStore, *, motor: str | None = None
@@ -623,6 +705,11 @@ class SessionManager:
         self._plan_progress: dict[str, dict[str, EstadoPaso]] = {}
         self._lock = threading.RLock()
         self._sessions: dict[str, Session] = {}
+        # Terminal compartido POR WORKSPACE (los bots + el IDE usan el MISMO
+        # Shell persistente por proyecto (ver `_ShellPersistente`): cwd ->
+        # shell vivo. Un shell compartido por carpeta = los bots y el IDE
+        # cooperan sobre el MISMO estado sin abrir ventana.
+        self._shells_compartidos: dict[str, _ShellPersistente] = {}
         self._mcp_pending: dict[tuple[str, str], dict[str, Any]] = {}
         self._load()
 
@@ -897,7 +984,10 @@ class SessionManager:
         return cls._validate_argv([shell])
 
     def start_terminal(
-        self, workspace_id: str, raw_argv: Any = None, title: Any = None
+        self,
+        workspace_id: str,
+        raw_argv: Any = None,
+        title: Any = None,
     ) -> dict[str, Any]:
         cwd = self.workspaces.root(workspace_id)
         if raw_argv is None:
@@ -997,6 +1087,38 @@ class SessionManager:
         except pty_compat.PTYError as exc:
             raise IDESessionError(f"No se pudo escribir en la terminal: {exc}") from exc
         return {"accepted": True, "bytes": len(encoded)}
+
+
+    # ---------------------------------------------------------------------
+    # Terminal COMPARTIDO por proyecto (los bots cooperan sobre el MISMO
+    # shell) — ver `_ShellPersistente`.
+    # ---------------------------------------------------------------------
+
+    async def terminal_compartido(
+        self,
+        cwd: str,
+        command: str,
+        *,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        """Corre `command` en un SHELL PERSISTENTE del proyecto (`cwd`).
+
+        Compartido por proyecto (no por bot): todos los bots y el IDE que
+        trabajan en la misma carpeta usan el MISMO shell, heredando cwd y
+        entorno — cooperan de verdad y `cd` persiste entre comandos.
+
+        Es un `Popen` con pipes (no un PTY): la salida es LIMPIA (sin eco, sin
+        ANSI, sin prompt) y no abre ninguna ventana. Un comando a la vez (lock
+        por `cwd`); el fin del comando se detecta con un sentinel único.
+        """
+        return await self._shell_persistente_cwd(cwd).correr(command, timeout=timeout)
+
+    def _shell_persistente_cwd(self, cwd: str) -> "_ShellPersistente":
+        estado = self._shells_compartidos.get(cwd)
+        if estado is None or estado.muerto():
+            estado = _ShellPersistente(cwd)
+            self._shells_compartidos[cwd] = estado
+        return estado
 
     def close(self, session_id: str, kind: str) -> dict[str, Any]:
         session = self._get(session_id, kind)

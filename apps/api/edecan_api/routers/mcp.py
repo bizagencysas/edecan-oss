@@ -71,6 +71,7 @@ import asyncio
 import logging
 import re
 import shlex
+import time
 import uuid
 from typing import Any
 
@@ -91,9 +92,18 @@ from edecan_mcp import (
 from edecan_schemas import TokenBundle
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
-from edecan_api.deps import CurrentUser, get_current_user, get_repo, get_vault, rate_limit
+from edecan_api.deps import (
+    CurrentUser,
+    get_current_user,
+    get_repo,
+    get_tenant_session,
+    get_vault,
+    rate_limit,
+)
 from edecan_api.repo import Repo
 
 logger = logging.getLogger(__name__)
@@ -120,6 +130,13 @@ _RESERVED_ENV_NAMES = frozenset({"PATH", "HOME"})
 _MAX_ENV_ENTRIES = 32
 _MAX_ENV_VALUE_LENGTH = 16_384
 _SENSITIVE_ARGUMENT_PARTS = ("token", "secret", "password", "passwd", "api_key", "apikey")
+
+# Salud por-servidor (directiva §27, tabla `mcp_server_health`, migración
+# `0056_mcp_server_health`). Vocabulario pinned en el CHECK de la tabla.
+_HEALTH_OPERATIONAL = "operational"
+_HEALTH_DEGRADED = "degraded"
+_HEALTH_AUTH_REQUIRED = "auth_required"
+_HEALTH_UNAVAILABLE = "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +180,9 @@ class MCPServerOut(BaseModel):
     comando: str | None = None
     estado: str
     autenticacion_configurada: bool = False
+    health: str = _HEALTH_UNAVAILABLE
+    latency_ms: int | None = None
+    last_error: str | None = None
 
 
 class MCPToolOut(BaseModel):
@@ -246,11 +266,19 @@ def _comando_seguro_para_respuesta(comando: str | None) -> str | None:
 
 
 def _servidor_out(
-    cuenta: dict[str, Any], config: MCPServerConfig, headers: dict[str, str]
+    cuenta: dict[str, Any],
+    config: MCPServerConfig,
+    headers: dict[str, str],
+    salud: dict[str, Any] | None = None,
 ) -> MCPServerOut:
     """`MCPServerOut` — NUNCA incluye `headers` aunque `_cargar_config` los
     haya descifrado para otro propósito (p. ej. `get_server_tools`, que sí
-    los necesita para conectar pero tampoco los devuelve en su respuesta)."""
+    los necesita para conectar pero tampoco los devuelve en su respuesta).
+
+    `salud` es la fila de `mcp_server_health` del servidor (o `None` si no hay
+    registro todavía): se proyecta a `health`/`latency_ms`/`last_error`.
+    """
+    salud = salud or {}
     return MCPServerOut(
         nombre=config.nombre,
         transporte=config.transporte,
@@ -258,7 +286,178 @@ def _servidor_out(
         comando=_comando_seguro_para_respuesta(config.comando),
         estado=cuenta.get("status", "active"),
         autenticacion_configurada=bool(headers or config.env),
+        health=str(salud.get("health") or _HEALTH_UNAVAILABLE),
+        latency_ms=salud.get("last_latency_ms"),
+        last_error=salud.get("last_error"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Salud por-servidor (`mcp_server_health`, directiva §27) — helpers defensivos.
+#
+# Viven en la MISMA transacción del request (`get_tenant_session`): un
+# handshake exitoso (PUT validate=true / GET .../tools) graba `operational` +
+# latencia y comitea con el 2xx; un fallo de handshake hace rollback, igual que
+# el resto del request (y para PUT validate=true ni siquiera existe un servidor
+# que mostrar: la config no se persistió). `session is None` (tests con fakes)
+# convierte cada helper en no-op — la salud cae a sus defaults.
+# ---------------------------------------------------------------------------
+
+
+async def _leer_salud(
+    session: AsyncSession | None, tenant_id: uuid.UUID
+) -> dict[str, dict[str, Any]]:
+    if session is None:
+        return {}
+    try:
+        result = await session.execute(
+            text(
+                "SELECT server_name, health, last_latency_ms, last_error, last_checked_at "
+                "FROM mcp_server_health WHERE tenant_id = :tenant_id"
+            ),
+            {"tenant_id": str(tenant_id)},
+        )
+        return {str(row["server_name"]): dict(row) for row in result.mappings().all()}
+    except Exception:  # noqa: BLE001 - tabla ausente en una instalación aún sin migrar
+        logger.warning("mcp: no se pudo leer mcp_server_health", exc_info=True)
+        return {}
+
+
+async def _grabar_salud(
+    session: AsyncSession | None,
+    tenant_id: uuid.UUID,
+    nombre: str,
+    *,
+    health: str,
+    latency_ms: int | None = None,
+    last_error: str | None = None,
+) -> None:
+    if session is None:
+        return
+    try:
+        await session.execute(
+            text(
+                "INSERT INTO mcp_server_health "
+                "(tenant_id, server_name, health, last_latency_ms, last_error, "
+                "last_checked_at, updated_at) "
+                "VALUES (:tenant_id, :server_name, :health, :latency, :error, now(), now()) "
+                "ON CONFLICT (tenant_id, server_name) DO UPDATE SET "
+                "health = EXCLUDED.health, "
+                "last_latency_ms = EXCLUDED.last_latency_ms, "
+                "last_error = EXCLUDED.last_error, "
+                "last_checked_at = now(), updated_at = now()"
+            ),
+            {
+                "tenant_id": str(tenant_id),
+                "server_name": nombre,
+                "health": health,
+                "latency": latency_ms,
+                "error": last_error,
+            },
+        )
+    except Exception:  # noqa: BLE001 - la salud es best-effort, nunca rompe el request
+        logger.warning("mcp: no se pudo grabar salud de «%s»", nombre, exc_info=True)
+
+
+async def _borrar_salud(
+    session: AsyncSession | None, tenant_id: uuid.UUID, nombre: str
+) -> None:
+    if session is None:
+        return
+    try:
+        await session.execute(
+            text(
+                "DELETE FROM mcp_server_health "
+                "WHERE tenant_id = :tenant_id AND server_name = :server_name"
+            ),
+            {"tenant_id": str(tenant_id), "server_name": nombre},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("mcp: no se pudo borrar salud de «%s»", nombre, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Resumen de salud por-servidor (directiva §27) — agregado de `mcp_server_health`
+# apto para un tablero. Función pura (nada de I/O) para que la lógica de
+# agregación se pruebe en determinismo, sin HTTP ni DB; el endpoint solo junta
+# las dos fuentes (configurados + salud) y delega aquí.
+# ---------------------------------------------------------------------------
+
+_MCP_HEALTH_FORMAT = "edecan-mcp-health.v1"
+_HEALTH_STATUSES = (
+    _HEALTH_OPERATIONAL,
+    _HEALTH_DEGRADED,
+    _HEALTH_AUTH_REQUIRED,
+    _HEALTH_UNAVAILABLE,
+)
+
+
+def _mcp_health_summary(
+    salud: dict[str, dict[str, Any]], configured_names: list[str]
+) -> dict[str, Any]:
+    """Agrega `mcp_server_health` a una instantánea de salud.
+
+    `salud` es `{server_name: row}` (lo que devuelve `_leer_salud`), normalizado
+    a `str` de clave para que case con `external_account_id`. Un servidor
+    CONFIGURADO que aún no tiene fila de salud cuenta como `unchecked` (nunca
+    validado desde que se configuró) y degrada el resumen — la ausencia de
+    muestra no es evidencia de que el servidor esté bien.
+
+    Estatus agregado (misma semántica que el vocabulario por-servidor):
+    `unavailable` si algún servidor está `unavailable`/`auth_required`;
+    si no, `degraded` si alguno está `degraded` o queda algún `unchecked`;
+    si no, `operational`. Nunca lanza: los datos de salud son best-effort y un
+    endpoint de diagnóstico no debe caerse por una fila corrupta.
+    """
+    by_status: dict[str, int] = {nombre: 0 for nombre in (*_HEALTH_STATUSES, "unknown")}
+    latency_values: list[int] = []
+    servers: list[dict[str, Any]] = []
+
+    for name, row in salud.items():
+        name = str(name)
+        health = str(row.get("health") or _HEALTH_UNAVAILABLE)
+        if health not in by_status:
+            health = "unknown"
+        by_status[health] += 1
+        latency = row.get("last_latency_ms")
+        if isinstance(latency, int):
+            latency_values.append(latency)
+        servers.append(
+            {
+                "server_name": name,
+                "health": health,
+                "latency_ms": latency,
+                "last_error": row.get("last_error"),
+                "last_checked_at": row.get("last_checked_at"),
+            }
+        )
+
+    checked = len(salud)
+    configured = len(configured_names)
+    unchecked = max(0, configured - checked)
+    operational = by_status[_HEALTH_OPERATIONAL]
+
+    if by_status[_HEALTH_UNAVAILABLE] or by_status[_HEALTH_AUTH_REQUIRED]:
+        status_value = _HEALTH_UNAVAILABLE
+    elif by_status[_HEALTH_DEGRADED] or by_status["unknown"] or unchecked:
+        status_value = _HEALTH_DEGRADED
+    else:
+        status_value = _HEALTH_OPERATIONAL
+
+    return {
+        "format": _MCP_HEALTH_FORMAT,
+        "status": status_value,
+        "configured": configured,
+        "checked": checked,
+        "unchecked": unchecked,
+        "by_status": by_status,
+        "operational_rate": round(operational / checked, 2) if checked else None,
+        "avg_latency_ms": (
+            round(sum(latency_values) / len(latency_values), 1) if latency_values else None
+        ),
+        "max_latency_ms": max(latency_values) if latency_values else None,
+        "servers": servers,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -342,13 +541,42 @@ async def list_servers(
     current_user: CurrentUser = Depends(_require_tools_mcp),
     repo: Repo = Depends(get_repo),
     vault: TokenVault = Depends(get_vault),
+    session: AsyncSession | None = Depends(get_tenant_session),
 ) -> list[MCPServerOut]:
     cuentas = await _list_mcp_accounts(repo, current_user.tenant_id)
+    salud_por_servidor = await _leer_salud(session, current_user.tenant_id)
     salida: list[MCPServerOut] = []
     for cuenta in cuentas:
         config, headers = await _cargar_config(vault, current_user.tenant_id, cuenta)
-        salida.append(_servidor_out(cuenta, config, headers))
+        salida.append(
+            _servidor_out(
+                cuenta,
+                config,
+                headers,
+                salud_por_servidor.get(str(cuenta["external_account_id"])),
+            )
+        )
     return salida
+
+
+@router.get("/health")
+async def mcp_health_summary(
+    current_user: CurrentUser = Depends(_require_tools_mcp),
+    repo: Repo = Depends(get_repo),
+    session: AsyncSession | None = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Resumen agregado de `mcp_server_health` del tenant (directiva §27).
+
+    A diferencia de `GET /servers` (que proyecta salud por servidor), esto
+    devuelve el estado consolidado para un tablero: conteo por estado,
+    porcentaje operativo, latencia promedio/máxima y la lista de servidores
+    con su marca de última verificación. La misma transacción del request
+    comitea las lecturas; `session is None` (tests con fakes) degrada a vacío.
+    """
+    cuentas = await _list_mcp_accounts(repo, current_user.tenant_id)
+    configured_names = [str(cuenta["external_account_id"]) for cuenta in cuentas]
+    salud = await _leer_salud(session, current_user.tenant_id)
+    return _mcp_health_summary(salud, configured_names)
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +591,7 @@ async def put_server(
     repo: Repo = Depends(get_repo),
     vault: TokenVault = Depends(get_vault),
     settings: Settings = Depends(get_settings),
+    session: AsyncSession | None = Depends(get_tenant_session),
 ) -> None:
     nombre = payload.nombre.strip()
     if not nombre:
@@ -436,7 +665,17 @@ async def put_server(
     headers = dict(payload.headers or {})
 
     if payload.validate_:
+        inicio = time.perf_counter()
         await _handshake_real(config, headers, local_mode=local_mode)
+        # Handshake real exitoso → `operational` + latencia medida (directiva
+        # §27). Comitea junto con el 204 (misma transacción del request).
+        await _grabar_salud(
+            session,
+            current_user.tenant_id,
+            nombre,
+            health=_HEALTH_OPERATIONAL,
+            latency_ms=int((time.perf_counter() - inicio) * 1000),
+        )
 
     # Upsert emulado (ver docstring del módulo): borra la fila existente (si
     # la hay) antes de crear la nueva — `ON DELETE CASCADE` se lleva el vault
@@ -481,11 +720,13 @@ async def delete_server(
     nombre: str,
     current_user: CurrentUser = Depends(_require_tools_mcp),
     repo: Repo = Depends(get_repo),
+    session: AsyncSession | None = Depends(get_tenant_session),
 ) -> None:
     cuenta = await _find_mcp_account(repo, current_user.tenant_id, nombre)
     if cuenta is None:
         return  # idempotente: nada que borrar ya es un estado válido de "desconectado".
     await repo.delete_connector_account(tenant_id=current_user.tenant_id, account_id=cuenta["id"])
+    await _borrar_salud(session, current_user.tenant_id, nombre)
     await repo.add_audit_log(
         tenant_id=current_user.tenant_id,
         actor_user_id=current_user.user_id,
@@ -506,6 +747,7 @@ async def get_server_tools(
     repo: Repo = Depends(get_repo),
     vault: TokenVault = Depends(get_vault),
     settings: Settings = Depends(get_settings),
+    session: AsyncSession | None = Depends(get_tenant_session),
 ) -> MCPToolsOut:
     cuenta = await _find_mcp_account(repo, current_user.tenant_id, nombre)
     if cuenta is None:
@@ -516,12 +758,17 @@ async def get_server_tools(
     config, headers = await _cargar_config(vault, current_user.tenant_id, cuenta)
     local_mode = bool(getattr(settings, "EDECAN_LOCAL_MODE", False))
 
+    inicio = time.perf_counter()
     try:
         tools = await asyncio.wait_for(
             _listar_tools_en_vivo(config, headers, local_mode=local_mode),
             timeout=_VALIDATE_TIMEOUT_SECONDS,
         )
     except (MCPSeguridadError, MCPClientError, MCPTransportError, ValueError) as exc:
+        # Un fallo de conexión termina en 400 (rollback de la transacción), así
+        # que acá no se graba `degraded`/`unavailable` durable: el enum completo
+        # sigue cubierto por `_grabar_salud` para un health-check de fondo o el
+        # próximo handshake exitoso. El 400 ya le dice al cliente qué falló.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo conectar con «{nombre}»: {exc}",
@@ -532,6 +779,13 @@ async def get_server_tools(
             detail=f"«{nombre}» no respondió en {_VALIDATE_TIMEOUT_SECONDS:.0f}s.",
         ) from exc
 
+    await _grabar_salud(
+        session,
+        current_user.tenant_id,
+        nombre,
+        health=_HEALTH_OPERATIONAL,
+        latency_ms=int((time.perf_counter() - inicio) * 1000),
+    )
     return MCPToolsOut(
         tools=[MCPToolOut(name=t["name"], description=t.get("description", "")) for t in tools]
     )

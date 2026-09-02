@@ -64,8 +64,8 @@ async def notify_important_event(
             deps,
             tenant_id=event.tenant_id,
             user_id=event.user_id,
-            titulo=event.title,
-            cuerpo=event.body,
+            titulo=event.apns_title if event.apns_title is not None else event.title,
+            cuerpo=event.apns_body if event.apns_body is not None else event.body,
             data=event.push_data(),
         )
     except Exception:

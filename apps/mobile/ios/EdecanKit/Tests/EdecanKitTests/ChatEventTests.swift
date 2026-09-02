@@ -134,6 +134,22 @@ struct ChatEventTests {
         try terminal.validarCierre()
     }
 
+    @Test func followUpTurnReabreElTurnoTrasDone() throws {
+        let evento = try decodificar(#"{"type":"follow_up_turn","pending":2}"#)
+        #expect(evento == .followUpTurn(pending: 2))
+
+        var terminal = SSETerminalState()
+        #expect(terminal.aceptar(.textDelta(text: "primero")))
+        #expect(terminal.aceptar(.done(usage: nil)))
+        #expect(terminal.finalizado)
+        #expect(terminal.aceptar(.followUpTurn(pending: 2)))
+        #expect(!terminal.finalizado)
+        #expect(terminal.aceptar(.textDelta(text: "segundo")))
+        #expect(terminal.aceptar(.done(usage: nil)))
+        #expect(terminal.finalizado)
+        try terminal.validarCierre()
+    }
+
     @Test func estadoTerminalRechazaConexionTruncada() {
         let terminal = SSETerminalState()
         #expect(throws: SSEClient.SSEError.self) {

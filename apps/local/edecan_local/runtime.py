@@ -143,6 +143,13 @@ _PLATFORM_CONFIG_KEYS = frozenset(
         # nunca llegaba al worker y el post salía SIN imagen (bug real: la card
         # llegaba solo con texto). `IMAGES_API_KEY` no tiene default -> es obligatoria.
         "IMAGES_PROVIDER",
+        # Voz: el webhook post-call de ElevenLabs ConvAI fallaba 401 en cada
+        # entrega porque este allowlist NUNCA pasaba el secret al sidecar
+        # (secret vacío -> "Firma inválida" -> auto-disabled por fallos
+        # repetidos). La API key mantiene el TTS (coach gym + voz del chat)
+        # aunque cambie el modo del proceso.
+        "ELEVENLABS_API_KEY",
+        "ELEVENLABS_VOICE_ID",
         "IMAGES_BASE_URL",
         "IMAGES_API_KEY",
         "IMAGES_MODEL",
@@ -467,6 +474,9 @@ def _build_env(
 ) -> dict[str, str]:
     env = {
         "EDECAN_LOCAL_MODE": "1",
+        # Encargos largos de los bots: presupuesto de pasos del Orchestrator
+        # generoso para que un trabajo multi-paso "no pare hasta terminar".
+        "MISSIONS_MAX_STEPS": "30",
         "DATABASE_URL": database_url,
         "REDIS_URL": "memory://",
         "QUEUE_PROVIDER": "db",
@@ -481,6 +491,14 @@ def _build_env(
     }
     if serve_web_dir:
         env["SERVE_WEB_DIR"] = serve_web_dir
+    # Repo local para `acceder_codigo_local` (el bot trabaja en el proyecto
+    # como en el IDE/Cursor): lee/escribe archivos del repo, corre comandos
+    # con cwd en la raíz y hace commits locales, con jaula de rutas. Se apunta
+    # al clon del dueño si existe; si no, la tool queda desactivada (gate de
+    # `_raiz`) sin romper nada — es una ruta de filesystem, no un secreto.
+    repo_candidato = Path.home() / "Edecan-Nuevo" / "edecan"
+    if repo_candidato.is_dir():
+        env["EDECAN_LOCAL_REPO_PATH"] = str(repo_candidato)
     if public_base_url:
         env["PUBLIC_BASE_URL"] = public_base_url
     if phone_webhook_base_url:

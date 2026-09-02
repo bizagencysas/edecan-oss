@@ -7,18 +7,17 @@
 //! ni comandos arbitrarios.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
 // Debounce por proceso de los diálogos de permiso de macOS: el teléfono
-// pide frames/input en bucle y sin este candado cada intento re-abriría el
-// modal del sistema. Una sola solicitud por ejecución basta para que el
-// permiso "llegue" a la Mac; los intentos siguientes vuelven al preflight
-// silencioso hasta que la persona conceda y (para Grabación de pantalla)
-// reinicie Edecán.
+// pide frames/input en bucle. Reintentar CGRequest en cada frame reabre el
+// modal; un temporizador (p. ej. 30 s) basta para refrescar tccd tras ditto.
 #[cfg(target_os = "macos")]
-static SCREEN_CAPTURE_PROMPT_SHOWN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static LAST_SCREEN_CAPTURE_PROMPT: Mutex<Option<Instant>> = Mutex::new(None);
+#[cfg(target_os = "macos")]
+const SCREEN_CAPTURE_PROMPT_INTERVAL: Duration = Duration::from_secs(30);
 // `CGPreflightScreenCaptureAccess` puede seguir devolviendo false dentro del
 // MISMO proceso aunque la persona haya concedido en el diálogo recién
 // mostrado — este flag recuerda esa concesión "en caliente" para no negar
@@ -217,10 +216,44 @@ fn request_accessibility_with_prompt() -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn refresh_screen_capture_permission() {
+    use std::sync::atomic::Ordering;
+
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        SCREEN_CAPTURE_GRANTED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let now = Instant::now();
+    let should_prompt = {
+        let mut last = LAST_SCREEN_CAPTURE_PROMPT
+            .lock()
+            .expect("screen capture prompt schedule");
+        match *last {
+            None => {
+                *last = Some(now);
+                true
+            }
+            Some(previous) if now.saturating_duration_since(previous) >= SCREEN_CAPTURE_PROMPT_INTERVAL => {
+                *last = Some(now);
+                true
+            }
+            _ => false,
+        }
+    };
+    if should_prompt {
+        let granted = unsafe { CGRequestScreenCaptureAccess() };
+        SCREEN_CAPTURE_GRANTED.store(granted, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn capture_screen(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     use base64::Engine as _;
+
+    refresh_screen_capture_permission();
+    let preflight = unsafe { CGPreflightScreenCaptureAccess() };
 
     let capture_mode = crate::screen_capture::capture_mode();
     if capture_mode == "screen_capture_kit_stream_ready" {
@@ -237,34 +270,13 @@ fn capture_screen(
         }
     }
 
-    // El preflight no abre ningún diálogo. Antes, ningún camino iniciado
-    // desde el teléfono disparaba la solicitud del sistema: el usuario
-    // esperaba en la Mac un permiso que jamás llegaba. Ahora, la PRIMERA vez
-    // por ejecución que el preflight falla, se pide el permiso de verdad
-    // (`CGRequestScreenCaptureAccess`): macOS muestra su diálogo y/o
-    // re-registra a Edecán con la firma actual — clave cuando una concesión
-    // vieja quedó anclada al cdhash de otra build y el interruptor se ve
-    // encendido pero tccd lo ignora. El debounce evita el modal en bucle con
-    // el polling continuo de frames.
-    if !unsafe { CGPreflightScreenCaptureAccess() } {
+    if !preflight {
         use std::sync::atomic::Ordering;
-        let granted_now = if !SCREEN_CAPTURE_PROMPT_SHOWN.swap(true, Ordering::SeqCst) {
-            let granted = unsafe { CGRequestScreenCaptureAccess() };
-            SCREEN_CAPTURE_GRANTED.store(granted, Ordering::SeqCst);
-            granted
-        } else {
-            SCREEN_CAPTURE_GRANTED.load(Ordering::SeqCst)
-        };
+        let granted_now = SCREEN_CAPTURE_GRANTED.load(Ordering::SeqCst);
         if !granted_now {
-            // NO bloquear acá: tccd puede devolver un preflight/request stale
-            // aunque el permiso SÍ esté concedido (el dueño lo confirmó: un
-            // reinicio de la Mac "arreglaba" el Remoto sin tocar el interruptor
-            // del sistema). Se intenta `screencapture` igual y su resultado real
-            // decide; si abajo devuelve una imagen vacía, se reporta el error de
-            // permiso con las instrucciones.
             eprintln!(
                 "capture_screen: preflight/request de ScreenCapture devolvió false; \
-                 se intenta screencapture igual (tccd puede estar stale)."
+                 se intenta captura igual (tccd puede estar stale tras actualizar)."
             );
         }
     }
@@ -302,9 +314,16 @@ fn capture_screen(
         } else {
             stderr.chars().take(240).collect()
         };
+        let stale_hint = if !preflight {
+            " (tccd puede estar stale: el interruptor sigue encendido pero el cdhash \
+             cambió tras actualizar; apaga y vuelve a encender Edecán en Privacidad o \
+             reinicia la Mac)"
+        } else {
+            ""
+        };
         return Err(format!(
-            "screencapture termino con {}: {detail}",
-            captured.status
+            "screencapture termino con {}{}: {detail}",
+            captured.status, stale_hint
         ));
     }
     let image =
@@ -312,17 +331,16 @@ fn capture_screen(
     let _ = std::fs::remove_file(&output);
     let image = image?;
     if image.is_empty() {
-        // Es la señal real de que no hay permiso (el preflight ya no bloquea
-        // arriba, así que este vacío distingue "permiso denegado" de "tccd
-        // stale"). El dueño confirmó que reiniciar la Mac también lo resuelve
-        // cuando el interruptor ya estaba encendido.
-        return Err(
-            "screencapture devolvió una imagen vacía (Grabación de pantalla sin \
-             autorizar). Activa Edecan en Configuración del Sistema > Privacidad y \
-             seguridad > Grabación de pantalla; si ya estaba activado, apaga y vuelve \
-             a encender su interruptor o reinicia la Mac, y abre Edecan de nuevo."
-                .into(),
-        );
+        let message = if !preflight {
+            "screencapture devolvió una imagen vacía con preflight en false (tccd stale: \
+             macOS muestra Edecán activado pero ignora el cdhash nuevo hasta reiniciar tccd \
+             o la Mac). Apaga y vuelve a encender su interruptor en Grabación de pantalla."
+        } else {
+            "screencapture devolvió una imagen vacía (Grabación de pantalla denegada). \
+             Activa Edecán en Configuración del Sistema > Privacidad y seguridad > \
+             Grabación de pantalla."
+        };
+        return Err(message.into());
     }
     let reported_mode = if capture_mode == "screen_capture_kit_stream_ready" {
         "screencapture_fallback_stale_stream"

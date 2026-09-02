@@ -76,6 +76,10 @@ class RunnerDeps:
     flags: dict[str, Any]
     save_run: SaveRun
     provider_health: Any | None = None
+    # Esfuerzo de razonamiento del turno (p. ej. "xhigh" para los bots en los
+    # despliegues gpt-5.6 de Azure). Opcional; el Agent lo aplica solo a los
+    # modelos de la familia gpt-5.
+    reasoning_effort: str | None = None
 
 
 def _build_safe_registry(full_registry: ToolRegistry, flags: dict[str, Any]) -> ToolRegistry:
@@ -141,12 +145,15 @@ async def run_automation(automation: dict[str, Any], deps: RunnerDeps) -> None:
 
     safe_registry = _build_safe_registry(deps.registry, deps.flags)
     if ctx.extras.get("companion") is not None:
-        mac = deps.registry.get("usar_computadora")
-        if mac is not None:
-            safe_registry.register(mac)
+        for nombre_mac in ("usar_computadora", "delegar_al_ide"):
+            mac = deps.registry.get(nombre_mac)
+            if mac is not None:
+                safe_registry.register(mac)
     agent_kwargs = {}
     if deps.provider_health is not None:
         agent_kwargs["provider_health"] = deps.provider_health
+    if deps.reasoning_effort:
+        agent_kwargs["reasoning_effort"] = deps.reasoning_effort
     agent = Agent(deps.llm_router, safe_registry, **agent_kwargs)
 
     text_parts: list[str] = []

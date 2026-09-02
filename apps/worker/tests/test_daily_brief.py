@@ -18,10 +18,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import edecan_worker.handlers.daily_brief as daily_brief_module
-import edecan_worker.push as push_module
 import pytest
 from edecan_schemas import JobEnvelope
-from fakes import FakeRepo, make_deps
+from fakes import FakeRepo, install_companion_wake_capture, make_deps
 
 
 class _FakeResult:
@@ -168,32 +167,29 @@ async def test_handle_compone_brief_y_entrega_chat_mas_push(
     session.seed_reminder(user_id, "pending")
     session.seed_reminder(user_id, "pending")
 
-    pushes: list[dict[str, Any]] = []
-
-    async def fake_push(deps, *, tenant_id, user_id, titulo, cuerpo, data=None, category=None):
-        pushes.append({"titulo": titulo, "cuerpo": cuerpo, "data": data})
-        return push_module.ResultadoEnvioPush(1, 0)
-
     monkeypatch.setattr(daily_brief_module, "SqlRepo", lambda s: fake_repo)
-    monkeypatch.setattr(daily_brief_module.push, "enviar_push_a_usuario", fake_push)
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps(session_factory=_session_factory(session))
 
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
 
-    assert len(fake_repo.messages) == 1
-    msg = fake_repo.messages[0]
-    assert msg["role"] == "assistant"
-    texto = msg["content"]["text"]
-    assert "Resumen de hoy" in texto
-    assert "corrieron bien 2 automatizaciones" in texto
-    assert "falló 1 (Publicar post)" in texto
-    assert "2 recordatorios pendientes" in texto
+    wakes = capture.companion_wakes()
+    assert len(wakes) == 1
+    payload = wakes[0]["payload"]
+    assert payload["source"] == "daily_brief"
+    assert payload["require_message"] is True
+    texto = payload["instruction"]
+    assert "resumen matutino" in texto.lower()
+    assert "automation_runs_done_24h: 2" in texto
+    assert "automation_runs_error_24h: 1" in texto
+    assert "automation_failures_names: Publicar post" in texto
+    assert "pending_reminders: 2" in texto
 
-    assert len(pushes) == 1
-    assert pushes[0]["titulo"] == "Edecán"
-    assert pushes[0]["cuerpo"].startswith("Hoy: ")
-    assert pushes[0]["data"]["chat_id"] == str(msg["conversation_id"])
-    assert "falló" in pushes[0]["cuerpo"]
+    push = payload["push"]
+    assert push["title"] == "Edecán"
+    assert push["body"].startswith("Hoy: ")
+    assert push["data"]["chat_id"] == payload["conversation_id"]
+    assert "falló" in push["body"]
 
     assert len(session.brief_deliveries) == 1
 
@@ -207,41 +203,28 @@ async def test_handle_segunda_vez_el_mismo_dia_no_duplica(
     ahora = datetime.now(UTC)
     session.seed_run("done", started_at=ahora - timedelta(hours=1))
 
-    pushes: list[dict[str, Any]] = []
-
-    async def fake_push(deps, **kwargs):
-        pushes.append(kwargs)
-        return push_module.ResultadoEnvioPush(1, 0)
-
     monkeypatch.setattr(daily_brief_module, "SqlRepo", lambda s: fake_repo)
-    monkeypatch.setattr(daily_brief_module.push, "enviar_push_a_usuario", fake_push)
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps(session_factory=_session_factory(session))
 
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
 
-    assert len(fake_repo.messages) == 1
-    assert len(pushes) == 1
+    assert len(capture.companion_wakes()) == 1
 
 
 async def test_handle_sin_contenido_no_envia_nada(monkeypatch: pytest.MonkeyPatch) -> None:
     session = FakeSession()
     fake_repo = FakeRepo()
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
-    pushes: list[dict[str, Any]] = []
 
     monkeypatch.setattr(daily_brief_module, "SqlRepo", lambda s: fake_repo)
-    monkeypatch.setattr(
-        daily_brief_module.push,
-        "enviar_push_a_usuario",
-        lambda *a, **k: pushes.append(k) or push_module.ResultadoEnvioPush(0, 0),
-    )
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps(session_factory=_session_factory(session))
 
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
 
-    assert fake_repo.messages == []
-    assert pushes == []
+    assert capture.companion_wakes() == []
     assert session.brief_deliveries == set()
 
 
@@ -255,20 +238,13 @@ async def test_handle_calendario_inaccesible_degrada_con_gracia(
     ahora = datetime.now(UTC)
     session.seed_run("done", started_at=ahora - timedelta(hours=1))
 
-    pushes: list[dict[str, Any]] = []
-
-    async def fake_push(deps, **kwargs):
-        pushes.append(kwargs)
-        return push_module.ResultadoEnvioPush(1, 0)
-
     monkeypatch.setattr(daily_brief_module, "SqlRepo", lambda s: fake_repo)
-    monkeypatch.setattr(daily_brief_module.push, "enviar_push_a_usuario", fake_push)
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps(session_factory=_session_factory(session))
 
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
 
-    assert len(fake_repo.messages) == 1
-    assert len(pushes) == 1
+    assert len(capture.companion_wakes()) == 1
 
 
 async def test_handle_calendario_disponible_incluye_eventos(
@@ -284,17 +260,15 @@ async def test_handle_calendario_disponible_incluye_eventos(
     ahora = datetime.now(UTC)
     session.seed_run("done", started_at=ahora - timedelta(hours=1))
 
-    async def fake_push(deps, **kwargs):
-        return push_module.ResultadoEnvioPush(1, 0)
-
     monkeypatch.setattr(daily_brief_module, "SqlRepo", lambda s: fake_repo)
-    monkeypatch.setattr(daily_brief_module.push, "enviar_push_a_usuario", fake_push)
+    capture = install_companion_wake_capture(monkeypatch)
     deps = make_deps(session_factory=_session_factory(session))
 
     await daily_brief_module.handle(_envelope(tenant_id, user_id), deps)
 
-    [msg] = fake_repo.messages
-    assert "Reunión con cliente" in msg["content"]["text"]
+    wakes = capture.companion_wakes()
+    assert len(wakes) == 1
+    assert "Reunión con cliente" in wakes[0]["payload"]["instruction"]
 
 
 # ---------------------------------------------------------------------------

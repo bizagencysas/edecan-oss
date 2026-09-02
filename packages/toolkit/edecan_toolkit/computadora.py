@@ -27,6 +27,8 @@ que solo una persona puede conceder.
 from __future__ import annotations
 
 import base64
+import json
+import logging
 from typing import Any
 
 from edecan_core import Tool, ToolContext, ToolResult
@@ -35,6 +37,9 @@ from edecan_schemas.plans import (
     FLAG_COMPANION_REMOTE_INPUT,
     FLAG_COMPANION_REMOTE_VIEW,
 )
+from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 _MENSAJE_SIN_EMPAREJAR = (
     "No tienes un companion (la app de escritorio de Edecán) emparejado todavía. "
@@ -100,6 +105,7 @@ PARAMS_CAPTURA_PARA_EL_MODELO: dict[str, Any] = {
     "crop_frontmost": True,
 }
 _ACCIONES_INPUT_REMOTO = frozenset({"input_pointer", "input_key"})
+
 _ACCIONES_QUE_CAMBIAN_PANTALLA = frozenset(
     {"input_pointer", "input_key", "open_app", "open_url"}
 )
@@ -107,6 +113,111 @@ _ACCIONES_QUE_CAMBIAN_PANTALLA = frozenset(
 _SIN_IDE = "El IDE embebido no está disponible en tu plan."
 _SIN_VISTA_REMOTA = "La vista remota no está disponible en tu plan."
 _SIN_CONTROL_REMOTO = "El control remoto (teclado/mouse) no está disponible en tu plan."
+
+# --- Plano de control de "toma de control / pausa" (directiva §18-24, §123,
+# §144-145; migración `0054_agent_takeover`) ---------------------------------
+#
+# La tabla `computer_sessions` (tenant-scoped, RLS) registra, por superficie
+# (`kind`) y por agente (opcional), el `mode` (`agent`/`user`/`paused`) que
+# gobierna quién mueve esa superficie AHORA. Este módulo lo consulta ANTES de
+# reenviar cualquier acción al companion y se niega cuando `mode != 'agent'` —
+# el enforcement es tool-side y durable, nunca una promesa al modelo. La
+# consulta falla abierta solo cuando no hay sesión de base de datos (tests/
+# dobles) o la tabla aún no existe (instalaciones sin la migración aplicada);
+# en ambos casos se conserva el comportamiento histórico, que es lo que pide
+# la retrocompatibilidad de la directiva.
+_SUPERFICIES_ARCHIVOS = frozenset(
+    {"read_dir", "read_file", "write_file", "trash_path", "list_tree", "search_files", "apply_edit"}
+)
+_SUPERFICIES_TERMINAL = frozenset({"run_command"})
+# Acciones cuya salida (stdout/stderr del comando) debe ver el modelo en el
+# content del ToolResult — sin esto solo veía «Ejecuté …» y no podía reportar.
+_ACCIONES_CON_SALIDA_TERMINAL = _SUPERFICIES_TERMINAL
+
+_SUPERFICIES_NAVEGADOR = frozenset({"open_url"})
+_MODO_AGENTE = "agent"
+_MODO_USUARIO = "user"
+_MODO_PAUSADO = "paused"
+# Clave que esta tool inyecta (y que el modelo NUNCA puede elegir: se pisa o
+# se borra incondicionalmente) para que `edecan_companion.actions` confine las
+# acciones de archivos/terminal a la carpeta `workspace_scope` del agente.
+_CLAVE_WORKSPACE_ROOT = "workspace_root"
+
+_MENSAJE_SUSPENDIDO = (
+    "El agente está pausado en esta superficie de la computadora: un humano tomó "
+    "el control, así que no puedo moverla ahora. Devuélvele el control para que "
+    "pueda seguir."
+)
+
+
+def _superficie_de_accion(accion: str) -> str:
+    """Superficie (`kind` de `computer_sessions`) que gobierna `accion`."""
+    if accion in _SUPERFICIES_ARCHIVOS:
+        return "files"
+    if accion in _SUPERFICIES_TERMINAL:
+        return "terminal"
+    if accion in _SUPERFICIES_NAVEGADOR:
+        return "browser"
+    return "desktop"
+
+
+async def _estado_de_superficie(
+    ctx: ToolContext, superficie: str
+) -> tuple[str | None, str | None]:
+    """`(modo_bloqueante, workspace_root)` de la superficie para este agente.
+
+    `modo_bloqueante` es `"user"`/`"paused"` cuando ALGUNA sesión activa de
+    `(tenant, superficie, agente|tenant)` suspendió al agente, o `None` si
+    puede actuar (sin sesión, o todas en `agent`). `workspace_root` es la
+    carpeta del `workspace_scope` (o `None` = máquina del dueño).
+    """
+    session = getattr(ctx, "session", None)
+    if session is None or not callable(getattr(session, "execute", None)):
+        return None, None
+    extras = ctx.extras if isinstance(getattr(ctx, "extras", None), dict) else {}
+    agent_id = extras.get("worker_id")
+    try:
+        result = await session.execute(
+            text(
+                "SELECT mode, workspace_scope FROM computer_sessions "
+                "WHERE tenant_id = :tenant_id AND kind = :kind AND status <> 'ended' "
+                "AND (agent_id IS NULL OR agent_id = :agent_id)"
+            ),
+            {
+                "tenant_id": ctx.tenant_id,
+                "kind": superficie,
+                "agent_id": str(agent_id) if agent_id else None,
+            },
+        )
+        filas = result.mappings().all()
+    except Exception:  # noqa: BLE001 - tabla ausente/DB caída: comportamiento histórico
+        logger.exception("no se pudo leer el plano de control de computadora")
+        return None, None
+
+    if not filas:
+        return None, None
+
+    modos = {fila["mode"] for fila in filas if isinstance(fila.get("mode"), str)}
+    bloqueo: str | None = None
+    if _MODO_PAUSADO in modos:
+        bloqueo = _MODO_PAUSADO
+    elif _MODO_USUARIO in modos:
+        bloqueo = _MODO_USUARIO
+
+    root: str | None = None
+    for fila in filas:
+        scope = fila.get("workspace_scope")
+        if isinstance(scope, str):
+            try:
+                scope = json.loads(scope)
+            except ValueError:
+                scope = {}
+        if isinstance(scope, dict):
+            candidato = scope.get("root")
+            if isinstance(candidato, str) and candidato.strip():
+                root = candidato.strip()
+                break
+    return bloqueo, root
 
 
 def _bloqueo_por_plan(accion: str, flags: dict[str, Any]) -> str | None:
@@ -189,24 +300,62 @@ class UsarComputadoraTool(Tool):
         if bloqueo is not None:
             return ToolResult(content=bloqueo)
 
+        superficie = _superficie_de_accion(accion)
+        modo_suspendido, workspace_root = await _estado_de_superficie(ctx, superficie)
+        if modo_suspendido is not None:
+            return ToolResult(content=_MENSAJE_SUSPENDIDO)
+
         parametros = args.get("parametros")
         if not isinstance(parametros, dict):
             parametros = {}
         parametros = _params_de_captura(accion, parametros)
+        # `workspace_root` lo fija SOLO esta tool (server-side) a partir del
+        # `workspace_scope` durable del agente; el modelo nunca puede elegirlo
+        # porque su valor se descarta incondicionalmente aquí.
+        parametros.pop(_CLAVE_WORKSPACE_ROOT, None)
+        # Aprobación del DUEÑO (server-side, no manipulable por el modelo):
+        # el turno proactivo del companion (vida digital) tiene
+        # `usar_computadora` pre-aprobada y `companion_wake=True` en extras.
+        # Con ella, el bridge permite input_key/input_pointer/clipboard
+        # (scrollear y leer WhatsApp/LinkedIn es EL propósito de la visita).
+        # Se SOBREESCRIBE lo que el modelo mandara en `parametros` — el valor
+        # sale de `extras`, que el modelo no controla.
+        parametros["owner_approved"] = bool(
+            "usar_computadora" in (extras.get("approved_tool_calls") or set())
+            and extras.get("companion_wake") is True
+        )
+        if workspace_root and superficie in ("files", "terminal"):
+            parametros[_CLAVE_WORKSPACE_ROOT] = workspace_root
 
         resultado = await companion(accion, parametros)
         ok = isinstance(resultado, dict) and bool(resultado.get("ok"))
         if ok and accion in _ACCIONES_QUE_CAMBIAN_PANTALLA:
             resultado = await _adjuntar_captura(companion, resultado)
         if ok:
-            content = (
-                f"Ejecuté «{accion}» en tu computadora."
-                if not _imagen_de_resultado(resultado)
-                else (
+            if accion in _ACCIONES_CON_SALIDA_TERMINAL:
+                # El modelo DEBE ver la salida real del comando: sin esto solo
+                # recibía "Ejecuté «run_command»" y jamás podía reportar qué
+                # pasó — el bug de "me quedé sin redactarte el resultado".
+                stdout = str(((resultado or {}).get("result") or {}).get("stdout") or "").strip()
+                stderr = str(((resultado or {}).get("result") or {}).get("stderr") or "").strip()
+                codigo = ((resultado or {}).get("result") or {}).get("returncode")
+                partes = []
+                if stdout:
+                    partes.append(f"Salida (stdout):\n{stdout}")
+                if stderr:
+                    partes.append(f"Error (stderr):\n{stderr}")
+                if codigo is not None and codigo != 0:
+                    partes.append(f"El comando salió con código {codigo}.")
+                content = f"Ejecuté «{accion}» en tu computadora." + (
+                    "\n\n" + "\n\n".join(partes) if partes else ""
+                )
+            elif not _imagen_de_resultado(resultado):
+                content = f"Ejecuté «{accion}» en tu computadora."
+            else:
+                content = (
                     f"Ejecuté «{accion}» en tu computadora. "
                     "La captura de pantalla va adjunta: mírala antes del siguiente clic."
                 )
-            )
         else:
             error = resultado.get("error") if isinstance(resultado, dict) else None
             detalle = f": {error}" if error else " (el companion no confirmó el éxito)."

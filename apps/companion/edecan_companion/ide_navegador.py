@@ -491,6 +491,9 @@ class MotorNavegador(Protocol):
 def _motor_playwright(*, headless: bool, timeout_ms: float) -> MotorNavegador:
     """Motor real: Chromium vía Playwright, import perezoso y guardeado
     (ver punto 1 del docstring del módulo)."""
+    from edecan_browser._chromium_bootstrap import asegurar_chromium_instalado
+    from edecan_browser._driver_macos import asegurar_driver_playwright_macos
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -505,6 +508,9 @@ def _motor_playwright(*, headless: bool, timeout_ms: float) -> MotorNavegador:
             "Sin este paso, abrir el navegador seguirá fallando con este mismo mensaje "
             "claro -- nunca con un traceback críptico."
         ) from exc
+
+    asegurar_driver_playwright_macos()
+    asegurar_chromium_instalado()
 
     class _MotorPlaywright:
         def __init__(self) -> None:

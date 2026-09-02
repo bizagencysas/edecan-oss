@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "macos")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -32,7 +32,7 @@ pub struct ScreenFrame {
 type SharedFrame = Arc<Mutex<Option<ScreenFrame>>>;
 
 struct OutputState {
-    frame_count: AtomicU64,
+    frame_count: std::sync::atomic::AtomicU64,
     latest: SharedFrame,
 }
 
@@ -68,7 +68,7 @@ define_class!(
 impl ScreenStreamOutput {
     fn new(latest: SharedFrame) -> objc2::rc::Retained<Self> {
         let this = ScreenStreamOutput::alloc().set_ivars(OutputState {
-            frame_count: AtomicU64::new(0),
+            frame_count: std::sync::atomic::AtomicU64::new(0),
             latest,
         });
         unsafe { msg_send![super(this), init] }
@@ -76,7 +76,20 @@ impl ScreenStreamOutput {
 }
 
 static LATEST_FRAME: OnceLock<SharedFrame> = OnceLock::new();
-static CAPTURE_MODE: OnceLock<&'static str> = OnceLock::new();
+static STREAM_READY: AtomicBool = AtomicBool::new(false);
+static PROBE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct ProbeSchedule {
+    last_attempt: Option<Instant>,
+    last_error: Option<String>,
+}
+
+static PROBE_SCHEDULE: Mutex<ProbeSchedule> = Mutex::new(ProbeSchedule {
+    last_attempt: None,
+    last_error: None,
+});
+
+pub(crate) const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 fn shared_frame() -> SharedFrame {
     LATEST_FRAME
@@ -95,6 +108,16 @@ pub fn latest_frame_fresh(max_age: Duration) -> Option<ScreenFrame> {
 
 fn frame_is_fresh(captured_at: Instant, now: Instant, max_age: Duration) -> bool {
     now.saturating_duration_since(captured_at) <= max_age
+}
+
+pub fn probe_due_for_retry(now: Instant, last_attempt: Option<Instant>, stream_ready: bool) -> bool {
+    if stream_ready {
+        return false;
+    }
+    match last_attempt {
+        None => true,
+        Some(previous) => now.saturating_duration_since(previous) >= PROBE_RETRY_INTERVAL,
+    }
 }
 
 pub fn probe_stream_frame() -> Result<u64, String> {
@@ -195,14 +218,58 @@ pub fn probe_stream_frame() -> Result<u64, String> {
         .map_err(|_| "SCStream no respondió a tiempo".to_string())?
 }
 
-pub fn capture_mode() -> &'static str {
-    CAPTURE_MODE.get_or_init(|| {
-        if probe_stream_frame().is_ok() {
-            "screen_capture_kit_stream_ready"
-        } else {
-            "screencapture_fallback"
+fn maybe_start_stream() {
+    if STREAM_READY.load(Ordering::Acquire) {
+        return;
+    }
+    if PROBE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let now = Instant::now();
+    let should_probe = {
+        let schedule = PROBE_SCHEDULE.lock().expect("probe schedule");
+        probe_due_for_retry(now, schedule.last_attempt, STREAM_READY.load(Ordering::Acquire))
+    };
+    if !should_probe {
+        PROBE_IN_FLIGHT.store(false, Ordering::Release);
+        return;
+    }
+
+    {
+        let mut schedule = PROBE_SCHEDULE.lock().expect("probe schedule");
+        schedule.last_attempt = Some(now);
+    }
+
+    match probe_stream_frame() {
+        Ok(_) => {
+            STREAM_READY.store(true, Ordering::Release);
+            let mut schedule = PROBE_SCHEDULE.lock().expect("probe schedule");
+            schedule.last_error = None;
         }
-    })
+        Err(error) => {
+            let mut schedule = PROBE_SCHEDULE.lock().expect("probe schedule");
+            schedule.last_error = Some(error);
+        }
+    }
+    PROBE_IN_FLIGHT.store(false, Ordering::Release);
+}
+
+pub fn stream_ready() -> bool {
+    maybe_start_stream();
+    STREAM_READY.load(Ordering::Acquire)
+}
+
+pub fn capture_mode() -> &'static str {
+    maybe_start_stream();
+    if STREAM_READY.load(Ordering::Acquire) {
+        "screen_capture_kit_stream_ready"
+    } else {
+        "screencapture_fallback"
+    }
 }
 
 fn encode_sample_buffer(sample_buffer: &objc2_core_media::CMSampleBuffer) -> Option<ScreenFrame> {
@@ -248,7 +315,7 @@ fn encode_sample_buffer(sample_buffer: &objc2_core_media::CMSampleBuffer) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use super::frame_is_fresh;
+    use super::{frame_is_fresh, probe_due_for_retry, PROBE_RETRY_INTERVAL};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -260,5 +327,22 @@ mod tests {
             ahora,
             Duration::from_secs(2)
         ));
+    }
+
+    #[test]
+    fn failed_probe_is_not_sticky_forever() {
+        let now = Instant::now();
+        assert!(probe_due_for_retry(now, None, false));
+        assert!(!probe_due_for_retry(
+            now,
+            Some(now - Duration::from_secs(5)),
+            false
+        ));
+        assert!(probe_due_for_retry(
+            now,
+            Some(now - PROBE_RETRY_INTERVAL),
+            false
+        ));
+        assert!(!probe_due_for_retry(now, Some(now - PROBE_RETRY_INTERVAL), true));
     }
 }

@@ -72,6 +72,8 @@ el usuario necesita saber qué revisar). Se mantiene el verbo `PUT` existente
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from typing import Any
 
@@ -92,7 +94,8 @@ from edecan_skills.security import (
 )
 from edecan_skills.store import delete_skill, get_by_id, insert_skill, list_skills, set_enabled
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
@@ -176,6 +179,10 @@ def _detail(row: dict[str, Any]) -> dict[str, Any]:
     out = _summary(row)
     out["contenido"] = row["contenido"]
     out["recursos"] = row.get("recursos") or {}
+    # Estado del ciclo de vida (migración `0053_skill_teach_sessions`): 'active'
+    # para las instaladas, 'draft' para las enseñadas aún no aprobadas. La lista
+    # no lo trae (no se selecciona), por eso el fallback acá también.
+    out["status"] = row.get("status", "active")
     out["updated_at"] = row["updated_at"]
     # Solo calculable acá — necesita `contenido`, que `_summary`/la lista NUNCA traen
     # (ver docstring del módulo).
@@ -356,3 +363,233 @@ async def delete_skill_endpoint(
     borrada = await delete_skill(session, current_user.tenant_id, skill_id)
     if not borrada:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill no encontrada.")
+
+
+# ---------------------------------------------------------------------------
+# "Enseñar una tarea" (directiva §38-41): captura de pasos → skill DRAFT.
+# Backend-only; la UI llega después. Nada se auto-activa: `finish` produce una
+# skill `status='draft'` + `enabled=false`, y solo `approve` la promueve.
+# ---------------------------------------------------------------------------
+
+
+class TeachStartIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    descripcion: str = Field(default="", max_length=2000)
+
+
+class TeachStepIn(BaseModel):
+    # Paso ESTRUCTURADO (`action`/`accion` + selector/decision/input/output) o
+    # texto libre (`texto`). `action` acepta también la clave española `accion`
+    # (la manda `edecan_companion.teach_capture.registrar_paso_teach`); el campo
+    # se persiste siempre bajo `action` para no romper `_contenido_desde_pasos`
+    # ni el contrato existente con `apps/web` (que ya postea `action`).
+    texto: str = Field(default="", max_length=4000)
+    action: str = Field(default="", validation_alias=AliasChoices("action", "accion"))
+    selector: str = Field(default="", max_length=500)
+    decision: str = Field(default="", max_length=2000)
+    input: str = Field(default="", max_length=2000)
+    output: str = Field(default="", max_length=2000)
+
+
+def _from_jsonb(value: Any) -> Any:
+    """Columna `jsonb` que el driver pudo entregar como `str` crudo."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _slugify(nombre: str, session_id: uuid.UUID) -> str:
+    """Slug determinista + sufijo corto del id de sesión: evita colisionar con
+    el `UNIQUE(tenant_id, slug)` de `skills` sin importar el nombre."""
+    base = re.sub(r"[^a-z0-9]+", "-", nombre.lower()).strip("-") or "skill"
+    return f"{base[:60]}-{session_id.hex[:8]}"
+
+
+def _contenido_desde_pasos(nombre: str, descripcion: str, pasos: list[dict[str, Any]]) -> str:
+    """Compila el `SKILL.md` del draft de forma determinista (sin LLM): la
+    habilidad es lo que el usuario capturó paso a paso, nada fabricado.
+
+    Un paso estructurado (`action` presente) se compila como
+    "N. **Acción**: ..." + sub-bullets de selector/decision/input/output; un
+    paso de texto libre (`texto` sin `action`) se compila tal cual, como su
+    propia línea numerada."""
+    lineas = [f"# {nombre}", "", descripcion or "", "", "## Pasos capturados", ""]
+    for i, paso in enumerate(pasos, start=1):
+        accion = str(paso.get("action") or "").strip()
+        texto = str(paso.get("texto") or "").strip()
+        if not accion and texto:
+            lineas.append(f"{i}. {texto}")
+            continue
+        lineas.append(f"{i}. **Acción**: {accion}".strip())
+        for clave, etiqueta in (
+            ("selector", "Selector"),
+            ("decision", "Decisión"),
+            ("input", "Input"),
+            ("output", "Output"),
+        ):
+            if paso.get(clave):
+                lineas.append(f"   - {etiqueta}: {paso[clave]}")
+    return "\n".join(lineas).strip()
+
+
+def _session_out(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "nombre": row.get("nombre"),
+        "descripcion": row.get("descripcion") or "",
+        "status": row.get("status"),
+        "pasos": _from_jsonb(row.get("pasos")) or [],
+        "draft_skill_id": str(row["draft_skill_id"]) if row.get("draft_skill_id") else None,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@router.post("/teach", status_code=status.HTTP_201_CREATED)
+async def teach_start_endpoint(
+    body: TeachStartIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    result = await session.execute(
+        text(
+            "INSERT INTO skill_teach_sessions (id, tenant_id, user_id, nombre, descripcion, "
+            "status, pasos, created_at, updated_at) VALUES (gen_random_uuid(), :tenant_id, "
+            ":user_id, :nombre, :descripcion, 'open', '[]' ::jsonb, now(), now()) RETURNING *"
+        ),
+        {
+            "tenant_id": current_user.tenant_id,
+            "user_id": current_user.user_id,
+            "nombre": body.nombre.strip(),
+            "descripcion": body.descripcion.strip(),
+        },
+    )
+    return _session_out(dict(result.mappings().first()))
+
+
+@router.post("/teach/{session_id}/step", status_code=status.HTTP_200_OK)
+async def teach_step_endpoint(
+    session_id: uuid.UUID,
+    body: TeachStepIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    paso = body.model_dump()
+    result = await session.execute(
+        text(
+            "UPDATE skill_teach_sessions SET pasos = pasos || :paso ::jsonb, updated_at = now() "
+            "WHERE tenant_id = :tenant_id AND id = :id AND status = 'open' RETURNING *"
+        ),
+        {
+            "tenant_id": current_user.tenant_id,
+            "id": session_id,
+            "paso": json.dumps([paso]),
+        },
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de enseñanza no encontrada o ya finalizada.",
+        )
+    return _session_out(dict(row))
+
+
+@router.post("/teach/{session_id}/finish", status_code=status.HTTP_200_OK)
+async def teach_finish_endpoint(
+    session_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    result = await session.execute(
+        text(
+            "SELECT * FROM skill_teach_sessions WHERE tenant_id = :tenant_id "
+            "AND id = :id AND status = 'open'"
+        ),
+        {"tenant_id": current_user.tenant_id, "id": session_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de enseñanza no encontrada o ya finalizada.",
+        )
+    sesion = dict(row)
+    pasos = _from_jsonb(sesion.get("pasos")) or []
+    if not isinstance(pasos, list) or not pasos:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La sesión no tiene pasos capturados todavía.",
+        )
+
+    nombre = str(sesion["nombre"]).strip()
+    slug = _slugify(nombre, session_id)
+    contenido = _contenido_desde_pasos(nombre, str(sesion.get("descripcion") or ""), pasos)
+
+    skill_result = await session.execute(
+        text(
+            "INSERT INTO skills (id, tenant_id, user_id, nombre, slug, source, descripcion, "
+            "version, contenido, recursos, enabled, status, trust_tier, capabilities, "
+            "created_at, updated_at) VALUES (gen_random_uuid(), :tenant_id, :user_id, "
+            ":nombre, :slug, 'teach', :descripcion, NULL, :contenido, '{}' ::jsonb, false, "
+            "'draft', 'sin_revisar', '[]' ::jsonb, now(), now()) RETURNING *"
+        ),
+        {
+            "tenant_id": current_user.tenant_id,
+            "user_id": current_user.user_id,
+            "nombre": nombre,
+            "slug": slug,
+            "descripcion": str(sesion.get("descripcion") or ""),
+            "contenido": contenido,
+        },
+    )
+    skill_row = dict(skill_result.mappings().first())
+
+    await session.execute(
+        text(
+            "UPDATE skill_teach_sessions SET status = 'finished', draft_skill_id = :skill_id, "
+            "updated_at = now() WHERE tenant_id = :tenant_id AND id = :id"
+        ),
+        {
+            "tenant_id": current_user.tenant_id,
+            "id": session_id,
+            "skill_id": skill_row["id"],
+        },
+    )
+    return _detail(skill_row)
+
+
+@router.post("/{skill_id}/approve", status_code=status.HTTP_200_OK)
+async def approve_skill_endpoint(
+    skill_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_session),
+) -> dict[str, Any]:
+    """Promueve una skill `draft` → `active` + `enabled=true`. Una skill que no
+    es draft (p. ej. ya activa) se rechaza con 409: aprobar dos veces no debe
+    cambiar de comportamiento en silencio."""
+    result = await session.execute(
+        text(
+            "UPDATE skills SET status = 'active', enabled = true, updated_at = now() "
+            "WHERE tenant_id = :tenant_id AND id = :id AND status = 'draft' RETURNING *"
+        ),
+        {"tenant_id": current_user.tenant_id, "id": skill_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        existing = await session.execute(
+            text("SELECT status FROM skills WHERE tenant_id = :tenant_id AND id = :id"),
+            {"tenant_id": current_user.tenant_id, "id": skill_id},
+        )
+        if existing.mappings().first() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Skill no encontrada."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La skill no está en estado 'draft'.",
+        )
+    return _detail(dict(row))

@@ -59,6 +59,44 @@ Bundle id de partida: `cc.edecan.app` (placeholder de desarrollo, ver la
 nota en `project.yml`) — cámbialo por uno propio antes de firmar con tu
 cuenta, un bundle id no se puede repetir entre cuentas Developer distintas.
 
+## Apple Watch (scaffold)
+
+Targets nuevos, generados desde el mismo `project.yml`:
+
+- `EdecanWatchApp` (`application.watchapp2`, watchOS 10+) — la app del Watch,
+  se embebe dentro de `Edecan.app` ("Embed Watch Content").
+- `EdecanWatchExtension` (`watchkit2-extension`, watchOS 10+) — la extensión
+  con `ContentView` (título del plan, cronómetro, ❤️ y botón "Entrenar") y
+  `WatchSessionManager` (sesión de `WatchConnectivity` que recibe el estado
+  de la sesión de gym desde el iPhone).
+
+Los bundle ids derivan de `$(EDECAN_IOS_BUNDLE_ID)` igual que
+`.widgets`/`.share`. Con el default del instalador
+(`EDECAN_IOS_BUNDLE_ID=org.example.edecan`, ver
+`scripts/install_device.sh`) quedan en:
+
+- `org.example.edecan.watchkitapp`
+- `org.example.edecan.watchkitapp.watchkitextension`
+
+**Estado del scaffold (¿qué listo, qué falta?):**
+
+- `EdecanApp/PhoneWatchBridge.swift` — transporte WatchConnectivity del lado
+  iOS listo (activa `WCSession` y expone `enviar(sesionActiva:titulo:...)` y
+  `enviar(titulo:frecuenciaCardiaca:calorias:)`), pero TODAVÍA no está
+  cableado a `GymViewModel`/`HealthKitManager`.
+- `WatchSessionManager` arranca con datos mock (plan, cronómetro, ❤️) para que
+  la vista muestre algo sin teléfono; los mensajes reales los sobrescriben.
+- Sin conexión al teléfono, el botón "Entrenar" solo alterna el estado local.
+- Lo que viene después (otros agentes): complicaciones, métricas en vivo
+  desde HealthKit del Watch, acciones de control (pausar/terminar), icono
+  real en `EdecanWatchApp/Resources/Assets.xcassets`.
+- Operación: para instalar en un reloj real, los App IDs
+  `org.example.edecan.watchkitapp` y
+  `org.example.edecan.watchkitapp.watchkitextension` deben existir en la
+  cuenta Apple Developer del operador y
+  firmarse con el mismo Team que la app iOS. WatchConnectivity no necesita
+  App Group.
+
 ## Pipeline de versión conocido
 
 Mismo patrón que el dueño de Edecán ya usa en sus otros proyectos iOS:

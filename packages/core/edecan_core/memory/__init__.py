@@ -17,6 +17,7 @@ no arrastra nada relacionado con la capa de datos.
 from __future__ import annotations
 
 from .base import Embedder, MemoryHit, MemoryStore
+from .corrections import MAX_CANDIDATOS, MIN_REPETICIONES, propose_preference_candidates
 from .embedders import DEFAULT_EMBEDDINGS_DIM, HashEmbedder, OpenAICompatEmbedder
 from .graph import add_edge, neighbors
 from .pg import PgMemoryStore
@@ -26,6 +27,8 @@ __all__ = [
     "CAMPOS_DATOS",
     "DEFAULT_EMBEDDINGS_DIM",
     "LISTA_MAX_ITEMS",
+    "MAX_CANDIDATOS",
+    "MIN_REPETICIONES",
     "RESUMEN_MAX_CHARS",
     "Embedder",
     "HashEmbedder",
@@ -37,4 +40,5 @@ __all__ = [
     "add_edge",
     "build_profile",
     "neighbors",
+    "propose_preference_candidates",
 ]

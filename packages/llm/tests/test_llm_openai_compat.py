@@ -12,6 +12,7 @@ from edecan_llm.errors import RateLimitedError
 from edecan_llm.openai_compat import OpenAICompatProvider
 
 CHAT_URL = "https://api.openai.com/v1/chat/completions"
+AZURE_CHAT_URL = "https://example-resource.openai.azure.com/openai/v1/chat/completions"
 
 
 def _req(**overrides: object) -> CompletionRequest:
@@ -58,6 +59,47 @@ async def test_mapeo_completion_normal() -> None:
         body = json.loads(request.content)
         assert body["messages"][0] == {"role": "system", "content": "Eres Edecán."}
         assert body["messages"][1] == {"role": "user", "content": "¿Qué hora es?"}
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_azure_gpt56_max_completion_tokens_sin_temperature() -> None:
+    """Los deployments de razonamiento de Azure (gpt-5.6-*) exigen
+    `max_completion_tokens` (rechazan `max_tokens` con "Unsupported parameter")
+    y rechazan `temperature` distinto de 1. El adaptador Azure
+    (use_max_completion_tokens=True, key_auth_mode="api-key") debe enviar el
+    primero, autenticar con header `api-key`, y omitir ambos campos rechazados.
+    """
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        response = await provider.complete(_req(model="gpt-5.6-sol", temperature=0.7))
+
+        assert response.text == "Listo."
+        request = respx.calls.last.request
+        assert request.headers["api-key"] == "clave-azure"
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-5.6-sol"
+        assert body["max_completion_tokens"] == 256
+        assert "max_tokens" not in body
+        assert "temperature" not in body
     finally:
         await provider.aclose()
 

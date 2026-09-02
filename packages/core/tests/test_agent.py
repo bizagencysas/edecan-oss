@@ -1481,6 +1481,63 @@ async def test_memoria_desactivada_no_busca():
     assert store.search_calls == []
 
 
+@pytest.mark.asyncio
+async def test_product_live_fact_siempre_en_prompt_aunque_memoria_desactivada():
+    provider = FakeProvider([[text_chunk("ok"), usage_chunk()]])
+    store = _FakeMemoryStore([_FakeHit(content="no debería aparecer")])
+    agent = Agent(FakeLLMRouter(provider), ToolRegistry())
+
+    await _collect(
+        agent,
+        ctx=_ctx(memory_store=store),
+        persona=_persona(memoria_activada=False),
+        history=[],
+        user_text="¿Cómo implementamos Grok Bot en Edecán?",
+        flags={},
+    )
+
+    system_prompt = provider.received_requests[0].system
+    assert "Edecán es un asistente local-first y configurable" in system_prompt
+    assert "no debería aparecer" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_product_live_fact_precede_hits_vectoriales_en_memorias():
+    provider = FakeProvider([[text_chunk("ok"), usage_chunk()]])
+    store = _FakeMemoryStore([_FakeHit(content="Prefiere café solo")])
+    agent = Agent(FakeLLMRouter(provider), ToolRegistry())
+
+    await _collect(
+        agent,
+        ctx=_ctx(memory_store=store, profile_context="Rol: operador"),
+        persona=_persona(memoria_activada=True),
+        history=[],
+        user_text="¿Cómo implementamos Grok Bot en Edecán?",
+        flags={},
+    )
+
+    system_prompt = provider.received_requests[0].system
+    assert "Rol: operador" in system_prompt
+    assert "Edecán es un asistente local-first y configurable" in system_prompt
+    assert "Prefiere café solo" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_recall_memories_incluye_product_fact_sin_buscar():
+    agent = Agent(FakeLLMRouter(FakeProvider([])), ToolRegistry())
+    memories = await agent._recall_memories(
+        _ctx(profile_context="Perfil estable"),
+        _persona(memoria_activada=False),
+        "hola",
+    )
+    from edecan_core.product_context import product_live_fact_for_language
+
+    assert memories == [
+        "Perfil estable",
+        product_live_fact_for_language("es"),
+    ]
+
+
 # --------------------------------------------------------------------------
 # Tope de iteraciones
 # --------------------------------------------------------------------------
@@ -1860,7 +1917,14 @@ async def test_tool_call_escrita_en_corchetes_se_ejecuta_y_no_miente():
         {"accion": "open_app", "parametros": {"app": "Cursor"}},
         {"accion": "screenshot", "parametros": {}},
     ]
-    assert [type(e) for e in events] == [ToolStartEvent, ToolEndEvent, ToolStartEvent, ToolEndEvent, TextDeltaEvent, DoneEvent]
+    assert [type(e) for e in events] == [
+        ToolStartEvent,
+        ToolEndEvent,
+        ToolStartEvent,
+        ToolEndEvent,
+        TextDeltaEvent,
+        DoneEvent,
+    ]
     assert events[4].text == "Listo, Cursor está abierto."
     assert all(
         not (isinstance(event, TextDeltaEvent) and "He enviado" in event.text)
@@ -1886,3 +1950,50 @@ async def test_json_que_no_es_tool_se_muestra_como_texto():
     assert [type(e) for e in events] == [TextDeltaEvent, DoneEvent]
     assert events[0].text == '{"ok": true, "valor": 42}'
 
+
+
+# --------------------------------------------------------------------------
+# reasoning_effort (Sol Xhigh de Azure) — regresión del bug del 1-sep-2026
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_default_queda_en_none_no_string_none():
+    """`str(None).strip() or None` convertía el default en el string "None" y
+    Azure rechazaba el turno con 400 ("reasoning_effort does not support
+    'None'"). El default tiene que quedarse en None de verdad."""
+    provider = FakeProvider([[text_chunk("OK"), usage_chunk()]])
+    router = FakeLLMRouter(provider, model="gpt-5.6-sol-2")
+    agent = Agent(router, ToolRegistry())
+
+    await _collect(
+        agent, ctx=_ctx(), persona=_persona(), history=[], user_text="hola", flags={}
+    )
+
+    assert provider.received_requests[0].reasoning_effort is None
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_xhigh_se_aplica_solo_a_gpt5():
+    provider = FakeProvider([[text_chunk("OK"), usage_chunk()]])
+    router = FakeLLMRouter(provider, model="gpt-5.6-sol-2")
+    agent = Agent(router, ToolRegistry(), reasoning_effort="xhigh")
+
+    await _collect(
+        agent, ctx=_ctx(), persona=_persona(), history=[], user_text="hola", flags={}
+    )
+
+    assert provider.received_requests[0].reasoning_effort == "xhigh"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_xhigh_no_toca_modelos_no_gpt5():
+    provider = FakeProvider([[text_chunk("OK"), usage_chunk()]])
+    router = FakeLLMRouter(provider, model="@cf/zai-org/glm-5.2")
+    agent = Agent(router, ToolRegistry(), reasoning_effort="xhigh")
+
+    await _collect(
+        agent, ctx=_ctx(), persona=_persona(), history=[], user_text="hola", flags={}
+    )
+
+    assert provider.received_requests[0].reasoning_effort is None

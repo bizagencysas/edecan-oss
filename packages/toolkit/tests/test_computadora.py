@@ -36,8 +36,32 @@ async def test_usar_computadora_con_companion_lo_invoca(make_ctx):
         ctx, {"accion": "captura_pantalla", "parametros": {"pantalla": 1}}
     )
 
-    assert llamadas == [("captura_pantalla", {"pantalla": 1})]
+    assert llamadas == [("captura_pantalla", {"pantalla": 1, "owner_approved": False})]
     assert resultado.data["resultado"] == {"ok": True, "captura": "base64..."}
+
+
+async def test_usar_computadora_con_wake_del_dueno_manda_owner_approved_true(make_ctx):
+    """Turno proactivo (vida digital): con `usar_computadora` pre-aprobada y
+    `companion_wake=True` en extras, el bridge recibe `owner_approved=True`
+    (el valor sale de extras, el modelo no puede inyectarlo)."""
+    llamadas = []
+
+    async def companion_falso(accion: str, parametros: dict) -> dict:
+        llamadas.append((accion, parametros))
+        return {"ok": True, "captura": "base64..."}
+
+    ctx = make_ctx(
+        extras={
+            "companion": companion_falso,
+            "approved_tool_calls": {"usar_computadora"},
+            "companion_wake": True,
+        }
+    )
+    await UsarComputadoraTool().run(
+        ctx, {"accion": "captura_pantalla", "parametros": {"pantalla": 1}}
+    )
+
+    assert llamadas == [("captura_pantalla", {"pantalla": 1, "owner_approved": True})]
 
 
 async def test_usar_computadora_sin_accion(make_ctx):
@@ -170,7 +194,12 @@ async def test_usar_computadora_permite_accion_con_flag_fino_activo(
 
     resultado = await UsarComputadoraTool().run(ctx, {"accion": accion})
 
-    assert llamadas[0] == (accion, PARAMS_CAPTURA_PARA_EL_MODELO if accion == "screenshot" else {})
+    assert llamadas[0] == (
+        accion,
+        {**PARAMS_CAPTURA_PARA_EL_MODELO, "owner_approved": False}
+        if accion == "screenshot"
+        else {"owner_approved": False},
+    )
     if accion in {"input_pointer", "input_key"}:
         assert any(
             nombre == "screenshot" and params == PARAMS_CAPTURA_PARA_EL_MODELO
@@ -179,7 +208,12 @@ async def test_usar_computadora_permite_accion_con_flag_fino_activo(
         assert resultado.data["resultado"]["ok"] is True
     else:
         assert llamadas == [
-            (accion, PARAMS_CAPTURA_PARA_EL_MODELO if accion == "screenshot" else {})
+            (
+                accion,
+                {**PARAMS_CAPTURA_PARA_EL_MODELO, "owner_approved": False}
+                if accion == "screenshot"
+                else {"owner_approved": False},
+            )
         ]
         assert resultado.data["resultado"] == {"ok": True}
 
@@ -204,12 +238,12 @@ async def test_usar_computadora_acciones_base_no_exigen_flags_finos(make_ctx, ac
 
     resultado = await UsarComputadoraTool().run(ctx, {"accion": accion})
 
-    assert llamadas[0] == (accion, {})
+    assert llamadas[0] == (accion, {"owner_approved": False})
     if accion == "open_app":
         assert ("screenshot", PARAMS_CAPTURA_PARA_EL_MODELO) in llamadas
         assert resultado.data["resultado"]["ok"] is True
     else:
-        assert llamadas == [(accion, {})]
+        assert llamadas == [(accion, {"owner_approved": False})]
         assert resultado.data["resultado"] == {"ok": True}
 
 
@@ -269,7 +303,14 @@ async def test_usar_computadora_no_deja_que_el_modelo_pida_png_crudo(make_ctx):
     assert llamadas == [
         (
             "screenshot",
-            {"format": "webp", "quality": 90, "max_width": 2560, "crop_frontmost": True, "display": 2},
+            {
+                "format": "webp",
+                "quality": 90,
+                "max_width": 2560,
+                "crop_frontmost": True,
+                "display": 2,
+                "owner_approved": False,
+            },
         )
     ]
 
@@ -331,3 +372,158 @@ async def test_usar_computadora_screenshot_deja_artifact_para_el_iphone(make_ctx
     assert resultado.data["artifacts"][0]["file_id"] == str(file_id)
     assert resultado.data["artifacts"][0]["mime"] == "image/webp"
     assert "iphone" in resultado.content.lower() or "chat" in resultado.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plano de control de "toma de control / pausa" (directiva §18-24, §123).
+#
+# `usar_computadora` consulta `computer_sessions` ANTES de reenviar la acción
+# al companion y se niega (sin invocar al companion) cuando la superficie del
+# agente tiene `mode` en `user`/`paused`. La consulta vive en `ctx.session`
+# (la AsyncSession tenant-scoped que ya recibe la tool), así que el
+# enforcement es durable y server-side — nunca una promesa al prompt. Sin
+# sesión de base de datos o sin tabla, falla abierto al comportamiento
+# histórico (retrocompatibilidad de la directiva).
+# ---------------------------------------------------------------------------
+
+_MODO_SCOPE_AGENTE = {"mode": "agent", "workspace_scope": {}}
+
+
+def _companion_que_registra(llamadas: list):
+    async def companion_falso(accion: str, parametros: dict) -> dict:
+        llamadas.append((accion, parametros))
+        return {"ok": True}
+
+    return companion_falso
+
+
+@pytest.mark.parametrize("modo", ["paused", "user"])
+async def test_usar_computadora_se_niega_cuando_la_superficie_esta_suspendida(
+    make_ctx, make_session, modo
+):
+    llamadas = []
+    ctx = make_ctx(
+        session=make_session([[{"mode": modo, "workspace_scope": {}}]]),
+        extras={"companion": _companion_que_registra(llamadas)},
+    )
+
+    resultado = await UsarComputadoraTool().run(
+        ctx, {"accion": "open_app", "parametros": {"app": "Safari"}}
+    )
+
+    assert llamadas == [], "con la superficie suspendida el companion NUNCA debe invocarse"
+    assert "pausado" in resultado.content.lower()
+
+
+async def test_usar_computadora_permite_cuando_la_superficie_esta_en_agent(make_ctx, make_session):
+    llamadas = []
+    ctx = make_ctx(
+        session=make_session([[dict(_MODO_SCOPE_AGENTE)]]),
+        extras={
+            "companion": _companion_que_registra(llamadas),
+            "flags": {FLAG_COMPANION_IDE: True},
+        },
+    )
+
+    resultado = await UsarComputadoraTool().run(ctx, {"accion": "list_tree"})
+
+    assert llamadas == [("list_tree", {"owner_approved": False})]
+    assert resultado.data["resultado"] == {"ok": True}
+
+
+async def test_usar_computadora_sin_sesion_de_base_no_bloquea(make_ctx):
+    """`ctx.session=None` (dobles sin SQL) conserva el comportamiento histórico:
+    no hay de dónde leer el modo, así que no se bloquea nada."""
+    llamadas = []
+    ctx = make_ctx(
+        extras={
+            "companion": _companion_que_registra(llamadas),
+            "flags": {FLAG_COMPANION_IDE: True},
+        }
+    )
+    ctx.session = None
+
+    resultado = await UsarComputadoraTool().run(ctx, {"accion": "list_tree"})
+
+    assert llamadas == [("list_tree", {"owner_approved": False})]
+    assert resultado.data["resultado"] == {"ok": True}
+
+
+async def test_usar_computadora_confina_a_workspace_scope(make_ctx, make_session):
+    llamadas = []
+    ctx = make_ctx(
+        session=make_session(
+            [[{"mode": "agent", "workspace_scope": {"root": "/tmp/agente"}}]]
+        ),
+        extras={
+            "companion": _companion_que_registra(llamadas),
+            "flags": {FLAG_COMPANION_IDE: True},
+        },
+    )
+
+    await UsarComputadoraTool().run(
+        ctx, {"accion": "read_file", "parametros": {"path": "x.txt"}}
+    )
+
+    assert llamadas == [
+        ("read_file",
+         {"path": "x.txt", "workspace_root": "/tmp/agente", "owner_approved": False})
+    ]
+
+
+async def test_usar_computadora_ignora_workspace_root_del_modelo(make_ctx, make_session):
+    """El modelo no puede elegir la carpeta de confinamiento: la tool pisa
+    `workspace_root` con el `workspace_scope` durable del agente (directiva
+    §123: enforce tool-side, never trust the model)."""
+    llamadas = []
+    ctx = make_ctx(
+        session=make_session(
+            [[{"mode": "agent", "workspace_scope": {"root": "/tmp/agente"}}]]
+        ),
+        extras={
+            "companion": _companion_que_registra(llamadas),
+            "flags": {FLAG_COMPANION_IDE: True},
+        },
+    )
+
+    await UsarComputadoraTool().run(
+        ctx,
+        {
+            "accion": "read_file",
+            "parametros": {"path": "x.txt", "workspace_root": "/"},
+        },
+    )
+
+    assert llamadas == [
+        ("read_file",
+         {"path": "x.txt", "workspace_root": "/tmp/agente", "owner_approved": False})
+    ]
+
+
+async def test_usar_computadora_sin_scope_descarta_workspace_root(make_ctx, make_session):
+    llamadas = []
+    ctx = make_ctx(
+        session=make_session([[dict(_MODO_SCOPE_AGENTE)]]),
+        extras={
+            "companion": _companion_que_registra(llamadas),
+            "flags": {FLAG_COMPANION_IDE: True},
+        },
+    )
+
+    await UsarComputadoraTool().run(
+        ctx,
+        {"accion": "read_file", "parametros": {"path": "x.txt", "workspace_root": "/"}},
+    )
+
+    assert llamadas == [("read_file", {"path": "x.txt", "owner_approved": False})]
+
+
+async def test_usar_computadora_superficie_de_accion():
+    from edecan_toolkit.computadora import _superficie_de_accion
+
+    assert _superficie_de_accion("read_file") == "files"
+    assert _superficie_de_accion("run_command") == "terminal"
+    assert _superficie_de_accion("open_url") == "browser"
+    assert _superficie_de_accion("open_app") == "desktop"
+    assert _superficie_de_accion("screenshot") == "desktop"
+    assert _superficie_de_accion("input_pointer") == "desktop"

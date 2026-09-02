@@ -76,6 +76,53 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.filas: dict[str, dict[str, Any]] = {}
+        self.teach_sessions: dict[str, dict[str, Any]] = {}
+
+    def _teach_execute(self, primero: str, params: dict[str, Any]) -> _FakeResult:
+        """Maneja el SQL de `skill_teach_sessions` (`POST /v1/skills/teach`,
+        `/teach/{id}/step`, `/teach/{id}/finish`) — aislado de las skills
+        instaladas (`self.filas`) para no mezclar los dos vocabularios."""
+        if primero == "INSERT":
+            row = {
+                "id": str(uuid.uuid4()),
+                "tenant_id": params["tenant_id"],
+                "user_id": params["user_id"],
+                "nombre": params["nombre"],
+                "descripcion": params["descripcion"],
+                "status": "open",
+                "pasos": [],
+                "draft_skill_id": None,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+            }
+            self.teach_sessions[row["id"]] = row
+            return _FakeResult([row])
+
+        if primero == "SELECT":
+            row = self.teach_sessions.get(str(params.get("id")))
+            if (
+                row is not None
+                and row["tenant_id"] == params.get("tenant_id")
+                and row["status"] == "open"
+            ):
+                return _FakeResult([row])
+            return _FakeResult([])
+
+        if primero == "UPDATE":
+            row = self.teach_sessions.get(str(params.get("id")))
+            if row is None or row["tenant_id"] != params.get("tenant_id"):
+                return _FakeResult([])
+            if "paso" in params:
+                # `pasos || :paso ::jsonb` con `:paso = json.dumps([paso])`.
+                row["pasos"] = list(row.get("pasos", [])) + json.loads(params["paso"])
+                row["updated_at"] = datetime.now(UTC)
+            if "skill_id" in params:
+                row["status"] = "finished"
+                row["draft_skill_id"] = params["skill_id"]
+                row["updated_at"] = datetime.now(UTC)
+            return _FakeResult([row])
+
+        raise AssertionError(f"query inesperada de teach en el fake: {params}")
 
     def seed_skill(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, nombre: str, **overrides: Any
@@ -105,6 +152,34 @@ class FakeSession:
         sql = str(stmt)
         params = dict(params or {})
         primero = sql.strip().split(None, 1)[0].upper()
+
+        if "skill_teach_sessions" in sql:
+            return self._teach_execute(primero, params)
+
+        if primero == "INSERT" and "INTO skills" in sql and "'draft'" in sql:
+            # `teach_finish_endpoint`: inserta la skill DRAFT compilada (misma
+            # forma que la fila de un install, pero `source='teach'` +
+            # `status='draft'` + `enabled=false`).
+            row = {
+                "id": str(uuid.uuid4()),
+                "tenant_id": params["tenant_id"],
+                "user_id": params["user_id"],
+                "nombre": params["nombre"],
+                "slug": params["slug"],
+                "source": "teach",
+                "descripcion": params["descripcion"],
+                "version": None,
+                "contenido": params["contenido"],
+                "recursos": {},
+                "trust_tier": "sin_revisar",
+                "capabilities": [],
+                "enabled": False,
+                "status": "draft",
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+            }
+            self.filas[row["id"]] = row
+            return _FakeResult([row])
 
         if primero == "SELECT" and "id = :id" in sql:
             row = self.filas.get(params.get("id"))
@@ -888,3 +963,148 @@ async def test_delete_skill_exito(client, fake_session: FakeSession) -> None:
 
     assert response.status_code == 204
     assert fila["id"] not in fake_session.filas
+
+
+# ---------------------------------------------------------------------------
+# "Enseñar una tarea" — helpers puros (directiva §38-41). La captura de pasos
+# y la compilación del draft son deterministas; se prueban sin HTTP.
+# ---------------------------------------------------------------------------
+
+
+def test_contenido_desde_pasos_compila_markdown_determinista() -> None:
+    contenido = skills._contenido_desde_pasos(
+        "PDF Helper",
+        "Ayuda con PDFs",
+        [
+            {
+                "action": "click",
+                "selector": "#boton",
+                "decision": "si",
+                "input": "x",
+                "output": "y",
+            },
+            {"action": "type", "selector": "", "decision": "", "input": "texto", "output": ""},
+        ],
+    )
+
+    assert contenido.startswith("# PDF Helper")
+    assert "Ayuda con PDFs" in contenido
+    assert "1. **Acción**: click" in contenido
+    assert "Selector: #boton" in contenido
+    assert "2. **Acción**: type" in contenido
+    assert "Input: texto" in contenido
+
+
+def test_slugify_es_unico_y_acotado() -> None:
+    session_id = uuid.uuid4()
+    slug = skills._slugify("Reporte de ventas ¡ya!", session_id)
+
+    assert slug.startswith("reporte-de-ventas-ya")
+    assert slug.endswith(session_id.hex[:8])
+    assert len(slug) <= 70
+
+
+def test_from_jsonb_decodifica_string_y_respeta_dict() -> None:
+    assert skills._from_jsonb('[{"a": 1}]') == [{"a": 1}]
+    assert skills._from_jsonb({"a": 1}) == {"a": 1}
+    assert skills._from_jsonb(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Paso ESTRUCTURADO + texto libre (directiva §38) — contrato del endpoint
+# `/teach/{id}/step` y compilación del draft.
+# ---------------------------------------------------------------------------
+
+
+def test_teach_step_acepta_accion_y_texto_libre() -> None:
+    paso = skills.TeachStepIn(
+        accion="click", selector="#boton", decision="si", input="x", output="y"
+    )
+    dump = paso.model_dump()
+    # La clave española `accion` se persiste bajo `action` (contrato estable).
+    assert dump["action"] == "click"
+    assert dump["selector"] == "#boton"
+    assert dump["texto"] == ""
+
+    libre = skills.TeachStepIn(texto="Abrir X y exportar CSV")
+    assert libre.model_dump()["texto"] == "Abrir X y exportar CSV"
+    assert libre.action == ""
+
+
+def test_teach_step_acepta_action_ingles_para_no_romper_web() -> None:
+    paso = skills.TeachStepIn(action="type", selector="#q", input="hola")
+    assert paso.action == "type"
+    assert paso.selector == "#q"
+    assert paso.input == "hola"
+
+
+def test_contenido_desde_pasos_mezcla_estructurado_y_texto_libre() -> None:
+    contenido = skills._contenido_desde_pasos(
+        "Flujo",
+        "",
+        [
+            {"action": "click", "selector": "#analytics", "texto": ""},
+            {"action": "", "texto": "Elegir últimos 7 días y exportar CSV"},
+            {"action": "type", "selector": "#rango", "input": "7", "texto": ""},
+        ],
+    )
+
+    assert "1. **Acción**: click" in contenido
+    assert "Selector: #analytics" in contenido
+    assert "2. Elegir últimos 7 días y exportar CSV" in contenido
+    assert "3. **Acción**: type" in contenido
+    assert "Input: 7" in contenido
+
+
+async def test_teach_flow_estructurado_y_texto_libre_persiste_y_compila(
+    client, fake_session: FakeSession
+) -> None:
+    """Extremo a extremo del flujo de enseñanza: paso ESTRUCTURADO (vía la clave
+    española `accion`) + paso de texto libre, y `finish` compila un draft cuyo
+    `contenido` incluye ambos."""
+    headers, _, _ = _auth()
+
+    start = await client.post(
+        "/v1/skills/teach",
+        json={"nombre": "Exportar reporte", "descripcion": "Bajar CSV semanal"},
+        headers=headers,
+    )
+    assert start.status_code == 201
+    session_id = start.json()["id"]
+
+    paso_estructurado = await client.post(
+        f"/v1/skills/teach/{session_id}/step",
+        json={"accion": "click", "selector": "#exportar", "decision": "si", "output": "vista"},
+        headers=headers,
+    )
+    assert paso_estructurado.status_code == 200
+    assert paso_estructurado.json()["pasos"][0]["action"] == "click"
+    assert paso_estructurado.json()["pasos"][0]["selector"] == "#exportar"
+
+    paso_libre = await client.post(
+        f"/v1/skills/teach/{session_id}/step",
+        json={"texto": "Elegir últimos 7 días"},
+        headers=headers,
+    )
+    assert paso_libre.status_code == 200
+    assert paso_libre.json()["pasos"][1]["texto"] == "Elegir últimos 7 días"
+
+    finish = await client.post(f"/v1/skills/teach/{session_id}/finish", headers=headers)
+    assert finish.status_code == 200
+    skill = finish.json()
+    assert skill["status"] == "draft"
+    assert skill["enabled"] is False
+    assert skill["source"] == "teach"
+    assert "1. **Acción**: click" in skill["contenido"]
+    assert "Selector: #exportar" in skill["contenido"]
+    assert "2. Elegir últimos 7 días" in skill["contenido"]
+
+
+async def test_teach_step_sesion_inexistente_404(client, fake_session: FakeSession) -> None:
+    headers, _, _ = _auth()
+    response = await client.post(
+        f"/v1/skills/teach/{uuid.uuid4()}/step",
+        json={"accion": "click", "selector": "#x"},
+        headers=headers,
+    )
+    assert response.status_code == 404

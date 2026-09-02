@@ -93,8 +93,8 @@ def default_mobile_server_config(*, version: int = 1) -> MobileServerConfig:
             ),
             MobileTabConfig(
                 id="equipo",
-                title="Equipo",
-                system_icon="person.3.fill",
+                title="Bots",
+                system_icon="sparkles",
                 order=1,
             ),
             MobileTabConfig(

@@ -221,7 +221,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from edecan_core.notifications import ImportantNotificationEvent
-from edecan_core.tools import ToolContext, ToolRegistry
+from edecan_core.tools import ToolContext, ToolRegistry, registry_para_tenant
 from edecan_schemas import FLAG_AUTOMATIONS_RULES, PLANES, JobEnvelope, PersonaConfig
 from sqlalchemy import text
 
@@ -354,7 +354,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         # posible, ver `apps/worker/tests/test_mcp_en_worker.py` — pero
         # registrarlas ACÁ igual es lo correcto: es el mismo punto por el que
         # pasa cualquier otra tool, no un caso especial.
-        base_registry = _build_registry()
+        base_registry = _build_registry(tenant_id)
         for mcp_tool in await deps.mcp_tools_para(tenant_id, session, flags):
             base_registry.register(mcp_tool)
 
@@ -466,10 +466,19 @@ async def _delegate_create_linkedin_post(
     )
 
 
-def _build_registry() -> ToolRegistry:
-    registry = ToolRegistry()
-    registry.load_entry_points(group="edecan.tools")
-    return registry
+def _build_registry(tenant_id: UUID | None = None) -> ToolRegistry:
+    import os
+
+    root = os.environ.get("EDECAN_PLUGINS_DIR") or "/opt/edecan/data/plugins"
+    if tenant_id is None:
+        # Llamadores que todavía no pasan tenant (p. ej. `run_companion_turn`,
+        # fuera del alcance BOTS-14) conservan el comportamiento previo: solo
+        # el nivel raíz, sin subdirectorio por tenant — sin regresión.
+        registry = ToolRegistry()
+        registry.load_entry_points(group="edecan.tools")
+        registry.load_plugin_dir(root)
+        return registry
+    return registry_para_tenant(root, tenant_id)
 
 
 def _apply_agent_profile(

@@ -30,8 +30,8 @@ import json
 import logging
 import time
 import uuid
-from contextvars import ContextVar
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any

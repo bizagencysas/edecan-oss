@@ -3373,14 +3373,11 @@ def _extraer_tema_de_post_linkedin(text: str) -> str | None:
     """
     limpio = re.sub(r"\s+", " ", (text or "").strip())
     # Se busca el tema DESPUÉS de la parte que identifica el pedido, para no
-    # confundir "un post de LinkedIn" con el tema en sí. Se prueban los dos
-    # patrones (plataforma y cuenta) porque cualquiera de los dos pudo disparar
-    # el atajo, y gana el que aparezca primero en la frase.
+    # confundir "un post de LinkedIn" con el tema en sí.
     fin = None
-    for patron in (_RE_PEDIDO_LINKEDIN, _RE_PEDIDO_POR_CUENTA):
-        match_pedido = patron.search(limpio)
-        if match_pedido and (fin is None or match_pedido.end() < fin):
-            fin = match_pedido.end()
+    match_pedido = _RE_PEDIDO_LINKEDIN.search(limpio)
+    if match_pedido:
+        fin = match_pedido.end()
     if fin is None:
         return None
     resto = limpio[fin:]

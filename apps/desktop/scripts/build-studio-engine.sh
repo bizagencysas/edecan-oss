@@ -76,7 +76,7 @@ case "$TARGET_TRIPLE" in
     YTDLP_ASSET="yt-dlp_linux"
     YTDLP_SHA256="bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66"
     FFMPEG_ASSET_NAME="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
-    FFMPEG_SHA256="5084e5bd22bedd579b5886d3f7f9bb66e1b894a66fbb52ba42305c3559df5c2f"
+    FFMPEG_SHA256="66238f92994b8fe0117a9441bc7a4e44154f0a2fb47a3f801d0dfa21087931e4"
     ;;
   *)
     echo "error: FyDesign Studio no tiene Node 22 fijado para $TARGET_TRIPLE." >&2

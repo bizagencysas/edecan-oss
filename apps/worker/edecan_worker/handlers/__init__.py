@@ -125,8 +125,11 @@ _register_defensive(HANDLERS, "create_linkedin_post", "create_linkedin_post")
 # Post de LinkedIn PRODUCT-LED para la página de Acme (fydesign elige la
 # pantalla + brief, modelo directo escribe el cuerpo, visual de fydesign). Same
 # criterio defensivo que `create_linkedin_post`: importa `edecan_creative`.
+# El archivo del handler es `create_organization_social_post.py` (el job type
+# sanitizado es `create_organization_linkedin_post`), así que el 3er argumento
+# (nombre de MÓDULO, ver `_register_defensive`) debe apuntar al archivo real.
 _register_defensive(
-    HANDLERS, "create_organization_linkedin_post", "create_organization_linkedin_post"
+    HANDLERS, "create_organization_linkedin_post", "create_organization_social_post"
 )
 
 # Refresco semanal de skills de catálogos remotos (aws-agent-plugins vía

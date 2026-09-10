@@ -5,25 +5,42 @@ import EdecanKit
 /// lugar, presentados como tarjetas de Liquid Glass.
 struct BotsChatsView: View {
     @Environment(SessionStore.self) private var session
+    @Environment(TabRouter.self) private var router
     @State private var bots: [PersistentWorker] = []
     @State private var equipos: [Team] = []
     @State private var filas: [FilaChat] = []
     @State private var busqueda = ""
     @State private var cargando = true
     @State private var error: String?
-    @State private var proximamenteEquipos = false
     @State private var ocupado = false
     @State private var creandoBot = false
     @State private var creandoGrupo = false
     @State private var mostrandoBusqueda = false
     @State private var botPorEliminar: PersistentWorker?
     @State private var rutaChat: RutaBotsChat?
+    @State private var sugerenciasProactivas: [AutomationSuggestion] = []
+    @State private var sugerenciasOcultas: Set<String> = []
+
+    private var sugerenciasVisibles: [AutomationSuggestion] {
+        sugerenciasProactivas.filter { !sugerenciasOcultas.contains($0.id) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             cabecera
             ScrollView {
                 LazyVStack(spacing: 12) {
+                    if !sugerenciasVisibles.isEmpty {
+                        TeamNeedsYouPanel(
+                            sugerencias: sugerenciasVisibles,
+                            onDelegar: delegarNeedsYou,
+                            onDescartar: { sugerencia in
+                                sugerenciasOcultas.insert(sugerencia.id)
+                            },
+                            etiquetaAccion: "Abrir bot",
+                            pieSinDetalle: "Toca ↑ para que el bot lo resuelva en su chat"
+                        )
+                    }
                     if let error {
                         Text(error)
                             .font(.footnote)
@@ -31,9 +48,6 @@ struct BotsChatsView: View {
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .tarjetaVidrioFlotante(esquina: 14)
-                    }
-                    if proximamenteEquipos {
-                        filaProximamente
                     }
                     if filasFiltradas.isEmpty && !cargando {
                         estadoVacio
@@ -66,9 +80,9 @@ struct BotsChatsView: View {
         .navigationBarHidden(true)
         .navigationDestination(item: $rutaChat) { ruta in
             switch ruta {
-            case .bot(let id):
+            case .bot(let id, let textoInicial):
                 if let bot = bots.first(where: { $0.id == id }) {
-                    BotChatView(bot: bot)
+                    BotChatView(bot: bot, textoInicial: textoInicial)
                 }
             case .grupo(let id):
                 if let equipo = equipos.first(where: { $0.id == id }) {
@@ -81,18 +95,30 @@ struct BotsChatsView: View {
                 ProgressView()
             }
         }
-        .task { await cargar() }
-        .refreshable { await cargar() }
+        .task(id: session.client != nil) {
+            await cargar()
+        }
+        // Un push en caliente no cambia `session.client`, así que la task de
+        // arriba no vuelve a correr. Observar la identidad pendiente abre el
+        // chat también cuando Bots ya estaba montado.
+        .onChange(of: router.botConversacionPendiente) { _, _ in
+            abrirBotPendienteSiDisponible()
+        }
+        .refreshable {
+            await cargar()
+            abrirBotPendienteSiDisponible()
+        }
         .sheet(isPresented: $creandoBot) {
             NavigationStack {
-                NuevoBotSheet { nombre, descripcion, relacion, instrucciones, acentoHex in
+                NuevoBotSheet { nombre, descripcion, relacion, instrucciones, acentoHex, forma in
                     Task {
                         await crearBot(
                             nombre: nombre,
                             descripcion: descripcion,
                             relacion: relacion,
                             instrucciones: instrucciones,
-                            acentoHex: acentoHex
+                            acentoHex: acentoHex,
+                            forma: forma
                         )
                     }
                 }
@@ -105,23 +131,16 @@ struct BotsChatsView: View {
                 }
             }
         }
-        .confirmationDialog(
-            "¿Eliminar \(botPorEliminar?.nombreVisible ?? "este bot")?",
-            isPresented: Binding(
-                get: { botPorEliminar != nil },
-                set: { if !$0 { botPorEliminar = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Eliminar bot y su chat", role: .destructive) {
-                if let bot = botPorEliminar {
-                    Task { await eliminarBot(bot) }
-                }
+        .sheet(item: $botPorEliminar) { bot in
+            HojaConfirmarEliminarBot(bot: bot) {
+                Task { await eliminarBot(bot) }
+                botPorEliminar = nil
+            } onCancelar: {
                 botPorEliminar = nil
             }
-            Button("Cancelar", role: .cancel) { botPorEliminar = nil }
-        } message: {
-            Text("Se borra el bot, su chat y su memoria de conversación. No se puede deshacer.")
+            .presentationDetents([.height(320)])
+            .presentationBackground(.clear)
+            .presentationDragIndicator(.hidden)
         }
     }
 
@@ -226,24 +245,10 @@ struct BotsChatsView: View {
         .padding(.vertical, 40)
     }
 
-    private var filaProximamente: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Grupos próximamente", systemImage: "hourglass")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(EdecanTheme.morado)
-            Text("Los chats de grupo están llegando al servidor. Tus bots 1:1 siguen disponibles.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .tarjetaVidrioFlotante(esquina: 14)
-    }
-
     private func abrir(_ fila: FilaChat) {
         switch fila.tipo {
         case .bot(let bot):
-            rutaChat = .bot(bot.id)
+            rutaChat = .bot(id: bot.id, textoInicial: nil)
         case .grupo(let equipo):
             rutaChat = .grupo(equipo.id)
         }
@@ -266,7 +271,6 @@ struct BotsChatsView: View {
         }
         cargando = filas.isEmpty
         error = nil
-        proximamenteEquipos = false
         defer { cargando = false }
 
         do {
@@ -279,13 +283,52 @@ struct BotsChatsView: View {
             do {
                 equipos = try await cargarConReintento { try await client.listTeams() }
             } catch let apiError as APIClient.APIError where apiError.esProximamente {
-                proximamenteEquipos = true
                 equipos = []
             }
             await reconstruirFilas(client: client)
+            await cargarSugerenciasProactivas(client: client)
+            abrirBotPendienteSiDisponible()
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Delega una sugerencia proactiva al bot dueño (o al primero si no hay `agent_id`).
+    private func delegarNeedsYou(_ sugerencia: AutomationSuggestion) {
+        let prompt = TeamNeedsYouPanel.promptParaBot(
+            sugerencia,
+            nombreBot: bots.first(where: { $0.id == sugerencia.agentId })?.nombreVisible
+                ?? bots.first?.nombreVisible
+                ?? "Bot"
+        )
+        let botId: String?
+        if let agentId = sugerencia.agentId {
+            botId = bots.first(where: { $0.id == agentId })?.id
+        } else {
+            botId = bots.first?.id
+        }
+        guard let id = botId else { return }
+        rutaChat = .bot(id: id, textoInicial: prompt)
+    }
+
+    private func cargarSugerenciasProactivas(client: APIClient) async {
+        do {
+            let todas = try await client.listAutomationSuggestions()
+            sugerenciasProactivas = TeamNeedsYouPanel.sugerenciasAccionables(todas)
+        } catch {
+            // Degradación silenciosa: la lista sigue sin Needs you.
+        }
+    }
+
+    /// Resuelve conversación→bot sin consumir primero. `cargar()` y el
+    /// `onChange` pueden coincidir, pero la confirmación condicional del
+    /// router hace que solo uno limpie la ruta y evita doble navegación.
+    private func abrirBotPendienteSiDisponible() {
+        guard let pendiente = router.botConversacionPendiente,
+              let bot = bots.first(where: { $0.conversationId == pendiente.conversationId })
+        else { return }
+        rutaChat = .bot(id: bot.id, textoInicial: nil)
+        router.confirmarAperturaBot(pendiente)
     }
 
     /// Un blip transitorio (túnel reconectando, salto de red) no debe tirar
@@ -344,7 +387,7 @@ struct BotsChatsView: View {
     }
 
     private static func vistaPreviaBot(client: APIClient, bot: PersistentWorker) async -> (snippet: String, fecha: Date?) {
-        if let mensajes = try? await client.listWorkerMessages(workerId: bot.id),
+        if let mensajes = try? await client.listWorkerMessages(workerId: bot.id, limit: 1),
            let ultimo = mensajes.last,
            !ultimo.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return (ultimo.text, ultimo.createdAt ?? bot.updatedAt)
@@ -354,7 +397,7 @@ struct BotsChatsView: View {
     }
 
     private static func vistaPreviaGrupo(client: APIClient, equipo: Team) async -> (snippet: String, fecha: Date?) {
-        if let mensajes = try? await client.listTeamMessages(teamId: equipo.id),
+        if let mensajes = try? await client.listTeamMessages(teamId: equipo.id, limit: 1),
            let ultimo = mensajes.last,
            !ultimo.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return (ultimo.text, ultimo.createdAt ?? equipo.createdAt)
@@ -391,7 +434,8 @@ struct BotsChatsView: View {
         descripcion: String,
         relacion: String = "profesional",
         instrucciones: String = "",
-        acentoHex: String? = nil
+        acentoHex: String? = nil,
+        forma: String? = nil
     ) async {
         guard let client = session.client else { return }
         ocupado = true
@@ -402,6 +446,7 @@ struct BotsChatsView: View {
                 purpose: descripcion,
                 displayName: nombre,
                 avatarAccentHex: acentoHex,
+                avatarForma: forma,
                 instructions: instrucciones.isEmpty ? nil : instrucciones,
                 relation: relacion == "amigo" || relacion == "coach" ? relacion : "profesional"
             )
@@ -418,15 +463,23 @@ struct BotsChatsView: View {
         defer { ocupado = false }
         do {
             let equipo = try await client.createTeam(name: nombre)
-            for agenteId in miembros {
-                try? await client.addTeamMember(teamId: equipo.id, agentId: agenteId)
+            for (indice, agenteId) in miembros.enumerated() {
+                do {
+                    try await client.addTeamMember(teamId: equipo.id, agentId: agenteId)
+                } catch {
+                    await cargar()
+                    self.error =
+                        "El grupo se creó, pero solo pude agregar \(indice) de \(miembros.count) bots. "
+                        + "Recarga para ver su estado real: \(error.localizedDescription)"
+                    return
+                }
             }
             creandoGrupo = false
             await cargar()
         } catch let apiError as APIClient.APIError {
-            self.error = apiError.esProximamente
-                ? "Los chats de grupo están llegando al servidor."
-                : apiError.localizedDescription
+            // Lo que aún no aterrizó no se anuncia acá: vive en
+            // Automatizaciones, sin error rojo ni placeholder.
+            self.error = apiError.esProximamente ? nil : apiError.localizedDescription
         } catch {
             self.error = error.localizedDescription
         }
@@ -434,7 +487,7 @@ struct BotsChatsView: View {
 }
 
 private enum RutaBotsChat: Hashable {
-    case bot(String)
+    case bot(id: String, textoInicial: String? = nil)
     case grupo(String)
 }
 
@@ -465,9 +518,19 @@ private struct FilaChatView: View {
         HStack(spacing: 14) {
             leadingIcon
             VStack(alignment: .leading, spacing: 4) {
-                Text(fila.titulo)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(fila.titulo)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                    if case .bot(let bot) = fila.tipo, bot.estaTrabajando {
+                        Text("Trabajando")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(EdecanTheme.morado.opacity(0.14), in: Capsule())
+                            .foregroundStyle(EdecanTheme.morado)
+                    }
+                }
                 Text(fila.subtitulo)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -581,7 +644,7 @@ private struct NuevoBotSheet: View {
     @State private var forma = "circle"
     @State private var acentoHex = AcentoAvatar.tonos[0].hex
 
-    let onCrear: (String, String, String, String, String?) -> Void
+    let onCrear: (String, String, String, String, String?, String?) -> Void
 
     private let formas: [(id: String, titulo: String, icono: String)] = [
         ("circle", "Círculo", "circle.fill"),
@@ -797,7 +860,8 @@ private struct NuevoBotSheet: View {
                 descripcion.trimmingCharacters(in: .whitespacesAndNewlines),
                 relacion,
                 instrucciones.trimmingCharacters(in: .whitespacesAndNewlines),
-                acentoHex
+                acentoHex,
+                forma
             )
             dismiss()
         } label: {
@@ -995,5 +1059,74 @@ private struct NuevoGrupoSheet: View {
                 seleccionados.insert(id)
             }
         }
+    }
+}
+
+/// Hoja flotante de vidrio para confirmar la eliminación de un bot — antes
+/// el `confirmationDialog` del sistema aparecía descolgado, lejos del botón,
+/// sin el lenguaje de la app. Panel Liquid Glass con la cara del bot, la
+/// advertencia y un botón destructivo de color.
+private struct PresionHojaEliminarStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: configuration.isPressed)
+    }
+}
+
+private struct HojaConfirmarEliminarBot: View {
+    let bot: PersistentWorker
+    let onConfirmar: () -> Void
+    let onCancelar: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Capsule()
+                .fill(.white.opacity(0.30))
+                .frame(width: 38, height: 5)
+                .padding(.top, 12)
+
+            GrokFaceAvatar(bot: bot, size: 56, showOnline: false)
+
+            VStack(spacing: 4) {
+                Text("¿Eliminar \(bot.nombreVisible)?")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                Text("Se borra el bot, su chat y su memoria de conversación. No se puede deshacer.")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+
+            HStack(spacing: 12) {
+                Button(action: onCancelar) {
+                    Text("Cancelar")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .tarjetaVidrio(esquina: 16)
+
+                Button(action: onConfirmar) {
+                    Text("Eliminar")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            Color(red: 0.86, green: 0.25, blue: 0.25),
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        )
+                }
+                .buttonStyle(PresionHojaEliminarStyle())
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 24)
+        }
+        .tarjetaVidrio(esquina: 36)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 }

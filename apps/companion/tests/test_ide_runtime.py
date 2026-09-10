@@ -1240,6 +1240,7 @@ async def test_lsp_definition_exige_line_y_character_enteros(
     assert "character" in resultado["error"]
 
 
+@pytest.mark.opencode_binario
 async def test_lsp_symbols_y_status_contra_opencode_real_traen_aviso_si_viene_vacio(
     companion_config: CompanionConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

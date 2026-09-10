@@ -476,7 +476,7 @@ class ComputerControlEngine(CognitiveEngine):
             "- Esta es la Mac del dueño. Usa usar_computadora para abrir apps, URLs, capturar pantalla, "
             "escribir, hacer clic y terminar el trabajo. No te quedes en instrucciones: actúa.",
             "- Cuando te llega una captura de ESTA Mac, di lo concreto: app al frente, título de la "
-            "ventana, texto que se lee (p. ej. 'Cursor abierto con el chat de Edecan-Nuevo'). "
+            "ventana, texto que se lee (p. ej. 'Cursor abierto con el chat del proyecto'). "
             "NUNCA inventes un escritorio genérico (navegador + correo + carpeta + 'varias pestañas'). "
             "Si no puedes leer, dilo y usa la lista de ventanas, el OCR y el foco adjuntos. No cierres con "
             "'estoy aquí para ayudarte'. No afirmes que enviaste un mensaje si no aparece en el OCR "
@@ -498,7 +498,7 @@ class ComputerControlEngine(CognitiveEngine):
             "- This is the owner's computer. Use usar_computadora to open apps, URLs, capture the screen, "
             "type, click, and finish the job. Do not stop at instructions: act.",
             "- When you get a screenshot of THIS Mac, name the concrete thing: frontmost app, window "
-            "title, readable text (e.g. 'Cursor is open on the Edecan-Nuevo chat'). NEVER invent a "
+            "title, readable text (e.g. 'Cursor is open on the project chat'). NEVER invent a "
             "generic desktop (browser + mail + folder + 'several tabs'). If you cannot read, say so "
             "and use the attached window list, OCR, and focus. Do not close with 'I'm here to help'. "
             "Do not claim you sent a message unless it appears in the OCR or the photo.",

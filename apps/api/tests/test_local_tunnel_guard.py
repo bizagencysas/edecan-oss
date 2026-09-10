@@ -42,16 +42,28 @@ async def test_tunnel_permits_health_and_one_time_pairing_without_bearer() -> No
 
 
 async def test_tunnel_never_exposes_login_register_or_desktop_ui() -> None:
+    # login/register quedaron PUBLICOS a propósito (login por correo+clave del
+    # iPhone, nivel ChatGPT/Grok — commit 7e912fc7): el guard los deja pasar y
+    # la validación de credenciales la hace el propio endpoint. Lo que sigue
+    # bloqueado: la raíz/UI del escritorio, `/v1/auth/local` (sesión del dueño
+    # sin contraseña) y `/v1/setup/*`.
     for path in (
         "/",
         "/app/ajustes/",
         "/v1/auth/local",
-        "/v1/auth/login",
-        "/v1/auth/register",
         "/v1/setup/status",
     ):
         response = await _request(path, method="POST", authorization="Bearer even-present")
         assert response.status_code == 403
+
+
+async def test_tunnel_allows_login_register_publicly() -> None:
+    # El camino correo+clave funciona desde Internet: el guard del túnel NO
+    # las bloquea (el resultado lo decide el endpoint, no el gate).
+    login = await _request("/v1/auth/login", method="POST", authorization="Bearer even-present")
+    assert login.status_code != 403
+    register = await _request("/v1/auth/register", method="POST", authorization="Bearer even-present")
+    assert register.status_code != 403
 
 
 async def test_tunnel_requires_bearer_for_regular_api_routes() -> None:

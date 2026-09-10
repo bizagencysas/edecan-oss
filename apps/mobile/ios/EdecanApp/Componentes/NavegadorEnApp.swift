@@ -65,4 +65,10 @@ struct DestinoNavegador: Identifiable {
         guard let segura = ChatAction.httpURLSegura(rawValue) else { return nil }
         self.url = segura
     }
+
+    /// Destino ya confiable (portal VPS / authorize URL del API). No refiltra
+    /// hosts privados: la casa del tenant ES el VPS que el dueño emparejó.
+    init(urlConfiable url: URL) {
+        self.url = url
+    }
 }

@@ -80,6 +80,7 @@ _MIGRACIONES_CON_RLS_TABLES: tuple[str, ...] = (
     "0056_mcp_server_health",
     "0057_agent_messages",
     "0061_bot_conversations",
+    "0070_job_outbox_bot_runs",
 )
 
 

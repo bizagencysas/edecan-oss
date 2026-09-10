@@ -1,5 +1,6 @@
 import EdecanKit
 import Foundation
+import Intents
 import Observation
 import UIKit
 import UserNotifications
@@ -10,6 +11,8 @@ extension Notification.Name {
     static let edecanAPNsRegistrationFailed = Notification.Name("cc.edecan.apns-registration-failed")
     static let edecanShareText = Notification.Name("cc.edecan.share-text")
     static let edecanSharePayloads = Notification.Name("cc.edecan.share-payloads")
+    /// OAuth social completado vía `edecan://conectores?ok=1&key=...`
+    static let edecanConectoresOAuth = Notification.Name("cc.edecan.conectores-oauth")
 }
 
 /// Categoría de notificación "¿Vas a ir al gym hoy?" con acciones Sí/No, y el
@@ -71,8 +74,14 @@ enum GymCheckinNotifications {
             actions: [agua],
             intentIdentifiers: []
         )
+        let botMensaje = UNNotificationCategory(
+            identifier: BotCommunicationNotificationSupport.categoryIdentifier,
+            actions: [],
+            intentIdentifiers: ["INSendMessageIntent"],
+            options: []
+        )
         UNUserNotificationCenter.current().setNotificationCategories([
-            gym, aviso, aprobar, gymSerie, aguaCat,
+            gym, aviso, aprobar, gymSerie, aguaCat, botMensaje,
         ])
     }
 

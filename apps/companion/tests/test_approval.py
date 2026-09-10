@@ -57,6 +57,51 @@ async def test_action_not_in_auto_approve_still_prompts(companion_config, monkey
     assert approved is False
 
 
+async def test_dangerous_run_command_is_never_auto_approved(companion_config, monkeypatch):
+    """`allow_all_commands` agrega `run_command` a `auto_approve`, pero un
+    `rm -rf` pasa por el denylist: NUNCA se auto-aprueba (pregunta al dueño)."""
+    companion_config.auto_approve.append("run_command")
+    companion_config.allow_all_commands = True
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+    approved = await approval.default_approver(
+        "run_command", {"command": "rm -rf /"}, companion_config
+    )
+
+    assert approved is False  # preguntó (y dijo que no); no se auto-aprobó
+
+
+async def test_safe_run_command_is_still_auto_approved(companion_config, monkeypatch):
+    companion_config.auto_approve.append("run_command")
+    companion_config.allow_all_commands = True
+
+    def _fail_if_called(prompt=""):
+        raise AssertionError("un comando seguro en auto_approve no debe preguntar")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    approved = await approval.default_approver(
+        "run_command", {"command": "ls -la"}, companion_config
+    )
+    assert approved is True
+
+
+async def test_dangerous_run_command_ignores_remembered_approval(
+    companion_config, monkeypatch
+):
+    companion_config.remember_approvals_minutes = 5
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    # Aprueba un comando SEGURO: deja "run_command" recordado.
+    await approval.default_approver("run_command", {"command": "ls"}, companion_config)
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    # El peligroso NO debe reutilizar la aprobación recordada.
+    approved = await approval.default_approver(
+        "run_command", {"command": "rm -rf /"}, companion_config
+    )
+    assert approved is False
+
+
 async def test_trash_path_ignores_auto_approve_and_approval_memory(companion_config, monkeypatch):
     companion_config.auto_approve.append("trash_path")
     companion_config.remember_approvals_minutes = 10
@@ -250,6 +295,26 @@ async def test_input_actions_ignore_auto_approve_and_still_prompt(
     )
 
     assert approved is True  # sí aprobó, pero PORQUE preguntó y dijeron que sí
+
+
+async def test_input_action_owner_approved_skips_prompt_even_without_session(
+    companion_config, monkeypatch
+):
+    """`owner_approved=True` (fijado server-side por `usar_computadora` tras la
+    confirmación del dueño en el chat) aprueba el control remoto SIN preguntar,
+    sin `session_id` y sin auto-aprobación de sesión -- mismo consentimiento que
+    ya acepta `companion_bridge.py`."""
+
+    def _fail_if_called(prompt=""):
+        raise AssertionError("no debería preguntar: owner_approved=True es el consentimiento")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    companion_config.remote_input_autoapprove_owner_session = False
+
+    approved = await approval.default_approver(
+        "input_key", {"owner_approved": True, "texto": "hola"}, companion_config
+    )
+    assert approved is True
 
 
 async def test_input_action_without_session_id_never_remembers(companion_config, monkeypatch):

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import sys
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from edecan_core.tools.base import Tool, ToolContext, ToolResult
-from edecan_core.tools.registry import ToolRegistry
+from edecan_core.tools.registry import ToolRegistry, registry_para_tenant
 from edecan_schemas import ToolSpec
 
 
@@ -174,3 +177,104 @@ def test_por_defecto_el_gate_dangerous_sigue_puesto(
     tool = registry.get("publicar_social")
     assert tool is not None
     assert tool.dangerous is True
+
+
+# ---------------------------------------------------------------------------
+# Plugins por tenant (BOTS-14): `registry_para_tenant` + namespace aislado.
+# ---------------------------------------------------------------------------
+
+
+_PLUGIN_TEMPLATE = """
+from edecan_core.tools import Tool, ToolResult
+
+
+class {clase}(Tool):
+    name = "{tool_name}"
+    description = "plugin del tenant"
+    input_schema = {{"type": "object", "properties": {{}}}}
+
+    async def run(self, ctx, args):
+        return ToolResult(content="ok")
+
+
+def get_all_tools():
+    return [{clase}()]
+"""
+
+
+def _escribir_plugin(directorio: Path, nombre_archivo: str, tool_name: str) -> None:
+    directorio.mkdir(parents=True, exist_ok=True)
+    clase = "".join(part.capitalize() for part in tool_name.split("_")) + "Tool"
+    (directorio / nombre_archivo).write_text(
+        _PLUGIN_TEMPLATE.format(clase=clase, tool_name=tool_name),
+        encoding="utf-8",
+    )
+
+
+def _sin_entry_points():
+    return patch("edecan_core.tools.registry.entry_points", return_value=[])
+
+
+def test_registry_para_tenant_carga_solo_plugins_del_tenant(tmp_path: Path) -> None:
+    """Un plugin de A es visible solo para A; invisible para B (BOTS-14)."""
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    root = tmp_path / "plugins"
+
+    _escribir_plugin(root / str(tenant_a), "a_tool.py", "a_tool")
+    _escribir_plugin(root / str(tenant_b), "b_tool.py", "b_tool")
+
+    with _sin_entry_points():
+        registry_a = registry_para_tenant(root, tenant_a)
+        registry_b = registry_para_tenant(root, tenant_b)
+
+    assert registry_a.get("a_tool") is not None
+    assert registry_a.get("b_tool") is None
+    assert registry_b.get("b_tool") is not None
+    assert registry_b.get("a_tool") is None
+
+
+def test_registry_para_tenant_namespace_por_tenant_no_colisiona(tmp_path: Path) -> None:
+    """Dos tenants con el MISMO nombre de archivo no colisionan en `sys.modules`."""
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    root = tmp_path / "plugins"
+
+    # Mismo nombre de archivo, distinta tool — antes de BOTS-14 ambos quedaban
+    # como `edecan_plugins.foo` y el segundo sobrescribía al primero en
+    # `sys.modules`.
+    _escribir_plugin(root / str(tenant_a), "foo.py", "a_foo")
+    _escribir_plugin(root / str(tenant_b), "foo.py", "b_foo")
+
+    with _sin_entry_points():
+        registry_a = registry_para_tenant(root, tenant_a)
+        registry_b = registry_para_tenant(root, tenant_b)
+
+    modulo_a = sys.modules.get(f"edecan_plugins.{tenant_a}.foo")
+    modulo_b = sys.modules.get(f"edecan_plugins.{tenant_b}.foo")
+    assert modulo_a is not None
+    assert modulo_b is not None
+    assert modulo_a is not modulo_b
+
+    # Cada registro ve SU tool, no la del otro.
+    assert registry_a.get("a_foo") is not None
+    assert registry_a.get("b_foo") is None
+    assert registry_b.get("b_foo") is not None
+    assert registry_b.get("a_foo") is None
+
+
+def test_load_plugin_dir_borrar_plugin_no_deja_fantasma(tmp_path: Path) -> None:
+    """Borrar el .py del tenant elimina la tool en la siguiente recarga."""
+    tenant_a = uuid.uuid4()
+    root = tmp_path / "plugins"
+    _escribir_plugin(root / str(tenant_a), "ghost.py", "ghost_tool")
+
+    registry = ToolRegistry()
+    with _sin_entry_points():
+        registry.load_plugin_dir(root / str(tenant_a), tenant_id=tenant_a)
+    assert registry.get("ghost_tool") is not None
+
+    (root / str(tenant_a) / "ghost.py").unlink()
+    with _sin_entry_points():
+        registry.load_plugin_dir(root / str(tenant_a), tenant_id=tenant_a)
+    assert registry.get("ghost_tool") is None

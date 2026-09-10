@@ -28,15 +28,10 @@ _MIN_OPCIONES = 2
 class PreguntarAlUsuarioTool(Tool):
     name = "preguntar_al_usuario"
     description = (
-        "Muestra una pregunta con 2 a 4 opciones para que el usuario elija tocando, en vez "
-        "de adivinar. ÚSALA cuando falte un dato que solo el usuario puede dar y en el que "
-        "equivocarse arruinaría el trabajo: a qué cuenta o marca va una publicación, cuál de "
-        "varios archivos o destinatarios, qué tono, o cuando su pedido admite dos lecturas "
-        "muy distintas. Preguntar es MUCHO más barato que entregar algo entero con la "
-        "suposición equivocada. Después de llamarla, TERMINA tu turno sin hacer nada más: la "
-        "respuesta te llega como un mensaje nuevo. NO la uses para pedir permiso de algo que "
-        "ya te pidieron, para confirmar lo que ya está claro, ni para preguntas de sí/no que "
-        "puedas resolver leyendo el contexto de la conversación."
+        "Pregunta al dueño con 2-4 opciones tapables cuando falte un dato crítico o "
+        "haya ambigüedad real (p. ej. ¿publicar o solo borrador?, ¿LinkedIn o X?). "
+        "Úsala en vez de adivinar o listar todo el catálogo de herramientas. Tras "
+        "llamarla, termina el turno: la respuesta llega en el siguiente mensaje."
     )
     category = "utility"
     risk_level = "none"

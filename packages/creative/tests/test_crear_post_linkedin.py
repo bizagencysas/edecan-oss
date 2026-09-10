@@ -592,10 +592,12 @@ async def test_sin_noticia_y_sin_banco_con_tema_pedido_escribe_tesis_pura(
     assert isinstance(result.data, dict)
     assert result.data["origen_fuente"] == "tesis_sin_fuente"
     assert uploader.calls, "con el tema pedido tiene que salir un borrador, no un mensaje vacío"
-    # El escritor recibió la instrucción de escribir criterio, no actualidad.
+    # El escritor recibió la instrucción anti-ensayo: escribir sobre LO QUE
+    # EL TEMA ES con hechos estables, jamás una tesis abstracta (rechazada
+    # explícitamente por el dueño el 03-sep: "nadie se detiene a leer eso").
     escritor = llm.prompt(0)
-    assert "TESIS PURA" in escritor
-    assert "cero cifras" in escritor
+    assert "LO QUE EL TEMA ES" in escritor
+    assert "PROHIBIDO: experimentos mentales" in escritor
     # Y el usuario se entera de por qué el post no cita a nadie, con qué hacer al respecto.
     assert "criterio puro" in result.content
     assert "context_bank" in result.content or "banco de contexto" in result.content

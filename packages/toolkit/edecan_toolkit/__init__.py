@@ -21,13 +21,14 @@ from .autorreparacion import (
 from .avances import AvisarAvanceTool
 from .codigo_local import AccederCodigoLocalTool
 from .computadora import UsarComputadoraTool
+from .comunidad import EstadoConectoresSocialesTool, ListarBorradoresSocialesTool
 from .contactos import BuscarContactosTool, GestionarContactoTool
 from .contenido import GenerarContenidoTool, PublicarSocialTool
 from .correo import BuscarCorreoTool, EnviarCorreoTool
 from .creator import CrearArtefactosTool
 from .documentos import ConsultarDocumentosTool
 from .finanzas import RegistrarTransaccionTool, ResumenFinanzasTool
-from .gym import CambiarRutinaGymTool
+from .gym import CambiarRutinaGymTool, EditarEntrenamientoGymTool
 from .ide_delegacion import DelegarAlIDETool
 from .memoria import GuardarMemoriaTool
 from .notificaciones import ProbarNotificacionesPushTool
@@ -65,12 +66,14 @@ __all__ = [
     "EnviarMensajePersonalTool",
     "EnviarCorreoTool",
     "EjecutarPentestGPTAutorizadoTool",
+    "EstadoConectoresSocialesTool",
     "GenerarContenidoTool",
     "GestionarContactoTool",
     "GestionarAutorreparacionLocalTool",
     "AvisarAvanceTool",
     "GuardarMemoriaTool",
     "HoraActualTool",
+    "ListarBorradoresSocialesTool",
     "ListarRecordatoriosTool",
     "LeerMensajesPersonalesTool",
     "PublicarSocialTool",
@@ -95,6 +98,7 @@ def get_all_tools() -> list[Tool]:
         AvisarAvanceTool(),
         GuardarMemoriaTool(),
         CambiarRutinaGymTool(),
+        EditarEntrenamientoGymTool(),
         AgendaEventosTool(),
         CrearEventoTool(),
         BuscarCorreoTool(),
@@ -109,6 +113,8 @@ def get_all_tools() -> list[Tool]:
         BuscarWebTool(),
         GenerarContenidoTool(),
         PublicarSocialTool(),
+        EstadoConectoresSocialesTool(),
+        ListarBorradoresSocialesTool(),
         PreguntarAlUsuarioTool(),
         ProbarNotificacionesPushTool(),
         UsarComputadoraTool(),

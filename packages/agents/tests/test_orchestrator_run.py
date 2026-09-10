@@ -7,6 +7,7 @@ pausa por confirmación, reanudación y manejo de errores."""
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -172,7 +173,7 @@ async def test_cada_paso_pasa_el_model_alias_del_perfil_al_agent(
 
     await orchestrator.run(_mission(), deps)  # perfiles: research, data_analyst
 
-    assert factory.model_aliases == ["profundo", "profundo"]
+    assert factory.model_aliases == ["worker_vision", "worker_vision"]
 
 
 async def test_agente_inexistente_cae_al_perfil_research(
@@ -854,13 +855,23 @@ async def test_lock_serializa_los_saves_durante_una_ola_paralela(
 
     class _DepsConcurrencia:
         def __init__(self) -> None:
-            self.session = None
             self.settings = SimpleNamespace()
-            self.vault = None
             self.flags: dict[str, Any] = {}
             self.step_calls: list[dict[str, Any]] = []
             self.mission_calls: list[dict[str, Any]] = []
             self.insert_steps_calls: list[list[dict[str, Any]]] = []
+
+        @asynccontextmanager
+        async def session_factory(self, tenant_id):
+            del tenant_id
+            yield SimpleNamespace()
+
+        def vault_factory(self, session):
+            del session
+            return SimpleNamespace()
+
+        async def cancellation_requested(self) -> bool:
+            return False
 
         async def save_step(self, **kwargs: Any) -> None:
             nonlocal en_vuelo, maximo_en_vuelo
@@ -1498,6 +1509,147 @@ async def test_paso_reanudado_incluye_timing_en_usage(
     started = _parse_iso(usage["started_at"])
     finished = _parse_iso(usage["finished_at"])
     assert finished >= started
+
+
+# ---------------------------------------------------------------------------
+# BOTS-23: sesiones independientes por paso
+# ---------------------------------------------------------------------------
+
+
+async def test_dos_pasos_paralelos_abren_sesiones_independientes_y_el_rollback_de_uno_no_afecta_al_otro(
+    make_llm_router, make_deps, _patch_agent, make_event, wrapped_registry
+):
+    """BOTS-23: dos pasos de una misma ola NUNCA comparten `AsyncSession`.
+    Cada paso abre la suya vía `deps.session_factory(tenant_id)` y construye su
+    vault con `deps.vault_factory(session)`. Si el `Agent` de un paso lanza (su
+    sesión hace rollback), el otro paso —con SU sesión— sigue limpio y completa.
+    La barrera garantiza paralelismo REAL: un orquestador secuencial jamás
+    liberaría la barrera y reventaría por timeout."""
+    sesiones: list[Any] = []
+
+    class _Session:
+        def __init__(self, nombre: str) -> None:
+            self.nombre = nombre
+            self.rolled_back = False
+
+    @asynccontextmanager
+    async def _session_factory(tenant_id):
+        del tenant_id
+        session = _Session(f"sesion-{len(sesiones)}")
+        sesiones.append(session)
+        try:
+            yield session
+        except Exception:
+            session.rolled_back = True
+            raise
+
+    vaults: list[Any] = []
+
+    def _vault_factory(session):
+        vault = SimpleNamespace(session=session)
+        vaults.append(vault)
+        return vault
+
+    activos = 0
+    maximo_visto = 0
+    barrera = asyncio.Event()
+
+    class _AgentConSesion:
+        def __init__(self, llm_router: Any, registry: Any, *, model_alias: Any = None) -> None:
+            del llm_router, registry, model_alias
+
+        async def run_turn(self, *, ctx, persona, history, user_text, flags):
+            nonlocal activos, maximo_visto
+            del persona, history, flags
+            _ = ctx.session  # el paso recibe SU sesión vía `ctx`
+            activos += 1
+            maximo_visto = max(maximo_visto, activos)
+            if activos < 2:
+                await asyncio.wait_for(barrera.wait(), timeout=2.0)
+            else:
+                barrera.set()
+            if user_text == "A":
+                raise RuntimeError("tool del paso A falló -> rollback de SU sesión")
+            yield make_event(type="text_delta", text=f"resultado de {user_text}")
+
+    _patch_agent(_AgentConSesion)
+    # Tras el fallo de A, `run()` intenta UN replan: este router devuelve texto
+    # que no es JSON -> no hay plan nuevo -> la misión termina en `error` (lo
+    # que importa acá es la sesión, no el destino final).
+    router = make_llm_router(responses=["esto no es JSON"])
+    deps = make_deps(session_factory=_session_factory, vault_factory=_vault_factory)
+    orchestrator = Orchestrator(router, wrapped_registry)
+    mission = _mission(
+        plan=[
+            {"seq": 1, "agente": "research", "instruccion": "A", "depende_de": []},
+            {"seq": 2, "agente": "data_analyst", "instruccion": "B", "depende_de": []},
+        ]
+    )
+
+    await orchestrator.run(mission, deps)
+
+    assert maximo_visto == 2  # ambos pasos en vuelo al mismo tiempo.
+    assert len(sesiones) == 2  # UNA sesión por paso, nunca compartida.
+    assert sesiones[0] is not sesiones[1]
+    # el rollback quedó AISLADO a UNA sola sesión (la del paso que falló).
+    assert [s.rolled_back for s in sesiones].count(True) == 1
+    # un vault por sesión, ligado cada uno a SU sesión (sin importar el orden).
+    assert len(vaults) == 2
+    assert {v.session for v in vaults} == set(sesiones)
+    # el paso B (que no falló) persistió su `done`: no lo arrastró el rollback de A.
+    estados_b = [c["status"] for c in deps.step_calls if c.get("seq") == 2]
+    assert estados_b == ["running", "done"]
+
+
+# ---------------------------------------------------------------------------
+# BOTS-01: cancelación gobernando el trabajo activo
+# ---------------------------------------------------------------------------
+
+
+async def test_cancel_durante_tool_sintetica_impide_el_siguiente_paso(
+    make_llm_router, make_deps, _patch_agent, make_event, wrapped_registry
+):
+    """BOTS-01: si el usuario cancela MIENTRAS corre una tool de un paso (aquí,
+    un `Agent` sintético que levanta el flag de cancelación a mitad de su
+    turno), el paso SIGUIENTE no se ejecuta: `run()` relee
+    `cancellation_requested()` ANTES de lanzar cada ola, marca lo que faltaba
+    `skipped` y retorna sin escribir ningún estado terminal (la API ya dejó
+    `cancelled`)."""
+    cancelado = {"flag": False}
+
+    def _cancellation_requested() -> bool:
+        return cancelado["flag"]
+
+    class _AgentConToolSintetica:
+        def __init__(self, llm_router: Any, registry: Any, *, model_alias: Any = None) -> None:
+            del llm_router, registry, model_alias
+
+        async def run_turn(self, *, ctx, persona, history, user_text, flags):
+            del ctx, persona, history, flags
+            # tool sintética: corre un rato y, a mitad, el usuario cancela.
+            await asyncio.sleep(0.01)
+            cancelado["flag"] = True
+            yield make_event(type="text_delta", text=f"resultado de {user_text}")
+
+    _patch_agent(_AgentConToolSintetica)
+    router = make_llm_router(responses=["no debería sintetizarse"])
+    deps = make_deps(cancellation_requested=_cancellation_requested)
+    orchestrator = Orchestrator(router, wrapped_registry)
+    mission = _mission(
+        plan=[
+            {"seq": 1, "agente": "research", "instruccion": "uno", "depende_de": []},
+            {"seq": 2, "agente": "research", "instruccion": "dos", "depende_de": [0]},
+        ]
+    )
+
+    await orchestrator.run(mission, deps)
+
+    # el paso 2 NUNCA se ejecutó: solo se abrió la sesión del paso 1.
+    assert len(deps.sessions_opened) == 1
+    estados_2 = [c["status"] for c in deps.step_calls if c.get("seq") == 2]
+    assert estados_2 == ["skipped"]  # quedó skipped, no running/done.
+    assert deps.mission_calls == []  # sin estado terminal (la API ya dejó cancelled).
+    assert router.provider.requests == []  # ni replan ni síntesis.
 
 
 async def test_paso_reanudado_sin_tool_disponible_incluye_timing_en_usage(

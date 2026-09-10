@@ -25,7 +25,10 @@ dependencies = [
 # Remote control stays optional: the companion loads platform backends lazily
 # and every non-remote action continues to work without these packages.
 [project.optional-dependencies]
-remote-input = ["pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'"]
+remote-input = [
+    "pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10.3.1; sys_platform == 'darwin'",
+]
 remote-control = [
     "pyobjc-framework-Quartz>=10.3.1; sys_platform == 'darwin'",
     "mss>=10.0; sys_platform != 'darwin'",

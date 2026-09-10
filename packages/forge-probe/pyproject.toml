@@ -29,6 +29,10 @@ build-backend = "hatchling.build"
 # `bench` va aquí a propósito: `runner.cargar_banco` lo busca como módulo
 # importable, así que dejarlo fuera del wheel haría que el banco existiera en el
 # árbol de fuentes y desapareciera en cuanto el paquete se instalara.
+#
+# Hatchling empaqueta el árbol completo del paquete (`*.py` y artefactos
+# junto a él). NO uses force-include de `bench/checks` ni `bench/oraculos`:
+# eso duplica rutas en el wheel (`check_api_usage_desglose.py`, `_repo.ts`).
 packages = ["edecan_forge_probe", "bench"]
 
 [tool.pytest.ini_options]

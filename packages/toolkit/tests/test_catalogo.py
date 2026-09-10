@@ -7,8 +7,10 @@ from edecan_toolkit import get_all_tools
 NOMBRES_PINNED = [
     "crear_recordatorio",
     "listar_recordatorios",
+    "avisar_avance",
     "guardar_memoria",
     "cambiar_rutina_gym",
+    "editar_entrenamiento_gym",
     "agenda_eventos",
     "crear_evento",
     "buscar_correo",
@@ -23,6 +25,8 @@ NOMBRES_PINNED = [
     "buscar_web",
     "generar_contenido",
     "publicar_social",
+    "estado_conectores_sociales",
+    "listar_borradores_sociales",
     "preguntar_al_usuario",
     "probar_notificaciones_push",
     "usar_computadora",
@@ -42,8 +46,8 @@ NOMBRES_PINNED = [
 def test_get_all_tools_devuelve_las_herramientas_con_los_nombres_pinned():
     nombres = [tool.name for tool in get_all_tools()]
     assert nombres == NOMBRES_PINNED
-    assert len(nombres) == 31
-    assert len(set(nombres)) == 31  # sin duplicados
+    assert len(nombres) == 35
+    assert len(set(nombres)) == 35  # sin duplicados
 
 
 def test_cada_tool_tiene_name_description_e_input_schema_validos():
@@ -82,6 +86,7 @@ def test_flags_requeridos_pinned():
     )
     sin_flags = set(NOMBRES_PINNED) - {
         "cambiar_rutina_gym",
+        "editar_entrenamiento_gym",
         "publicar_social",
         "usar_computadora",
         "leer_mensajes_personales",

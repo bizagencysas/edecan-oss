@@ -26,6 +26,7 @@ import asyncio
 import json
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -505,6 +506,22 @@ async def test_run_scheduler_tick_aisla_fallos_por_tipo(monkeypatch: pytest.Monk
     assert encoladas == ["automation_scan"]
 
 
+def test_limpiar_archivos_viejos_es_diario_no_por_tick() -> None:
+    """La limpieza de archivos es un barrido diario: nunca en los ticks cortos
+    (30s/60s/300s) y con un intervalo exacto de 24 h."""
+    assert "limpiar_archivos_viejos" in worker_loop.JOBS_PERIODICOS_DIARIOS
+    assert worker_loop.SCHEDULER_INTERVAL_LIMPIAR_ARCHIVOS_SECONDS == 24 * 3600.0
+    todos = (
+        worker_loop.JOBS_PERIODICOS_30S
+        + worker_loop.JOBS_PERIODICOS_60S_AUTOMATIONS
+        + worker_loop.JOBS_PERIODICOS_60S_PERSISTENT
+        + worker_loop.JOBS_PERIODICOS_300S
+        + worker_loop.JOBS_PERIODICOS_3600S_VIDA_DIGITAL
+        + worker_loop.JOBS_PERIODICOS_SEMANALES
+    )
+    assert "limpiar_archivos_viejos" not in todos
+
+
 # ---------------------------------------------------------------------------
 # run_forever — loop completo con asyncpg fakeado
 # ---------------------------------------------------------------------------
@@ -661,3 +678,157 @@ def test_has_real_embeddings_provider_true_con_config_real() -> None:
         EMBEDDINGS_MODEL="text-embedding-3-small",
     )
     assert worker_loop._has_real_embeddings_provider(settings) is True
+
+
+# ---------------------------------------------------------------------------
+# on_usage del router local → usage_events (kind="llm_tokens")
+# ---------------------------------------------------------------------------
+#
+# `_build_llm_router` cablea `on_usage=make_llm_usage_persister(tenant_getter=
+# _job_tenant_ctx.get)`. El tenant sale del ContextVar que `_process_job` fija
+# alrededor de cada handler (task-local: dos jobs concurrentes no se pisan) y
+# el persister abre su propia sesión de DB por completion. Estos tests usan
+# fakes de `edecan_api.deps` (el persister vive allá) — nunca Postgres.
+
+
+class _FakeUsageRepo:
+    events: list[dict[str, Any]] = []
+
+    def __init__(self, session: Any) -> None:
+        self.session = session
+
+    async def add_usage_event(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        kind: str,
+        quantity: float,
+        meta: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
+    ) -> None:
+        _FakeUsageRepo.events.append(
+            {
+                "tenant_id": tenant_id,
+                "kind": kind,
+                "quantity": quantity,
+                "meta": meta or {},
+                "cost_usd": cost_usd,
+            }
+        )
+
+
+async def test_build_llm_router_cablea_on_usage() -> None:
+    router = worker_loop._build_llm_router(SimpleNamespace())
+
+    assert getattr(router, "_on_usage", None) is not None
+    await router.aclose()
+
+
+async def test_process_job_pone_y_restaura_el_tenant_del_contextvar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    visto: dict[str, Any] = {}
+
+    async def fake_handler(env: Any, deps: Any) -> None:
+        visto["tenant_ctx"] = worker_loop._job_tenant_ctx.get()
+
+    monkeypatch.setitem(handlers_module.HANDLERS, "ingest_file", fake_handler)
+    job = _job_row(job_type="ingest_file")
+    jobs = {job["id"]: job}
+    pool = FakePool(jobs)
+
+    await worker_loop._process_job(pool, SimpleNamespace(), dict(job))
+
+    assert visto["tenant_ctx"] == job["tenant_id"]
+    # Al salir del handler el ContextVar se restauró (no filtra al siguiente job).
+    assert worker_loop._job_tenant_ctx.get() is None
+
+
+async def test_on_usage_del_worker_persiste_con_tenant_del_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from edecan_api import deps as api_deps
+    from edecan_llm.base import Usage
+
+    _FakeUsageRepo.events = []
+
+    @asynccontextmanager
+    async def fake_get_session(tenant_id: uuid.UUID | None):
+        yield object()
+
+    monkeypatch.setattr(api_deps, "get_session", fake_get_session)
+    monkeypatch.setattr(api_deps, "SqlRepo", _FakeUsageRepo)
+
+    router = worker_loop._build_llm_router(SimpleNamespace())
+    tenant_id = uuid.uuid4()
+    token = worker_loop._job_tenant_ctx.set(tenant_id)
+    try:
+        await router._on_usage(
+            "@cf/meta/llama-4-scout-17b-16e-instruct",
+            Usage(input_tokens=5, output_tokens=2),
+        )
+    finally:
+        worker_loop._job_tenant_ctx.reset(token)
+        await router.aclose()
+
+    assert len(_FakeUsageRepo.events) == 1
+    event = _FakeUsageRepo.events[0]
+    assert event["tenant_id"] == tenant_id
+    assert event["kind"] == "llm_tokens"
+    assert event["quantity"] == 7.0
+    assert event["meta"]["model"] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert event["meta"]["input_tokens"] == 5
+    assert event["meta"]["output_tokens"] == 2
+
+
+async def test_on_usage_del_worker_sin_tenant_no_persiste(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from edecan_api import deps as api_deps
+    from edecan_llm.base import Usage
+
+    _FakeUsageRepo.events = []
+
+    @asynccontextmanager
+    async def fake_get_session(tenant_id: uuid.UUID | None):
+        yield object()
+
+    monkeypatch.setattr(api_deps, "get_session", fake_get_session)
+    monkeypatch.setattr(api_deps, "SqlRepo", _FakeUsageRepo)
+
+    router = worker_loop._build_llm_router(SimpleNamespace())
+    try:
+        await router._on_usage("m", Usage(input_tokens=1, output_tokens=1))
+    finally:
+        await router.aclose()
+
+    assert _FakeUsageRepo.events == []
+
+
+async def test_on_usage_del_worker_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from edecan_api import deps as api_deps
+    from edecan_llm.base import Usage
+
+    class RepoQueExplota:
+        def __init__(self, session: Any) -> None:
+            self.session = session
+
+        async def add_usage_event(self, **kwargs: Any) -> None:
+            raise RuntimeError("db caída")
+
+    @asynccontextmanager
+    async def fake_get_session(tenant_id: uuid.UUID | None):
+        yield object()
+
+    monkeypatch.setattr(api_deps, "get_session", fake_get_session)
+    monkeypatch.setattr(api_deps, "SqlRepo", RepoQueExplota)
+
+    router = worker_loop._build_llm_router(SimpleNamespace())
+    token = worker_loop._job_tenant_ctx.set(uuid.uuid4())
+    try:
+        await router._on_usage("m", Usage(input_tokens=1, output_tokens=1))
+    finally:
+        worker_loop._job_tenant_ctx.reset(token)
+        await router.aclose()

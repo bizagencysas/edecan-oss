@@ -38,6 +38,10 @@ export interface ComputerSessionCreateInput {
   mode?: string;
 }
 
+function isNotFound(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404;
+}
+
 async function rawFetch(path: string, init: RequestInit): Promise<Response> {
   const headers = new Headers(init.headers);
   const token = getAccessToken();
@@ -149,4 +153,4 @@ export async function endComputerSession(id: string): Promise<ComputerSession> {
   return apiJson<ComputerSession>(`/v1/computer/sessions/${id}/end`, { method: "POST" });
 }
 
-export { ApiError };
+export { ApiError, isNotFound };

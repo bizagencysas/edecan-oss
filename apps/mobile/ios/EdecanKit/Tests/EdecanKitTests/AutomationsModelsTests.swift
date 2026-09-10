@@ -122,12 +122,11 @@ struct AutomationsModelsTests {
         #expect(automatizacion.hookSecret == "un-secreto-de-un-solo-uso")
     }
 
-    @Test func triggerDeKindDesconocidoLanzaError() {
-        #expect(throws: (any Error).self) {
-            _ = try APIClient.crearDecoder().decode(
-                AutomationTrigger.self, from: Data(#"{"kind": "algo_nuevo"}"#.utf8)
-            )
-        }
+    @Test func triggerDeKindDesconocidoDecodificaComoUnknown() throws {
+        let trigger = try APIClient.crearDecoder().decode(
+            AutomationTrigger.self, from: Data(#"{"kind": "algo_nuevo"}"#.utf8)
+        )
+        #expect(trigger == .unknown)
     }
 
     @Test func decodificaListaDeAutomatizaciones() throws {

@@ -98,6 +98,11 @@ _PUSH_DATA_KEYS = frozenset(
         "artifact_id",
         "resource_id",
         "deeplink",
+        "sender_id",
+        "sender_display_name",
+        "avatar_shape",
+        "avatar_fill",
+        "avatar_accent",
     }
 )
 _MAX_PUSH_DATA_VALUE_CHARS = 512
@@ -219,6 +224,8 @@ async def enviar_apns(
     *,
     data: Mapping[str, str] | None = None,
     category: str | None = None,
+    thread_id: str | None = None,
+    mutable_content: bool = False,
 ) -> httpx.Response:
     """`POST /3/device/{push_token}` de APNs con un JWT de proveedor firmado
     ES256 con la `.p8` del propio tenant.
@@ -248,6 +255,10 @@ async def enviar_apns(
     aps: dict[str, Any] = {"alert": {"title": titulo, "body": cuerpo}, "sound": "default"}
     if category:
         aps["category"] = category
+    if thread_id:
+        aps["thread-id"] = thread_id
+    if mutable_content:
+        aps["mutable-content"] = 1
     body: dict[str, Any] = {"aps": aps}
     body.update(_normalizar_data_push(data))
 
@@ -469,6 +480,8 @@ async def _despachar_a_dispositivo(
     tenant_id: UUID,
     user_id: UUID,
     category: str | None = None,
+    thread_id: str | None = None,
+    mutable_content: bool = False,
 ) -> bool:
     """`True` si el proveedor confirmó la entrega (HTTP 200). Nunca lanza:
     dependencia faltante, red caída, o cualquier otro error del proveedor
@@ -515,9 +528,26 @@ async def _despachar_a_dispositivo(
     try:
         if plataforma == "apns":
             response = (
-                await enviar_apns(cred, push_token, titulo, cuerpo, data=data, category=category)
+                await enviar_apns(
+                    cred,
+                    push_token,
+                    titulo,
+                    cuerpo,
+                    data=data,
+                    category=category,
+                    thread_id=thread_id,
+                    mutable_content=mutable_content,
+                )
                 if data
-                else await enviar_apns(cred, push_token, titulo, cuerpo, category=category)
+                else await enviar_apns(
+                    cred,
+                    push_token,
+                    titulo,
+                    cuerpo,
+                    category=category,
+                    thread_id=thread_id,
+                    mutable_content=mutable_content,
+                )
             )
             statuses_invalidos = _APNS_TOKEN_INVALIDO_STATUSES
         else:
@@ -597,6 +627,8 @@ async def enviar_push_a_usuario(
     cuerpo: str,
     data: Mapping[str, str] | None = None,
     category: str | None = None,
+    thread_id: str | None = None,
+    mutable_content: bool = False,
 ) -> ResultadoEnvioPush:
     """Envía un push a TODOS los dispositivos `active` de `user_id` que
     tengan `push_token` registrado, despachando por `push_platform`.
@@ -662,6 +694,8 @@ async def enviar_push_a_usuario(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     category=category,
+                    thread_id=thread_id,
+                    mutable_content=mutable_content,
                 )
                 if exito:
                     enviados += 1

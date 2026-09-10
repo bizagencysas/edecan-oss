@@ -461,14 +461,17 @@ class ServidorOpencode:
         prompt, etc.) -- generoso a propósito porque un modelo pensando
         puede tardar; ``eventos()`` usa su propia política de timeout, ver
         ese método.
+
+        El directorio se valida ANTES de buscar el binario: un cwd que no
+        existe es un error de la llamada, no "falta opencode".
         """
 
-        binario = _ubicar_binario(ruta_binario)
         directorio = Path(directorio_trabajo).resolve()
         if not directorio.is_dir():
             raise ValueError(
                 f"El directorio de trabajo no existe o no es una carpeta: {directorio}"
             )
+        binario = _ubicar_binario(ruta_binario)
 
         # Ver el docstring de _argv_y_flags_lanzamiento -- ahí vive el
         # porqué completo (precedente del .cmd, CREATE_NO_WINDOW,

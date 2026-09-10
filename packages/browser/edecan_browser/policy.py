@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -238,13 +239,22 @@ async def check_navigation(
         )
 
     hostname = partes.hostname.lower()
-    if _host_requiere_via_autorizada(hostname):
+    perfil_dueno = bool(
+        getattr(settings, "EDECAN_BROWSER_PROFILE", "")
+        or os.environ.get("EDECAN_BROWSER_PROFILE", "")
+    )
+    if _host_requiere_via_autorizada(hostname) and not perfil_dueno:
         return PolicyResult(
             False,
             "El extractor web genérico no hace scraping de LinkedIn. Edecán sí puede crear "
             "posts e imágenes; para leer o publicar usa una integración oficial autorizada "
             "o una sesión local ya abierta con confirmación.",
         )
+    if _host_requiere_via_autorizada(hostname) and perfil_dueno:
+        # El perfil persistente del dueño (EDECAN_BROWSER_PROFILE) ES la
+        # "sesión local ya abierta" de este bloque: Edecán navega LinkedIn con
+        # la identidad del dueño, en su propio navegador del box.
+        logger.info("check_navigation: %s permitido (perfil persistente del dueño)", hostname)
 
     if _RUTA_TRANSACCIONAL_RE.search(url):
         return PolicyResult(
@@ -264,9 +274,17 @@ async def check_navigation(
     user_agent = str(_valor(settings, "BROWSER_USER_AGENT", _USER_AGENT_DEFECTO))
     timeout = float(_valor(settings, "BROWSER_TIMEOUT_SECONDS", _TIMEOUT_DEFECTO_SEGUNDOS))
     origin = f"{partes.scheme}://{partes.netloc}"
+    perfil_dueno = bool(
+        getattr(settings, "EDECAN_BROWSER_PROFILE", "")
+        or os.environ.get("EDECAN_BROWSER_PROFILE", "")
+    )
     cache = robots_cache if robots_cache is not None else _CACHE_GLOBAL
     permitido = await cache.permite(origin=origin, url=url, user_agent=user_agent, timeout=timeout)
-    if not permitido:
+    if not permitido and not perfil_dueno:
         return PolicyResult(False, f"El robots.txt de {partes.netloc} no permite navegar esa ruta.")
+    if not permitido and perfil_dueno:
+        # El navegador PROPIO del dueño (perfil persistente con su sesión) no
+        # es un scraper: robots.txt no gobierna su lectura de vida digital.
+        logger.info("robots.txt de %s ignorado (perfil persistente del dueño)", partes.netloc)
 
     return PolicyResult(True)

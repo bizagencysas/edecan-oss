@@ -95,7 +95,9 @@ async def test_advanced_ide_accepts_ephemeral_desktop_capability_only_on_loopbac
 
 
 async def test_advanced_ide_rejects_wrong_desktop_capability_on_loopback(app, test_settings):
-    test_settings.EDECAN_LOCAL_MODE = True
+    # El bypass de dueño-JWT solo aplica en modo local; este test valida el
+    # gate de desktop-capability, que ahora vive en modo HOSTED.
+    test_settings.EDECAN_LOCAL_MODE = False
     _, _, headers = _identity()
     headers["X-Edecan-Desktop-Capability"] = "wrong-desktop-capability"
 
@@ -106,7 +108,7 @@ async def test_advanced_ide_rejects_wrong_desktop_capability_on_loopback(app, te
 
 
 async def test_advanced_ide_never_accepts_desktop_capability_from_lan(app, test_settings):
-    test_settings.EDECAN_LOCAL_MODE = True
+    test_settings.EDECAN_LOCAL_MODE = False
     _, _, headers = _identity()
     headers["X-Edecan-Desktop-Capability"] = "test-desktop-capability"
 

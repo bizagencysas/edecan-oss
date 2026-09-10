@@ -19,6 +19,12 @@ final class TabRouter {
     /// que llama a `consumirConversacionPendiente()` y abre esa conversación
     /// con `ChatViewModel.abrirConversacion(id:client:)`.
     var conversacionPendiente: ConversacionSolicitada?
+    /// Deeplink de push de BOT (`agent_bot_message`): conversación de worker a
+    /// abrir DIRECTAMENTE en la pestaña Bots. `BotsChatsView` solo la limpia
+    /// después de resolverla contra un bot cargado; una carga fallida no debe
+    /// perder la navegación pendiente. Identidad por push (AUD-2): re-tocar
+    /// el MISMO push re-dispara aunque la conversación sea la misma.
+    var botConversacionPendiente: BotConversacionPendiente?
     var abrirVozPendiente = false
     var presentacion: Presentacion?
 
@@ -56,6 +62,11 @@ final class TabRouter {
         let conversationId: String
     }
 
+    struct BotConversacionPendiente: Equatable {
+        let id = UUID()
+        let conversationId: String
+    }
+
     func pedir(_ texto: String) {
         solicitudPendiente = SolicitudRapida(texto: texto)
         seleccion = .edecan
@@ -82,6 +93,22 @@ final class TabRouter {
     func abrirConversacionDesdeNotificacion(_ conversationId: String) {
         conversacionPendiente = ConversacionSolicitada(conversationId: conversationId)
         seleccion = .edecan
+    }
+
+    /// Push de BOT: pestaña Bots + conversación de worker pendiente. La
+    /// lista de bots la consume y abre `BotChatView` directo. Identidad por
+    /// push (AUD-2): re-tocar el MISMO push re-dispara aunque la conversación
+    /// sea la misma.
+    func abrirBotDesdeNotificacion(_ conversationId: String) {
+        botConversacionPendiente = BotConversacionPendiente(conversationId: conversationId)
+        seleccion = .equipo
+    }
+
+    /// Confirma una apertura ya resuelta. La comparación evita que una tarea
+    /// vieja borre un push más reciente que llegó mientras cargaba la lista.
+    func confirmarAperturaBot(_ pendiente: BotConversacionPendiente) {
+        guard botConversacionPendiente == pendiente else { return }
+        botConversacionPendiente = nil
     }
 
     func consumirConversacionPendiente() -> ConversacionSolicitada? {
@@ -162,6 +189,10 @@ struct RootTabView: View {
             }
         }
         .tint(EdecanTheme.morado)
+        // El IDE ya NO fuerza light: respeta el esquema del sistema como el
+        // resto de la app (el dueño lo reportó como bug — tocar IDE en dark
+        // cambiaba toda la app a light).
+        .preferredColorScheme(nil)
         .environment(router)
         .task { await session.cargarMobileConfig() }
         .task {
@@ -213,40 +244,61 @@ struct RootTabView: View {
         }
         .onChange(of: push.rutaPendiente) { _, route in
             guard let route else { return }
-            switch route {
-            case .assistant:
-                // Frente 3 (deeplink): si el push traía `chat_id`, abre esa
-                // conversación puntual; si no, comportamiento de siempre
-                // (solo cambia a la pestaña del asistente).
-                if let conversationId = push.conversacionPendiente {
-                    router.abrirConversacionDesdeNotificacion(conversationId)
-                } else {
-                    router.seleccion = .edecan
-                }
-            case .activity:
-                // Frente 6 (deeplink): una llamada ENTRANTE abre su vista en
-                // vivo encima de Actividad. Una misión fallida o terminada
-                // abre su detalle: Actividad sola es una grilla de atajos y
-                // no muestra el trabajo. El resto (automatización,
-                // recordatorio, resumen de llamada ya terminada) se queda
-                // con el comportamiento de siempre.
-                router.seleccion = .activity
-                if let callId = push.llamadaPendiente {
-                    router.mostrarLlamadaEnVivo(callId: callId)
-                } else if let missionId = push.misionPendiente {
-                    router.mostrarMisionDesdeNotificacion(missionId: missionId)
-                }
-            case .settings: router.seleccion = .settings
-            case .create:
-                router.pedir("Crea ")
-            case .remote:
-                router.mostrarRemoto()
-            }
-            push.rutaPendiente = nil
-            push.conversacionPendiente = nil
-            push.llamadaPendiente = nil
-            push.misionPendiente = nil
+            // FIX crash en frío (watchdog): un tap de push mientras la app
+            // arranca aplicaba la navegación ANTES de restaurar la sesión,
+            // en carrera con el bootstrap (carga de historial + layout).
+            // En frío se retiene la ruta y se aplica cuando la sesión ya
+            // está válida (el onChange de abajo la re-despacha).
+            guard session.sesionValida else { return }
+            aplicarRutaDeNotificacion(route)
         }
+        .onChange(of: session.sesionValida) { _, valida in
+            guard valida, let route = push.rutaPendiente else { return }
+            aplicarRutaDeNotificacion(route)
+        }
+        // R-10: respaldo para rutas que llegaron ANTES de que esta vista
+        // montara (tap del push durante onboarding/arranque): los dos
+        // onChange de arriba no disparan si el valor ya era true al montar.
+        .task {
+            guard session.sesionValida, let route = push.rutaPendiente else { return }
+            aplicarRutaDeNotificacion(route)
+        }
+    }
+
+    /// Aplica la ruta pedida por una notificación (tap en frío o en caliente)
+    /// y limpia los pendientes. Solo se llama con la sesión YA válida.
+    @MainActor
+    private func aplicarRutaDeNotificacion(_ route: NotificationRoute) {
+        switch route {
+        case .assistant:
+            if let conversationId = push.conversacionPendiente {
+                router.abrirConversacionDesdeNotificacion(conversationId)
+            } else {
+                router.seleccion = .edecan
+            }
+        case .botChat:
+            if let conversationId = push.conversacionPendiente {
+                router.abrirBotDesdeNotificacion(conversationId)
+            } else {
+                router.seleccion = .equipo
+            }
+        case .activity:
+            router.seleccion = .activity
+            if let callId = push.llamadaPendiente {
+                router.mostrarLlamadaEnVivo(callId: callId)
+            } else if let missionId = push.misionPendiente {
+                router.mostrarMisionDesdeNotificacion(missionId: missionId)
+            }
+        case .settings: router.seleccion = .settings
+        case .create:
+            router.pedir("Crea ")
+        case .remote:
+            router.mostrarRemoto()
+        }
+        push.rutaPendiente = nil
+        push.conversacionPendiente = nil
+        push.llamadaPendiente = nil
+        push.misionPendiente = nil
     }
 
     private var tabsVisibles: [ResolvedMobileTab] {

@@ -47,6 +47,25 @@ public struct GymPlan: Codable, Sendable, Equatable {
     }
 }
 
+/// Check-in del día (`GET /v1/gym/plan/today` → `{"checkin_hoy": GymCheckinHoy|null}`).
+/// Fuente de verdad del servidor para que la tarjeta "¿Vas a ir al gym?" NO
+/// reaparezca tras responder y reabrir la app: si hoy ya hay check-in (Sí o
+/// No), la tarjeta queda como respondida aunque el estado local se pierda
+/// (re-instalación, otro dispositivo, cuenta distinta).
+public struct GymCheckinHoy: Codable, Sendable, Equatable {
+    /// `"YYYY-MM-DD"` del check-in.
+    public let fecha: String
+    /// `"si"` o `"no"`.
+    public let respuesta: String
+    /// Sesión creada por un "Sí" (opcional; siempre `nil` con "No").
+    public let sessionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case fecha, respuesta
+        case sessionId = "session_id"
+    }
+}
+
 /// Una serie ya registrada dentro de `GymSession.series`.
 /// `en` es la cadena opaca que manda el backend en la clave `"en"` — se
 /// conserva tal cual, sin interpretarse en el cliente.

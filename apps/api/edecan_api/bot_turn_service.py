@@ -11,21 +11,194 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from datetime import datetime
 from typing import Any
 
+from edecan_core.bot_harness import (
+    AUTONOMY_LEVEL_ASK,
+    AUTONOMY_LEVEL_FULL,
+    AUTONOMY_LEVELS,
+    append_skills_to_persona,
+    autonomy_allows_operation,
+    bot_preapproved_tool_calls,
+    build_skills_context,
+    mcp_preapproved_tokens,
+    parse_mcp_grants,
+    tool_local_operation,
+    worker_chat_extras,
+)
 from edecan_core.bot_persona import persona_from_worker, worker_display_name
+from edecan_core.bot_registry import build_worker_registry
 from edecan_core.companion_access import companion_para
+from edecan_core.safety import redact
 from edecan_core.session_store import load_unified_session
 from edecan_core.tools import ToolContext, ToolRegistry
 from fastapi import HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edecan_api.chat_context import ChatContextLimits, build_contextual_history
+from edecan_api.chat_context import (
+    ChatContextLimits,
+    build_contextual_history,
+    resumen_llm_hilo_anterior,
+)
 from edecan_api.config import Settings
 from edecan_api.deps import CurrentUser
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MESSAGE_LIST_LIMIT = 50
+MAX_MESSAGE_LIST_LIMIT = 200
+
+
+def clamp_message_limit(limit: int | None) -> int:
+    """Tope del GET de historial visible. No recorta el contexto del modelo."""
+    if limit is None:
+        return DEFAULT_MESSAGE_LIST_LIMIT
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return DEFAULT_MESSAGE_LIST_LIMIT
+    return max(1, min(n, MAX_MESSAGE_LIST_LIMIT))
+
+
+def _worker_autonomy_level(worker: Mapping[str, Any]) -> str:
+    """Nivel de autonomía efectivo del worker para el turno de chat (BOTS-02).
+
+    Mismo contrato que el runner headless (`run_persistent_agent`): vacío o
+    desconocido cae a `ask` (solo lectura, fail-closed) — nunca a un nivel más
+    permisivo por un campo ausente o un typo del dueño.
+    """
+    nivel = str(worker.get("autonomy_level") or "").strip()
+    return nivel if nivel in AUTONOMY_LEVELS else AUTONOMY_LEVEL_ASK
+
+
+def _filter_registry_by_autonomy(registry: ToolRegistry, autonomy_level: str) -> ToolRegistry:
+    """Restringe el registry de tools del turno de chat por nivel de autonomía.
+
+    `full` conserva todo lo que `build_worker_registry` ya autorizó. Los niveles
+    restrictivos descartan, ANTES de ofrecerlas al modelo, toda tool cuya
+    operación local no esté permitida (una tool no clasificable → `None` →
+    rechazada, fail-closed). Espeja `edecan_automations.runner` sin importar el
+    paquete de automatizaciones en el paquete API.
+    """
+    if autonomy_level == AUTONOMY_LEVEL_FULL:
+        return registry
+    # Dobles de prueba pueden inyectar un registry que NO es `ToolRegistry`
+    # (p. ej. `object()` en `test_bot_turn_service`): no hay herramientas que
+    # filtrar ahí, se conserva tal cual. En producción `build_worker_registry`
+    # siempre devuelve un `ToolRegistry` real.
+    if not hasattr(registry, "all"):
+        return registry
+    restringido = ToolRegistry()
+    for tool in registry.all():
+        operation = tool_local_operation(
+            name=tool.name,
+            dangerous=bool(
+                getattr(tool, "intrinsically_dangerous", getattr(tool, "dangerous", False))
+            ),
+            category=getattr(tool, "category", None),
+        )
+        if autonomy_allows_operation(autonomy_level, operation):
+            restringido.register(tool)
+    return restringido
+
+
+def _filter_extra_tools_by_autonomy(extra_tools: list[Any], autonomy_level: str) -> list[Any]:
+    """Filtra las tools extra (MCP dinámicas + persona) por nivel de autonomía
+    ANTES de ofrecerlas al modelo (BOTS-02). `full` no filtra nada; los niveles
+    restrictivos descartan toda tool cuya operación local no esté permitida (una
+    tool MCP no clasificable → `None` → rechazada, fail-closed)."""
+    if autonomy_level == AUTONOMY_LEVEL_FULL:
+        return list(extra_tools)
+    filtradas: list[Any] = []
+    for tool in extra_tools:
+        name = str(getattr(tool, "name", "") or "")
+        operation = tool_local_operation(
+            name=name,
+            input_schema=getattr(tool, "input_schema", None),
+            dangerous=bool(
+                getattr(tool, "intrinsically_dangerous", getattr(tool, "dangerous", False))
+            ),
+            category=getattr(tool, "category", None),
+        )
+        if autonomy_allows_operation(autonomy_level, operation):
+            filtradas.append(tool)
+    return filtradas
+
+
+def _conversation_epoch_key(*, tenant_id: uuid.UUID, conversation_id: uuid.UUID) -> str:
+    return f"conversation_epoch:{tenant_id}:{conversation_id}"
+
+
+async def increment_conversation_epoch(
+    redis_client: Any, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+) -> int:
+    """Incrementa el epoch de una conversación (BOTS-09) para invalidar
+    productores y refreshes viejos tras `/clear` o DELETE del chat de un bot.
+
+    Redis es el único almacén compartido entre procesos (no puede ser un dict
+    módulo-nivel, ver la restricción de réplica única en `persistent_agents`).
+    El epoch es un contador de invalidación de caché, no una fuente de verdad
+    durable: si Redis se pierde, el contador reinicia — aceptable para su rol.
+    """
+    key = _conversation_epoch_key(tenant_id=tenant_id, conversation_id=conversation_id)
+    return int(await redis_client.incr(key))
+
+
+async def get_conversation_epoch(
+    redis_client: Any, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
+) -> int:
+    """Epoch actual de la conversación (0 si nunca se limpió/borró)."""
+    key = _conversation_epoch_key(tenant_id=tenant_id, conversation_id=conversation_id)
+    raw = await redis_client.get(key)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _encode_message_cursor(created_at: Any, message_id: Any) -> str:
+    """Cursor opaco de paginación (BOTS-12): el par `(created_at, id)` del
+    mensaje más viejo de la página, serializado para que el cliente lo trate
+    como opaco y lo devuelva tal cual en el siguiente `before`."""
+    iso = created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
+    return f"{iso},{message_id}"
+
+
+def _decode_message_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Inverso de `_encode_message_cursor`; 422 si el cursor está malformado."""
+    try:
+        iso, id_part = cursor.split(",", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Cursor de historial inválido.") from exc
+    try:
+        # El offset del timestamp (p. ej. `+00:00`) viaja dentro del query
+        # string y el cliente/form lo decodifica a un espacio en el camino.
+        # Restaurarlo antes de parsear: sin esto, el cursor de primera página
+        # (`9999-12-31T23:59:59.999999+00:00,...`) llegaba como
+        # `...999999 00:00,...` y `fromisoformat` lo rechazaba con 422.
+        iso = iso.replace(" ", "+")
+        return datetime.fromisoformat(iso), uuid.UUID(id_part)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Cursor de historial inválido.") from exc
+
+
+async def _extra_bot_turn_tools(request: Request, user: CurrentUser) -> list[Any]:
+    """Persona tools + MCP del tenant (mismo contrato que el chat principal)."""
+    from edecan_api.deps import get_mcp_tools_for_tenant
+    from edecan_api.persona_tools import conversation_persona_tools
+
+    try:
+        mcp_tools = await get_mcp_tools_for_tenant(request, user)
+    except Exception:  # noqa: BLE001 - fail-open como `_extra_mcp_tools_or_empty`
+        logger.warning(
+            "get_mcp_tools_for_tenant lanzó en turno de bot; sigue sin MCP efímeras.",
+            exc_info=True,
+        )
+        mcp_tools = []
+    return [*conversation_persona_tools(), *mcp_tools]
+
 
 _WORKER_COLUMNS = (
     "id, tenant_id, user_id, name, purpose, workspace, display_name, avatar, "
@@ -34,64 +207,27 @@ _WORKER_COLUMNS = (
     "tools, permissions, memory, schedule, budget, status, enabled, relation, conversation_id"
 )
 
+def _redact_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_payload(item) for key, item in value.items()}
+    return value
 
-def build_worker_registry(
-    full_registry: ToolRegistry, worker: Mapping[str, Any], *, local_mode: bool = False
-) -> ToolRegistry:
-    """Registro de tools del bot.
 
-    En el Mac del dueño (companion presente) el bot recibe **TODO** el
-    registro — es un amigo con acceso total: buscar, navegar, archivos,
-    terminal, computadora, todo lo que Edecán sabe hacer. La idea del
-    producto es «los bots hacen de verdad todo» (grokbot.md), no un
-    workforce restringido que solo responde chat.
-
-    Sin companion (deploy remoto sin Mac): se respeta la lista declarada
-    por el bot y se excluyen las tools `dangerous` — sin humano presente no
-    hay flujo de confirmación que las cubra.
-    """
-    tenant_id = worker.get("tenant_id")
-    companion = companion_para(tenant_id) if tenant_id is not None else None
-    registry = ToolRegistry()
-    if companion is not None:
-        for tool in full_registry.all():
-            registry.register(tool)
-        logger.info(
-            "bot registry: %s COMPLETA con companion (%d tools)",
-            str(worker.get("id") or "")[:8],
-            len(registry.all()),
-        )
-        return registry
-    # En un runtime local single-owner (`EDECAN_LOCAL_MODE`) la propia Mac es
-    # el companion aunque el WebSocket/iOS Remoto esté desconectado — el
-    # registro completo no debe depender del factory. Sin esto el turno del
-    # bot caía a `tools=[]` y el bot decía "no tengo habilitado el canal".
-    if local_mode:
-        for tool in full_registry.all():
-            registry.register(tool)
-        logger.info(
-            "bot registry: %s COMPLETA local-mode (%d tools)",
-            str(worker.get("id") or "")[:8],
-            len(registry.all()),
-        )
-        return registry
-    # Sin companion (deploy remoto o Mac desconectada): se respeta la lista
-    # declarada por el bot y se excluyen las dangerous — PERO las herramientas
-    # de comunicación entre bots siempre son válidas: no necesitan la Mac.
-    for tool_name in worker.get("tools") or []:
-        tool = full_registry.get(str(tool_name))
-        if tool is None:
-            continue
-        if tool.dangerous:
-            continue
-        registry.register(tool)
-    for nombre_social in ("enviar_mensaje_bot", "listar_bots", "avisar_avance"):
-        # `avisar_avance` solo escribe en el chat PROPIO del bot — no toca la
-        # Mac ni terceros: válida también en deploy remoto.
-        tool = full_registry.get(nombre_social)
-        if tool is not None:
-            registry.register(tool)
-    return registry
+def _parse_tool_calls(raw: Any) -> list[Any] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(raw, list):
+        return raw
+    return None
 
 
 def _content_text(content: Any) -> str:
@@ -129,7 +265,7 @@ def normalize_stored_message(row: Mapping[str, Any]) -> dict[str, Any]:
         else:
             sender_id = content.get("agent_id") or "assistant"
             sender_name = sender_name or "Asistente"
-    return {
+    payload: dict[str, Any] = {
         "id": str(row.get("id")),
         "role": role,
         "text": _content_text(content),
@@ -147,12 +283,41 @@ def normalize_stored_message(row: Mapping[str, Any]) -> dict[str, Any]:
                 "de": str(content.get("de") or ""),
                 "goal": str(content.get("goal") or ""),
                 "cara": content.get("cara"),
+                **(
+                    {
+                        "assigned_worker_id": str(
+                            content.get("assigned_worker_id")
+                            or content.get("asignado_id")
+                            or ""
+                        ),
+                        "assigned_worker_name": str(
+                            content.get("assigned_worker_name")
+                            or content.get("asignado_nombre")
+                            or content.get("de")
+                            or ""
+                        ),
+                        **(
+                            {"motivo": str(content.get("motivo"))}
+                            if content.get("motivo")
+                            else {}
+                        ),
+                    }
+                    if content.get("evento") == "asignacion"
+                    else {}
+                ),
             }
             if content.get("kind") == "evento"
             else {}
         ),
         **({"adjuntos": content.get("attachments")} if content.get("attachments") else {}),
+        # Beats mid-turn (`avisar_avance`) persisten con kind=aviso para que iOS
+        # los pinte como «En vivo» al recargar el historial.
+        **({"kind": "aviso"} if content.get("kind") == "aviso" else {}),
     }
+    tool_calls = _parse_tool_calls(row.get("tool_calls"))
+    if tool_calls:
+        payload["tool_calls"] = _redact_payload(tool_calls)
+    return payload
 
 
 async def load_worker(
@@ -180,7 +345,25 @@ async def ensure_worker_conversation(
     user: CurrentUser,
     worker: Mapping[str, Any],
 ) -> uuid.UUID:
-    conversation_id = worker.get("conversation_id")
+    # The caller's worker mapping is only a snapshot. Lock and re-read the
+    # parent row so two first requests (including requests in different API
+    # processes) cannot each create and attach a different conversation.
+    current = await session.execute(
+        text(
+            "SELECT conversation_id FROM persistent_agents "
+            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id "
+            "FOR UPDATE"
+        ),
+        {
+            "tenant_id": str(user.tenant_id),
+            "user_id": str(user.user_id),
+            "id": str(worker["id"]),
+        },
+    )
+    current_row = current.mappings().first()
+    if current_row is None:
+        raise HTTPException(status_code=404, detail="Bot no encontrado.")
+    conversation_id = current_row["conversation_id"]
     if conversation_id is not None:
         return uuid.UUID(str(conversation_id))
     title = f"Bot: {worker_display_name(worker)}"
@@ -200,11 +383,13 @@ async def ensure_worker_conversation(
     await session.execute(
         text(
             "UPDATE persistent_agents SET conversation_id = :cid, updated_at = now() "
-            "WHERE tenant_id = :tenant_id AND id = :id"
+            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id "
+            "AND conversation_id IS NULL"
         ),
         {
             "cid": str(new_id),
             "tenant_id": str(user.tenant_id),
+            "user_id": str(user.user_id),
             "id": str(worker["id"]),
         },
     )
@@ -252,21 +437,105 @@ async def persist_chat_message(
     )
 
 
+async def persist_team_assignment_event(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    assignee: Mapping[str, Any],
+    reason: str,
+) -> None:
+    """Evento visible «Se lo pasé a X» antes del turno del bot elegido."""
+
+    nombre = worker_display_name(assignee)
+    motivo = (reason or "mejor coincidencia con tu pedido").strip()
+    worker_id = str(assignee.get("id") or "")
+    payload = {
+        "kind": "evento",
+        "evento": "asignacion",
+        "text": f"Se lo pasé a {nombre}",
+        "de": nombre,
+        "goal": motivo,
+        "assigned_worker_id": worker_id,
+        "assigned_worker_name": nombre,
+        "asignado_id": worker_id,
+        "asignado_nombre": nombre,
+        "motivo": motivo,
+        "cara": assignee.get("avatar"),
+    }
+    await session.execute(
+        text(
+            "INSERT INTO messages (id, tenant_id, conversation_id, role, content) "
+            "VALUES (gen_random_uuid(), :tenant_id, :cid, 'assistant', :content ::jsonb)"
+        ),
+        {
+            "tenant_id": str(tenant_id),
+            "cid": str(conversation_id),
+            "content": json.dumps(payload, ensure_ascii=False),
+        },
+    )
+
+
 async def list_normalized_messages(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     conversation_id: uuid.UUID,
-) -> list[dict[str, Any]]:
+    limit: int | None = None,
+    before: str | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Historial normalizado del chat del bot, paginable hacia atrás (BOTS-12).
+
+    Sin `before` (protocolo legacy) devuelve la lista plana de siempre: los
+    últimos `limit` mensajes en orden ascendente. Con `before` devuelve una
+    `HistoryPage` (`messages`, `next_cursor`, `has_more`) con los mensajes
+    ANTERIORES al cursor, en el mismo orden ascendente. El cursor es opaco:
+    el cliente lo devuelve tal cual en el siguiente `before`.
+    """
+    capped = clamp_message_limit(limit)
+    paginar = before is not None
+    # Se pide una fila extra solo al paginar, para saber si hay más sin una
+    # segunda consulta. El camino legacy conserva el `LIMIT` exacto de siempre.
+    fetch_limit = capped + 1 if paginar else capped
+    before_clause = ""
+    params: dict[str, Any] = {
+        "tenant_id": str(tenant_id),
+        "conversation_id": str(conversation_id),
+        "limit": fetch_limit,
+    }
+    if paginar:
+        before_created_at, before_id = _decode_message_cursor(before)
+        before_clause = "AND (created_at, id) < (:before_created_at, :before_id)"
+        params["before_created_at"] = before_created_at
+        params["before_id"] = before_id
     result = await session.execute(
         text(
-            "SELECT id, conversation_id, role, content, created_at "
+            "SELECT id, conversation_id, role, content, tool_calls, created_at FROM ("
+            "SELECT id, conversation_id, role, content, tool_calls, created_at "
             "FROM messages WHERE tenant_id = :tenant_id AND conversation_id = :conversation_id "
-            "ORDER BY created_at ASC"
+            f"{before_clause} "
+            "ORDER BY created_at DESC, id DESC "
+            "LIMIT :limit"
+            ") recientes ORDER BY created_at ASC, id ASC"
         ),
-        {"tenant_id": str(tenant_id), "conversation_id": str(conversation_id)},
+        params,
     )
-    return [normalize_stored_message(row) for row in result.mappings().all()]
+    rows = [normalize_stored_message(row) for row in result.mappings().all()]
+    if not paginar:
+        return rows
+    has_more = len(rows) > capped
+    # ACT-02: al paginar hacia atrás, la página son los `capped` mensajes MÁS
+    # NUEVOS de la ventana consultada (los pegados al cursor anterior):
+    # `rows[-capped:]`, no `rows[:capped]` (que devolvía los más viejos y
+    # perdía/duplicaba mensajes en el borde).
+    rows = rows[-capped:] if has_more else rows
+    next_cursor: str | None = None
+    if has_more and rows:
+        # El cursor es el mensaje MÁS VIEJO de la página (rows[0] en orden
+        # ascendente): la siguiente página trae estrictamente lo anterior a él.
+        oldest = rows[0]
+        next_cursor = _encode_message_cursor(oldest.get("created_at"), oldest.get("id"))
+    return {"messages": rows, "next_cursor": next_cursor, "has_more": has_more}
 
 
 async def stream_worker_turn(
@@ -284,6 +553,8 @@ async def stream_worker_turn(
     run_turn: bool = True,
     persist_user_message: bool = True,
     attachments: list[str] | None = None,
+    seleccion_modelo: str | None = None,
+    seleccion_esfuerzo: str | None = None,
 ) -> AsyncIterator[str]:
     """Ejecuta un turno real del worker y emite SSE estándar de chat.
 
@@ -304,8 +575,6 @@ async def stream_worker_turn(
     from edecan_api.routers.perfil import profile_context_for
 
     clean = user_text.strip()
-    if not clean:
-        raise HTTPException(status_code=422, detail="El mensaje no puede estar vacío.")
 
     # Adjuntos (imágenes/documentos que el dueño mandó): se resuelven por
     # tenant, quedan referenciados en el mensaje persistido (para que el chat
@@ -319,11 +588,16 @@ async def stream_worker_turn(
 
         try:
             ids_adjuntos = [uuid.UUID(a) for a in attachments if a.strip()]
-            adjuntos_resueltos = await _resolve_message_attachments(
-                repo=SqlRepo(session), tenant_id=user.tenant_id, file_ids=ids_adjuntos
-            )
-        except Exception:  # noqa: BLE001 - un adjunto inválido no tumba el turno
-            adjuntos_resueltos = []
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="file_id adjunto inválido.") from exc
+        adjuntos_resueltos = await _resolve_message_attachments(
+            repo=SqlRepo(session), tenant_id=user.tenant_id, file_ids=ids_adjuntos
+        )
+
+    if not clean:
+        if not adjuntos_resueltos:
+            raise HTTPException(status_code=422, detail="El mensaje no puede estar vacío.")
+        clean = "Revisa los archivos adjuntos."
 
     if persist_user_message:
         await persist_chat_message(
@@ -369,22 +643,37 @@ async def stream_worker_turn(
         limit=max(50, int(settings.BOT_CONTEXT_MAX_MESSAGES)),
         after=None,
     )
+    # Contexto ESCALONADO (política de costos): solo los últimos
+    # BOT_CONTEXT_RECENT_MESSAGES viajan crudos; el resto de la historia se
+    # compacta con el resumen LLM cacheado de `resumen_llm_hilo_anterior`
+    # (solo se paga cuando el hilo viejo no cabe en el presupuesto, y queda
+    # en caché por hilo). La memoria del bot NO se inyecta completa: el
+    # agente la busca a demanda con búsqueda semántica por turno.
+    limits = ChatContextLimits(
+        enabled=settings.BOT_CONTEXT_MAX_MESSAGES > 0,
+        recent_messages=min(
+            int(getattr(settings, "BOT_CONTEXT_RECENT_MESSAGES", 20) or 20),
+            settings.BOT_CONTEXT_MAX_MESSAGES,
+        ),
+        max_messages=settings.BOT_CONTEXT_MAX_MESSAGES,
+        max_chars=settings.BOT_CONTEXT_MAX_CHARS,
+        cross_chat_enabled=False,
+        cross_chat_conversations=0,
+        cross_chat_messages_per_conversation=0,
+        cross_chat_max_chars=0,
+    )
+    resumen_llm = await resumen_llm_hilo_anterior(history_rows, limits, llm_router=llm_router)
     history = build_contextual_history(
         current_rows=history_rows,
         cross_chat_rows=[],
-        limits=ChatContextLimits(
-            enabled=settings.BOT_CONTEXT_MAX_MESSAGES > 0,
-            recent_messages=settings.BOT_CONTEXT_MAX_MESSAGES,
-            max_messages=settings.BOT_CONTEXT_MAX_MESSAGES,
-            max_chars=settings.BOT_CONTEXT_MAX_CHARS,
-            cross_chat_enabled=False,
-            cross_chat_conversations=0,
-            cross_chat_messages_per_conversation=0,
-            cross_chat_max_chars=0,
-        ),
+        limits=limits,
+        current_summary=resumen_llm or None,
     )
 
     persona = persona_from_worker(worker)
+    skills_context = await build_skills_context(session, user.tenant_id, user.user_id)
+    append_skills_to_persona(persona, skills_context)
+    extra_tools = await _extra_bot_turn_tools(request, user)
     profile_context = await profile_context_for(session, user.tenant_id, user.user_id)
     full_registry = get_tool_registry(request)
     registry = build_worker_registry(
@@ -392,7 +681,22 @@ async def stream_worker_turn(
         worker,
         local_mode=bool(getattr(settings, "EDECAN_LOCAL_MODE", False)),
     )
-    agent = _agent_for_request(request, llm_router, registry)
+    # BOTS-02: el chat interactivo aplica la MISMA matriz de autonomía que el
+    # runner headless. `read_only`/`ask` dejan solo lectura aunque el modelo pida
+    # escritura; `full` conserva todo lo autorizado. Se filtra ANTES de entregar
+    # registry y tools extra al Agent — igual que `run_persistent_agent`
+    # restringe el dispatcher. La instrucción al modelo NO sustituye este control.
+    autonomy_level = _worker_autonomy_level(worker)
+    registry = _filter_registry_by_autonomy(registry, autonomy_level)
+    extra_tools = _filter_extra_tools_by_autonomy(extra_tools, autonomy_level)
+    # Política de costos (dueño, 6-sep): los chats de bot corren con el
+    # modelo del CHAT (Luna en Azure, el de `perfiles.chat_rapido` en
+    # Workers AI), NO con el perfil profundo — el profundo resolvía a Sol en
+    # Azure y un solo día de charla con los bots gastó 2M de tokens de Sol
+    # (~100 USD). El escritor de posts SÍ conserva el profundo (calidad
+    # pedida a propósito). Si un bot necesita Sol/Astra para algo puntual,
+    # el dueño lo pide en el chat principal.
+    agent = _agent_for_request(request, llm_router, registry, model_alias="chat_rapido")
 
     unified_session = await load_unified_session(
         session,
@@ -406,7 +710,18 @@ async def stream_worker_turn(
         )
 
     companion = companion_para(user.tenant_id)
-    approved = {"usar_computadora", "delegar_al_ide"} if companion is not None else set()
+    local_mode = bool(getattr(settings, "EDECAN_LOCAL_MODE", False))
+    approved = bot_preapproved_tool_calls(
+        companion_present=companion is not None,
+        local_mode=local_mode,
+    )
+    # BOTS-06: las tools MCP no se pre-aprueban por prefijo. Solo un grant
+    # explícito del dueño (`worker.approval_policy.mcp_grants`), atado a la
+    # versión de definición ACTUAL de cada tool, produce un token de
+    # pre-aprobación. Una tool MCP sin grant (o con definición cambiada) sigue
+    # exigiendo tarjeta de confirmación.
+    mcp_grants = parse_mcp_grants(worker.get("approval_policy"))
+    approved |= mcp_preapproved_tokens(tools=extra_tools, grants=mcp_grants)
     ctx: ToolContext = _build_ctx(
         tenant_id=user.tenant_id,
         user_id=user.user_id,
@@ -425,6 +740,12 @@ async def stream_worker_turn(
         unified_session=unified_session,
     )
     ctx.extras["worker_id"] = str(worker["id"])
+    # delegar_al_ide SIN capability de escritorio (VPS) va por el companion:
+    # la tool necesita el manager del app.state para hablar con la Mac.
+    _app = getattr(request, "app", None)
+    ctx.extras["companion_manager"] = getattr(
+        getattr(_app, "state", None), "companion_manager", None
+    )
     ctx.extras["lo_pidio_una_persona"] = speaker_id in ("user", "owner", "human")
     ctx.extras["tools_con_pregunta_pendiente"] = _tools_con_pregunta_pendiente(history_rows)
     unified_session.user_id = str(user.user_id)
@@ -436,19 +757,22 @@ async def stream_worker_turn(
     # Canal de narración en vivo: `avisar_avance` escribe avisos del bot en
     # SU chat — el dueño los ve al instante (regla «avisan todo, como los
     # LLM que narran cada paso»).
-    ctx.extras["worker_chat"] = {
-        "conversation_id": str(conversation_id),
-        "worker_id": bot_id,
-        "worker_name": bot_name,
-    }
+    ctx.extras["worker_chat"] = worker_chat_extras(worker, conversation_id)
+    from edecan_api.routers.conversations import SeleccionDeModelo
+
+    seleccion = (
+        SeleccionDeModelo(modelo=seleccion_modelo, esfuerzo=seleccion_esfuerzo)
+        if seleccion_modelo or seleccion_esfuerzo
+        else None
+    )
     events = agent.run_turn(
         ctx=ctx,
         persona=persona,
         history=history,
         user_text=clean,
         flags=user.tenant.flags,
-        extra_tools=[],
-        seleccion=None,
+        extra_tools=extra_tools,
+        seleccion=seleccion,
     )
     stream = _stream_agent_events(
         events=events,
@@ -461,6 +785,9 @@ async def stream_worker_turn(
         llm_router=llm_router,
         session=session,
         assistant_content_extra={"sender_id": bot_id, "sender_name": bot_name},
+        approval_snapshot_extra={"worker_id": bot_id},
+        # Chats de bot/equipo: burbuja por mensaje, no un bloque pegado.
+        split_messages=True,
     )
     async for chunk in stream:
         yield chunk

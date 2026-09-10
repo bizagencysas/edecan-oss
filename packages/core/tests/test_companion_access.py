@@ -50,16 +50,16 @@ def test_relato_de_la_mac_nombra_cursor_no_un_escritorio_generico() -> None:
                 "ok": True,
                 "image_b64": "Zm90bw==",
                 "ventanas": [
-                    {"app": "Cursor", "titulo": "Edecan-Nuevo", "al_frente": True},
+                    {"app": "Cursor", "titulo": "Mi Proyecto", "al_frente": True},
                     {"app": "Safari", "titulo": "GitHub"},
                 ],
             },
         }
     )
     assert "Cursor" in texto
-    assert "Edecan-Nuevo" in texto
+    assert "Mi Proyecto" in texto
     assert "(al frente)" in texto
-    assert "- Cursor — Edecan-Nuevo (al frente)" in texto
+    assert "- Cursor — Mi Proyecto (al frente)" in texto
     assert "- Safari — GitHub" in texto
 
 
@@ -91,7 +91,7 @@ def test_relato_de_la_mac_incluye_ocr_y_foco() -> None:
                 "ok": True,
                 "image_b64": "Zm90bw==",
                 "crop_b64": "cmVjb3J0ZQ==",
-                "ventanas": [{"app": "Cursor", "titulo": "Edecan-Nuevo", "al_frente": True}],
+                "ventanas": [{"app": "Cursor", "titulo": "Mi Proyecto", "al_frente": True}],
                 "foco": {"app": "Cursor", "rol": "AXTextArea", "valor": "hola"},
                 "texto_visible": ["Eso estoy haciendo justo al momento de escribir este mensaje"],
             },

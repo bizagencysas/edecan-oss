@@ -133,7 +133,8 @@ def test_esfuerzo_solo_en_los_que_razonan() -> None:
     }
     assert modelo_chat_por_defecto() not in con_esfuerzo  # Scout no razona
     assert len(con_esfuerzo) == 3
-    assert ESFUERZOS_CHAT == ("bajo", "medio", "alto")
+    # El selector del chat ofrece de "bajo" a "extremo" (xhigh en Azure).
+    assert ESFUERZOS_CHAT == ("bajo", "medio", "alto", "extremo")
     assert ESFUERZO_CHAT_POR_DEFECTO in ESFUERZOS_CHAT
 
 

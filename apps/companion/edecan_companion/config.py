@@ -156,6 +156,9 @@ class CompanionConfig:
     # ambos APAGADOS/acotados por defecto -- ver el porqué en el comentario
     # de `remote_input_enabled` en `_CONFIG_TEMPLATE` arriba.
     remote_input_enabled: bool = False
+    # Companion headless (vivo de launchd): aprueba input_pointer/input_key
+    # con session_id válido del dueño sin pedir [y/N] (no hay terminal).
+    remote_input_autoapprove_owner_session: bool = False
     allow_all_apps: bool = False
     remote_input_remember_minutes: int = 10
     config_path: Path = DEFAULT_CONFIG_PATH
@@ -262,6 +265,11 @@ def load_config(path: Path | str | None = None) -> CompanionConfig:
         data.get("allow_all_commands"), field_name="allow_all_commands", default=False
     )
     if allow_all_commands:
+        # `run_command` entra a `auto_approve`, PERO sigue pasando por el
+        # denylist de comandos destructivos (`security.es_comando_peligroso`):
+        # `approval.default_approver` no auto-aprueba un comando peligroso y
+        # `actions._run_command` lo bloquea en seco. "Todo comando" no incluye
+        # `rm -rf`/`dd`/`curl|sh`.
         if "run_command" not in auto_approve:
             auto_approve.append("run_command")
     allow_all_apps = _coerce_bool(
@@ -287,6 +295,11 @@ def load_config(path: Path | str | None = None) -> CompanionConfig:
             auto_approve.append("open_app")
 
     return CompanionConfig(
+        remote_input_autoapprove_owner_session=_coerce_bool(
+            data.get("remote_input_autoapprove_owner_session"),
+            field_name="remote_input_autoapprove_owner_session",
+            default=False,
+        ),
         sandbox_dir=sandbox_dir,
         transfer_dir=transfer_dir,
         allowed_apps=allowed_apps,

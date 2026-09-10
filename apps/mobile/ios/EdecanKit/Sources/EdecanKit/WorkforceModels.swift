@@ -83,6 +83,8 @@ public struct PendingApproval: Codable, Sendable, Equatable, Identifiable {
     public let status: String?
     public let createdAt: Date?
     public let decidedAt: Date?
+    /// Worker companion que originó la aprobación (snapshot). Filtra CM/envíos.
+    public let workerId: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, args, status
@@ -90,6 +92,7 @@ public struct PendingApproval: Codable, Sendable, Equatable, Identifiable {
         case toolCallId = "tool_call_id"
         case createdAt = "created_at"
         case decidedAt = "decided_at"
+        case workerId = "worker_id"
     }
 
     /// Vista corta de los argumentos para pintar en una fila sin volcar

@@ -129,4 +129,14 @@ _register_defensive(
     HANDLERS, "create_organization_linkedin_post", "create_organization_linkedin_post"
 )
 
+# Refresco semanal de skills de catálogos remotos (aws-agent-plugins vía
+# tarball de codeload, upsert idempotente por slug vía `edecan_skills.store`).
+# Defensivo como el resto de los handlers nuevos.
+_register_defensive(HANDLERS, "refresh_skills", "refresh_skills")
+
+# Auto-eliminación diaria de las filas de `event_log` con más de 7 días (la
+# plataforma de logging TOTAL, migración 0067): DELETE por `created_at` servido
+# por `ix_event_log_created_at`. Global (`tenant_id=None`), fail-open.
+_register_defensive(HANDLERS, "event_log_cleanup", "event_log_cleanup")
+
 __all__ = ["HANDLERS", "Handler"]

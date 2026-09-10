@@ -42,6 +42,7 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._sockets: dict[uuid.UUID, WebSocket] = {}
+        self._socket_names: dict[uuid.UUID, str] = {}
         # En la app instalada, la propia computadora ES el companion. El
         # runtime local registra aquí un ejecutor in-process después de abrir
         # la sesión single-owner; el teléfono emparejado por QR no necesita
@@ -49,9 +50,11 @@ class ConnectionManager:
         self._local_handlers: dict[
             uuid.UUID, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
         ] = {}
+        self._local_names: dict[uuid.UUID, str] = {}
         self._local_default_handler: (
             Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
         ) = None
+        self._local_default_name: str = "VPS"
         self._pending: dict[str, _Pending] = {}
 
     def is_connected(self, tenant_id: uuid.UUID) -> bool:
@@ -61,9 +64,42 @@ class ConnectionManager:
             or self._local_default_handler is not None
         )
 
+    def list_machines(self, tenant_id: uuid.UUID) -> list[dict[str, Any]]:
+        """Máquinas disponibles para este tenant: la local (VPS) y la que se
+        conectó por WebSocket (p. ej. la Mac del dueño). El orden deja la
+        conexión WS (la Mac) primero: es el destino preferido para lectura de
+        vida digital (WhatsApp/LinkedIn/Mail viven en ella)."""
+        maquinas: list[dict[str, Any]] = []
+        local = self._local_handlers.get(tenant_id) or self._local_default_handler
+        if local is not None:
+            nombre = self._local_names.get(tenant_id) or self._local_default_name
+            maquinas.append(
+                {
+                    "machineId": nombre,
+                    "label": nombre,
+                    "name": nombre,
+                    "kind": "local",
+                    "connected": True,
+                }
+            )
+        if tenant_id in self._sockets:
+            nombre = self._socket_names.get(tenant_id) or "Mac"
+            maquinas.append(
+                {
+                    "machineId": nombre,
+                    "label": nombre,
+                    "name": nombre,
+                    "kind": "remote",
+                    "connected": True,
+                }
+            )
+        return maquinas
+
     def register_local_default(
         self,
         handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        *,
+        name: str = "VPS",
     ) -> None:
         """Registra el único equipo de un runtime local single-owner.
 
@@ -72,12 +108,15 @@ class ConnectionManager:
         necesite volver a llamar ``/v1/auth/local``.
         """
         self._local_default_handler = handler
-        logger.info("Computadora del runtime local disponible")
+        self._local_default_name = name
+        logger.info("Computadora del runtime local disponible (name=%s)", name)
 
     def register_local(
         self,
         tenant_id: uuid.UUID,
         handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        *,
+        name: str = "VPS",
     ) -> None:
         """Registra la computadora de una instalación local como destino.
 
@@ -86,15 +125,40 @@ class ConnectionManager:
         conserva para instalaciones hospedadas o equipos adicionales.
         """
         self._local_handlers[tenant_id] = handler
-        logger.info("Computadora local disponible para tenant_id=%s", tenant_id)
+        self._local_names[tenant_id] = name
+        logger.info("Computadora local disponible para tenant_id=%s (name=%s)", tenant_id, name)
 
-    async def connect(self, tenant_id: uuid.UUID, websocket: WebSocket) -> None:
+    async def connect(self, tenant_id: uuid.UUID, websocket: WebSocket, *, name: str = "Mac") -> None:
         await websocket.accept()
+        anterior = self._sockets.pop(tenant_id, None)
+        if anterior is not None and anterior is not websocket:
+            # Reemplazo limpio: cierra la conexión vieja ANTES de registrar la
+            # nueva. El finally del handler viejo correrá su disconnect, que
+            # por identidad NO tocará la nueva (ver disconnect).
+            try:
+                await anterior.close(code=4001, reason="reemplazada por una conexión más nueva")
+            except Exception:  # noqa: BLE001 - la vieja puede ya estar muerta
+                pass
         self._sockets[tenant_id] = websocket
-        logger.info("Companion conectado para tenant_id=%s", tenant_id)
+        self._socket_names[tenant_id] = name
+        logger.info("Companion conectado para tenant_id=%s (name=%s)", tenant_id, name)
 
-    def disconnect(self, tenant_id: uuid.UUID) -> None:
+    def disconnect(self, tenant_id: uuid.UUID, websocket: WebSocket | None = None) -> None:
+        actual = self._sockets.get(tenant_id)
+        if actual is None:
+            return
+        if websocket is not None and actual is not websocket:
+            # El finally de una conexión VIEJA no puede borrar la NUEVA:
+            # este era el bug que hacía aparecer/desaparecer la Mac a cada
+            # reconexión (el handler antiguo barría el socket fresco).
+            logger.info(
+                "disconnect ignorado: la conexión que cierra no es la vigente "
+                "(tenant_id=%s)",
+                tenant_id,
+            )
+            return
         self._sockets.pop(tenant_id, None)
+        self._socket_names.pop(tenant_id, None)
         logger.info("Companion desconectado para tenant_id=%s", tenant_id)
 
     async def handle_incoming(self, tenant_id: uuid.UUID, message: dict[str, Any]) -> None:
@@ -132,26 +196,47 @@ class ConnectionManager:
         action: str,
         params: dict[str, Any],
         timeout: float = 30,
+        *,
+        machine: str | None = None,
     ) -> dict[str, Any]:
-        """Envía `{request_id, action, params}` al companion del tenant y espera su respuesta."""
-        local_handler = self._local_handlers.get(tenant_id) or self._local_default_handler
-        if local_handler is not None:
+        """Envía `{request_id, action, params}` al companion del tenant y espera su respuesta.
+
+        Modelo Grok: el DEFAULT es la computadora de los bots (el box = el
+        VPS local). La Mac del dueño se usa SOLO cuando `machine` la nombra
+        explícitamente (p. ej. vida digital: WhatsApp/LinkedIn/Mail viven en
+        ella, o builds de Xcode). Las máquinas se listan en
+        GET /v1/remote/machines."""
+        local = self._local_handlers.get(tenant_id) or self._local_default_handler
+        local_name = self._local_names.get(tenant_id) or self._local_default_name
+        socket = self._sockets.get(tenant_id)
+        socket_name = self._socket_names.get(tenant_id) or "Mac"
+
+        if machine is not None:
+            objetivo = machine.strip().lower()
+            if objetivo == local_name.lower() and local is not None:
+                socket = None
+            elif socket is not None and objetivo == socket_name.lower():
+                local = None
+            else:
+                raise CompanionError(
+                    f"No hay una máquina conectada con el nombre '{machine}'."
+                )
+        if local is not None:
             try:
-                return await asyncio.wait_for(local_handler(action, params), timeout=timeout)
+                return await asyncio.wait_for(local(action, params), timeout=timeout)
             except TimeoutError as exc:
                 raise CompanionError(
                     f"La computadora local no respondió a la acción '{action}' en {timeout}s."
                 ) from exc
 
-        websocket = self._sockets.get(tenant_id)
-        if websocket is None:
+        if socket is None:
             raise CompanionError(f"No hay companion conectado para el tenant {tenant_id}.")
 
         request_id = str(uuid.uuid4())
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _Pending(future=future, tenant_id=tenant_id)
         try:
-            await websocket.send_json(
+            await socket.send_json(
                 {"request_id": request_id, "action": action, "params": params}
             )
             return await asyncio.wait_for(future, timeout=timeout)

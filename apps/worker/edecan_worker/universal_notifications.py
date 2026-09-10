@@ -60,6 +60,15 @@ async def notify_important_event(
         # conversación (solo `resource_id`/`artifact_id`), el payload tampoco
         # la trae y la app abre la pestaña de siempre sin conversación
         # puntual.
+        apns_category: str | None = None
+        apns_thread_id: str | None = None
+        apns_mutable = False
+        if event.kind == "agent_bot_message":
+            apns_category = "EDECAN_BOT_MESSAGE"
+            apns_mutable = True
+            if event.chat_id is not None:
+                apns_thread_id = str(event.chat_id)
+
         result = await push.enviar_push_a_usuario(
             deps,
             tenant_id=event.tenant_id,
@@ -67,6 +76,9 @@ async def notify_important_event(
             titulo=event.apns_title if event.apns_title is not None else event.title,
             cuerpo=event.apns_body if event.apns_body is not None else event.body,
             data=event.push_data(),
+            category=apns_category,
+            thread_id=apns_thread_id,
+            mutable_content=apns_mutable,
         )
     except Exception:
         # ``enviar_push_a_usuario`` ya promete no lanzar. Esta segunda red

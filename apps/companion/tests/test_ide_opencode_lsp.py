@@ -134,6 +134,7 @@ def test_error_legado_se_parsea_con_la_forma_real_de_badrequest() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.opencode_binario
 async def test_sin_lsp_habilitado_ambas_rutas_dan_lista_vacia_sin_error(tmp_path: Path) -> None:
     """Regla 6: esto NO debe ser un error ni un colgado -- es el
     comportamiento real de opencode (log real: ``"all LSPs are disabled"``)
@@ -148,6 +149,7 @@ async def test_sin_lsp_habilitado_ambas_rutas_dan_lista_vacia_sin_error(tmp_path
     assert estado == []
 
 
+@pytest.mark.opencode_binario
 async def test_lsp_habilitado_sigue_dando_lista_vacia_por_http_typescript(tmp_path: Path) -> None:
     """El hallazgo central del módulo, reproducido: con ``"lsp": true`` (el
     log real pasa a mostrar ``"enabled LSP servers"`` con ~35 IDs, incluido
@@ -172,6 +174,7 @@ async def test_lsp_habilitado_sigue_dando_lista_vacia_por_http_typescript(tmp_pa
     assert estado == []
 
 
+@pytest.mark.opencode_binario
 async def test_lsp_habilitado_sigue_dando_lista_vacia_por_http_python(tmp_path: Path) -> None:
     """Mismo hallazgo que el test anterior, con Python -- deliberadamente en
     un repo separado porque ``pyright`` (el LSP de Python que opencode
@@ -189,6 +192,7 @@ async def test_lsp_habilitado_sigue_dando_lista_vacia_por_http_python(tmp_path: 
     assert estado == []
 
 
+@pytest.mark.opencode_binario
 async def test_parametro_requerido_faltante_da_error_real_no_generico(tmp_path: Path) -> None:
     """Regla 6 contra un servidor de verdad: ``query`` es obligatorio en
     ``GET /find/symbol`` (ver ``/doc``) -- si se pide sin él (vía el método
@@ -208,6 +212,7 @@ async def test_parametro_requerido_faltante_da_error_real_no_generico(tmp_path: 
     assert "query" in str(error).lower()
 
 
+@pytest.mark.opencode_binario
 async def test_error_de_conexion_se_propaga_como_erroropencode(tmp_path: Path) -> None:
     """Regla 6: si el proceso ``opencode serve`` ya no está, el fallo de
     transporte se propaga como ``ErrorOpencode`` -- nunca un ``[]``
@@ -230,6 +235,7 @@ async def test_error_de_conexion_se_propaga_como_erroropencode(tmp_path: Path) -
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.opencode_binario
 async def test_definicion_no_fabrica_vacio_explica_por_que_no_existe(tmp_path: Path) -> None:
     workspace = _workspace_typescript(tmp_path, lsp_habilitado=False)
     async with await ServidorOpencode.iniciar(workspace, timeout_arranque=30.0) as servidor:
@@ -238,6 +244,7 @@ async def test_definicion_no_fabrica_vacio_explica_por_que_no_existe(tmp_path: P
                 await lsp.definicion()
 
 
+@pytest.mark.opencode_binario
 async def test_referencias_no_fabrica_vacio_explica_por_que_no_existe(tmp_path: Path) -> None:
     workspace = _workspace_typescript(tmp_path, lsp_habilitado=False)
     async with await ServidorOpencode.iniciar(workspace, timeout_arranque=30.0) as servidor:
@@ -246,6 +253,7 @@ async def test_referencias_no_fabrica_vacio_explica_por_que_no_existe(tmp_path: 
                 await lsp.referencias()
 
 
+@pytest.mark.opencode_binario
 async def test_diagnosticos_no_fabrica_vacio_explica_por_que_no_existe(tmp_path: Path) -> None:
     workspace = _workspace_typescript(tmp_path, lsp_habilitado=False)
     async with await ServidorOpencode.iniciar(workspace, timeout_arranque=30.0) as servidor:

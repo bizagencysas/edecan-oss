@@ -109,7 +109,11 @@ struct IDEBlocksTests {
 
     @Test("un bloque de tipo desconocido se descarta sin tumbar el resto")
     func tipoDesconocido() throws {
-        let evento = try #require(decodificarEvento(presentation: "[{\"schema_version\": 1, \"type\": \"mapa\"}, \(Self.tabla)]"))
+        let evento = try #require(
+            decodificarEvento(
+                presentation: "[{\"schema_version\": 1, \"type\": \"mapa\"}, \(Self.tabla)]"
+            )
+        )
         #expect(evento.presentation.count == 1)
         if case .table = evento.presentation[0] {} else { Issue.record("debía quedar la tabla") }
     }

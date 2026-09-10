@@ -103,6 +103,12 @@ async def require_paired_ide_device(
         return PairedIDEDevice(device_id=None, kind="desktop")
 
     if not device_id_value or not device_token:
+        # Modo local de UN solo dueño: el JWT YA identifica al dueño (mismo
+        # canal que chats/automatizaciones). El gate de dispositivo IDE es
+        # defensa extra para despliegues multi-usuario; acá, exigirlo
+        # dejaba el IDE en 403 permanente para el teléfono del dueño.
+        if getattr(settings, "EDECAN_LOCAL_MODE", False):
+            return PairedIDEDevice(device_id=None, kind="mobile")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -138,6 +144,14 @@ async def require_paired_ide_device(
     )
     row: Any = result.mappings().first()
     stored_hash = str(row["pairing_secret_hash"]) if row is not None else ""
+    # Modo local de un solo operador: el teléfono puede haber migrado del
+    # servidor anterior y su pairing_secret_hash quedó NULL — pero es el
+    # MISMO dispositivo activo del MISMO dueño, ya autenticado por JWT.
+    # Exigir el secret de un emparejamiento que nunca se completó acá
+    # dejaba el IDE en 403 para siempre. Con hash presente se sigue
+    # validando como siempre.
+    if row is not None and not stored_hash and getattr(settings, "EDECAN_LOCAL_MODE", False):
+        return PairedIDEDevice(device_id=device_id)
     supplied_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
     if not stored_hash or not hmac.compare_digest(stored_hash, supplied_hash):
         raise HTTPException(

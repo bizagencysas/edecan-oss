@@ -58,6 +58,7 @@ ALL_SPECS = [
     _spec("crear_post_linkedin", "Escribe un post de LinkedIn de principio a fin."),
     _spec("capturar_senal_editorial", "Guarda una señal editorial sin escribir un post."),
     _spec("configurar_perfil_social", "Configura la estrategia personal para redes."),
+    _spec("estado_conectores_sociales", "Consulta OAuth de redes sociales del tenant."),
     _spec("generar_imagen", "Genera una imagen original."),
     _spec("usar_estudio_creativo", "Usa Studio para trabajos creativos locales."),
     _spec("usar_estudio_creativo_premium", "Usa Studio para imagen, video y producto."),
@@ -138,7 +139,7 @@ def test_slash_clear_es_solo_un_guardarrail_de_texto_sin_tools_de_autorreparacio
     nada -- lo contrario sería el mismo bug que /clear existe para arreglar.
     """
     names = {spec.name for spec in select_tool_specs(ALL_SPECS, "/clear")}
-    assert "acceder_codigo_local" not in names
+    assert "acceder_codigo_local" in names  # universal (crear en el box)
     assert "diagnosticar_autorreparacion_local" not in names
     assert "gestionar_autorreparacion_local" not in names
 
@@ -188,7 +189,7 @@ def test_frase_compuesta_selecciona_correo_documento_y_recordatorio_sin_modulos_
     assert "crear_factura" not in names
     assert "crear_documento" not in names
     assert "registrar_salud" not in names
-    assert "acceder_codigo_local" not in names
+    assert "acceder_codigo_local" in names  # universal
     assert "preparar_pago" not in names
     assert len(names) < len(ALL_SPECS)
 
@@ -223,8 +224,9 @@ def test_un_fallo_generico_no_autoriza_editar_codigo():
     selected = select_tool_specs(ALL_SPECS, "Falló el correo, vuelve a intentarlo.")
     names = {spec.name for spec in selected}
     assert "enviar_correo" in names
+    # acceder_codigo_local pasó a universal (los bots crean en el box); lo que
+    # NO autoriza un fallo genérico es la familia de auto-reparación.
     assert {
-        "acceder_codigo_local",
         "diagnosticar_autorreparacion_local",
         "reparar_con_skill_local",
         "gestionar_autorreparacion_local",
@@ -300,6 +302,8 @@ def test_creacion_compuesta_usa_un_solo_creator_con_manifest() -> None:
         "crear_presentacion",
         "generar_contenido",
     }.isdisjoint(names)
+    # "web" ahora también activa el estudio creativo (el bot crea de verdad).
+    assert "usar_estudio_creativo" in names
     assert "publicar_social" not in names
 
 
@@ -375,17 +379,15 @@ def test_crear_y_publicar_conserva_creator_y_gate_externo() -> None:
     assert {"crear_artefactos", "publicar_social", "configurar_credencial"} <= names
 
 
-def test_publicar_a_secas_ofrece_consultar_que_red_esta_conectada() -> None:
+def test_publicar_a_secas_ofrece_consultar_estado_oauth() -> None:
     # Bug real: "publícalo" sin "post"/"social"/"linkedin" en la misma frase solo
     # activaba la tool que actúa (`publicar_social`), nunca la que consulta qué red ya
-    # está conectada (`configurar_perfil_social`, accion='ver') -- el modelo publicaba a
-    # ciegas o se quedaba sin poder verificar antes. Antes se colaba por casualidad
-    # solo cuando el mensaje también traía una palabra de la familia de estudio social.
+    # está conectada (`estado_conectores_sociales`) -- el modelo publicaba a ciegas.
     selected = select_tool_specs(
         ALL_SPECS, "Publica esto ya, la gente lo está esperando desde hace rato."
     )
     names = {spec.name for spec in selected}
-    assert {"publicar_social", "configurar_perfil_social"} <= names
+    assert {"publicar_social", "estado_conectores_sociales"} <= names
 
 
 def test_invariante_actuar_requiere_consultar_en_la_misma_familia() -> None:
@@ -431,6 +433,13 @@ def test_reservar_hotel_usa_busqueda_nativa_no_la_mac() -> None:
 def test_abrir_una_app_siempre_ofrece_control_del_mac() -> None:
     names = {spec.name for spec in select_tool_specs(ALL_SPECS, "Abre Notes y Calendar.")}
     assert "usar_computadora" in names
+
+
+def test_avisar_avance_siempre_disponible_en_cualquier_turno() -> None:
+    """P0 Grok Bot: narrar avances no puede depender de keywords del mensaje."""
+    specs = [*ALL_SPECS, _spec("avisar_avance", "Narra un avance en el chat del bot.")]
+    names = {spec.name for spec in select_tool_specs(specs, "Hola, ¿qué tal?")}
+    assert "avisar_avance" in names
 
 
 def test_linkedin_crea_paquete_multimedia_y_publica_por_conector_oficial() -> None:

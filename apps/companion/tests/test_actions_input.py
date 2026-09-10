@@ -111,6 +111,9 @@ class _FakeQuartzModule:
 def _install_fake_quartz(monkeypatch, *, trusted: bool = True) -> _FakeQuartzModule:
     fake = _FakeQuartzModule(trusted=trusted)
     monkeypatch.setitem(sys.modules, "Quartz", fake)
+    # AXIsProcessTrusted moved to ApplicationServices in pyobjc; the backend
+    # imports that module after Quartz. Same fake exposes the flag.
+    monkeypatch.setitem(sys.modules, "ApplicationServices", fake)
     return fake
 
 

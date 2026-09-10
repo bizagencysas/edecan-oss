@@ -41,7 +41,6 @@ def _ruta_yaml_efectiva(ruta_yaml: Path | str | None) -> Path:
             return bundled
     return RUTA_CONFIG_MODELOS
 
-
 METADATA_MODELO_ELEGIDO = "modelo_elegido"
 """Clave de `CompletionRequest.metadata` con el modelo que fijó el usuario.
 
@@ -50,7 +49,7 @@ API (columnas `conversations.chat_model` o el override del body del turno).
 Ausente o `None` = automático.
 """
 
-ESFUERZOS_CHAT: tuple[str, ...] = ("bajo", "medio", "alto")
+ESFUERZOS_CHAT: tuple[str, ...] = ("bajo", "medio", "alto", "extremo")
 """Niveles de Esfuerzo del chat. Espejo del CHECK de `conversations.chat_effort`."""
 
 ESFUERZO_CHAT_POR_DEFECTO = "medio"
@@ -161,11 +160,88 @@ def cargar_configuracion_modelos(ruta_yaml: Path | str | None = None) -> dict[st
         return {}
 
 
+MODELOS_BOTS_FALLBACK: list[dict[str, Any]] = [
+    {
+        "id": "@cf/zai-org/glm-5.3",
+        "nombre": "GLM 5.3",
+        "descripcion": "Trabajador fuerte de los bots (sin visión).",
+        "ve_imagenes": False,
+    },
+    {
+        "id": "@cf/zai-org/glm-5.3-flash",
+        "nombre": "GLM 5.3 Flash",
+        "descripcion": "Trabajador rápido CON visión (capturas, PDFs, gráficos).",
+        "ve_imagenes": True,
+    },
+    {
+        "id": "@cf/deepseek-ai/deepseek-v4-pro-0813",
+        "nombre": "DeepSeek V4 Pro",
+        "descripcion": "Trabajador profundo para código y razonamiento (sin visión).",
+        "ve_imagenes": False,
+    },
+    {
+        "id": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+        "nombre": "DeepSeek V4 Flash",
+        "descripcion": "Trabajador barato y rápido para tareas livianas (sin visión).",
+        "ve_imagenes": False,
+    },
+]
+
+
+def modelos_bots_disponibles(
+    ruta_yaml: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Catálogo SERVER-DRIVEN de los trabajadores de los bots (Workers AI).
+
+    Vive en `config/modelos.yml` (`modelos_bots`) para que se pueda actualizar
+    sin cambiar código; la app del teléfono lo lee del API y su texto se
+    refresca solo cuando la lista cambia."""
+    config = cargar_configuracion_modelos(ruta_yaml)
+    rows = config.get("modelos_bots")
+    if isinstance(rows, list):
+        clean: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("id") or "").strip()
+            if not model_id:
+                continue
+            clean.append(
+                {
+                    "id": model_id,
+                    "nombre": str(row.get("nombre") or model_id),
+                    "descripcion": str(row.get("descripcion") or ""),
+                    "ve_imagenes": bool(row.get("ve_imagenes") or False),
+                }
+            )
+        if clean:
+            return clean
+    return [dict(row) for row in MODELOS_BOTS_FALLBACK]
+
+
+def _modelo_perfil_workers(perfil: str, ruta_yaml: Path | str | None = None) -> str | None:
+    """Modelo del perfil worker desde config/modelos.yml (perfiles.<perfil>.modelo)."""
+    config = cargar_configuracion_modelos(ruta_yaml)
+    perfiles = config.get("perfiles") or {}
+    if isinstance(perfiles.get(perfil), dict):
+        if m := perfiles[perfil].get("modelo"):
+            return str(m)
+    # Fallback: pro sin visión para "worker"; flash con visión para "worker_vision".
+    fallback = MODELOS_BOTS_FALLBACK[2] if perfil == "worker" else MODELOS_BOTS_FALLBACK[1]
+    return str(fallback["id"])
+
+
 def modelo_para_perfil(perfil: str, ruta_yaml: Path | str | None = None) -> str:
-    if azure_activo() and perfil in ("chat_rapido", "profundo"):
-        # Con Azure activo, "chat_rapido" y "profundo" (el ESCRITOR de posts de
-        # LinkedIn) usan el id real del primer deployment; el primero
-        # ("gpt-5.6-sol-2" por default) es el default del chat y del escritor.
+    if azure_activo() and perfil in ("chat_rapido", "principal"):
+        # Política de costos: los trabajos rápidos/operativos (memoria,
+        # workers, wakes) van con LUNA (la barata); sin Luna, el primer
+        # deployment. "profundo" (el escritor de posts) sigue con el primer
+        # deployment (Sol) — es trabajo de calidad explícita.
+        luna = _modelo_nombrado_azure("luna")
+        if luna is not None:
+            return luna
+        return _azure_deployments()[0]["id"]
+    if azure_activo() and perfil == "profundo":
         return _azure_deployments()[0]["id"]
     config = cargar_configuracion_modelos(ruta_yaml)
     perfiles = config.get("perfiles") or {}
@@ -269,12 +345,36 @@ _AZURE_DEFAULT_DEPLOYMENTS: tuple[dict[str, Any], ...] = (
     {"id": "gpt-5.6-sol-2", "nombre": "Sol", "ve_imagenes": True},
     {"id": "gpt-5.6-terra", "nombre": "Terra", "ve_imagenes": True},
     {"id": "gpt-5.6-luna", "nombre": "Luna", "ve_imagenes": True},
+    {"id": "gpt-6-astra", "nombre": "Astra", "ve_imagenes": True},
 )
 
 
-def azure_activo() -> bool:
-    """True si el switch `LLM_PROVIDER` apunta a Azure (ver router.py)."""
-    return str(os.getenv("LLM_PROVIDER") or "").strip().lower() == "azure_openai"
+def _provider_activo(settings: Any | None = None) -> str:
+    """Única fuente de verdad del switch `LLM_PROVIDER` (ver router.py).
+
+    `settings.LLM_PROVIDER` (pydantic: lee `os.environ` + `.env`) es la
+    autoridad cuando hay un objeto `settings` disponible — es exactamente lo
+    que consume la factory `build_provider_from_settings`. Sin `settings` (los
+    módulos `edecan_creative`/`edecan_worker` que solo tienen el proceso)
+    cae a `os.environ`. Antes `azure_activo()` leía SOLO `os.environ` mientras
+    la factory leía `settings` — dos fuentes de verdad que recreaban E-LLM-1
+    (mandar `@cf/` a Azure → 400) cuando el switch vivía en `.env`/config y
+    no en el entorno del proceso.
+    """
+    if settings is not None:
+        valor = getattr(settings, "LLM_PROVIDER", None)
+        if valor is not None and str(valor).strip():
+            return str(valor).strip().lower()
+    return str(os.getenv("LLM_PROVIDER") or "").strip().lower()
+
+
+def azure_activo(settings: Any | None = None) -> bool:
+    """True si el switch `LLM_PROVIDER` apunta a Azure (ver router.py).
+
+    `settings` es opcional: donde hay un objeto de configuración (el
+    `LLMRouter`), se le pasa para que use la MISMA fuente que la factory.
+    """
+    return _provider_activo(settings) == "azure_openai"
 
 
 def _azure_deployments() -> list[dict[str, Any]]:
@@ -288,7 +388,7 @@ def _azure_deployments() -> list[dict[str, Any]]:
       imagen+texto; se puede apagar por deployment sin recompilar).
 
     Default: `gpt-5.6-sol/terra/luna` con nombres "Sol"/"Terra"/"Luna" (los
-    deployments reales de una instalación en Azure OpenAI)."""
+    deployments configurados por el operador)."""
     raw = os.getenv("AZURE_AI_FOUNDRY_TEXT_DEPLOYMENTS")
     if raw:
         try:
@@ -343,6 +443,15 @@ def modelo_sol_configurada() -> str | None:
     return modelo_nombrada("sol")
 
 
+def _modelo_nombrado_azure(nombre: str) -> str | None:
+    """Id del deployment cuyo `nombre` visible coincide (sin tildes/case)."""
+    objetivo = nombre.strip().lower()
+    for dep in _azure_deployments():
+        if str(dep.get("nombre") or "").strip().lower() == objetivo:
+            return str(dep["id"])
+    return None
+
+
 def modelos_chat_azure() -> list[dict[str, Any]]:
     """Catálogo del selector cuando Azure está activo: una fila por deployment.
 
@@ -361,7 +470,7 @@ def modelos_chat_azure() -> list[dict[str, Any]]:
                 "orden": i,
                 "principal": True,
                 "ve_imagenes": bool(dep.get("ve_imagenes", True)),
-                "soporta_esfuerzo": False,
+                "soporta_esfuerzo": True,
                 "contexto_ventana": 0,
             }
         )
@@ -409,6 +518,14 @@ def modelo_chat_por_defecto(ruta_yaml: Path | str | None = None) -> str:
     """
 
     catalogo = modelos_chat_disponibles(ruta_yaml)
+    if azure_activo():
+        # Política de costos del dueño: el default es LUNA (la barata).
+        # Sol/Astra/Terra entran solo cuando se les pide explícito o para
+        # planes MUY difíciles (Astra). Si el catálogo no trae Luna, se cae
+        # al primer principal de siempre.
+        luna = _modelo_nombrado_azure("luna")
+        if luna is not None:
+            return luna
     principales = [row for row in catalogo if row["principal"]]
     return str((principales or catalogo)[0]["id"])
 
@@ -453,29 +570,15 @@ class TaskRouter:
         self,
         *,
         chat_model: str | None = None,
-        principal_model: str | None = None,
         deep_model: str | None = None,
-        voice_model: str | None = None,
-        engineering_model: str | None = None,
-        allow_catalog_selection: bool = True,
-        allow_empty_models: bool = False,
         config_path: Path | str | None = None,
     ) -> None:
         self._config_path = config_path
-        self._allow_empty_models = allow_empty_models
-        self._chat_model = (
-            (chat_model or "").strip()
-            if allow_empty_models
-            else chat_model or modelo_para_perfil("chat_rapido", config_path)
-        )
+        self._chat_model = chat_model or modelo_para_perfil("chat_rapido", config_path)
         # Alias "profundo": el escritor de posts pide un modelo fuerte. Si no se
         # configura, cae al de chat (comportamiento anterior). Ver
         # `apps/api/edecan_api/config.py::WORKERS_AI_MODEL_PROFUNDO`.
         self._deep_model = (deep_model or "").strip() or None
-        self._principal_model = (principal_model or "").strip() or None
-        self._voice_model = (voice_model or "").strip() or None
-        self._engineering_model = (engineering_model or "").strip() or None
-        self._allow_catalog_selection = allow_catalog_selection
 
     def decide(
         self,
@@ -493,24 +596,45 @@ class TaskRouter:
         surface = str(combined.get("surface") or "").strip().lower()
 
         if alias == "ingenieria_software":
-            model = (
-                self._engineering_model or ""
-                if self._allow_empty_models
-                else self._engineering_model
-                or modelo_para_perfil("ingenieria_software", self._config_path)
-            )
+            model = modelo_para_perfil("ingenieria_software", self._config_path)
             return TaskDecision(
                 kind=TaskKind.ENGINEERING,
                 model=model,
                 reason="perfil de ingeniería de software (Forge)",
             )
 
-        if alias == "principal" and (self._principal_model is not None or self._allow_empty_models):
-            return TaskDecision(
-                kind=TaskKind.BACKGROUND,
-                model=self._principal_model or "",
-                reason="perfil principal configurado por el usuario",
-            )
+        # Alias "orquestador": el JEFE de los bots (planifica misiones). Con
+        # Azure activo es el deployment "Astra" (gpt-6-astra); sin Azure cae
+        # al profundo de siempre.
+        if alias == "orquestador":
+            astra = _modelo_nombrado_azure("astra")
+            if astra is not None:
+                kind, _ = self._clasificar(
+                    explicit=explicit, channel=channel, alias=alias, request=request
+                )
+                return TaskDecision(
+                    kind=kind,
+                    model=astra,
+                    reason="orquestador de bots: Astra planifica",
+                )
+            alias = "profundo"
+
+        # Alias "worker"/"worker_vision": los TRABAJADORES de los bots corren en
+        # Workers AI (@cf/...), server-driven desde config/modelos.yml. El
+        # router rutea @cf/ al proveedor de Workers AI aunque el principal
+        # sea Azure — GPT queda para el chat y para Astra (el jefe).
+        if alias in {"worker", "worker_vision"}:
+            modelo_worker = _modelo_perfil_workers(alias, self._config_path)
+            if modelo_worker:
+                kind, _ = self._clasificar(
+                    explicit=explicit, channel=channel, alias=alias, request=request
+                )
+                return TaskDecision(
+                    kind=kind,
+                    model=modelo_worker,
+                    reason=f"trabajador de bots en Workers AI ({alias})",
+                )
+            alias = "principal"
 
         # Alias "profundo": el ESCRITOR (posts de LinkedIn) pide un modelo fuerte,
         # separado del de chat. Determinista y ANTES del selector del chat
@@ -540,7 +664,7 @@ class TaskRouter:
         # existe. La decisión sigue viviendo aquí y las tres autoridades
         # viejas quedan intactas como fallback documentado.
         elegido = combined.get(METADATA_MODELO_ELEGIDO)
-        if elegido and self._allow_catalog_selection:
+        if elegido:
             elegido = str(elegido).strip()
             if modelo_chat_permitido(elegido, self._config_path):
                 return TaskDecision(
@@ -561,16 +685,10 @@ class TaskRouter:
         if kind == TaskKind.VOICE:
             return TaskDecision(
                 kind=kind,
-                model=(self._voice_model or "")
-                if self._allow_empty_models
-                else self._voice_model or modelo_para_perfil("voz_llamada", self._config_path),
+                model=modelo_para_perfil("voz_llamada", self._config_path),
                 reason="llamada o voz: modelo de baja latencia",
             )
-        model = (
-            self._chat_model
-            if self._allow_empty_models
-            else self._chat_model or modelo_para_perfil("chat_rapido", self._config_path)
-        )
+        model = self._chat_model or modelo_para_perfil("chat_rapido", self._config_path)
         return TaskDecision(kind=kind, model=model, reason=reason)
 
     def _clasificar(

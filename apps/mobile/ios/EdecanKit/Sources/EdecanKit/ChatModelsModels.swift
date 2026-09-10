@@ -60,6 +60,7 @@ public enum EsfuerzoChat: String, Codable, Sendable, Equatable, CaseIterable, Id
     case bajo
     case medio
     case alto
+    case extremo
 
     public var id: String { rawValue }
 
@@ -68,6 +69,7 @@ public enum EsfuerzoChat: String, Codable, Sendable, Equatable, CaseIterable, Id
         case .bajo: return "Bajo"
         case .medio: return "Medio"
         case .alto: return "Alto"
+        case .extremo: return "Extremo"
         }
     }
 
@@ -77,6 +79,7 @@ public enum EsfuerzoChat: String, Codable, Sendable, Equatable, CaseIterable, Id
         case .bajo: return "Responde con menos vueltas de pensamiento."
         case .medio: return "El equilibrio de siempre."
         case .alto: return "Le da más aire para razonar antes de responder."
+        case .extremo: return "Razonamiento máximo (xhigh en Azure) para lo más difícil."
         }
     }
 }
@@ -259,4 +262,28 @@ public struct SeleccionDeModeloChat: Sendable, Equatable {
         guard hayImagenEnElTurno, let info, !info.veImagenes else { return nil }
         return "\(info.nombre) no ve imágenes: este mensaje lo atiende un modelo con visión."
     }
+}
+
+/// Fila del control de gastos por modelo (`GET /v1/usage/modelos`).
+public struct UsoModelo: Codable, Sendable, Equatable, Identifiable {
+    public let model: String
+    public let llamadas: Int
+    public let tokensEntrada: Int
+    public let tokensSalida: Int
+    public let costoUsd: Double
+
+    public var id: String { model }
+    public var tokensTotales: Int { tokensEntrada + tokensSalida }
+
+    enum CodingKeys: String, CodingKey {
+        case model, llamadas
+        case tokensEntrada = "tokens_entrada"
+        case tokensSalida = "tokens_salida"
+        case costoUsd = "costo_usd"
+    }
+}
+
+public struct UsoModelosOut: Codable, Sendable, Equatable {
+    public let periodo: String
+    public let modelos: [UsoModelo]
 }

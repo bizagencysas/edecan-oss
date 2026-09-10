@@ -131,18 +131,31 @@ async def _record_suggestion(
     Reusa `automations` (no se crea una tabla nueva) pero NUNCA auto-crea una
     automatización activa: `enabled=false`, `next_run_at=NULL` y
     `trigger.kind="suggestion"` (que `automation_scan` ignora). Dedup
-    determinista por `nombre` (derivado de la tarea normalizada): la misma
-    tarea repetida no genera filas duplicadas en barridos sucesivos.
+    determinista por `nombre` (derivado de la tarea normalizada), SIN importar
+    `enabled` (AUD-22a): una sugerencia ya ACEPTADA (enabled=true) o pendiente
+    bloquea la re-insertión — una sugerencia decidida no reaparece en barridos
+    sucesivos.
     """
     task = str(signal.get("task") or "").strip()
     if not task:
         return False
     nombre = f"Sugerencia de rutina: {task[:120]}"
 
+    # Dedup atómico SIN migraciones (BOTS-22): `automations` no tiene un índice
+    # único sobre (tenant_id, user_id, nombre), así que no hay ON CONFLICT que
+    # sirva. Serializamos el SELECT+INSERT por tenant con un advisory lock
+    # transaccional de Postgres (mismo patrón que `edecan_core.companion_wake`/
+    # `notifications`): dos scans simultáneos del mismo tenant quedan en fila y
+    # el segundo ve la fila del primero, produciendo UNA sola sugerencia.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": f"proactive_suggestion:{tenant_id}"},
+    )
+
     existing = await session.execute(
         text(
             "SELECT 1 FROM automations WHERE tenant_id = :tenant_id AND user_id = :user_id "
-            "AND enabled = false AND trigger->>'kind' = 'suggestion' AND nombre = :nombre"
+            "AND trigger->>'kind' = 'suggestion' AND nombre = :nombre"
         ),
         {"tenant_id": str(tenant_id), "user_id": str(user_id), "nombre": nombre},
     )

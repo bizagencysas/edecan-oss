@@ -1,9 +1,18 @@
 """`POST /v1/companion/pair-code` y `WS /v1/companion/ws` (ARCHITECTURE.md §10.12).
 
 El pair-code es un código alfanumérico de 8 caracteres guardado en Redis
-(`pair:{code}` -> `tenant_id`, TTL 600s). El companion de escritorio lo
+(`pair:{code}` -> `tenant_id`, TTL 24h). El companion de escritorio lo
 introduce al conectar el WebSocket; si es válido, la conexión se registra en
 `app.state.companion_manager` (`edecan_api.companion_manager.ConnectionManager`).
+
+El pair-code es REUTILIZABLE durante su TTL: el handshake WS valida el código
+contra Redis pero NO lo borra. Solo expira por TTL (o si el usuario genera un
+código nuevo, que reemplaza la key). El motivo: el companion de la Mac
+reconecta con el MISMO código tras cada corte de red (caída de internet,
+reinicio del API); si el primer uso borrara el par, cada reconexión quedaría
+sin emparejar hasta que el loop vivo de la Mac pidiera un código nuevo, y el
+pairing viejo era de un solo uso justo para eso. El QR del teléfono NO usa
+esta key: es `devices.py` con su propio secreto de un solo uso (GETDEL).
 
 `companion_ws` NO puede usar `Depends(rate_limit)` como el resto de rutas con
 credenciales (p. ej. `pair-code` más abajo): `rate_limit` exige
@@ -31,7 +40,7 @@ from edecan_api.deps import CurrentUser, get_current_user, get_redis, rate_limit
 
 router = APIRouter(prefix="/v1/companion", tags=["companion"])
 
-PAIR_CODE_TTL_SECONDS = 600
+PAIR_CODE_TTL_SECONDS = 24 * 60 * 60  # 24h: el companion reconecta con el MISMO código (ver docstring).
 PAIR_CODE_LENGTH = 8
 # Alfabeto sin caracteres ambiguos (0/O, 1/I/L) para que sea fácil de teclear a mano.
 _PAIR_CODE_ALPHABET = "".join(
@@ -90,11 +99,17 @@ async def companion_ws(websocket: WebSocket, code: str) -> None:
     if not tenant_id_raw:
         await websocket.close(code=WS_CLOSE_INVALID_PAIR_CODE)
         return
-    await redis_client.delete(f"pair:{code}")
+    # El par NO se borra acá (reutilizable durante su TTL): el companion
+    # reconecta con el mismo código tras cada corte. Si dos conexiones usan
+    # el mismo par, `ConnectionManager.connect` reemplaza la vieja por la
+    # nueva. La expiración es SOLO por TTL; generar un código nuevo reemplaza
+    # la key y deja inservible el anterior.
     tenant_id = uuid.UUID(tenant_id_raw)
 
     manager = websocket.app.state.companion_manager
-    await manager.connect(tenant_id, websocket)
+    await manager.connect(
+        tenant_id, websocket, name=websocket.query_params.get("name", "Mac")
+    )
     try:
         while True:
             message = await websocket.receive_json()
@@ -102,4 +117,4 @@ async def companion_ws(websocket: WebSocket, code: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(tenant_id)
+        manager.disconnect(tenant_id, websocket)

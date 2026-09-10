@@ -140,8 +140,8 @@ async def test_imagen_con_proveedor_vision_genera_chunk_seq0_y_status_ready(monk
     assert bloques[0]["source"]["media_type"] == "image/png"
     assert bloques[1]["type"] == "text"
 
-    # Alias "rapido" (job automático, no la tool interactiva) y sin tenant_flags.
-    assert deps.llm_router.resolved == [("rapido", {})]
+    # Alias "worker_vision" (el trabajador CON visión, GLM 5.3 Flash) y sin tenant_flags.
+    assert deps.llm_router.resolved == [("worker_vision", {})]
 
 
 async def test_imagen_con_proveedor_no_anthropic_tambien_se_indexa(monkeypatch) -> None:

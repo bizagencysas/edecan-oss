@@ -287,11 +287,18 @@ def test_manifiesto_every_installable_argv_is_a_fixed_list_of_nonempty_strings()
 # ---------------------------------------------------------------------------
 
 
-def test_ejecutor_listar_outside_windows_reports_platform_requirements_without_elevation():
+def test_ejecutor_listar_reports_platform_requisitos_and_is_not_elevated():
+    # Fuera de Windows no hay elevación Win32. Linux ya no miente con lista
+    # vacía ("todo bien"): reporta REQUISITOS_LINUX. macOS y el resto siguen [].
     resultado = preparacion.EjecutorPreparacion().listar()
 
     assert resultado["elevado"] is False
-    assert isinstance(resultado["requisitos"], list)
+    if sys.platform.startswith("linux"):
+        assert [fila["id"] for fila in resultado["requisitos"]] == [
+            requisito.id for requisito in preparacion.REQUISITOS_LINUX
+        ]
+    else:
+        assert resultado["requisitos"] == []
 
 
 def test_ejecutor_instalar_rejects_unknown_id_before_touching_the_system(

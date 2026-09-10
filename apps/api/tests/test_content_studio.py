@@ -135,10 +135,11 @@ async def test_content_studio_creates_private_editable_package(client, app, fake
     # (perfil personal por defecto, sin ningún nombre de marca fijo en el código).
     assert "Destino: Perfil personal." in request.messages[0].content
     assert "publica como PERSONA" in request.messages[0].content
-    event = fake_repo.usage_events[-1]
-    assert event["kind"] == "llm_tokens"
-    assert event["quantity"] == 78
-    assert event["meta"]["job"] == "content_studio_social"
+    # El endpoint ya NO persiste usage a mano: lo hace el callback `on_usage`
+    # del router global (ver edecan_api.deps). Persistirlo acá también
+    # contaría dos veces la misma completion (el FakeLLMRouter de este test
+    # no trae callback, por eso no hay evento llm_tokens en absoluto).
+    assert all(event["kind"] != "llm_tokens" for event in fake_repo.usage_events)
     assert queued[0][0] == "notify_important_event"
     assert queued[0][1]["kind"] == "content_created"
     assert queued[0][1]["event_id"] == body["artifacts"][0]["file_id"]

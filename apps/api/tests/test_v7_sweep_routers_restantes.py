@@ -698,11 +698,11 @@ async def test_confirm_mission_si_enqueue_falla_la_sesion_revierte_el_status() -
     session = _FakeSession(mission_row, step_seq=1)
     current_user = _current_user(tenant_id, user_id)
 
-    async def _enqueue_que_falla(*args, **kwargs):
-        raise RuntimeError("SQS caído (simulado)")
+    async def _outbox_que_falla(*args, **kwargs):
+        raise RuntimeError("job_outbox caído (simulado)")
 
-    original_enqueue = missions_module.enqueue
-    missions_module.enqueue = _enqueue_que_falla  # type: ignore[assignment]
+    original_outbox = missions_module.enqueue_outbox
+    missions_module.enqueue_outbox = _outbox_que_falla  # type: ignore[assignment]
     try:
         with pytest.raises(RuntimeError):
             await missions_module.confirm_mission(
@@ -710,11 +710,10 @@ async def test_confirm_mission_si_enqueue_falla_la_sesion_revierte_el_status() -
                 MissionConfirmIn(approved=True),
                 current_user,
                 session,  # type: ignore[arg-type]
-                object(),  # settings: no se usa antes de que enqueue lance
             )
         # La sesión NUNCA comiteó nada por su cuenta -- el rollback (si el
         # llamador real lo hace, como `get_tenant_session`) queda enteramente en
         # manos de quien abrió la sesión, nunca de este router.
         assert session.commits == 0
     finally:
-        missions_module.enqueue = original_enqueue  # type: ignore[assignment]
+        missions_module.enqueue_outbox = original_outbox  # type: ignore[assignment]

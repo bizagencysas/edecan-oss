@@ -42,11 +42,15 @@ class FakeSession:
 
     respuestas: list[list[dict[str, Any]]] = field(default_factory=list)
     llamadas: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    commits: int = 0
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> FakeResult:
         self.llamadas.append((str(stmt), dict(params or {})))
         filas = self.respuestas.pop(0) if self.respuestas else []
         return FakeResult(filas)
+
+    async def commit(self) -> None:
+        self.commits += 1
 
 
 @dataclass

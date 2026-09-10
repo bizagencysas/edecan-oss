@@ -1,4 +1,4 @@
-"""Protocolo inter-agente (grokbot.md §12): cola durable de mensajes entre agentes.
+"""Protocolo inter-agente (product design): cola durable de mensajes entre agentes.
 
 Este router administra los mensajes `agent_messages`; no ejecuta trabajo
 autónomo. La autorización de ejecución queda para una ola posterior.
@@ -13,15 +13,14 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from edecan_core.queue import enqueue
+from edecan_core.queue import enqueue_outbox
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edecan_api.config import Settings, get_settings
 from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, rate_limit
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ _MESSAGE_TYPES = (
 )
 _STATUSES = ("pending", "delivered", "acknowledged", "done", "error")
 
-# Tipos que implican trabajo real del receptor (grokbot.md §12-13): solo estos
+# Tipos que implican trabajo real del receptor (product design): solo estos
 # disparan `run_persistent_agent`; `result`/`status`/`cancel`/`blocker` son
 # informativos y no ejecutan nada.
 _RUNNABLE_MESSAGE_TYPES = ("task", "handoff", "question")
@@ -76,6 +75,27 @@ class AgentMessageCreateIn(BaseModel):
     artifact_refs: Any = None
     context_refs: Any = None
 
+    @field_validator("dependencies")
+    @classmethod
+    def _dependencies_must_be_uuid_strings(cls, value: Any) -> Any:
+        """F4/F5: `dependencies` es una lista de UUID en texto; cualquier otro
+        shape (dict, string suelto, UUID no parseable) se rechaza con 422 ANTES
+        de llegar al worker — donde un dict rompía el cast y mandaba el job a
+        dead-letter."""
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("dependencies debe ser una lista de UUIDs en texto")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("cada dependencia debe ser un UUID en texto")
+            try:
+                normalized.append(str(uuid.UUID(item.strip())))
+            except ValueError:
+                raise ValueError("cada dependencia debe ser un UUID en texto") from None
+        return normalized
+
 
 def _current(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if not user.tenant.flags.get("agents.missions", False):
@@ -103,8 +123,7 @@ async def _get_one(
     result = await session.execute(
         text(
             f"SELECT {_COLUMNS} FROM agent_messages m WHERE m.tenant_id = :tenant_id AND m.id = :id "
-            "AND (m.sender_agent_id IS NULL "
-            "OR EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.sender_agent_id "
+            "AND (EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.sender_agent_id "
             "AND w.user_id = :user_id) "
             "OR EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.receiver_agent_id "
             "AND w.user_id = :user_id))"
@@ -151,71 +170,102 @@ async def _lookup_agent_owner_user_id(
     return uuid.UUID(str(row["user_id"]))
 
 
+def _build_envelope(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Envelope canónico que viaja al runner (BOTS-03).
+
+    Copia del mensaje recién insertado los campos de restricción que el runner
+    debe aplicar del lado del receptor: `allowed_tools`, `deadline`,
+    `dependencies`, `approval_boundary`, `expected_output`, más referencias de
+    contexto. `deadline` se serializa a ISO-8601 para que sobreviva el JSON del
+    job y `envelope_expired`/`apply_envelope_restrictions` (edecan_core.agent_envelope)
+    lo lean tal cual.
+    """
+    deadline = row.get("deadline")
+    if isinstance(deadline, datetime):
+        deadline = deadline.isoformat()
+    return {
+        "allowed_tools": row.get("allowed_tools"),
+        "approval_boundary": row.get("approval_boundary"),
+        "deadline": deadline,
+        "dependencies": row.get("dependencies"),
+        "expected_output": row.get("expected_output"),
+        "context_refs": row.get("context_refs"),
+        "artifact_refs": row.get("artifact_refs"),
+        "priority": row.get("priority"),
+        "message_type": row.get("message_type"),
+        "sender_agent_id": (
+            str(row["sender_agent_id"]) if row.get("sender_agent_id") else None
+        ),
+        "task_id": row.get("task_id"),
+        "parent_task_id": row.get("parent_task_id"),
+        "conversation_id": (
+            str(row["conversation_id"]) if row.get("conversation_id") else None
+        ),
+    }
+
+
 async def _enqueue_agent_message_push(
-    settings: Settings,
+    session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     owner_user_id: uuid.UUID,
     message_id: uuid.UUID,
 ) -> None:
-    """Notifica al dueño del agente receptor — best-effort, fail-closed en logs."""
-    try:
-        await enqueue(
-            settings,
-            "notify_important_event",
-            {
-                "user_id": str(owner_user_id),
-                "kind": "agent_message",
-                "event_id": str(message_id),
-                "resource_id": str(message_id),
-            },
-            tenant_id,
-        )
-    except Exception:  # noqa: BLE001 - el mensaje ya quedó persistido
-        logger.warning(
-            "send_message: no se pudo encolar notify_important_event "
-            "(message_id=%s owner_user_id=%s)",
-            message_id,
-            owner_user_id,
-            exc_info=True,
-        )
+    """Notificación al dueño del agente receptor, vía outbox transaccional.
+
+    BOTS-08: la notificación se escribe en la MISMA sesión (transacción) que el
+    INSERT del mensaje — se compromete con él y se despacha después del commit
+    (`dispatch_outbox`), nunca antes. Un fallo aquí rueda atrás el mensaje, en
+    vez de dejar un mensaje persistido sin su notificación.
+    """
+    await enqueue_outbox(
+        session,
+        tenant_id=tenant_id,
+        job_type="notify_important_event",
+        payload={
+            "user_id": str(owner_user_id),
+            "kind": "agent_bot_message",
+            "event_id": str(message_id),
+            "resource_id": str(message_id),
+        },
+    )
 
 
 async def _enqueue_receiver_work(
-    settings: Settings,
+    session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     receiver_agent_id: uuid.UUID,
     message_id: uuid.UUID,
     goal: str | None,
+    envelope: dict[str, Any],
 ) -> None:
-    """Encola `run_persistent_agent` para el receptor de un mensaje ejecutable.
+    """Escribe `run_persistent_agent` para el receptor en el outbox (BOTS-08).
 
-    Best-effort (grokbot.md §12-13): el insert del mensaje ya está persistido;
-    un fallo de encolado NO debe tumbar la respuesta. El worker receptor vuelve
-    a validar enabled/status/presupuesto al correr, y `task_id` queda ligado al
-    id del mensaje para que el acknowledge/estado final pueda reconciliarse.
+    Misma sesión que el INSERT del mensaje: mensaje y trabajo se comprometen o
+    ruedan atrás juntos; el dispatch real ocurre tras el commit en
+    `dispatch_outbox`. `task_id` queda ligado al id del mensaje (identidad
+    estable: una entrega duplicada no re-ejecuta, BOTS-07).
+
+    BOTS-03: el payload ahora lleva el envelope completo (`allowed_tools`,
+    `deadline`, `dependencies`, …) para que el runner lo aplique con
+    `edecan_core.agent_envelope.apply_envelope_restrictions`/`envelope_expired`
+    antes de reclamar y antes de producir efectos.
     """
     instruction = (goal or "").strip()
     if not instruction:
         return
-    try:
-        await enqueue(
-            settings,
-            "run_persistent_agent",
-            {
-                "worker_id": str(receiver_agent_id),
-                "instruction": instruction,
-                "task_id": str(message_id),
-            },
-            tenant_id,
-        )
-    except Exception:  # noqa: BLE001 - best-effort, el mensaje ya quedó guardado
-        logger.warning(
-            "send_message: no se pudo encolar run_persistent_agent para receptor=%s",
-            receiver_agent_id,
-            exc_info=True,
-        )
+    await enqueue_outbox(
+        session,
+        tenant_id=tenant_id,
+        job_type="run_persistent_agent",
+        payload={
+            "worker_id": str(receiver_agent_id),
+            "instruction": instruction,
+            "task_id": str(message_id),
+            "envelope": envelope,
+        },
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -223,7 +273,6 @@ async def send_message(
     body: AgentMessageCreateIn,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
-    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     message_type = body.message_type.strip().lower()
     if message_type not in _MESSAGE_TYPES:
@@ -296,24 +345,28 @@ async def send_message(
         )
         row = result.mappings().first()
         assert row is not None
-        # Inter-agent runtime (grokbot.md §12-13): si el mensaje va dirigido a
-        # un worker concreto y es ejecutable, el RECEPTOR hace el trabajo.
+        message_id = uuid.UUID(str(row["id"]))
+        # Inter-agent runtime (product design): si el mensaje va dirigido a
+        # un worker concreto y es ejecutable, el RECEPTOR hace el trabajo. El
+        # job se escribe en el outbox EN ESTA MISMA sesión (BOTS-08), con el
+        # envelope completo (BOTS-03) para que el runner lo aplique.
         if receiver is not None and message_type in _RUNNABLE_MESSAGE_TYPES:
             await _enqueue_receiver_work(
-                settings,
+                session,
                 tenant_id=user.tenant_id,
                 receiver_agent_id=receiver,
-                message_id=uuid.UUID(str(row["id"])),
+                message_id=message_id,
                 goal=goal,
+                envelope=_build_envelope(row),
             )
         if receiver is not None:
             owner_user_id = await _lookup_agent_owner_user_id(session, user, receiver)
             if owner_user_id is not None:
                 await _enqueue_agent_message_push(
-                    settings,
+                    session,
                     tenant_id=user.tenant_id,
                     owner_user_id=owner_user_id,
-                    message_id=uuid.UUID(str(row["id"])),
+                    message_id=message_id,
                 )
         return _public_row(row)
     except ProgrammingError:
@@ -341,8 +394,7 @@ async def list_messages(
         result = await session.execute(
             text(
                 f"SELECT {_COLUMNS} FROM agent_messages m WHERE m.tenant_id = :tenant_id "
-                "AND (m.sender_agent_id IS NULL "
-                "OR EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.sender_agent_id "
+                "AND (EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.sender_agent_id "
                 "AND w.user_id = :user_id) "
                 "OR EXISTS (SELECT 1 FROM persistent_agents w WHERE w.id = m.receiver_agent_id "
                 "AND w.user_id = :user_id)) "

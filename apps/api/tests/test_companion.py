@@ -44,6 +44,24 @@ async def test_create_pair_code_requires_authentication(client) -> None:
     assert response.status_code == 401
 
 
+async def test_create_pair_code_uses_24h_ttl(client, fake_redis) -> None:
+    """El par debe vivir 24h (reutilizable para reconexiones) — no 30 min."""
+    import time
+
+    import edecan_api.routers.companion as companion_module
+
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_basic")
+    response = await client.post("/v1/companion/pair-code", headers=headers)
+    assert response.status_code == 200
+    code = response.json()["code"]
+
+    assert companion_module.PAIR_CODE_TTL_SECONDS == 24 * 60 * 60
+    expiry = fake_redis._expiry.get(f"pair:{code}")
+    assert expiry is not None
+    remaining = expiry - time.time()
+    assert 24 * 60 * 60 - 5 <= remaining <= 24 * 60 * 60 + 5
+
+
 def test_ws_connect_with_invalid_pair_code_closes_with_4401(
     app, fake_redis, test_settings, monkeypatch
 ) -> None:
@@ -60,7 +78,33 @@ def test_ws_connect_with_invalid_pair_code_closes_with_4401(
             assert exc.code == 4401
 
 
-def test_ws_connect_with_valid_pair_code_registers_in_manager_and_consumes_code(
+def test_ws_connect_with_expired_pair_code_closes_with_4401(
+    app, fake_redis, test_settings, monkeypatch
+) -> None:
+    """Reutilizable ≠ eterno: pasado el TTL el par deja de validar (seguridad)."""
+    import time
+
+    import edecan_api.routers.companion as companion_module
+
+    monkeypatch.setattr(companion_module, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(companion_module, "get_redis", lambda settings: fake_redis)
+
+    tenant_id = uuid.uuid4()
+    code = "CADUCO12"
+    asyncio.run(fake_redis.set(f"pair:{code}", str(tenant_id), ex=600))
+    # Simula el paso del TTL: FakeRedis expira por tiempo real, así que se
+    # retrocede la marca de expiración para no esperar en el test.
+    fake_redis._expiry[f"pair:{code}"] = time.time() - 1
+
+    with TestClient(app) as test_client:
+        try:
+            with test_client.websocket_connect(f"/v1/companion/ws?code={code}"):
+                raise AssertionError("un pair-code expirado no debería servir")
+        except WebSocketDisconnect as exc:
+            assert exc.code == 4401
+
+
+def test_ws_connect_with_valid_pair_code_registers_in_manager_and_keeps_code(
     app, fake_redis, test_settings, monkeypatch
 ) -> None:
     import edecan_api.routers.companion as companion_module
@@ -78,13 +122,14 @@ def test_ws_connect_with_valid_pair_code_registers_in_manager_and_consumes_code(
     with TestClient(app) as test_client:
         with test_client.websocket_connect(f"/v1/companion/ws?code={code}"):
             assert manager.is_connected(tenant_id) is True
-            # El pair-code es de un solo uso: se borra de Redis al conectar.
-            assert asyncio.run(fake_redis.get(f"pair:{code}")) is None
+            # El pair-code es reutilizable durante su TTL: la conexión NO lo
+            # consume, para que la Mac pueda reconectar con el MISMO código.
+            assert asyncio.run(fake_redis.get(f"pair:{code}")) == str(tenant_id)
 
     assert manager.is_connected(tenant_id) is False
 
 
-def test_ws_reused_pair_code_is_rejected_the_second_time(
+def test_ws_pair_code_can_be_reused_for_a_second_connection_while_valid(
     app, fake_redis, test_settings, monkeypatch
 ) -> None:
     import edecan_api.routers.companion as companion_module
@@ -96,15 +141,18 @@ def test_ws_reused_pair_code_is_rejected_the_second_time(
     code = "WXYZ6789"
     asyncio.run(fake_redis.set(f"pair:{code}", str(tenant_id), ex=600))
 
+    manager = app.state.companion_manager
     with TestClient(app) as test_client:
         with test_client.websocket_connect(f"/v1/companion/ws?code={code}"):
-            pass
+            assert manager.is_connected(tenant_id) is True
+        assert manager.is_connected(tenant_id) is False
 
-        try:
-            with test_client.websocket_connect(f"/v1/companion/ws?code={code}"):
-                raise AssertionError("un pair-code ya consumido no debería volver a servir")
-        except WebSocketDisconnect as exc:
-            assert exc.code == 4401
+        # Segunda conexión con el MISMO código (reconexión tras un corte):
+        # debe aceptarse igual, no rechazarse con 4401.
+        with test_client.websocket_connect(f"/v1/companion/ws?code={code}"):
+            assert manager.is_connected(tenant_id) is True
+
+    assert asyncio.run(fake_redis.get(f"pair:{code}")) == str(tenant_id)
 
 
 def test_ws_pairing_attempts_are_rate_limited_per_ip(

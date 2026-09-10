@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -35,6 +36,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AWS_REGION = "us-east-1"
 _SQS_SERVICE_NAME = "sqs"
 _DB_QUEUE_PROVIDER = "db"
+_OUTBOX_BATCH_SIZE = 50
+_OUTBOX_MAX_ATTEMPTS = 5
+_OUTBOX_MAX_BACKOFF_SECONDS = 900
+_OUTBOX_BASE_BACKOFF_SECONDS = 30
 
 # Clave dentro de `payload` donde `_enqueue_db` guarda el equivalente de
 # `delay_seconds` (ver su docstring) — `edecan_local.worker_loop` (WP-V3-05)
@@ -57,6 +62,247 @@ class QueueSettingsLike(Protocol):
     SQS_QUEUE_URL: str | None
     AWS_ENDPOINT_URL: str | None
     AWS_REGION: str
+
+
+class OutboxTransport(Protocol):
+    """Delivery boundary used by :func:`dispatch_outbox`."""
+
+    async def send(self, envelope: JobEnvelope) -> Any: ...
+
+
+def _sql(statement: str) -> Any:
+    """Wrap textual SQL when SQLAlchemy is installed by the hosting process."""
+    try:
+        from sqlalchemy import text
+    except ImportError:  # pragma: no cover - standalone core without SQLAlchemy
+        return statement
+    return text(statement)
+
+
+def _validate_job_type(job_type: str) -> None:
+    if job_type not in JOB_TYPES:
+        raise ValueError(f"job_type inválido: {job_type!r}. Debe ser uno de {JOB_TYPES}")
+
+
+async def _send_sqs_envelope(
+    settings: QueueSettingsLike,
+    envelope: JobEnvelope,
+    *,
+    delay_seconds: int | None = None,
+) -> None:
+    queue_url = getattr(settings, "SQS_QUEUE_URL", None)
+    if not queue_url:
+        raise RuntimeError(
+            f"SQS_QUEUE_URL no está configurado — no se puede encolar el job "
+            f"{envelope.type!r} (ARCHITECTURE.md §10.2)."
+        )
+
+    region = getattr(settings, "AWS_REGION", None) or _DEFAULT_AWS_REGION
+    endpoint_url = getattr(settings, "AWS_ENDPOINT_URL", None)
+    send_kwargs: dict[str, Any] = {
+        "QueueUrl": queue_url,
+        "MessageBody": envelope.model_dump_json(),
+    }
+    if delay_seconds is not None:
+        send_kwargs["DelaySeconds"] = delay_seconds
+
+    session = aioboto3.Session()
+    async with session.client(
+        _SQS_SERVICE_NAME, region_name=region, endpoint_url=endpoint_url
+    ) as sqs:
+        await sqs.send_message(**send_kwargs)
+
+
+class QueueTransport:
+    """Publish outbox envelopes to the configured real queue provider.
+
+    The outbox id is also the downstream ``JobEnvelope.job_id``. In DB mode
+    the explicit id plus ``ON CONFLICT DO NOTHING`` makes a retry after a
+    publish/commit ambiguity idempotent at the queue boundary.
+    """
+
+    def __init__(self, settings: QueueSettingsLike) -> None:
+        self._settings = settings
+
+    async def send(self, envelope: JobEnvelope) -> None:
+        if getattr(self._settings, "QUEUE_PROVIDER", "sqs") == _DB_QUEUE_PROVIDER:
+            await self._send_db(envelope)
+            return
+        await _send_sqs_envelope(self._settings, envelope)
+
+    async def _send_db(self, envelope: JobEnvelope) -> None:
+        import asyncpg
+
+        dsn = _to_asyncpg_dsn(getattr(self._settings, "DATABASE_URL", None))
+        if not dsn:
+            raise RuntimeError(
+                f"DATABASE_URL no está configurado — no se puede despachar el job "
+                f"{envelope.type!r} desde job_outbox."
+            )
+
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute(
+                "INSERT INTO jobs (id, tenant_id, type, payload, status, attempts) "
+                "VALUES ($1, $2, $3, $4::jsonb, 'queued', 0) "
+                "ON CONFLICT (id) DO NOTHING",
+                envelope.job_id,
+                envelope.tenant_id,
+                envelope.type,
+                json.dumps(envelope.payload, default=str),
+            )
+        finally:
+            await conn.close()
+
+
+async def enqueue_outbox(
+    session: Any,
+    *,
+    tenant_id: UUID | None,
+    job_type: str,
+    payload: dict[str, Any],
+) -> UUID:
+    """Persist a queued event in the caller's current business transaction.
+
+    This function deliberately never commits and never opens another session:
+    the business mutation and its request for asynchronous work therefore
+    either commit together or roll back together.
+    """
+    # Auditoría H1: job_outbox.tenant_id es NOT NULL — un job GLOBAL no
+    # tiene cabida aquí; falla temprano con error claro en vez de un
+    # NotNullViolation a mitad de la transacción.
+    if tenant_id is None:
+        raise ValueError("enqueue_outbox exige tenant_id (los jobs globales usan enqueue()).")
+    _validate_job_type(job_type)
+    outbox_id = uuid4()
+    await session.execute(
+        _sql(
+            "INSERT INTO job_outbox ("
+            "id, tenant_id, job_type, payload, status, attempts, available_at, "
+            "sent_at, last_error, created_at, updated_at"
+            ") VALUES ("
+            ":id, :tenant_id, :job_type, CAST(:payload AS jsonb), 'queued', 0, "
+            "now(), NULL, NULL, now(), now()"
+            ")"
+        ),
+        {
+            "id": outbox_id,
+            "tenant_id": tenant_id,
+            "job_type": job_type,
+            "payload": json.dumps(dict(payload), default=str),
+        },
+    )
+    return outbox_id
+
+
+def _decode_outbox_payload(raw_payload: Any) -> dict[str, Any]:
+    payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    if not isinstance(payload, dict):
+        raise ValueError("job_outbox.payload debe ser un objeto JSON")
+    return dict(payload)
+
+
+def _outbox_backoff_seconds(attempts: int) -> int:
+    bounded_attempts = max(0, min(attempts, _OUTBOX_MAX_ATTEMPTS))
+    return min(
+        _OUTBOX_MAX_BACKOFF_SECONDS,
+        (2**bounded_attempts) * _OUTBOX_BASE_BACKOFF_SECONDS,
+    )
+
+
+async def _send_outbox(
+    transport: OutboxTransport | Callable[[JobEnvelope], Awaitable[Any]],
+    envelope: JobEnvelope,
+) -> None:
+    sender = getattr(transport, "send", None)
+    if sender is not None:
+        await sender(envelope)
+        return
+    await transport(envelope)
+
+
+async def dispatch_outbox(
+    *,
+    session_factory: Callable[[UUID | None], Any],
+    transport: OutboxTransport | Callable[[JobEnvelope], Awaitable[Any]],
+) -> int:
+    """Publish at most 50 ready outbox rows and return the successful count.
+
+    Rows stay locked while they are published so concurrent dispatchers skip
+    them. Delivery is at-least-once: a process can die after the transport
+    accepts an envelope but before this transaction marks it ``sent``. The
+    stable outbox id is therefore reused as ``JobEnvelope.job_id``; the DB
+    transport deduplicates that id at insert time.
+    """
+    sent = 0
+    now = datetime.now(UTC)
+    async with session_factory(None) as session:
+        result = await session.execute(
+            _sql(
+                "SELECT id, tenant_id, job_type, payload, attempts FROM job_outbox "
+                "WHERE status = 'queued' AND available_at <= :now "
+                "ORDER BY available_at ASC, created_at ASC, id ASC "
+                "LIMIT :limit FOR UPDATE SKIP LOCKED"
+            ),
+            {"now": now, "limit": _OUTBOX_BATCH_SIZE},
+        )
+        rows = [dict(row) for row in result.mappings().all()]
+        for row in rows:
+            outbox_id = UUID(str(row["id"]))
+            attempts = int(row.get("attempts") or 0)
+            next_attempts = attempts + 1
+            try:
+                payload = _decode_outbox_payload(row.get("payload"))
+                envelope = JobEnvelope(
+                    job_id=outbox_id,
+                    tenant_id=(
+                        UUID(str(row["tenant_id"])) if row.get("tenant_id") is not None else None
+                    ),
+                    type=str(row["job_type"]),
+                    payload=payload,
+                )
+                await _send_outbox(transport, envelope)
+            except Exception as exc:
+                status = "dead" if next_attempts >= _OUTBOX_MAX_ATTEMPTS else "queued"
+                available_at = now + timedelta(seconds=_outbox_backoff_seconds(attempts))
+                await session.execute(
+                    _sql(
+                        "UPDATE job_outbox SET status = :status, attempts = :attempts, "
+                        "available_at = :available_at, sent_at = NULL, last_error = :last_error, "
+                        "updated_at = now() WHERE id = :id"
+                    ),
+                    {
+                        "id": outbox_id,
+                        "status": status,
+                        "attempts": next_attempts,
+                        "available_at": available_at,
+                        "last_error": f"{type(exc).__name__}: {exc}"[:2000],
+                    },
+                )
+                logger.warning(
+                    "job_outbox publish failed id=%s attempt=%s status=%s",
+                    outbox_id,
+                    next_attempts,
+                    status,
+                    exc_info=True,
+                )
+                continue
+
+            await session.execute(
+                _sql(
+                    "UPDATE job_outbox SET status = :status, attempts = :attempts, "
+                    "sent_at = :sent_at, last_error = NULL, updated_at = now() WHERE id = :id"
+                ),
+                {
+                    "id": outbox_id,
+                    "status": "sent",
+                    "attempts": next_attempts,
+                    "sent_at": datetime.now(UTC),
+                },
+            )
+            sent += 1
+
+    return sent
 
 
 async def enqueue(
@@ -86,38 +332,15 @@ async def enqueue(
     igual que antes de agregar este parámetro. En la rama `"db"`, el
     equivalente se guarda en `payload["_not_before"]` (ver `_enqueue_db`).
     """
-    if job_type not in JOB_TYPES:
-        raise ValueError(f"job_type inválido: {job_type!r}. Debe ser uno de {JOB_TYPES}")
+    _validate_job_type(job_type)
 
     if getattr(settings, "QUEUE_PROVIDER", "sqs") == _DB_QUEUE_PROVIDER:
         return await _enqueue_db(
             settings, job_type, payload, tenant_id, delay_seconds=delay_seconds
         )
 
-    queue_url = getattr(settings, "SQS_QUEUE_URL", None)
-    if not queue_url:
-        raise RuntimeError(
-            f"SQS_QUEUE_URL no está configurado — no se puede encolar el job {job_type!r} "
-            "(ARCHITECTURE.md §10.2)."
-        )
-
     envelope = JobEnvelope(job_id=uuid4(), tenant_id=tenant_id, type=job_type, payload=payload)
-
-    region = getattr(settings, "AWS_REGION", None) or _DEFAULT_AWS_REGION
-    endpoint_url = getattr(settings, "AWS_ENDPOINT_URL", None)
-
-    send_kwargs: dict[str, Any] = {
-        "QueueUrl": queue_url,
-        "MessageBody": envelope.model_dump_json(),
-    }
-    if delay_seconds is not None:
-        send_kwargs["DelaySeconds"] = delay_seconds
-
-    session = aioboto3.Session()
-    async with session.client(
-        _SQS_SERVICE_NAME, region_name=region, endpoint_url=endpoint_url
-    ) as sqs:
-        await sqs.send_message(**send_kwargs)
+    await _send_sqs_envelope(settings, envelope, delay_seconds=delay_seconds)
 
     logger.info("Job %s encolado: type=%s tenant_id=%s", envelope.job_id, job_type, tenant_id)
     return envelope.job_id
@@ -187,6 +410,10 @@ async def _enqueue_db(
 
     envelope_payload = dict(payload)
     if delay_seconds is not None:
+        # Auditoría F2: sin tope, un caller con delay>900s tapaba la cola
+        # DB indefinidamente (head-of-line). SQS ya limita a 900s nativo;
+        # acá se aplica el MISMO tope.
+        delay_seconds = max(0, min(int(delay_seconds), 900))
         not_before = datetime.now(UTC) + timedelta(seconds=delay_seconds)
         envelope_payload[_NOT_BEFORE_PAYLOAD_KEY] = not_before.isoformat()
 

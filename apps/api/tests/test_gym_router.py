@@ -69,6 +69,12 @@ class _FakeSession:
     async def flush(self) -> None:
         pass
 
+    async def commit(self) -> None:
+        pass
+
+    async def rollback(self) -> None:
+        pass
+
 
 @pytest.fixture
 def app(fake_repo, fake_redis, test_settings):
@@ -157,6 +163,19 @@ def _plan_today_row(**overrides) -> dict:
     return row
 
 
+def _checkin_row(**overrides) -> dict:
+    row = {
+        "id": uuid.uuid4(),
+        "tenant_id": None,
+        "user_id": None,
+        "fecha": date.today(),
+        "respuesta": "si",
+        "session_id": None,
+    }
+    row.update(overrides)
+    return row
+
+
 def _plan_dummy() -> WorkoutPlan:
     return WorkoutPlan(
         titulo="Empuje",
@@ -233,6 +252,9 @@ async def test_checkin_si_genera_plan_y_crea_sesion_planeada(
 
     monkeypatch.setattr(gym_module, "generar_plan", fake_generar_plan)
     monkeypatch.setattr(gym_module, "_collage_en_segundo_plano", noop_collage_en_segundo_plano)
+    # checkin SELECT (vacío) + historial SELECT (vacío) + plan INSERT RETURNING
+    # (gana la carrera) — el resto de INSERTs caen en el default vacío del fake.
+    fake_session.respuestas = [[], [], [{"id": uuid.uuid4()}]]
 
     response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
 
@@ -293,12 +315,152 @@ async def test_checkin_si_collage_falla_no_tumba_el_checkin(
 
     monkeypatch.setattr(gym_module, "generar_plan", fake_generar_plan)
     monkeypatch.setattr(gym_module, "_collage_en_segundo_plano", noop_collage_en_segundo_plano)
+    fake_session.respuestas = [[], [], [{"id": uuid.uuid4()}]]
 
     response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
 
     assert response.status_code == 200
     assert response.json()["plan"]["imagen_file_id"] is None
     assert response.json()["session"]["estado"] == "planned"
+
+
+async def test_checkin_no_repetido_no_inserta_otra_fila(client, fake_session) -> None:
+    """Un segundo "No" del mismo día es idempotente: devuelve el mismo mensaje
+    y NO inserta otra fila en `gym_checkins`."""
+    headers, tenant_id, user_id = _auth()
+    fake_session.respuestas = [
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="no", session_id=None)]
+    ]
+
+    response = await client.post("/v1/gym/checkin", json={"respuesta": "no"}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["plan"] is None
+    assert body["session"] is None
+    assert "descansar" in body["mensaje"]
+
+    inserts = [p for sql, p in fake_session.executed if "INSERT INTO gym_checkins" in sql]
+    assert inserts == []
+    sql_check, params = fake_session.executed[0]
+    assert "gym_checkins" in sql_check
+    assert params["tenant_id"] == tenant_id
+    assert params["user_id"] == user_id
+
+
+async def test_checkin_si_repetido_devuelve_sesion_existente(client, fake_session) -> None:
+    """Un segundo "Sí" del mismo día devuelve LA sesión/plan existente sin
+    generar nada nuevo (idempotencia del contrato con iOS)."""
+    headers, tenant_id, user_id = _auth()
+    sid = uuid.uuid4()
+    fake_session.respuestas = [
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="si", session_id=sid)],
+        [_session_row(id=sid, tenant_id=tenant_id, user_id=user_id, estado="planned", started_at=None)],
+        [],  # historial: sin sesiones previas
+    ]
+
+    response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["session"]["id"] == str(sid)
+    assert "Ya te había registrado" in body["mensaje"]
+
+    inserts = [p for sql, p in fake_session.executed if "INSERT" in sql]
+    assert inserts == []
+    selects = [sql for sql, _ in fake_session.executed if "SELECT" in sql]
+    assert len(selects) == 3  # checkin de hoy + sesión + historial; cero escrituras
+
+
+async def test_checkin_si_despues_de_no_devuelve_el_no(client, fake_session) -> None:
+    """La primera respuesta del día manda: un "Sí" posterior a un "No" devuelve
+    el estado del "No" y no genera plan ni filas nuevas."""
+    headers, tenant_id, user_id = _auth()
+    fake_session.respuestas = [
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="no", session_id=None)]
+    ]
+
+    response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["plan"] is None
+    assert body["session"] is None
+    assert "descansar" in body["mensaje"]
+    assert not any("INSERT" in sql for sql, _ in fake_session.executed)
+
+
+async def test_recheckin_mismo_dia_no_regenera_plan(client, fake_session, monkeypatch) -> None:
+    """C4: un re-check-in del mismo día devuelve lo existente y NO vuelve a
+    llamar al LLM (cero generaciones de plan nuevas)."""
+    headers, tenant_id, user_id = _auth()
+    sid = uuid.uuid4()
+    llamadas: list[tuple] = []
+
+    async def fake_generar_plan_gym(llm_router, flags, *, historial, objetivo, readiness=None):
+        llamadas.append((historial, objetivo, readiness))
+        return _plan_dummy()
+
+    monkeypatch.setattr(gym_module, "_generar_plan_gym", fake_generar_plan_gym)
+    fake_session.respuestas = [
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="si", session_id=sid)],
+        [_session_row(id=sid, tenant_id=tenant_id, user_id=user_id, estado="planned", started_at=None)],
+        [],  # historial: sin sesiones previas
+    ]
+
+    response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["session"]["id"] == str(sid)
+    assert llamadas == []  # el LLM no se invocó de nuevo
+    assert not any("INSERT" in sql for sql, _ in fake_session.executed)
+
+
+async def test_checkin_concurrente_segundo_reutiliza_existente(
+    client, fake_session, monkeypatch
+) -> None:
+    """C4: si el INSERT del plan pierde la carrera (ON CONFLICT DO NOTHING
+    devuelve nada), el check-in devuelve LA sesión existente sin duplicar
+    sesión ni check-in."""
+    headers, tenant_id, user_id = _auth()
+    sid = uuid.uuid4()
+
+    async def fake_generar_plan_gym(llm_router, flags, *, historial, objetivo, readiness=None):
+        return _plan_dummy()
+
+    monkeypatch.setattr(gym_module, "_generar_plan_gym", fake_generar_plan_gym)
+    # Orden de ejecución del camino "si" que pierde la carrera:
+    # 1) checkin SELECT -> vacío   2) historial SELECT -> vacío
+    # 3) plan INSERT RETURNING -> vacío (= ON CONFLICT DO NOTHING, perdió)
+    # 4) checkin SELECT (re-read) -> el "si" del ganador
+    # 5) session SELECT -> la sesión del ganador   6) historial SELECT -> vacío
+    fake_session.respuestas = [
+        [],
+        [],
+        [],
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="si", session_id=sid)],
+        [_session_row(id=sid, tenant_id=tenant_id, user_id=user_id, estado="planned", started_at=None)],
+        [],
+    ]
+
+    response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["session"]["id"] == str(sid)
+    assert "Ya te había registrado" in body["mensaje"]
+
+    # El plan se intentó con ON CONFLICT DO NOTHING...
+    plan_insert = [sql for sql, _ in fake_session.executed if "INSERT INTO workout_plans" in sql]
+    assert len(plan_insert) == 1
+    assert "ON CONFLICT" in plan_insert[0]
+    # ...pero NO se duplicó sesión ni check-in (solo el INSERT del plan, que perdió).
+    assert not any("workout_sessions" in sql for sql, _ in fake_session.executed if "INSERT" in sql)
+    assert not any("gym_checkins" in sql for sql, _ in fake_session.executed if "INSERT" in sql)
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +472,9 @@ async def test_plan_today_vacio_devuelve_null(client, fake_session) -> None:
     headers, _, _ = _auth()
     response = await client.get("/v1/gym/plan/today", headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"plan": None}
+    # Contrato fijo con iOS: `checkin_hoy` SIEMPRE está presente (null sin
+    # check-in) — es lo que esconde la tarjeta Sí/No tras responder.
+    assert response.json() == {"plan": None, "checkin_hoy": None}
 
 
 async def test_plan_today_devuelve_plan_con_tenant_scoped(client, fake_session) -> None:
@@ -323,9 +487,49 @@ async def test_plan_today_devuelve_plan_con_tenant_scoped(client, fake_session) 
     body = response.json()
     assert body["plan"]["titulo"] == "Empuje"
     assert body["plan"]["ejercicios"][0]["musculo"] == "pecho"
+    assert body["checkin_hoy"] is None
     sql, params = fake_session.executed[0]
     assert params["tenant_id"] == tenant_id
     assert params["user_id"] == user_id
+
+
+async def test_plan_today_incluye_checkin_hoy_si_con_sesion(client, fake_session) -> None:
+    headers, tenant_id, user_id = _auth()
+    sid = uuid.uuid4()
+    fake_session.respuestas = [
+        [_plan_today_row(tenant_id=tenant_id, user_id=user_id)],
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="si", session_id=sid)],
+    ]
+
+    response = await client.get("/v1/gym/plan/today", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checkin_hoy"]["fecha"] == date.today().isoformat()
+    assert body["checkin_hoy"]["respuesta"] == "si"
+    assert body["checkin_hoy"]["session_id"] == str(sid)
+    sql, params = fake_session.executed[1]
+    assert "gym_checkins" in sql
+    assert params["tenant_id"] == tenant_id
+    assert params["user_id"] == user_id
+    assert params["fecha"] == date.today()
+
+
+async def test_plan_today_incluye_checkin_hoy_no_sin_sesion(client, fake_session) -> None:
+    """La respuesta "No" TAMBIÉN se expone: la tarjeta no debe reaparecer."""
+    headers, tenant_id, user_id = _auth()
+    fake_session.respuestas = [
+        [],
+        [_checkin_row(tenant_id=tenant_id, user_id=user_id, respuesta="no", session_id=None)],
+    ]
+
+    response = await client.get("/v1/gym/plan/today", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plan"] is None
+    assert body["checkin_hoy"]["respuesta"] == "no"
+    assert body["checkin_hoy"]["session_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +838,7 @@ async def test_checkin_readiness_se_pasa_al_plan(
 
     monkeypatch.setattr(gym_module, "_generar_plan_gym", fake_generar_plan_gym)
     monkeypatch.setattr(gym_module, "_collage_en_segundo_plano", noop_collage_en_segundo_plano)
+    fake_session.respuestas = [[], [], [{"id": uuid.uuid4()}]]
 
     response = await client.post(
         "/v1/gym/checkin",
@@ -662,6 +867,7 @@ async def test_checkin_readiness_por_defecto_none(
 
     monkeypatch.setattr(gym_module, "_generar_plan_gym", fake_generar_plan_gym)
     monkeypatch.setattr(gym_module, "_collage_en_segundo_plano", noop_collage_en_segundo_plano)
+    fake_session.respuestas = [[], [], [{"id": uuid.uuid4()}]]
 
     response = await client.post("/v1/gym/checkin", json={"respuesta": "si"}, headers=headers)
 
@@ -890,3 +1096,46 @@ async def test_coach_voz_tipo_invalido_422(client) -> None:
         headers=headers,
     )
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /plan/swap-ejercicio
+# ---------------------------------------------------------------------------
+
+
+async def test_swap_ejercicio_persiste_el_update_en_db(client, fake_session, app) -> None:
+    """C5: el `UPDATE workout_plans` del swap DEBE ejecutarse.
+
+    Antes se llamaba `session.execute(...)` SIN `await`, así que la corrutina
+    nunca corría, `commit()` commiteaba vacío y la DB se quedaba con el plan
+    viejo. Con el `await`, el UPDATE se registra en `executed` y lleva el
+    ejercicio nuevo serializado."""
+    headers, tenant_id, user_id = _auth()
+    pid = uuid.uuid4()
+    fake_session.respuestas = [
+        [_plan_today_row(id=pid, tenant_id=tenant_id, user_id=user_id)],
+    ]
+    llm = _FakeLLMRouter(
+        '{"ejercicio": {"nombre": "Sentadilla", "musculo": "pierna", "series": 4, '
+        '"repeticiones": "8-10", "descanso_seg": 120, "notas": ""}, '
+        '"alternativas": [], "interpreto": "cambiar a pierna"}'
+    )
+    app.dependency_overrides[edecan_deps.get_llm_router] = lambda: llm
+
+    response = await client.post(
+        "/v1/gym/plan/swap-ejercicio",
+        json={"ejercicio_idx": 0, "nombre": "sentadilla"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ejercicio_nuevo"]["nombre"] == "Sentadilla"
+
+    updates = [p for sql, p in fake_session.executed if "UPDATE workout_plans" in sql]
+    assert len(updates) == 1
+    assert updates[0]["tenant_id"] == str(tenant_id)
+    assert updates[0]["id"] == str(pid)
+    # El ejercicio nuevo va serializado en el UPDATE: prueba de que el `await`
+    # corre (sin él, `executed` no tendría NINGÚN UPDATE).
+    assert "Sentadilla" in updates[0]["ejercicios"]

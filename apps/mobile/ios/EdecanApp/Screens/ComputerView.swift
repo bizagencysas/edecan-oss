@@ -14,14 +14,25 @@ struct ComputerView: View {
     @State private var proximamente = false
     @State private var ocupado = false
     @State private var creando = false
+    @State private var equipos: [RemoteMachine] = []
+    @State private var cargandoEquipos = false
+    @State private var errorEquipos = false
 
     var body: some View {
         List {
+            seccionEquipos
+
             if let error {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .listRowSeparator(.hidden)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Button("Reintentar") {
+                        Task { await cargar() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .listRowSeparator(.hidden)
             }
             if proximamente {
                 filaProximamente
@@ -59,8 +70,8 @@ struct ComputerView: View {
                 ProgressView()
             }
         }
-        .task { await cargar() }
-        .refreshable { await cargar() }
+        .task { await cargarTodo() }
+        .refreshable { await cargarTodo() }
         .sheet(isPresented: $creando) {
             NavigationStack { NuevaSesionSheet { kind in
                 Task { await crear(kind: kind) }
@@ -70,15 +81,75 @@ struct ComputerView: View {
 
     private var filaProximamente: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Próximamente", systemImage: "hourglass")
+            Label("Sesiones en el VPS", systemImage: "server.rack")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(EdecanTheme.morado)
-            Text("El plano de control de la computadora está llegando al servidor.")
+            Text("El plano de control de sesiones aún no está en este servidor. Mientras tanto, usa Remoto para ver y controlar equipos conectados.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            NavigationLink {
+                RemotoView()
+            } label: {
+                Label("Ir a Remoto", systemImage: "display")
+                    .font(.footnote.weight(.semibold))
+            }
         }
         .padding(.vertical, 4)
         .listRowSeparator(.hidden)
+    }
+
+    private var seccionEquipos: some View {
+        Section {
+            if errorEquipos {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No pude cargar los equipos del VPS.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Reintentar") {
+                        Task { await cargarEquipos() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            } else if equipos.isEmpty && !cargandoEquipos {
+                Text("No hay equipos conectados ahora")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(equipos) { equipo in
+                    FilaEquipo(equipo: equipo)
+                }
+            }
+        } header: {
+            Text("Equipos")
+        }
+    }
+
+    private func cargarTodo() async {
+        await cargarEquipos()
+        await cargar()
+    }
+
+    private func cargarEquipos() async {
+        guard let client = session.client else {
+            equipos = []
+            errorEquipos = true
+            return
+        }
+        cargandoEquipos = true
+        defer { cargandoEquipos = false }
+        do {
+            equipos = try await client.listRemoteMachines()
+            errorEquipos = false
+        } catch {
+            // Fallback silencioso: la sección muestra el texto corto y el
+            // resto de la pantalla (las sesiones) sigue funcionando.
+            equipos = []
+            errorEquipos = true
+        }
     }
 
     private func cargar() async {
@@ -258,6 +329,45 @@ private struct TarjetaSesion: View {
         }
         .buttonStyle(.bordered)
         .tint(EdecanTheme.morado)
+    }
+}
+
+/// Un equipo del dueño (`GET /v1/remote/machines`): icono según `kind`,
+/// etiqueta y badge de conexión, en card vidrio.
+private struct FilaEquipo: View {
+    let equipo: RemoteMachine
+
+    private var icono: String { equipo.esLocal ? "cloud.fill" : "laptopcomputer" }
+    private var etiquetaTipo: String { equipo.esLocal ? "Local" : "Remoto" }
+    private var colorEstado: Color { equipo.connected ? EdecanTheme.morado : .secondary }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icono)
+                .font(.title3)
+                .foregroundStyle(EdecanTheme.morado)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(equipo.label)
+                    .font(.subheadline.weight(.semibold))
+                Text(etiquetaTipo)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(colorEstado)
+                    .frame(width: 7, height: 7)
+                Text(equipo.connected ? "En línea" : "Sin WS")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(colorEstado)
+            }
+        }
+        .padding(14)
+        .tarjetaVidrio(esquina: 14)
+        .padding(.vertical, 3)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 }
 

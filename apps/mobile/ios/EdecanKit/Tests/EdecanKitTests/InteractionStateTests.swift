@@ -84,6 +84,84 @@ struct InteractionStateTests {
         #expect(store.lastReadAt(conversationId: "conv-a") == nil)
     }
 
+    @Test func principalConversationIdSeLimpiaConLaSesion() throws {
+        let suiteName = "InteractionStateTests.principal.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ChatLocalStateStore(defaults: defaults)
+        store.principalConversationId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+        store.clearAll()
+        #expect(store.principalConversationId == nil)
+    }
+
+    @Test func snapshotDeConversacionSePintaYSeBorraAlCerrarSesion() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ConversationSnapshotStore.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConversationSnapshotStore(directoryURL: directory)
+        let conversationId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let snap = CachedConversationSnapshot(
+            conversationId: conversationId,
+            title: "Edecán",
+            isMain: true,
+            model: nil,
+            effort: nil,
+            messages: [
+                CachedChatMessage(
+                    id: "m1",
+                    role: "user",
+                    text: "Hola",
+                    createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+                )
+            ]
+        )
+
+        store.save(snap)
+        let loaded = try #require(store.load(conversationId: conversationId))
+        #expect(loaded.messages.count == 1)
+        #expect(loaded.messages[0].text == "Hola")
+        #expect(loaded.isMain)
+
+        store.clearAll()
+        #expect(store.load(conversationId: conversationId) == nil)
+    }
+
+    @Test func snapshotRechazaRutaInsegura() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ConversationSnapshotStore.unsafe.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConversationSnapshotStore(directoryURL: directory)
+        store.save(
+            CachedConversationSnapshot(
+                conversationId: "../etc/passwd",
+                title: nil,
+                isMain: false,
+                model: nil,
+                effort: nil,
+                messages: []
+            )
+        )
+        #expect(store.load(conversationId: "../etc/passwd") == nil)
+    }
+
+    @Test func snapshotDeBotSeLimpiaConLaSesion() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BotChatSnapshotStore.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = BotChatSnapshotStore(directoryURL: directory)
+        let workerId = "11111111-2222-3333-4444-555555555555"
+        store.save(
+            CachedBotThread(
+                workerId: workerId,
+                messages: [CachedBotMessage(id: "b1", esUsuario: true, texto: "Hola BotAlpha")]
+            )
+        )
+        #expect(store.load(workerId: workerId)?.messages.first?.texto == "Hola BotAlpha")
+        store.clearAll()
+        #expect(store.load(workerId: workerId) == nil)
+    }
+
     @Test func intentoPendienteSePersisteSinPromptCrudoYSeEliminaAlCompletar() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingChatAttemptStore.\(UUID().uuidString)", isDirectory: true)

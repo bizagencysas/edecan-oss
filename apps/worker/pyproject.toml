@@ -7,7 +7,7 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
     "aioboto3>=13.0",
-    "pypdf>=4.3",
+    "pypdf>=6.16.1",
     "python-docx>=1.1",
     "httpx[http2]>=0.27",
     "pydantic>=2.7",
@@ -42,7 +42,7 @@ dependencies = [
     "edecan-mcp",
     # APNs provider-token signing requires PyJWT's cryptography backend.
     "pyjwt>=2.9",
-    "cryptography>=42",
+    "cryptography>=50",
 ]
 
 [dependency-groups]

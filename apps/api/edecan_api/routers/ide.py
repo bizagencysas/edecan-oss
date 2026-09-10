@@ -23,8 +23,11 @@ Nunca se loguea contenido de archivos ni de comandos: este módulo no llama
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from edecan_llm.router import LLMRouter
 from edecan_llm.task_router import modelo_ide_permitido, modelos_ide_disponibles
@@ -129,9 +132,23 @@ async def _send_or_error(
         )
 
     try:
-        response = await companion_manager.send_command(tenant_id, action, params, timeout=timeout)
+        # El IDE vive en la MAC del dueño (su repo, su editor): sin `machine`
+        # el default de send_command es el LOCAL (el box), cuyo sandbox no
+        # tiene los workspaces del dueño -- el IDE contestaba vacío/403.
+        response = await companion_manager.send_command(
+            tenant_id, action, params, timeout=timeout, machine="Mac"
+        )
     except CompanionError as exc:
-        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
+        mensaje = str(exc)
+        # F-6: "no hay una máquina con ese nombre" NO es un timeout del
+        # gateway — es indisponibilidad. Un 504 le miente al cliente (que
+        # decide reintentos según el código).
+        if "máquina conectada con el nombre" in mensaje:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="La Mac del dueño no está conectada. Enciéndela y reintenta.",
+            ) from exc
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=mensaje) from exc
 
     if not response.get("ok", False):
         if response.get("lsp_no_disponible"):
@@ -362,7 +379,14 @@ async def get_status(
 ) -> dict[str, bool]:
     """`{"connected": bool}` -- si no hay companion emparejado, el resto de rutas devuelve 503."""
     _require_companion_ide(current_user.tenant)
-    return {"connected": companion_manager.is_connected(current_user.tenant_id)}
+    conectado = companion_manager.is_connected(current_user.tenant_id)
+    logger.info(
+        "ide/status: tenant=%s user=%s conectado=%s",
+        current_user.tenant_id,
+        current_user.user_id,
+        conectado,
+    )
+    return {"connected": conectado}
 
 
 @router.get("/tree")

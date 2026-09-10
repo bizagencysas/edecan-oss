@@ -84,6 +84,13 @@ def test_descubrir_encuentra_display_del_gestor_de_sesion_del_mismo_usuario(
         },
     )
 
+    class _Passwd:
+        pw_dir = str(tmp_path / "home-sin-xauthority")
+
+    import pwd
+
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: _Passwd())
+
     encontradas = linux_session.descubrir_variables_de_sesion()
 
     assert encontradas == {

@@ -40,6 +40,13 @@ from sqlalchemy import text
 _DEFAULT_BUCKET = "edecan-files"
 _DEFAULT_REGION = "us-east-1"
 
+# Tope de descarga de `descargar_archivo` — el mismo máximo que `LeerArchivoTool`
+# acepta abrir (`archivos.py` lo importa como `_MAX_FILE_BYTES`). Antes se leía el
+# `Body` ENTERO y el control de tamaño recién se hacía en la tool: un objeto de
+# 1 GB entraba completo a memoria. Ahora el `read` se acota a `MAX + 1` bytes para
+# detectar exceso sin traer el objeto entero (BOTS-17).
+MAX_DESCARGABLE_BYTES = 25 * 1024 * 1024
+
 
 @dataclass
 class ArchivoDescargado:
@@ -92,7 +99,12 @@ async def descargar_archivo(ctx: ToolContext, file_id: uuid.UUID) -> ArchivoDesc
     session = aioboto3.Session()
     async with session.client("s3", **_client_kwargs(ctx)) as s3:
         respuesta = await s3.get_object(Bucket=_bucket(ctx), Key=fila["s3_key"])
-        cuerpo = await respuesta["Body"].read()
+        # Lectura acotada: no traer el objeto entero a memoria (BOTS-17). El
+        # `+1` permite detectar "más grande que el máximo" sin bajar todo.
+        # OJO (ACT-01): `StreamingBody.read(n)` puede devolver MENOS que `n`
+        # sin ser EOF — una sola llamada corta archivos válidos a la mitad.
+        # Se lee en loop hasta EOF o tope.
+        cuerpo = await _leer_acotado(respuesta["Body"], MAX_DESCARGABLE_BYTES)
 
     return ArchivoDescargado(
         contenido=cuerpo,
@@ -176,3 +188,22 @@ async def subir_resultado(
         },
     )
     return file_id
+
+
+async def _leer_acotado(body: Any, maximo: int) -> bytes:
+    """Lee hasta `maximo + 1` bytes del body en loop (ACT-01).
+
+    `StreamingBody.read(n)` de aioboto3/aiohttp puede devolver menos de `n`
+    bytes ANTES del EOF real; una sola llamada trunca archivos válidos. El loop
+    sigue hasta EOF verdadero (chunk vacío) o hasta superar el máximo en 1
+    (señal de "más grande que el tope", quien llame decide qué hacer).
+    """
+    trozos: list[bytes] = []
+    total = 0
+    while total <= maximo:
+        trozo = await body.read(min(1024 * 1024, maximo + 1 - total))
+        if not trozo:
+            break
+        trozos.append(trozo)
+        total += len(trozo)
+    return b"".join(trozos)

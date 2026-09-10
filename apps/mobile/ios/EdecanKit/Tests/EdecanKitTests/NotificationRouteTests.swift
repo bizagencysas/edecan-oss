@@ -121,3 +121,36 @@ import Testing
     #expect(destino.route == .assistant)
     #expect(destino.conversationId == "conv-789")
 }
+
+// Push de BOT (`agent_bot_message`, kind dedicado): debe abrir la pestaña
+// Bots con la conversación del bot, NO el chat principal.
+@Test func notificationDestinoMensajeDeBotVaALaPestanaBots() {
+    let destino = NotificationDestino.parse(userInfo: [
+        "route": "assistant",
+        "event": "agent_bot_message",
+        "chat_id": "conv-bot-1",
+    ])
+    #expect(destino.route == .botChat)
+    #expect(destino.conversationId == "conv-bot-1")
+}
+
+// Bug real del 6-sep: un mensaje NORMAL del chat principal (`agent_message`)
+// debe seguir abriendo el asistente — antes todos caían en Bots.
+@Test func notificationDestinoMensajeNormalVaAlAsistente() {
+    let destino = NotificationDestino.parse(userInfo: [
+        "route": "assistant",
+        "event": "agent_message",
+        "chat_id": "conv-normal-1",
+    ])
+    #expect(destino.route == .assistant)
+    #expect(destino.conversationId == "conv-normal-1")
+}
+
+@Test func notificationDestinoSinEventoAgenteSigueEnAsistente() {
+    let destino = NotificationDestino.parse(userInfo: [
+        "route": "assistant",
+        "chat_id": "conv-normal-1",
+    ])
+    #expect(destino.route == .assistant)
+    #expect(destino.conversationId == "conv-normal-1")
+}

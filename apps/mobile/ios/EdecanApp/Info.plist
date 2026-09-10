@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>EDECAN_SENTRY_DSN</key>
+	<string>$(EDECAN_SENTRY_DSN)</string>
 	<key>EdecanUpdateChannel</key>
 	<string>$(EDECAN_IOS_UPDATE_CHANNEL)</string>
 	<key>EdecanUpdateManifestURL</key>
@@ -56,6 +58,10 @@
 	<string>Edecán accede únicamente a las fotos que tú elijas para adjuntarlas en el chat.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Edecan usa el reconocimiento de voz del dispositivo para convertir tus solicitudes en texto sin exigir una clave externa.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

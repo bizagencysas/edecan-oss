@@ -7,6 +7,40 @@ from typing import Any
 
 from edecan_schemas import PersonaConfig
 
+BOT_CHAT_SOCIAL_TOOL_NAMES: tuple[str, ...] = (
+    "enviar_mensaje_bot",
+    "listar_bots",
+    "avisar_avance",
+    "preguntar_al_usuario",
+    "buscar_skills",
+    "listar_skills",
+    "instalar_skill",
+    "usar_skill",
+    "listar_mcp",
+    "conectar_mcp",
+    "desconectar_mcp",
+)
+BOT_CHAT_COMMUNITY_MANAGER_TOOL_NAMES: tuple[str, ...] = (
+    "generar_contenido",
+    "crear_contenido_social",
+    "crear_post_linkedin",
+    "publicar_social",
+    "estado_conectores_sociales",
+    "listar_borradores_sociales",
+)
+BOT_CHAT_AUTOMATIONS_TOOL_NAMES: tuple[str, ...] = ("gestionar_automatizacion",)
+BOT_CHAT_DOCUMENT_TOOL_NAMES: tuple[str, ...] = (
+    "leer_archivo",
+    "analizar_imagen",
+    "consultar_documentos",
+)
+BOT_CHAT_REMOTE_ALWAYS_TOOL_NAMES: tuple[str, ...] = (
+    *BOT_CHAT_SOCIAL_TOOL_NAMES,
+    *BOT_CHAT_COMMUNITY_MANAGER_TOOL_NAMES,
+    *BOT_CHAT_AUTOMATIONS_TOOL_NAMES,
+    *BOT_CHAT_DOCUMENT_TOOL_NAMES,
+)
+
 
 def worker_display_name(worker: Mapping[str, Any]) -> str:
     display = str(worker.get("display_name") or "").strip()

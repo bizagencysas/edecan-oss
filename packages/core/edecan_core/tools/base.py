@@ -163,6 +163,35 @@ class Tool(ABC):
     input_schema: dict[str, Any]
     requires_flags: frozenset[str] = frozenset()
     dangerous: bool = False
+    async_run_in_thread: bool = False
+    """Run the async tool entry point on a dedicated worker thread.
+
+    This is opt-in because most tools are properly cooperative coroutines. It
+    exists for tools whose ``run()`` contains unavoidable synchronous work: a
+    timeout can then stop awaiting the worker without blocking the agent event
+    loop, although Python cannot forcibly stop the underlying thread.
+    """
+
+    intrinsically_dangerous: bool
+    _intrinsically_dangerous: bool
+
+    def __init__(self) -> None:
+        # Capture declared risk before a registry can turn off the confirmation
+        # gate for an explicitly authorised single-owner deployment.  The
+        # public property has no setter: authorisation may change ``dangerous``;
+        # the nature of the effect must not.
+        self._intrinsically_dangerous = bool(self.dangerous)
+
+    @property
+    def intrinsically_dangerous(self) -> bool:
+        """Whether this tool was dangerous before effective authorisation."""
+
+        # Compatibility for legacy subclasses whose custom ``__init__`` did
+        # not call ``super()``. Registry.register also performs this capture
+        # before it can mutate ``dangerous``.
+        if "_intrinsically_dangerous" not in vars(self):
+            Tool.__init__(self)
+        return self._intrinsically_dangerous
 
     category: str = "utility"
     """Categoría semántica para el router de tools (§6): read, write,

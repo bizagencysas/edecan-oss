@@ -681,3 +681,58 @@ async def test_list_suggestions_incluye_stage_y_agent_id(
     rutina = next(s for s in body if s["kind"] == "routine_suggestion")
     assert rutina["stage"] == "suggestion"
     assert rutina["agent_id"] == str(agent_id)
+
+
+async def test_list_suggestions_filtra_por_worker_id(
+    client, fake_session: _FakeSession
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent_a = uuid.uuid4()
+    agent_b = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="free_selfhost")
+    fake_session.respuestas = [
+        _FakeResult(rows=[]),
+        [
+            {
+                "objetivo": "Revisar logs",
+                "owner_agent_id": agent_a,
+                "created_at": None,
+            },
+            {
+                "objetivo": "revisar logs",
+                "owner_agent_id": agent_a,
+                "created_at": None,
+            },
+            {
+                "objetivo": "revisar logs",
+                "owner_agent_id": agent_a,
+                "created_at": None,
+            },
+            {
+                "objetivo": "Publicar LinkedIn",
+                "owner_agent_id": agent_b,
+                "created_at": None,
+            },
+            {
+                "objetivo": "publicar linkedin",
+                "owner_agent_id": agent_b,
+                "created_at": None,
+            },
+            {
+                "objetivo": "publicar linkedin",
+                "owner_agent_id": agent_b,
+                "created_at": None,
+            },
+        ],
+    ]
+
+    response = await client.get(
+        f"/v1/automations/suggestions?worker_id={agent_a}",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["kind"] == "routine_suggestion"
+    assert body[0]["agent_id"] == str(agent_a)

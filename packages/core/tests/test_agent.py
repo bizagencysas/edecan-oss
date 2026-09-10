@@ -717,6 +717,45 @@ async def test_tool_lenta_emite_progreso_publico_hasta_terminar(monkeypatch):
     assert isinstance(events[-1], DoneEvent)
 
 
+
+
+@pytest.mark.asyncio
+async def test_tool_colgada_se_cancela_por_su_timeout_declarado(monkeypatch):
+    """E-CORE-2: `Tool.timeout_seconds` es un deadline DURO. Una tool que
+    cuelga se cancela y el modelo recibe un error honesto — el turno no se
+    queda infinito."""
+    monkeypatch.setattr(agent_module, "TOOL_PROGRESS_INTERVAL_SECONDS", 0.01)
+
+    class Colgada(FakeTool):
+        async def run(self, ctx: ToolContext, args: dict) -> ToolResult:
+            self.calls.append(args)
+            await asyncio.sleep(3600)
+            return self._result
+
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("call_colgada", "herramienta_colgada", {})],
+            [text_chunk("No llegó a terminar"), usage_chunk()],
+        ]
+    )
+    tool = Colgada(name="herramienta_colgada")
+    tool.timeout_seconds = 0.1
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    events = await _collect(
+        Agent(FakeLLMRouter(provider), registry),
+        ctx=_ctx(),
+        persona=_persona(),
+        history=[],
+        user_text="Usa la herramienta colgada",
+        flags={},
+    )
+
+    ends = [event for event in events if isinstance(event, ToolEndEvent)]
+    assert ends
+    assert "excedió su tiempo" in ends[0].result_preview
+    assert isinstance(events[-1], DoneEvent)
 @pytest.mark.asyncio
 async def test_tool_end_expone_solo_mission_id_valido_para_continuidad_del_chat():
     mission_id = uuid4()

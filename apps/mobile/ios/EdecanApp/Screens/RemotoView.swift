@@ -29,6 +29,15 @@ import EdecanKit
 /// En este producto la aprobación humana vive ahora en el EMPAREJAMIENTO, no en
 /// cada sesión.
 ///
+/// **WP-V6-09 (selector de equipo).** Con varios equipos (`GET
+/// /v1/remote/machines`), el auto-arranque ciego ya no sirve: si hay máquinas
+/// conectadas, esta pantalla muestra ``selectorEquipo`` arriba y el dueño
+/// elige cuál controlar antes de crear la sesión (`machine: <machineId>`).
+/// El auto-arranque se conserva SOLO como fallback cuando no hay máquinas o
+/// falló la carga (sin `machine` → el backend cae al box, igual que antes).
+/// Elige a mitad de sesión no es posible: el selector solo existe sin sesión
+/// en pantalla, así que cambiar de equipo exige Terminar → elegir → arrancar.
+///
 /// **No revertir esto sin preguntarle.** Y no relajar lo que sigue en pie: el
 /// emparejamiento por QR es obligatorio, el banner de sesión activa es visible
 /// y Terminar siempre está a un toque.
@@ -93,6 +102,10 @@ struct RemotoView: View {
 
                         if let sesion = viewModel.sesion {
                             visorTerminado(sesion: sesion)
+                        } else if viewModel.cargandoMaquinas {
+                            buscandoEquipos
+                        } else if !viewModel.maquinasConectadas.isEmpty {
+                            selectorEquipo
                         } else {
                             consentimiento
                         }
@@ -119,20 +132,150 @@ struct RemotoView: View {
         // el emparejamiento explícito por QR sigue siendo obligatorio, el banner
         // "Sesión remota activa" sigue visible y el botón Terminar sigue siempre
         // alcanzable (``bannerDeSesion``).
+        //
+        // WP-V6-09 (selector de equipo): si hay equipos conectados
+        // (`GET /v1/remote/machines`), la pantalla los muestra en
+        // ``selectorEquipo`` y el dueño ELIGE cuál controlar antes de arrancar.
+        // El auto-arranque solo se conserva como fallback cuando NO hay equipos
+        // (o falló la carga): ahí sí se abre directo, sin `machine` — el
+        // backend cae al box, igual que hoy.
         .task {
             guard viewModel.sesion == nil, !viewModel.iniciando else { return }
-            await viewModel.iniciar(kind: "control", client: session.client)
+            await viewModel.cargarMaquinas(client: session.client)
+            if viewModel.maquinasConectadas.isEmpty {
+                await viewModel.iniciar(kind: "control", client: session.client)
+            }
         }
         .onDisappear { viewModel.limpiar() }
     }
 
     // MARK: - Arranque (sin sesión activa)
 
-    /// Solo se ve mientras la sesión levanta, o si falló: el camino normal es que
-    /// `.task` ya la haya iniciado y esto ni aparezca.
-    private var consentimiento: some View {
+    /// Card que se ve mientras `GET /v1/remote/machines` carga: no se sabe
+    /// todavía si hay equipos para el selector o si toca el arranque directo
+    /// de siempre.
+    private var buscandoEquipos: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            Text("Buscando tus equipos…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .tarjetaVidrio(esquina: 18)
+    }
+
+    /// Selector de equipo (WP-V6-09): chips con cada máquina CONECTADA
+    /// (`cloud.fill` para la local del runtime, `laptopcomputer` para la Mac
+    /// del dueño) + el botón que arranca la sesión de control contra la
+    /// selección. Los chips se deshabilitan mientras la sesión levanta: la
+    /// máquina destino queda fijada al disparar ``RemotoViewModel/iniciar``
+    /// y cambiarla a mitad de camino no aplicaría sino al próximo intento.
+    private var selectorEquipo: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if viewModel.iniciando || viewModel.errorMensaje == nil {
+            Text("Elige qué equipo controlar")
+                .font(.subheadline.weight(.semibold))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.maquinasConectadas) { maquina in
+                        chipMaquina(maquina)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            botonDeInicio
+        }
+        .padding(16)
+        .tarjetaVidrio(esquina: 18)
+    }
+
+    private func chipMaquina(_ maquina: RemoteMachine) -> some View {
+        let seleccionada = viewModel.maquinaSeleccionadaID == maquina.machineId
+        return Button {
+            viewModel.maquinaSeleccionadaID = maquina.machineId
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: maquina.esLocal ? "cloud.fill" : "laptopcomputer")
+                    .font(.subheadline.weight(.semibold))
+                Text(maquina.label)
+                    .font(.subheadline.weight(.semibold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                seleccionada ? AnyShapeStyle(EdecanTheme.morado) : AnyShapeStyle(.quaternary),
+                in: Capsule()
+            )
+            .foregroundStyle(seleccionada ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.iniciando)
+    }
+
+    /// Spinner "levantando sesión" o el botón que la dispara (dice
+    /// "Reintentar" si el intento anterior falló). La selección actual de
+    /// ``RemotoViewModel/maquinaSeleccionadaID`` se manda tal cual en cada
+    /// intento — cambiarla entre reintentos sí aplica, es justo para lo que
+    /// el selector queda a la vista.
+    @ViewBuilder
+    private var botonDeInicio: some View {
+        if viewModel.iniciando {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Abriendo la pantalla de tu computadora…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Button {
+                Task { await viewModel.iniciar(kind: "control", client: session.client) }
+            } label: {
+                Label(
+                    viewModel.errorMensaje == nil
+                        ? "Controlar este equipo"
+                        : "Reintentar",
+                    systemImage: viewModel.errorMensaje == nil
+                        ? "hand.point.up.left.fill"
+                        : "arrow.clockwise"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(EdecanTheme.morado)
+            .disabled(viewModel.iniciando)
+        }
+    }
+
+    /// Fallback cuando NO hay equipos conectados (o falló `GET
+    /// /v1/remote/machines`): el comportamiento de siempre — `.task` ya
+    /// disparó ``RemotoViewModel/iniciar`` directo, sin `machine`, y esto
+    /// solo se ve mientras la sesión levanta o si falló. El botón en reposo
+    /// también cubre el regreso a esta pantalla tras Terminar sin equipos
+    /// cargados (antes quedaba un spinner huérfano con nada en vuelo).
+    /// Copy honesto: companion offline ≠ VPS/servidor muerto.
+    private var mensajeFallbackRemoto: String {
+        let locales = viewModel.maquinas.filter(\.esLocal)
+        let remotas = viewModel.maquinas.filter { !$0.esLocal }
+        if remotas.contains(where: { !$0.connected }) && locales.contains(where: \.connected) {
+            return "Tu Mac companion no respondió. El VPS/servidor sí está en la lista — elige ese equipo arriba o reintenta; no asumas que Edecán está apagado."
+        }
+        if remotas.contains(where: { !$0.connected }) && !locales.isEmpty {
+            return "Companion sin WebSocket. Prueba el equipo «local/VPS» del selector si aparece; el servidor puede seguir sirviendo la sesión."
+        }
+        if viewModel.maquinas.isEmpty {
+            return "No hay máquinas listadas. Remoto puede caer al box del servidor. Enciende el companion solo si quieres tu Mac física."
+        }
+        return "Revisa red y permisos. Si el companion falló pero el VPS sigue, no es un «todo desconectado»."
+    }
+
+    private var consentimiento: some View {
+
+        VStack(alignment: .leading, spacing: 14) {
+            if viewModel.iniciando {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text("Abriendo la pantalla de tu computadora…")
@@ -141,15 +284,18 @@ struct RemotoView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Text("No se pudo abrir la pantalla")
-                    .font(.headline)
-                Text("Revisa que tu computadora esté encendida y con Edecán abierto.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if viewModel.errorMensaje != nil {
+                    Text("No se pudo abrir esa pantalla")
+                        .font(.headline)
+                    Text(mensajeFallbackRemoto)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 Button {
                     Task { await viewModel.iniciar(kind: "control", client: session.client) }
                 } label: {
-                    Text("Reintentar").frame(maxWidth: .infinity)
+                    Text(viewModel.errorMensaje == nil ? "Controlar" : "Reintentar")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(EdecanTheme.morado)

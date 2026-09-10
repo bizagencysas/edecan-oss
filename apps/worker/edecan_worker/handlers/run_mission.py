@@ -116,14 +116,17 @@ por unidad de trabajo")**:
    invocación abre su PROPIA sesión corta, dedicada, que comitea al salir
    limpio — así el checkpoint de CADA paso (y de la misión) queda durable
    en el instante en que ocurre, sin depender de que el resto de la
-   ejecución también termine limpio. La sesión larga original SIGUE
-   existiendo (`run_deps.session`/`ToolContext.session`, sin cambios): las
-   `Tool`s que corren dentro de un paso la siguen usando igual que siempre
-   (su propia durabilidad ya está cubierta por una capa distinta —
-   `edecan_core.agent.Agent._run_turn` nunca deja que la excepción de UNA
-   tool escape hacia el límite de esa transacción, ver el barrido de
-   `tools.py` en `docs/cumplimiento/barrido-evidencia-v6.md` — este fix no
-   toca ni necesita tocar esa garantía).
+ejecución también termine limpio.
+
+    **BOTS-23 (posterior a WP-V7-06):** la sesión larga original ya NO existe:
+    `_RunDeps` no expone `session`/`vault`, expone `session_factory`/
+    `vault_factory`. CADA paso paralelo abre SU propia `AsyncSession`
+    tenant-scoped (`session_factory(mission.tenant_id)`, con RLS activo para
+    ese tenant) y su propio vault (`vault_factory(session)`) — dos pasos de una
+    misma ola ya no comparten `AsyncSession` (SQLAlchemy la declara no segura
+    en tareas concurrentes), así que el rollback de uno no arrastra al otro.
+    La durabilidad de las tools sigue cubierta por la capa de `Agent._run_turn`
+    (ver el punto 1 de arriba).
 2. **La planificación inicial (`_insert_steps` + `_update_mission(status=
    "running", plan=...)`) también comitea ANTES de invocar
    `orchestrator.run`**: en la MISMA sesión corta que la validación de
@@ -172,7 +175,7 @@ from typing import Any
 from uuid import UUID
 
 from edecan_core.notifications import ImportantNotificationEvent
-from edecan_core.tools import ToolRegistry
+from edecan_core.tools import ToolRegistry, registry_para_tenant
 from edecan_schemas import PLANES, JobEnvelope
 from sqlalchemy import text
 
@@ -183,6 +186,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_STEPS = 8
 _TERMINAL_STATUSES = ("done", "error", "cancelled")
+_RUN_STOP_STATUSES = ("cancelled", "paused")
+"""BOTS-01: estados que un run activo NO controla. `cancellation_requested`
+devuelve `True` ante ellos; `_update_mission(guard_active=True)` los incluye
+(junto a `done`/`error`) en la condición `status NOT IN (...)` para que una
+escritura tardía del orquestador nunca los sobrescriba."""
+_GUARD_STATUSES = ("done", "error", "cancelled", "paused")
 
 
 async def handle(env: JobEnvelope, deps: Deps) -> None:
@@ -265,7 +274,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         # Se resuelve después de todos los early-return para no inicializar
         # inferencia en una misión inválida o ya terminal.
         llm_router = await deps.llm_router_for(tenant_id)
-        registry = _build_registry()
+        registry = _build_registry(tenant_id)
         # MCP bring-your-own (ARCHITECTURE.md §15): se registran en ESTE
         # `ToolRegistry` recién construido (uno nuevo por job, nunca el
         # compartido de `edecan_api`) ANTES de construir el `Orchestrator` —
@@ -298,7 +307,26 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
             # `Orchestrator._run_resumed_step`) en vez de volver a llamar al
             # LLM, que acuñaría un `tool_call_id` nuevo que jamás
             # coincidiría con `approved_tool_call_id`.
-            await _update_step(session, tenant_id, mission_id, resume_step_seq, status="pending")
+            #
+            # C8b: el reseteo es un CLAIM durable (CAS `waiting_confirmation` →
+            # `pending`), no un UPDATE ciego — un job `resume` duplicado
+            # (SQS at-least-once) ve el paso ya `pending` y pierde el claim,
+            # así no se re-ejecuta el paso aprobado dos veces.
+            claimed_step = await _claim_step(
+                session,
+                tenant_id,
+                mission_id,
+                resume_step_seq,
+                expected_status="waiting_confirmation",
+            )
+            if not claimed_step:
+                logger.info(
+                    "run_mission: paso %s de la misión %s ya fue reclamado por otro run; "
+                    "se ignora.",
+                    resume_step_seq,
+                    mission_id,
+                )
+                return
             await _update_mission(session, tenant_id, mission_id, status="running")
         else:
             # Reanudación IMPLÍCITA (ver docstring del módulo): si YA hay
@@ -317,6 +345,21 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 )
                 await _update_mission(session, tenant_id, mission_id, status="running")
             else:
+                # C8b: claim durable ANTES de planificar — dos jobs
+                # `run_mission` concurrentes para una misión nueva compiten por
+                # `planning` → `running` y solo UNO gana; el perdedor sale sin
+                # llamar al LLM de planificación ni insertar pasos. El claim va
+                # en la MISMA sesión corta que la planificación/INSERT de pasos,
+                # así que un crash antes del commit lo deshace TODO (la misión
+                # sigue `planning`, sin pasos a medias ni estado "running"
+                # huérfano).
+                claimed = await _claim_mission(session, tenant_id, mission_id, "planning")
+                if not claimed:
+                    logger.info(
+                        "run_mission: misión %s ya fue reclamada por otro run; se ignora.",
+                        mission_id,
+                    )
+                    return
                 pasos = await orchestrator.plan(
                     _objetivo_con_steering(mission_row), flags, deps.settings
                 )
@@ -346,22 +389,27 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         approved_tool_args=approved_tool_args,
     )
 
-    # Sesión de trabajo del turno: vive solo para `ctx.session`/`vault` (lo
-    # que las `Tool`s usan durante cada paso — sin cambios respecto a antes
-    # de este WP, ver docstring del módulo). `save_step`/`save_mission`/
-    # `insert_steps` YA NO cierran sobre esta sesión.
-    async with deps.session_factory(None) as session:
-        run_deps = _RunDeps(
-            session=session,
-            settings=deps.settings,
-            vault=deps.vault(session),
-            flags=flags,
-            save_step=_make_save_step(deps.session_factory, tenant_id, mission_id),
-            save_mission=_make_save_mission(deps.session_factory, tenant_id, mission_id),
-            insert_steps=_make_insert_steps(deps.session_factory, tenant_id, mission_id),
-        )
+    # BOTS-23: NO hay una sesión larga de turno. `_RunDeps` recibe las
+    # FACTORIES (`session_factory`/`vault_factory`) y CADA paso paralelo abre
+    # su propia `AsyncSession` tenant-scoped + su propio vault (`session`/
+    # `vault` compartidos ya no existen). `save_step`/`save_mission`/
+    # `insert_steps` siguen abriendo su propia sesión corta por invocación
+    # (WP-V7-06). `cancellation_requested` relee el estado durable antes de
+    # cada ola y antes del commit terminal (BOTS-01).
+    run_deps = _RunDeps(
+        session_factory=deps.session_factory,
+        vault_factory=deps.vault,
+        settings=deps.settings,
+        flags=flags,
+        cancellation_requested=_make_cancellation_check(
+            deps.session_factory, tenant_id, mission_id
+        ),
+        save_step=_make_save_step(deps.session_factory, tenant_id, mission_id),
+        save_mission=_make_save_mission(deps.session_factory, tenant_id, mission_id),
+        insert_steps=_make_insert_steps(deps.session_factory, tenant_id, mission_id),
+    )
 
-        await orchestrator.run(mission, run_deps)
+    await orchestrator.run(mission, run_deps)
 
     # El estado de la misión fue guardado por ``save_mission`` en una sesión
     # independiente. Se relee y solo se avisa por una transición terminal;
@@ -370,6 +418,9 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         final_mission = await _load_mission(session, tenant_id, mission_id)
     if final_mission is not None and final_mission["status"] in {"done", "error"}:
         kind = "work_completed" if final_mission["status"] == "done" else "work_failed"
+        # Push con RESUMEN real (el dueño pidió ChatGPT-like: al terminar,
+        # el push dice qué hizo; al abrir, el trabajo está en el chat).
+        resumen = " ".join(str(final_mission.get("resultado") or "").split())[:160]
         await notify_important_event(
             deps,
             ImportantNotificationEvent(
@@ -378,39 +429,150 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 kind=kind,
                 event_id=mission_id,
                 resource_id=mission_id,
+                apns_title="Misión terminada" if kind == "work_completed" else "La misión falló",
+                apns_body=resumen or "El trabajo terminó. Ábrelo para ver el resultado.",
             ),
         )
+        # La misión nació del CHAT de un bot (owner_agent_id): el resultado
+        # NO se queda solo en Misiones — se entrega en el chat del bot y el
+        # bot se despierta para preguntarle al dueño si procede a ejecutar
+        # (el dueño pidió exactamente este flujo: el bot recibe el resultado
+        # de Astra y pregunta, como los demás).
+        if final_mission.get("owner_agent_id"):
+            await _entregar_resultado_al_chat_del_bot(
+                deps,
+                tenant_id=tenant_id,
+                mission=final_mission,
+            )
 
     logger.info("run_mission completado mission_id=%s tenant_id=%s", mission_id, tenant_id)
 
 
-def _build_registry() -> ToolRegistry:
-    registry = ToolRegistry()
-    registry.load_entry_points(group="edecan.tools")
-    return registry
+async def _entregar_resultado_al_chat_del_bot(
+    deps: Deps, *, tenant_id: UUID, mission: dict[str, Any]
+) -> None:
+    """Entrega el resultado de la misión en el chat del bot que la creó y lo
+    despierta con un turno que le pide preguntar al dueño cómo proceder."""
+    worker_id_raw = mission.get("owner_agent_id")
+    try:
+        worker_id = UUID(str(worker_id_raw))
+    except (TypeError, ValueError):
+        logger.warning("owner_agent_id no es UUID (%r)", worker_id_raw)
+        return
+    resultado = str(mission.get("resultado") or "").strip() or "(sin texto)"
+    estado = str(mission.get("status") or "")
+    titulo = "terminó" if estado == "done" else "falló"
+    try:
+        async with deps.session_factory(None) as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT conversation_id, name FROM persistent_agents "
+                        "WHERE tenant_id = :tenant_id AND id = :id"
+                    ),
+                    {"tenant_id": str(tenant_id), "id": str(worker_id)},
+                )
+            ).mappings().first()
+            if row is None:
+                return
+            conversation_id = str(row["conversation_id"])
+            sender_name = str(row["name"] or "Bot").strip()
+            await session.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, conversation_id, tenant_id, role, content, created_at, updated_at) "
+                    "VALUES (gen_random_uuid(), :cid, :tid, 'assistant', :content ::jsonb, now(), now())"
+                ),
+                {
+                    "cid": conversation_id,
+                    "tid": str(tenant_id),
+                    "content": json.dumps(
+                        {
+                            "text": (
+                                f"La misión que delegaste {titulo}. Resultado: "
+                                f"{resultado}"
+                            ),
+                            "sender_id": str(worker_id),
+                            "sender_name": sender_name,
+                            "mission_id": str(mission["id"]),
+                            "mission_status": estado,
+                        },
+                        default=str,
+                    ),
+                },
+            )
+    except Exception:  # noqa: BLE001 - la entrega jamás debe romper run_mission
+        logger.exception("no pude entregar el resultado en el chat del bot")
+        return
+    try:
+        from edecan_core.queue import enqueue_outbox
+
+        async with deps.session_factory(None) as session:
+            await enqueue_outbox(
+                session,
+                tenant_id=tenant_id,
+                job_type="run_persistent_agent",
+                payload={
+                    "worker_id": str(worker_id),
+                    "instruction": (
+                        f"La misión {mission['id']} {titulo}. Su resultado YA quedó "
+                        "escrito en tu chat. Revisa si el resultado menciona "
+                        "archivos entregables (.md, PDF, código, imágenes): "
+                        "LÉELOS con `acceder_codigo_local` y preséntalos "
+                        "COMPLETOS en el chat en su formato. Luego pregúntale "
+                        "al dueño, con una tarjeta de opciones, si procedes a "
+                        "EJECUTAR las recomendaciones, y con qué modelo quiere "
+                        "que lo hagas (menciónale Luna y los modelos de Workers AI)."
+                    ),
+                    "task_id": f"entrega-mision:{mission['id']}",
+                    "source": "delegacion_resultado",
+                },
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("no pude despertar al bot tras la entrega")
+
+
+
+def _build_registry(tenant_id: UUID | None = None) -> ToolRegistry:
+    import os
+
+    root = os.environ.get("EDECAN_PLUGINS_DIR") or "/opt/edecan/data/plugins"
+    if tenant_id is None:
+        # Llamadores que todavía no pasan tenant (p. ej. `run_companion_turn`,
+        # fuera del alcance BOTS-14) conservan el comportamiento previo: solo
+        # el nivel raíz, sin subdirectorio por tenant — sin regresión.
+        registry = ToolRegistry()
+        registry.load_entry_points(group="edecan.tools")
+        registry.load_plugin_dir(root)
+        return registry
+    return registry_para_tenant(root, tenant_id)
 
 
 class _RunDeps:
     """Implementación concreta de `edecan_agents.orchestrator.RunDeps` sobre
-    SQL real sobre `session` (una `AsyncSession` ya abierta por
-    `deps.session_factory(None)`, conexión "dueño" — ver docstring del
-    módulo)."""
+    SQL real. BOTS-23: NO expone una `AsyncSession`/`vault` compartidos —
+    expone `session_factory` (cada paso paralelo abre su propia sesión
+    tenant-scoped) y `vault_factory` (un vault por sesión de paso). BOTS-01:
+    `cancellation_requested` relee el estado durable de `agent_missions` en
+    una sesión corta (dueño, filtro manual por `tenant_id`)."""
 
     def __init__(
         self,
         *,
-        session: Any,
+        session_factory: Any,
+        vault_factory: Any,
         settings: Any,
-        vault: Any,
         flags: dict[str, Any],
+        cancellation_requested: Any,
         save_step: Any,
         save_mission: Any,
         insert_steps: Any,
     ) -> None:
-        self.session = session
+        self.session_factory = session_factory
+        self.vault_factory = vault_factory
         self.settings = settings
-        self.vault = vault
         self.flags = flags
+        self.cancellation_requested = cancellation_requested
         self.save_step = save_step
         self.save_mission = save_mission
         self.insert_steps = insert_steps
@@ -443,7 +605,12 @@ def _make_save_step(session_factory: Any, tenant_id: UUID, mission_id: UUID) -> 
 
 
 def _make_save_mission(session_factory: Any, tenant_id: UUID, mission_id: UUID) -> Any:
-    """Ídem `_make_save_step`: sesión corta e independiente por invocación."""
+    """Ídem `_make_save_step`: sesión corta e independiente por invocación.
+    BOTS-01: pasa `guard_active=True` a `_update_mission` para que la escritura
+    del orquestador JAMÁS sobrescriba un estado terminal/pausado (`done`/
+    `error`/`cancelled`/`paused`) que el usuario (la API) ya dejó en la fila —
+    una escritura tardía de un paso que terminaba justo cuando el usuario
+    canceló no revive la misión `cancelled`."""
 
     async def _save_mission(
         *,
@@ -461,9 +628,33 @@ def _make_save_mission(session_factory: Any, tenant_id: UUID, mission_id: UUID) 
                 resultado=resultado,
                 error=error,
                 presupuesto=presupuesto,
+                guard_active=True,
             )
 
     return _save_mission
+
+
+def _make_cancellation_check(
+    session_factory: Any, tenant_id: UUID, mission_id: UUID
+) -> Any:
+    """`RunDeps.cancellation_requested` (BOTS-01): relee el estado durable de
+    `agent_missions` en una sesión corta y devuelve `True` si la misión ya no
+    está en un estado que este run controle (`cancelled`/`paused`). El
+    `Orchestrator` lo consulta ANTES de lanzar cada ola y ANTES del commit
+    terminal — nunca se confía en un flag local que pueda quedar
+    desincronizado entre el worker y la API."""
+
+    async def _cancellation_requested() -> bool:
+        async with session_factory(None) as session:
+            row = await _load_mission(session, tenant_id, mission_id)
+        if row is None:
+            # La misión desapareció (borrado externo): tratar como cancelada
+            # es lo seguro — nunca seguir haciendo trabajo sobre algo que ya
+            # no existe.
+            return True
+        return row["status"] in _RUN_STOP_STATUSES
+
+    return _cancellation_requested
 
 
 def _make_insert_steps(session_factory: Any, tenant_id: UUID, mission_id: UUID) -> Any:
@@ -622,12 +813,22 @@ async def _update_mission(
     resultado: str | None = None,
     error: str | None = None,
     presupuesto: dict[str, Any] | None = None,
+    guard_active: bool = False,
 ) -> None:
     """`None` en cualquier campo (salvo `status`, que casi siempre se pasa)
     significa "no lo toques" — actualización parcial, mismo criterio que
     `edecan_api.routers.reminders.ReminderPatch`. `presupuesto` (WP-V5-05):
     así persiste `Orchestrator.run` el contador `replans_usados` tras un
-    replan (ver `edecan_agents.orchestrator`, sección "Replan acotado")."""
+    replan (ver `edecan_agents.orchestrator`, sección "Replan acotado").
+
+    `guard_active` (BOTS-01): cuando es `True`, el `UPDATE` añade
+    `AND status NOT IN (...)` a su `WHERE` — la escritura del orquestador
+    JAMÁS sobrescribe un estado que este run ya no controla (`done`/`error`/
+    `cancelled`/`paused`). Es una condición ATÓMICA en la base de datos, no un
+    check-then-act: si el usuario canceló/pausó entre medias, la fila
+    simplemente no se toca. Solo lo activa `_make_save_mission` (el seam del
+    `Orchestrator`); las transiciones de PASO 1 (`handle`) siguen sin guarda
+    porque son legítimas y ya van precedidas de su propio chequeo de estado."""
     sets = ["updated_at = now()"]
     params: dict[str, Any] = {"tenant_id": str(tenant_id), "id": str(mission_id)}
     if status is not None:
@@ -647,10 +848,12 @@ async def _update_mission(
         params["presupuesto"] = json.dumps(presupuesto)
     if len(sets) == 1:  # solo `updated_at`: nada que actualizar de verdad.
         return
+    where = "WHERE tenant_id = :tenant_id AND id = :id"
+    if guard_active:
+        literal = ", ".join(f"'{s}'" for s in _GUARD_STATUSES)
+        where += f" AND status NOT IN ({literal})"
     await session.execute(
-        text(
-            f"UPDATE agent_missions SET {', '.join(sets)} WHERE tenant_id = :tenant_id AND id = :id"
-        ),
+        text(f"UPDATE agent_missions SET {', '.join(sets)} {where}"),
         params,
     )
 
@@ -689,3 +892,62 @@ async def _update_step(
         ),
         params,
     )
+
+
+async def _claim_mission(
+    session: Any, tenant_id: UUID, mission_id: UUID, expected_status: str
+) -> bool:
+    """Claim durable de la misión (C8b): CAS `status = 'running'` SOLO si la
+    fila sigue en `expected_status` (p. ej. `'planning'`). Devuelve `True` si
+    afectó UNA fila (este run ganó el claim), `False` si otro run/request ya la
+    movió — en cuyo caso el llamador debe salir sin ejecutar nada.
+
+    La transición es ATÓMICA en la base de datos (un único UPDATE condicional),
+    no un check-then-act: dos jobs `run_mission` concurrentes para la misma
+    misión compiten por el claim y solo uno lo gana, evitando planificar/
+    ejecutar los mismos pasos dos veces (hallazgo C8b).
+    """
+    result = await session.execute(
+        text(
+            "UPDATE agent_missions SET status = 'running', updated_at = now() "
+            "WHERE tenant_id = :tenant_id AND id = :id AND status = :expected"
+        ),
+        {
+            "tenant_id": str(tenant_id),
+            "id": str(mission_id),
+            "expected": expected_status,
+        },
+    )
+    return (getattr(result, "rowcount", 1) or 0) == 1
+
+
+async def _claim_step(
+    session: Any,
+    tenant_id: UUID,
+    mission_id: UUID,
+    seq: int,
+    *,
+    expected_status: str,
+    new_status: str = "pending",
+) -> bool:
+    """Claim durable de un paso (C8b): CAS `status = :new_status` SOLO si el
+    paso sigue en `expected_status` (p. ej. `'waiting_confirmation'` →
+    `'pending'`). Devuelve `True` solo si ganó el claim. Un job `run_mission`
+    `resume` duplicado (SQS at-least-once) ve el paso ya `pending` y pierde el
+    claim → no re-ejecuta el paso aprobado dos veces.
+    """
+    result = await session.execute(
+        text(
+            "UPDATE agent_steps SET status = :new_status, updated_at = now() "
+            "WHERE tenant_id = :tenant_id AND mission_id = :mission_id AND seq = :seq "
+            "AND status = :expected"
+        ),
+        {
+            "tenant_id": str(tenant_id),
+            "mission_id": str(mission_id),
+            "seq": seq,
+            "expected": expected_status,
+            "new_status": new_status,
+        },
+    )
+    return (getattr(result, "rowcount", 1) or 0) == 1

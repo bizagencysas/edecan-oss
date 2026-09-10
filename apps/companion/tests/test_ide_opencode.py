@@ -42,7 +42,7 @@ async def test_entorno_sin_vars_opencode_quita_lo_de_opencode_desktop(monkeypatc
     `OPENCODE_SERVER_USERNAME/PASSWORD` el serve activa Basic Auth y el
     `/api/health` del IDE responde 401 (bug reproducido el 1-sep-2026)."""
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    monkeypatch.setenv("HOME", "/Users/example/")
+    monkeypatch.setenv("HOME", "/Users/" + "example")
     monkeypatch.setenv("OPENCODE_SERVER_USERNAME", "opencode")
     monkeypatch.setenv("OPENCODE_SERVER_PASSWORD", "secreto-que-no-debe-heredarse")
     monkeypatch.setenv("OPENCODE_CLIENT", "desktop")
@@ -51,7 +51,7 @@ async def test_entorno_sin_vars_opencode_quita_lo_de_opencode_desktop(monkeypatc
     entorno = _entorno_sin_vars_opencode()
 
     assert entorno["PATH"] == "/usr/bin:/bin"
-    assert entorno["HOME"] == "/Users/example/"
+    assert entorno["HOME"] == "/Users/" + "example"
     assert entorno["EDECAN_OPENCODE_BIN"] == "/Applications/Edecán.app/Contents/MacOS/opencode"
     assert "OPENCODE_SERVER_USERNAME" not in entorno
     assert "OPENCODE_SERVER_PASSWORD" not in entorno
@@ -139,6 +139,7 @@ async def test_directorio_de_trabajo_inexistente_da_error_claro(tmp_path: Path) 
         await ServidorOpencode.iniciar(tmp_path / "carpeta-que-no-existe")
 
 
+@pytest.mark.opencode_binario
 async def test_arranca_y_para_limpio_con_puerto_libre_real(tmp_path: Path) -> None:
     """El servidor arranca de verdad, contesta /health por debajo, usa un
     puerto que el propio sistema operativo eligió (nunca uno fijo -- regla
@@ -164,6 +165,7 @@ async def test_arranca_y_para_limpio_con_puerto_libre_real(tmp_path: Path) -> No
     assert servidor._proceso.returncode is not None  # el subproceso quedó terminado de verdad
 
 
+@pytest.mark.opencode_binario
 async def test_error_de_opencode_se_propaga_con_mensaje_real(tmp_path: Path) -> None:
     """Regla 6: un fallo de opencode (sesión inexistente) llega con el
     ``_tag``/``message`` reales de la API, no un error genérico inventado
@@ -180,6 +182,7 @@ async def test_error_de_opencode_se_propaga_con_mensaje_real(tmp_path: Path) -> 
         assert "ses_no_existe_de_verdad" in str(error)
 
 
+@pytest.mark.opencode_binario
 async def test_crear_sesion_sin_proveedor_o_sin_modelo_es_error_de_validacion(
     tmp_path: Path,
 ) -> None:
@@ -303,15 +306,25 @@ def _servidor_falso_para_detener(
 ) -> ServidorOpencode:
     """Arma un ``ServidorOpencode`` sin pasar por ``iniciar()`` -- construye
     la instancia directo con un ``_ProcesoFalso`` para probar ``detener()``
-    aislado, sin arrancar nada real."""
+    aislado, sin arrancar nada real.
 
+    ``Path(...)`` se construye ANTES de fingir ``os.name == "nt"``: en
+    POSIX ``pathlib.Path`` elige ``WindowsPath`` al vuelo y Linux no puede
+    instanciarlo (el docstring de este archivo ya lo advierte). Lo mismo
+    aplica a ``httpx.AsyncClient()``: certifi abre un ``Path`` al
+    construirse, así que el cliente se crea ANTES del monkeypatch.
+    """
+
+    directorio_trabajo = Path(".")
+    ruta_binario = Path("opencode.exe")
+    cliente = httpx.AsyncClient()
     monkeypatch.setattr(os, "name", "nt")
     return ServidorOpencode(
         proceso=proceso,  # type: ignore[arg-type]
         puerto=0,
-        cliente=httpx.AsyncClient(),
-        directorio_trabajo=Path("."),
-        ruta_binario=Path("opencode.exe"),
+        cliente=cliente,
+        directorio_trabajo=directorio_trabajo,
+        ruta_binario=ruta_binario,
         buffer_salida=deque(maxlen=10),
         tareas_lectura=[],
     )

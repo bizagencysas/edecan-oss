@@ -141,10 +141,10 @@ class AnalizarImagenTool(Tool):
         try:
             respuesta = await asyncio.wait_for(
                 ctx.llm.complete(
-                    "rapido",
+                    "worker_vision",
                     flags,
                     CompletionRequest(
-                        model="rapido",
+                        model="worker_vision",
                         system=_SYSTEM_PROMPT,
                         messages=[
                             ChatMessage(

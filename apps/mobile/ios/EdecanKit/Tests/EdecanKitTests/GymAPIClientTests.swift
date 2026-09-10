@@ -85,6 +85,43 @@ struct GymAPIClientTests {
         #expect(plan == nil)
     }
 
+    @Test func gymCheckinDeHoyDecodificaCheckinDelServidor() async throws {
+        let tokens = GymLockedAuthTokenStore(access: "access-gym", refresh: "refresh-gym")
+        let session = gymStubSession { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/gym/plan/today")
+            return (200, Data("""
+            {"plan": null, "checkin_hoy": {"fecha": "2026-09-05", "respuesta": "no", "session_id": null}}
+            """.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        let checkin = try await api.gymCheckinDeHoy()
+
+        #expect(checkin?.respuesta == "no")
+        #expect(checkin?.sessionId == nil)
+    }
+
+    @Test func gymCheckinDeHoySinCheckinDevuelveNil() async throws {
+        let tokens = GymLockedAuthTokenStore(access: "access-gym", refresh: "refresh-gym")
+        let session = gymStubSession { _ in
+            (200, Data(#"{"plan": null, "checkin_hoy": null}"#.utf8))
+        }
+        let api = APIClient(
+            baseURL: try #require(URL(string: "https://edecan.test")),
+            urlSession: session,
+            tokenStore: tokens
+        )
+
+        let checkin = try await api.gymCheckinDeHoy()
+
+        #expect(checkin == nil)
+    }
+
     @Test func gymSesionActualDevuelveNilEn404YDecodificaEn200() async throws {
         let tokens = GymLockedAuthTokenStore(access: "access-gym", refresh: "refresh-gym")
         let calls = GymLockedCounter()
@@ -192,7 +229,7 @@ struct GymAPIClientTests {
             #expect(
                 components.queryItems?.first(where: { $0.name == "limit" })?.value == "30"
             )
-            return (200, Data(#"{"sessions": [\#(Self.sessionJSON)]}"#.utf8))
+            return (200, Data(#"{"sessions": [\#(Self.sessionJSON)], "streak": 2}"#.utf8))
         }
         let api = APIClient(
             baseURL: try #require(URL(string: "https://edecan.test")),
@@ -202,8 +239,8 @@ struct GymAPIClientTests {
 
         let historial = try await api.gymHistorial()
 
-        #expect(historial.count == 1)
-        #expect(historial[0].id == "gym-s1")
+        #expect(historial.sessions.count == 1)
+        #expect(historial.sessions[0].id == "gym-s1")
     }
 
     private func gymStubSession(

@@ -83,10 +83,14 @@ class RestrictedRegistry:
         allowed_tools: frozenset[str],
         *,
         permite_dangerous_con_confirmacion: bool = False,
+        dangerous_sin_confirmacion: frozenset[str] = frozenset(),
     ) -> None:
         self._wrapped = wrapped
         self._allowed = frozenset(allowed_tools)
         self._permite_dangerous_con_confirmacion = permite_dangerous_con_confirmacion
+        # Tools dangerous que pasan SIN confirmación (p. ej. acceder_codigo_local
+        # en perfiles read_only: su propio guard interno ya bloquea escrituras).
+        self._dangerous_sin_confirmacion = frozenset(dangerous_sin_confirmacion)
 
     def get(self, name: str) -> Any | None:
         """`None` si `name` no está en `allowed_tools`, si el registro
@@ -107,7 +111,11 @@ class RestrictedRegistry:
         tool = self._wrapped.get(name)
         if tool is None:
             return None
-        if getattr(tool, "dangerous", False) and not self._permite_dangerous_con_confirmacion:
+        if (
+            getattr(tool, "dangerous", False)
+            and not self._permite_dangerous_con_confirmacion
+            and name not in self._dangerous_sin_confirmacion
+        ):
             return None
         return tool
 

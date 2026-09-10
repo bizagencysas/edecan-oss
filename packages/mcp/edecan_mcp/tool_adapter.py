@@ -77,6 +77,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
+from edecan_core.bot_harness import mcp_tool_definition_version
 from edecan_core.tools.base import Tool, ToolContext, ToolResult
 
 from .client import MCPClient, MCPClientError
@@ -180,6 +181,17 @@ class _MCPRemoteTool(Tool):
         self._remote_tool_name = remote_tool_name
         self._headers = headers
         self._local_mode = local_mode
+        # Versión de definición (BOTS-06): fingerprint de lo que el servidor
+        # remoto reportó para esta tool (nombre + descripción + schema + server).
+        # La consumen `bot_harness.mcp_preapproved_tokens` y
+        # `agent._llamada_peligrosa_pendiente`: un grant queda INVALIDADO si el
+        # servidor cambia el schema/capacidad/nombre/descripción.
+        self.definition_version = mcp_tool_definition_version(
+            name=remote_tool_name,
+            description=description,
+            input_schema=input_schema,
+            server_name=server_config.nombre,
+        )
 
     async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         del ctx  # no usado: la config/credenciales ya vienen cerradas por adelantado

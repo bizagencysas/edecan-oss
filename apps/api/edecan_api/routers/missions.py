@@ -70,7 +70,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from edecan_core.queue import enqueue
+from edecan_core.queue import enqueue, enqueue_outbox
 from edecan_core.safety import redact
 from edecan_schemas import MissionOut, MissionStepOut
 from edecan_schemas.missions import MISSION_STATUSES, MISSION_STEP_STATUSES, MissionStepStatus
@@ -628,7 +628,6 @@ async def confirm_mission(
     body: MissionConfirmIn,
     current_user: CurrentUser = Depends(_require_agents_missions),
     session: AsyncSession = Depends(get_tenant_session),
-    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     mission = await _require_mission(session, current_user, mission_id)
     if mission["status"] != "waiting_confirmation":
@@ -638,18 +637,29 @@ async def confirm_mission(
         )
 
     if not body.approved:
-        await _update_mission_status(session, current_user.tenant_id, mission_id, "cancelled")
-        await session.execute(
-            text(
-                "UPDATE agent_steps SET status = 'skipped', updated_at = now() "
-                "WHERE tenant_id = :tenant_id AND mission_id = :mission_id AND status = :waiting"
-            ),
-            {
-                "tenant_id": str(current_user.tenant_id),
-                "mission_id": str(mission_id),
-                "waiting": _ACTIVE_STEP_STATUS,
-            },
+        # CAS: solo cancela si sigue `waiting_confirmation` — un `approved`
+        # concurrente puede haber ganado el claim y dejado la misión `running`.
+        rejected = await _update_mission_status(
+            session,
+            current_user.tenant_id,
+            mission_id,
+            "cancelled",
+            expected_status="waiting_confirmation",
         )
+        # Solo se marcan pasos `skipped` si el RECHAZO ganó el claim; si un
+        # `approved` concurrente ya movió la misión a `running`, no se tocan.
+        if rejected:
+            await session.execute(
+                text(
+                    "UPDATE agent_steps SET status = 'skipped', updated_at = now() "
+                    "WHERE tenant_id = :tenant_id AND mission_id = :mission_id AND status = :waiting"
+                ),
+                {
+                    "tenant_id": str(current_user.tenant_id),
+                    "mission_id": str(mission_id),
+                    "waiting": _ACTIVE_STEP_STATUS,
+                },
+            )
         return await _require_mission(session, current_user, mission_id)
 
     pending_seq = await _find_waiting_step_seq(session, current_user.tenant_id, mission_id)
@@ -659,12 +669,28 @@ async def confirm_mission(
             detail="No se encontró el paso pendiente de confirmación de esta misión.",
         )
 
-    await _update_mission_status(session, current_user.tenant_id, mission_id, "running")
-    await enqueue(
-        settings,
-        "run_mission",
-        {"mission_id": str(mission_id), "resume": True, "approved_step_seq": pending_seq},
+    # Claim durable (CAS, C8b): solo el PRIMER confirm mueve
+    # `waiting_confirmation` → `running`. Un confirm/resume concurrente ve
+    # `rowcount == 0` y devuelve 409 sin encolar nada — no hay doble run.
+    claimed = await _update_mission_status(
+        session,
         current_user.tenant_id,
+        mission_id,
+        "running",
+        expected_status="waiting_confirmation",
+    )
+    if not claimed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Esta misión ya fue confirmada.",
+        )
+    # Outbox TRANSACCIONAL (misma sesión que el cambio de estado, C8b): el job
+    # solo se despacha tras el commit; un rollback del estado no deja job.
+    await enqueue_outbox(
+        session,
+        tenant_id=current_user.tenant_id,
+        job_type="run_mission",
+        payload={"mission_id": str(mission_id), "resume": True, "approved_step_seq": pending_seq},
     )
     return await _require_mission(session, current_user, mission_id)
 
@@ -705,18 +731,28 @@ async def resume_mission(
     mission_id: uuid.UUID,
     current_user: CurrentUser = Depends(_require_agents_missions),
     session: AsyncSession = Depends(get_tenant_session),
-    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Reanuda una misión pausada desde sus checkpoints persistidos."""
     mission = await _require_mission(session, current_user, mission_id)
     if mission["status"] != "paused":
         raise HTTPException(status_code=409, detail="Esta misión no está pausada.")
-    await _update_mission_status(session, current_user.tenant_id, mission_id, "running")
-    await enqueue(
-        settings,
-        "run_mission",
-        {"mission_id": str(mission_id), "resume_paused": True},
+    # Claim durable (CAS, C8b): solo el PRIMER resume mueve `paused` → `running`.
+    # Un resume concurrente ve `rowcount == 0` y devuelve 409 sin encolar.
+    claimed = await _update_mission_status(
+        session,
         current_user.tenant_id,
+        mission_id,
+        "running",
+        expected_status="paused",
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="Esta misión ya se reanudó.")
+    # Outbox TRANSACCIONAL (misma sesión que el cambio de estado, C8b).
+    await enqueue_outbox(
+        session,
+        tenant_id=current_user.tenant_id,
+        job_type="run_mission",
+        payload={"mission_id": str(mission_id), "resume_paused": True},
     )
     return await _require_mission(session, current_user, mission_id)
 
@@ -788,15 +824,36 @@ async def archive_mission(
 
 
 async def _update_mission_status(
-    session: AsyncSession, tenant_id: uuid.UUID, mission_id: uuid.UUID, new_status: str
-) -> None:
-    await session.execute(
-        text(
-            "UPDATE agent_missions SET status = :status, updated_at = now() "
-            "WHERE tenant_id = :tenant_id AND id = :id"
-        ),
-        {"status": new_status, "tenant_id": str(tenant_id), "id": str(mission_id)},
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    mission_id: uuid.UUID,
+    new_status: str,
+    *,
+    expected_status: str | None = None,
+) -> bool:
+    """Transición de estado de la misión.
+
+    Sin `expected_status` es el UPDATE ciego de siempre. Con `expected_status`
+    es un claim durable (compare-and-swap): el UPDATE solo afecta la fila si
+    todavía está en ese estado, y devuelve `True` solo si afectó UNA fila (el
+    claim ganó). Dos `confirm`/`resume` concurrentes compiten por el mismo
+    claim: el segundo ve `rowcount == 0` (la fila ya no está en el estado
+    esperado) y debe devolver 409 sin encolar nada — hallazgo C8b.
+    """
+    where = "WHERE tenant_id = :tenant_id AND id = :id"
+    params: dict[str, Any] = {
+        "status": new_status,
+        "tenant_id": str(tenant_id),
+        "id": str(mission_id),
+    }
+    if expected_status is not None:
+        where += " AND status = :expected_status"
+        params["expected_status"] = expected_status
+    result = await session.execute(
+        text(f"UPDATE agent_missions SET status = :status, updated_at = now() {where}"),
+        params,
     )
+    return (getattr(result, "rowcount", 1) or 0) == 1
 
 
 async def _find_waiting_step_seq(

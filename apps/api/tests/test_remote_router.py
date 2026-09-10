@@ -99,7 +99,13 @@ class _FakeCompanionManager:
         return tenant_id in self.connected
 
     async def send_command(
-        self, tenant_id: uuid.UUID, action: str, params: dict, timeout: float = 30
+        self,
+        tenant_id: uuid.UUID,
+        action: str,
+        params: dict,
+        timeout: float = 30,
+        *,
+        machine: str | None = None,
     ) -> dict:
         self.calls.append((tenant_id, action, params))
         if not self.responses:
@@ -1292,3 +1298,44 @@ async def test_input_denied_by_user_marks_session_denied_and_commits_before_403(
     # 2 = el "screenshot" de activación + el "input_key" denegado; el
     # reintento nunca volvió a llamar al companion.
     assert len(fake_manager.calls) == 2
+
+
+async def test_send_input_de_otro_usuario_del_tenant_403(
+    client, app, fake_manager: _FakeCompanionManager
+) -> None:
+    """F-1: una sesión de control solo la opera QUIEN la creó. Otro usuario
+    del mismo tenant no puede mandar clic/teclado a la Mac del dueño."""
+    tenant_id = uuid.uuid4()
+    owner_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key=PLAN_WITH_REMOTE_CONTROL
+    )
+    otro_headers = auth_headers(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key=PLAN_WITH_REMOTE_CONTROL
+    )
+    fake_manager.connected.add(tenant_id)
+
+    created = await client.post(
+        "/v1/remote/sessions", json={"consent": True, "kind": "control"}, headers=owner_headers
+    )
+    assert created.status_code == 201
+    session_id = created.json()["id"]
+
+    fake_manager.responses.append(dict(CANNED_FRAME_OK))
+    frame = await client.get(f"/v1/remote/sessions/{session_id}/frame", headers=owner_headers)
+    assert frame.status_code == 200
+
+    ajeno = await client.post(
+        f"/v1/remote/sessions/{session_id}/input",
+        json={"tipo": "key", "tecla": "enter"},
+        headers=otro_headers,
+    )
+    assert ajeno.status_code == 403
+    assert "otro usuario" in ajeno.json()["detail"].lower()
+
+    fake_manager.responses.append(dict(CANNED_FRAME_OK))
+    dueño = await client.post(
+        f"/v1/remote/sessions/{session_id}/input",
+        json={"tipo": "key", "tecla": "enter"},
+        headers=owner_headers,
+    )
+    assert dueño.status_code == 200

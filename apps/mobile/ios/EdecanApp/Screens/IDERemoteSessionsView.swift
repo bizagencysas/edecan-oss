@@ -1094,8 +1094,7 @@ private struct IDEStudioSheet: View {
             .padding(.trailing, 12)
             .accessibilityLabel("Cerrar")
         }
-        .ideLightOnly()
-    }
+            }
 }
 
 // MARK: - View models

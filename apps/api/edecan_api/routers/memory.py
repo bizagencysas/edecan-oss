@@ -412,7 +412,9 @@ async def list_memory(
                 detail="Namespace de agente inválido (esperado 'agent:<id>').",
             ) from exc
         row = await repo.get_agent_memory(
-            tenant_id=current_user.tenant_id, agent_id=agent_id
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.user_id,
+            agent_id=agent_id,
         )
         if row is None:
             return []
@@ -468,13 +470,17 @@ class ImportarMemoriaConfirmIn(BaseModel):
 async def preview_import_memoria(
     body: ImportarMemoriaPreviewIn,
     current_user: CurrentUser = Depends(get_current_user),
-    repo: Repo = Depends(get_repo),
     llm_router: LLMRouter = Depends(get_llm_router),
 ) -> list[dict[str, Any]]:
     """Corre la extracción sobre `body.texto` y devuelve la lista propuesta
     SIN guardar nada — ver docstring del módulo, "Importar memoria desde
     otra IA". El usuario revisa/edita en la UI y recién confirma con
-    `POST /import/confirm`."""
+    `POST /import/confirm`.
+
+    El uso de tokens ya no se persiste acá a mano: el callback `on_usage` del
+    router global (`edecan_api.deps`) registra cada completion en
+    `usage_events` con el modelo real — hacerlo también acá lo contaría dos
+    veces."""
     fragmentos = _dividir_texto_importar(body.texto)
     responses = []
     for indice, fragmento in enumerate(fragmentos, start=1):
@@ -493,20 +499,6 @@ async def preview_import_memoria(
         responses.append(
             await llm_router.complete(_ALIAS_LLM_IMPORTAR, current_user.tenant.flags, request)
         )
-    await repo.add_usage_event(
-        tenant_id=current_user.tenant_id,
-        kind="llm_tokens",
-        quantity=float(
-            sum(
-                response.usage.input_tokens + response.usage.output_tokens for response in responses
-            )
-        ),
-        meta={
-            "alias": _ALIAS_LLM_IMPORTAR,
-            "job": "memory_import_preview",
-            "fragments": len(fragmentos),
-        },
-    )
 
     items = [
         validado

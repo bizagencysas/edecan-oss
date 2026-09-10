@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 from typing import Any
 from urllib.parse import urlsplit
@@ -425,10 +426,15 @@ def _tabla_markdown(filas: list[dict[str, Any]]) -> str:
 # cierra al final del turno, no queda estado entre llamadas.
 
 _ACCIONES_INTERACTIVAS = frozenset(
-    {"click", "type", "select", "scroll", "screenshot", "search_page"}
+    {"click", "type", "select", "scroll", "scroll_up", "screenshot", "search_page"}
 )
 
 _MAX_RESULTADOS_SEARCH_PAGE = 20
+_MAX_CARACTERES_LEER = 6000
+# Puerto CDP del navegador persistente del dueño: la tool se CONECTA a la
+# instancia viva (la que se ve en Remoto) en vez de abrir otra con el mismo
+# perfil (que robaría el SingletonLock y WhatsApp Web negaría la sesión).
+_CDP_PORT = 9333
 
 
 def _validar_args_accion(
@@ -471,6 +477,17 @@ async def _accion_playwright(
     if accion == "scroll":
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         return {"content": "Hice scroll al final de la página.", "data": {}}
+    if accion == "scroll_up":
+        # `mouse.wheel` mueve el contenedor bajo el cursor: en WhatsApp Web
+        # sube el panel del chat (que no responde a window.scrollTo).
+        await page.mouse.wheel(0, -700)
+        return {"content": "Hice scroll hacia arriba (una pantalla).", "data": {}}
+    if accion == "leer":
+        cuerpo = (await page.inner_text("body")) or ""
+        return {
+            "content": "Texto visible de la página (recorte).",
+            "data": {"texto": cuerpo[:_MAX_CARACTERES_LEER]},
+        }
     if accion == "screenshot":
         png = await page.screenshot(full_page=True)
         if not png:
@@ -521,15 +538,66 @@ async def _ejecutar_interaccion(
     tras la acción. Cualquier bloqueo lanza `httpx.HTTPError`
     (`_error_navegacion_bloqueada`), el mismo tipo que atrapa `run()`.
     """
-    user_agent = str(getattr(ctx.settings, "BROWSER_USER_AGENT", "EdecanBot/1.0"))
+    user_agent = str(getattr(ctx.settings, "BROWSER_USER_AGENT", "") or "").strip()
+    if not user_agent or "EdecanBot" in user_agent:
+        # En el perfil PROPIO del dueño un UA de bot delata la sesión:
+        # LinkedIn redirige al login por detección de bot. Un UA real de
+        # Chrome es lo que el dueño mismo usa en esa sesión (no scraping).
+        user_agent = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        )
     timeout_seg = float(getattr(ctx.settings, "BROWSER_TIMEOUT_SECONDS", 20.0))
     motivos_bloqueo: list[str] = []
 
+    perfil = str(getattr(ctx.settings, "EDECAN_BROWSER_PROFILE", "") or "").strip()
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
-        try:
+        browser = None
+        context = None
+        navegador_vivo = None
+        pagina_nueva_de_cdp: Any | None = None
+        if perfil:
+            # 1) REUTILIZAR la instancia VIVA del navegador del dueño (la que
+            # se ve en Remoto) vía CDP: misma sesión real, headed (sin la
+            # marca webdriver que le niega la sesión a WhatsApp Web) y sin
+            # robarle el SingletonLock al navegador que ya corre. Si no hay
+            # instancia viva, se lanza una headed cuando hay DISPLAY (Xvfb
+            # del box) y headless como último recurso.
+            try:
+                navegador_vivo = await pw.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{_CDP_PORT}", timeout=4000
+                )
+                contexto_vivo = (
+                    navegador_vivo.contexts[0] if navegador_vivo.contexts else None
+                )
+                if contexto_vivo is not None:
+                    pagina_nueva_de_cdp = await contexto_vivo.new_page()
+                    page = pagina_nueva_de_cdp
+            except Exception:
+                navegador_vivo = None
+            if pagina_nueva_de_cdp is None:
+                headless = not bool(os.environ.get("DISPLAY"))
+                context = await pw.chromium.launch_persistent_context(
+                    perfil,
+                    headless=headless,
+                    viewport={"width": 1280, "height": 800},
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled",
+                        f"--remote-debugging-port={_CDP_PORT}",
+                    ],
+                    user_agent=user_agent,
+                )
+                browser = None
+                navegador_vivo = None
+                page = context.pages[0] if context.pages else await context.new_page()
+        else:
+            browser = await pw.chromium.launch()
+            context = None
             page = await browser.new_page(user_agent=user_agent)
 
+        try:
             async def _handler(route: Any) -> None:
                 motivo = await _manejar_ruta_playwright(
                     route, main_frame=page.main_frame, settings=ctx.settings
@@ -549,6 +617,12 @@ async def _ejecutar_interaccion(
             if motivos_bloqueo:
                 raise _error_navegacion_bloqueada(url, motivos_bloqueo[0])
 
+            # WhatsApp Web/LinkedIn hidratan tarde: leer antes = "no hay
+            # chats legibles". Una espera corta + un scroll del feed es la
+            # diferencia entre ver el contenido y ver la pantalla vacía.
+            await page.wait_for_load_state("networkidle", timeout=8000)
+            await page.wait_for_timeout(1500)
+
             for candidata in _cadena_de_redirects(page.url, response):
                 motivo = await _validar_navegacion(candidata, ctx.settings)
                 if motivo is not None:
@@ -557,6 +631,11 @@ async def _ejecutar_interaccion(
             resultado = await _accion_playwright(
                 page, accion, selector=selector, texto=texto, opcion=opcion
             )
+            if pagina_nueva_de_cdp is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
             if motivos_bloqueo:
                 raise _error_navegacion_bloqueada(page.url, motivos_bloqueo[-1])
@@ -564,7 +643,10 @@ async def _ejecutar_interaccion(
             resultado["data"]["url_final"] = page.url
             return resultado
         finally:
-            await browser.close()
+            if browser is not None:
+                await browser.close()
+            elif context is not None:
+                await context.close()
 
 
 async def _intentar_accion(

@@ -400,7 +400,7 @@ def fake_orchestrator(monkeypatch: pytest.MonkeyPatch):
     fake_module.Orchestrator = _FakeOrchestrator  # type: ignore[attr-defined]
     fake_module.Mission = _FakeMission  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "edecan_agents", fake_module)
-    monkeypatch.setattr(run_mission_module, "_build_registry", lambda: object())
+    monkeypatch.setattr(run_mission_module, "_build_registry", lambda _tenant_id: object())
     return _FakeOrchestrator
 
 
@@ -506,7 +506,7 @@ def fake_automation_runner(monkeypatch: pytest.MonkeyPatch):
     fake_package.runner = fake_runner_module  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "edecan_automations", fake_package)
     monkeypatch.setitem(sys.modules, "edecan_automations.runner", fake_runner_module)
-    monkeypatch.setattr(run_automation_module, "_build_registry", lambda: object())
+    monkeypatch.setattr(run_automation_module, "_build_registry", lambda _tenant_id: object())
     return _FakeAutomationRunner
 
 

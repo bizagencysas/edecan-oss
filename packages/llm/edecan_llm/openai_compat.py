@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import httpx
 
@@ -31,6 +32,65 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 60.0
 
 _FINISH_REASON_MAP = {"tool_calls": "tool_use", "length": "max_tokens"}
+
+
+@dataclass(frozen=True)
+class _EffortResolution:
+    """Decisión explícita sobre `reasoning_effort` para un request concreto
+    (BOTS-15): qué se mandó por el wire y por qué, sin fallback silencioso."""
+
+    status: str  # "sent" | "forced_none" | "dropped" | "not_requested"
+    wire_value: str | None  # valor a escribir en `body["reasoning_effort"]`
+    requested: str | None
+    note: str
+
+
+def _resolve_reasoning_effort(
+    model: str, effort: str | None, *, has_tools: bool, azure: bool
+) -> _EffortResolution:
+    """Matriz de capacidades provider/deployment/protocolo/modelo.
+
+    El endpoint `/chat/completions` de Azure rechaza `reasoning_effort` con
+    function tools en dos familias distintas (ver HANDOFF.md "Astra 400" y
+    run.md §"Cadena técnica"):
+
+    - `gpt-6-*`: trae effort POR DEFECTO en Foundry → hay que mandar `"none"`
+      explícito (omitir no basta: Azure responde 400 "Function tools with
+      reasoning_effort are not supported ... set reasoning_effort to 'none'").
+    - `gpt-5.6-*`: no soporta effort con tools en `/chat/completions` (solo por
+      Responses) → se descarta, pero quedando EXPLÍCITO en metadata del request
+      (antes se perdía en silencio).
+
+    OpenAI oficial (bearer, no Azure) sí documenta effort+tools para Astra,
+    así que en ese protocolo el effort viaja tal cual.
+    """
+    # El workaround de gpt-6 se aplica AUNQUE no haya effort pedido: el
+    # deployment trae un reasoning_effort POR DEFECTO en Foundry, así que
+    # omitir el campo no basta — hay que mandar "none" explícito con tools.
+    if azure and has_tools and model.startswith("gpt-6"):
+        return _EffortResolution(
+            "forced_none",
+            "none",
+            effort,
+            "Azure gpt-6 deployment rechaza reasoning_effort con function tools; se envía 'none'",
+        )
+    if not effort:
+        return _EffortResolution("not_requested", None, None, "")
+    if azure and has_tools:
+        if model.startswith("gpt-5.6"):
+            return _EffortResolution(
+                "dropped",
+                None,
+                effort,
+                "Azure gpt-5.6 en /chat/completions no soporta reasoning_effort con function tools (solo Responses)",
+            )
+        return _EffortResolution(
+            "dropped",
+            None,
+            effort,
+            "Deployment Azure: reasoning_effort no se envía con function tools",
+        )
+    return _EffortResolution("sent", effort, effort, "")
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -63,7 +123,13 @@ class OpenAICompatProvider(LLMProvider):
     ) -> None:
         self._api_key = api_key
         self._key_auth_mode = "api-key" if key_auth_mode == "api-key" else "bearer"
+        # `api-key` es la marca del protocolo Azure (Azure AI Foundry / Azure
+        # OpenAI), que restringe `reasoning_effort` con tools de forma distinta
+        # a OpenAI oficial. Ver `_resolve_reasoning_effort`.
+        self._azure = self._key_auth_mode == "api-key"
         self._use_max_completion_tokens = use_max_completion_tokens
+        # Última decisión de effort (observable para tests y atribución).
+        self.last_effort_resolution: _EffortResolution | None = None
         self._max_retries = max(1, max_retries)
         self._retry_base_delay = retry_base_delay
         self._extra_body = dict(extra_body or {})
@@ -112,8 +178,26 @@ class OpenAICompatProvider(LLMProvider):
                 }
                 for t in req.tools
             ]
-        if req.reasoning_effort:
-            body["reasoning_effort"] = req.reasoning_effort
+        effort = _resolve_reasoning_effort(
+            str(req.model or ""),
+            req.reasoning_effort,
+            has_tools=bool(req.tools),
+            azure=self._azure,
+        )
+        self.last_effort_resolution = effort
+        if effort.wire_value is not None:
+            body["reasoning_effort"] = effort.wire_value
+        if effort.status != "not_requested":
+            # La resolución queda EXPLÍCITA en el metadata del request (para
+            # atribución/costo), nunca como fallback silencioso (BOTS-15).
+            req.metadata["reasoning_effort_resolution"] = {
+                "status": effort.status,
+                "requested": effort.requested,
+                "wire": effort.wire_value,
+                "note": effort.note,
+            }
+            if effort.status in ("dropped", "forced_none"):
+                logger.warning("reasoning_effort (%s): %s", effort.status, effort.note)
         body.update(self._extra_body)
         return body
 
@@ -173,6 +257,7 @@ class OpenAICompatProvider(LLMProvider):
     async def stream(self, req: CompletionRequest) -> AsyncIterator[StreamChunk]:
         body = self._build_body(req, stream=True)
         attempt = 0
+        emitted = False
         while True:
             attempt += 1
             try:
@@ -198,9 +283,20 @@ class OpenAICompatProvider(LLMProvider):
                             status_code=response.status_code,
                         )
                     async for chunk in _iter_openai_sse(response):
+                        emitted = True
                         yield chunk
                     return
             except httpx.TransportError as exc:
+                # E-LLM-2: si YA se entregaron chunks al agente, re-POSTear
+                # duplicaría texto y tool calls (side effects dobles). El
+                # retry solo aplica ANTES del primer chunk; después, el error
+                # sube y es el agente quien decide (su propia política).
+                if emitted:
+                    raise ProviderDownError(
+                        f"Se cortó la conexión a mitad del stream tras entregar "
+                        f"chunks (no se reintenta para no duplicar): {exc}",
+                        provider=self.name,
+                    ) from exc
                 if attempt >= self._max_retries:
                     raise ProviderDownError(
                         f"No se pudo conectar con {self._client.base_url}: {exc}",

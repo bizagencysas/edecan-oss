@@ -44,7 +44,7 @@ class _FakeCompanionManager:
         return self.connected
 
     async def send_command(
-        self, tenant_id: uuid.UUID, action: str, params: dict[str, Any], timeout: float = 30
+        self, tenant_id: uuid.UUID, action: str, params: dict[str, Any], timeout: float = 30, machine: str | None = None
     ) -> dict[str, Any]:
         self.calls.append((tenant_id, action, dict(params)))
         if self.error is not None:

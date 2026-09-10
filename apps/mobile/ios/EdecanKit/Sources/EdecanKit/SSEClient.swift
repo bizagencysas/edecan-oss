@@ -18,6 +18,10 @@ public struct SSEClient: Sendable {
     public enum SSEError: Error, LocalizedError, Sendable, Equatable {
         case respuestaInvalida
         case servidor(status: Int, retryAfter: TimeInterval?)
+        /// F5: el servidor devolvió `x-run-state: interrupted` — el turno murió
+        /// por un reinicio del servidor. No se reintenta: se marca la burbuja
+        /// y el dueño la toca para reenviar con una clave nueva.
+        case interrumpido(status: Int)
         case eventoInvalido(detalle: String)
         case conexion(detalle: String)
 
@@ -27,6 +31,8 @@ public struct SSEClient: Sendable {
                 return "El servidor envió una respuesta que no se pudo interpretar."
             case .servidor(let status, _):
                 return "El servidor rechazó la conexión de chat (\(status))."
+            case .interrumpido:
+                return "El turno se interrumpió por un reinicio del servidor."
             case .eventoInvalido(let detalle):
                 return "Edecán envió un evento de chat que no se pudo leer: \(detalle)"
             case .conexion(let detalle):
@@ -63,6 +69,13 @@ public struct SSEClient: Sendable {
                     guard http.statusCode == 200 else {
                         let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
                             .flatMap(TimeInterval.init)
+                        // F5: `x-run-state: interrupted` distingue un turno
+                        // matado por restart (reintentar no sirve) de un 409
+                        // «sigue en vuelo» (reintentar con la misma clave).
+                        let runState = http.value(forHTTPHeaderField: "x-run-state")
+                        if runState == "interrupted" {
+                            throw SSEError.interrumpido(status: http.statusCode)
+                        }
                         throw SSEError.servidor(
                             status: http.statusCode,
                             retryAfter: retryAfter

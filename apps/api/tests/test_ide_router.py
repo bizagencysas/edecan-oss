@@ -54,7 +54,7 @@ class _FakeCompanionManager:
         return self.connected
 
     async def send_command(
-        self, tenant_id: uuid.UUID, action: str, params: dict[str, Any], timeout: float = 30
+        self, tenant_id: uuid.UUID, action: str, params: dict[str, Any], timeout: float = 30, machine: str | None = None
     ) -> dict[str, Any]:
         self.calls.append((tenant_id, action, dict(params)))
         if self.error is not None:
@@ -180,6 +180,20 @@ async def test_run_returns_504_when_the_companion_does_not_answer_in_time(app, c
     response = await client.post("/v1/ide/run", headers=_headers(), json={"command": "ls"})
 
     assert response.status_code == 504
+
+
+async def test_run_returns_503_cuando_no_hay_maquina_con_ese_nombre(app, client):
+    # F-6: "no hay una máquina con ese nombre" NO es timeout (504) — es
+    # indisponibilidad de la Mac (503), para que el cliente no reintente.
+    fake_manager = _FakeCompanionManager(
+        connected=True, error=CompanionError("No hay una máquina conectada con el nombre 'Mac'.")
+    )
+    _set_fake_manager(app, fake_manager)
+
+    response = await client.post("/v1/ide/run", headers=_headers(), json={"command": "ls"})
+
+    assert response.status_code == 503
+    assert "mac" in response.json()["detail"].lower()
 
 
 async def test_edit_returns_422_when_the_companion_reports_an_action_error(app, client):
@@ -343,7 +357,7 @@ async def test_post_run_uses_a_longer_timeout_than_the_default(app, client):
     seen_timeouts = []
 
     class _TimeoutSpyManager(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -455,7 +469,7 @@ async def test_workspace_picker_opens_the_local_dialog_without_receiving_a_path(
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -496,7 +510,7 @@ async def test_workspace_clone_forwards_only_typed_validated_fields_and_long_tim
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -566,7 +580,7 @@ async def test_terminal_start_returns_direct_session_and_uses_long_approval_time
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -804,7 +818,7 @@ async def test_agent_mcp_requires_confirmation_and_executes_exact_tool(
     monkeypatch.setattr(ide, "get_mcp_tools_for_tenant", mcp_tools)
 
     class MCPManager(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             self.calls.append((tenant_id, action, dict(params)))
             if action == "ide_agent_mcp_pending":
                 return {
@@ -860,7 +874,7 @@ async def test_agent_mcp_denial_never_executes_remote_tool(
     monkeypatch.setattr(ide, "get_mcp_tools_for_tenant", mcp_tools)
 
     class MCPManager(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             self.calls.append((tenant_id, action, dict(params)))
             if action == "ide_agent_mcp_pending":
                 return {
@@ -1112,7 +1126,7 @@ async def test_conversation_delete_uses_extended_timeout_and_returns_closed_sess
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -1141,7 +1155,7 @@ async def test_git_diff_is_typed_and_push_gets_extended_timeout(app, client):
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 
@@ -1223,7 +1237,7 @@ async def test_post_command_execute_forwards_all_optional_context_and_uses_appro
     seen_timeouts: list[float] = []
 
     class _TimeoutSpy(_FakeCompanionManager):
-        async def send_command(self, tenant_id, action, params, timeout=30):
+        async def send_command(self, tenant_id, action, params, timeout=30, machine=None):
             seen_timeouts.append(timeout)
             return await super().send_command(tenant_id, action, params, timeout=timeout)
 

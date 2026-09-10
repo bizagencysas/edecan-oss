@@ -47,9 +47,9 @@ import dataclasses
 import json
 import logging
 import os
-import subprocess
 import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -106,7 +106,7 @@ from edecan_companion.ide_reparto import (
     rutas_desde_texto,
 )
 from edecan_companion.ide_workers_agent import WorkersIDEAgent, build_failure_final
-from edecan_companion.ide_workspaces import IDEWorkspaceError, WorkspaceStore
+from edecan_companion.ide_workspaces import WorkspaceStore
 from edecan_companion.platform_paths import reemplazar_con_reintentos
 
 logger = logging.getLogger(__name__)
@@ -283,6 +283,35 @@ def _limpiar_eco_comando(buffer: str, command: str) -> str:
         if primera and (primera == command.strip() or command.strip().startswith(primera)):
             return "\n".join(lineas[1:])
     return buffer
+
+
+# Secuencias de control del terminal que la app del teléfono pinta crudas
+# (no tiene parser ANSI): CSI, OSC, DCS, charset, y solos ESC. Se retiran
+# del output del PTY para que el dueño lea "open -a ChatGPT" y no
+# "[1m[7m%[27m...". El carry (`sobrante`) protege secuencias partidas
+# entre dos chunks de 4096 bytes.
+_ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANSI_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_ANSI_OTRAS = re.compile(r"\x1b[()][0-9A-B]|\x1b[=>]|\x1b[78]|\x1bM|\x1bD|\x1bE|\x1bH|\x1bN|\x1bO|\x1bc")
+_ANSI_SUELTO = re.compile(r"\x1b")
+_ANSI_INCOMPLETO = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*)?[A-Za-z@-~]?$")
+
+
+def _limpiar_ansi(texto: str, *, final: bool = False) -> tuple[str, str]:
+    """Retira secuencias ANSI. Devuelve `(limpio, sobrante)`; `sobrante` es la
+    cola que podría ser una secuencia incompleta (se re-procesa con el
+    siguiente chunk), o "" si ya está resuelto."""
+    limpio = _ANSI_CSI.sub("", texto)
+    limpio = _ANSI_OSC.sub("", limpio)
+    limpio = _ANSI_OTRAS.sub("", limpio)
+    # Cola incompleta (secuencia partida entre chunks): se guarda para el
+    # siguiente; en el chunk final se descarta.
+    if not final:
+        match = _ANSI_INCOMPLETO.search(limpio)
+        if match:
+            return limpio[: match.start()], match.group(0)
+    limpio = _ANSI_SUELTO.sub("", limpio)
+    return limpio, ""
 
 
 def _archivo_solicitado(prompt: str, workspace_root: Path) -> Path | None:
@@ -610,7 +639,7 @@ class _ShellPersistente:
                         loop.run_in_executor(None, self._proc.stdout.readline),
                         timeout=min(5.0, max(0.1, timeout - (_time.monotonic() - inicio))),
                     )
-                except (asyncio.TimeoutError, ValueError, OSError):
+                except (TimeoutError, ValueError, OSError):
                     return {"ok": False, "error": "El comando no respondió a tiempo.",
                             "parcial": buffer.decode(errors="replace")}
                 if not chunk:
@@ -1063,16 +1092,22 @@ class SessionManager:
     def _read_pty(self, session: Session) -> None:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         assert session.terminal is not None
+        sobrante_ansi = ""
         while True:
             chunk = session.terminal.leer(4096)
             if not chunk:
                 break
             text = decoder.decode(chunk)
             if text:
-                session.append("output", text, stream="stdout")
+                text = sobrante_ansi + text
+                limpio, sobrante_ansi = _limpiar_ansi(text)
+                if limpio:
+                    session.append("output", limpio, stream="stdout")
         tail = decoder.decode(b"", final=True)
-        if tail:
-            session.append("output", tail, stream="stdout")
+        if tail or sobrante_ansi:
+            limpio_tail, _ = _limpiar_ansi(sobrante_ansi + tail, final=True)
+            if limpio_tail:
+                session.append("output", limpio_tail, stream="stdout")
         self._finish(session)
 
     def input_terminal(self, session_id: str, data: str) -> dict[str, Any]:
@@ -1113,7 +1148,7 @@ class SessionManager:
         """
         return await self._shell_persistente_cwd(cwd).correr(command, timeout=timeout)
 
-    def _shell_persistente_cwd(self, cwd: str) -> "_ShellPersistente":
+    def _shell_persistente_cwd(self, cwd: str) -> _ShellPersistente:
         estado = self._shells_compartidos.get(cwd)
         if estado is None or estado.muerto():
             estado = _ShellPersistente(cwd)

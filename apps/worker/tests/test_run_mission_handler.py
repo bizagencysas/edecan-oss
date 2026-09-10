@@ -63,8 +63,9 @@ class _FakeLLMVault:
 
 
 class _FakeResult:
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(self, rows: list[dict[str, Any]] | None = None, *, rowcount: int = 1) -> None:
         self._rows = rows or []
+        self.rowcount = rowcount
 
     def mappings(self) -> _FakeResult:
         return self
@@ -188,6 +189,25 @@ class FakeSession:
         if primer_token == "UPDATE" and "agent_missions" in sql:
             row = self.missions.get(params["id"])
             if row is not None and row["tenant_id"] == params["tenant_id"]:
+                # C8b: claim durable `_claim_mission` — CAS `status='running'`
+                # con `AND status = :expected`. Si la fila ya NO está en el
+                # estado esperado, el claim pierde (rowcount 0) y no se toca.
+                if "AND status = :expected" in sql:
+                    if row["status"] != params["expected"]:
+                        return _FakeResult(rowcount=0)
+                    row["status"] = "running"
+                    return _FakeResult(rowcount=1)
+                # BOTS-01: replica la guarda atómica de
+                # `_update_mission(guard_active=True)` (`AND status NOT IN (...)`):
+                # si la fila ya está en un estado terminal/pausado, el UPDATE
+                # no afecta NINGUNA fila -> no-op.
+                if "status NOT IN" in sql and row["status"] in (
+                    "done",
+                    "error",
+                    "cancelled",
+                    "paused",
+                ):
+                    return _FakeResult(rowcount=0)
                 if "status" in params:
                     row["status"] = params["status"]
                 if "plan" in params:
@@ -204,6 +224,14 @@ class FakeSession:
             key = (params["mission_id"], params["seq"])
             row = self.steps.get(key)
             if row is not None and row["tenant_id"] == params["tenant_id"]:
+                # C8b: claim durable `_claim_step` — CAS `status = :new_status`
+                # con `AND status = :expected`. Si el paso ya no está en el
+                # estado esperado, el claim pierde (rowcount 0).
+                if "AND status = :expected" in sql and ":new_status" in sql:
+                    if row["status"] != params["expected"]:
+                        return _FakeResult(rowcount=0)
+                    row["status"] = params["new_status"]
+                    return _FakeResult(rowcount=1)
                 if "status" in params:
                     row["status"] = params["status"]
                 if "resultado" in params:
@@ -282,7 +310,7 @@ def fake_orchestrator(monkeypatch: pytest.MonkeyPatch):
     fake_module.Orchestrator = FakeOrchestrator  # type: ignore[attr-defined]
     fake_module.Mission = FakeMission  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "edecan_agents", fake_module)
-    monkeypatch.setattr(run_mission_module, "_build_registry", lambda: REGISTRY_SENTINEL)
+    monkeypatch.setattr(run_mission_module, "_build_registry", lambda _tenant_id: REGISTRY_SENTINEL)
     return FakeOrchestrator
 
 
@@ -431,30 +459,33 @@ async def test_mision_nueva_sin_tenant_en_bd_usa_plan_free_selfhost():
     assert plan_call["flags"]["agents.missions"] is True  # free_selfhost también lo trae en True
 
 
-async def test_run_deps_expone_session_settings_vault_y_flags(monkeypatch: pytest.MonkeyPatch):
+async def test_run_deps_expone_session_factory_vault_factory_y_flags(
+    monkeypatch: pytest.MonkeyPatch,
+):
     session = FakeSession()
     mission_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     session.seed_mission(mission_id, tenant_id)
     session.seed_tenant(tenant_id, "hosted_basic")
 
-    # `_FakeLLMVault` (no un `object()` plano): `deps.vault(session)` es la
-    # MISMA factory que usa `Deps.llm_router_for` para resolver el LLM
-    # bring-your-own del tenant (ver comentario junto a `_LLM_ACCOUNT_ID`) Y
-    # la que recibe `_RunDeps` — así que el objeto que se identity-checkea
-    # abajo (`run_deps.vault is vault_sentinel`) también necesita un
-    # `.get()` que funcione: el handler lo usa para OTRAS credenciales
-    # (conectores, MCP) antes de construir `_RunDeps`.
+    # BOTS-23: `_RunDeps` ya NO expone una `AsyncSession`/`vault` compartidos
+    # — expone `session_factory`/`vault_factory` para que CADA paso paralelo
+    # abra los suyos. `deps.vault` (el `VaultFactory` de `Deps`) es el que se
+    # reenvía tal cual; `deps.session_factory` se reenvía tal cual.
     vault_sentinel = _FakeLLMVault()
     deps = make_deps(session_factory=_session_factory(session), vault=lambda s: vault_sentinel)
 
     await run_mission_module.handle(_envelope(mission_id, tenant_id), deps)
 
     run_deps = FakeOrchestrator.run_calls[0]["deps"]
-    assert run_deps.session is session
+    # `session_factory` es la MISMA factory inyectada (aquí, la que devuelve
+    # siempre `session`); `vault_factory` es `deps.vault`.
+    assert run_deps.session_factory is deps.session_factory
     assert run_deps.settings is deps.settings
-    assert run_deps.vault is vault_sentinel
+    assert run_deps.vault_factory is deps.vault
     assert run_deps.flags["agents.missions"] is True  # hosted_basic también lo trae en True
+    # BOTS-01: el seam de cancelación quedó conectado.
+    assert callable(run_deps.cancellation_requested)
 
 
 async def test_run_deps_save_step_y_save_mission_persisten_via_sql():
@@ -739,3 +770,183 @@ async def test_resume_conserva_depende_de_de_los_pasos_pendientes_que_nunca_corr
     paso_2 = next(p for p in mission.plan if p["seq"] == 2)
     assert paso_2.get("depende_de") is None
     assert paso_2["usage"]["pending_tool_call"]["name"] == "enviar_correo"
+
+
+# ---------------------------------------------------------------------------
+# BOTS-01: cancelación/pausa gobernando el trabajo activo
+# ---------------------------------------------------------------------------
+
+
+async def test_escritura_tardia_no_revive_mision_cancelled():
+    """BOTS-01: `save_mission` (el seam del `Orchestrator`) NO sobrescribe un
+    estado terminal/pausado — `_make_save_mission` pasa `guard_active=True`, así
+    que `_update_mission` añade `AND status NOT IN (...)`. Una escritura tardía
+    (`status="done"`) de un paso que terminaba justo cuando el usuario canceló
+    no revive la misión `cancelled`."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="cancelled")
+
+    save_mission = run_mission_module._make_save_mission(
+        _session_factory(session), tenant_id, mission_id
+    )
+
+    await save_mission(status="done", resultado="síntesis tardía", error=None)
+
+    # la fila siguió `cancelled`; ni `status` ni `resultado` se tocaron.
+    assert session.missions[str(mission_id)]["status"] == "cancelled"
+    assert session.missions[str(mission_id)].get("resultado") is None
+
+
+async def test_escritura_tardia_no_revive_mision_paused():
+    """Contraparte de arriba: pausar también es un stop que el run no controla.
+    `save_mission(status="done")` tardío NO convierte una misión `paused` en
+    `done`."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="paused")
+
+    save_mission = run_mission_module._make_save_mission(
+        _session_factory(session), tenant_id, mission_id
+    )
+
+    await save_mission(status="done", resultado="síntesis tardía", error=None)
+
+    assert session.missions[str(mission_id)]["status"] == "paused"
+
+
+async def test_save_mission_sin_guarda_sobrescribe_cuando_el_run_sigue_activo():
+    """Camino feliz de la guarda: si la misión sigue en un estado que este run
+    controla (`running`), `save_mission(status="done")` SÍ persiste el estado
+    terminal — la guarda no bloquea el flujo normal."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="running")
+
+    save_mission = run_mission_module._make_save_mission(
+        _session_factory(session), tenant_id, mission_id
+    )
+
+    await save_mission(status="done", resultado="síntesis", error=None)
+
+    assert session.missions[str(mission_id)]["status"] == "done"
+    assert session.missions[str(mission_id)]["resultado"] == "síntesis"
+
+
+async def test_cancellation_requested_relee_estado_durable():
+    """BOTS-01: `_make_cancellation_check` relee `agent_missions` en una sesión
+    corta y devuelve `True` solo para `cancelled`/`paused` (estados que el run
+    activo no controla), `False` para `running`/`waiting_confirmation`."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="running")
+
+    check = run_mission_module._make_cancellation_check(
+        _session_factory(session), tenant_id, mission_id
+    )
+
+    assert await check() is False  # running -> sigue
+
+    session.missions[str(mission_id)]["status"] = "cancelled"
+    assert await check() is True  # cancelled -> detener
+
+    session.missions[str(mission_id)]["status"] = "paused"
+    assert await check() is True  # paused -> detener
+
+
+# ---------------------------------------------------------------------------
+# C8b: claim durable — CAS en el arranque del paso-1. Dos jobs `run_mission`
+# concurrentes para la MISMA misión compiten por el claim y solo uno gana;
+# el perdedor no planifica ni ejecuta pasos.
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_mission_es_cas_planning_a_running():
+    """`_claim_mission` gana solo si la misión sigue en `planning`; una vez
+    reclamada (running), un segundo claim pierde (rowcount 0)."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="planning")
+
+    claimed = await run_mission_module._claim_mission(session, tenant_id, mission_id, "planning")
+    assert claimed is True
+    assert session.missions[str(mission_id)]["status"] == "running"
+
+    # Un segundo claim sobre la misma misión (ya running) pierde.
+    second = await run_mission_module._claim_mission(session, tenant_id, mission_id, "planning")
+    assert second is False
+    assert session.missions[str(mission_id)]["status"] == "running"
+
+
+async def test_claim_step_es_cas_waiting_confirmation_a_pending():
+    """`_claim_step` gana solo si el paso sigue en `waiting_confirmation`; una
+    vez reseteado a `pending`, un segundo claim pierde."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="waiting_confirmation")
+    session.seed_step(mission_id, tenant_id, seq=2, status="waiting_confirmation")
+
+    claimed = await run_mission_module._claim_step(
+        session, tenant_id, mission_id, 2, expected_status="waiting_confirmation"
+    )
+    assert claimed is True
+    assert session.steps[(str(mission_id), 2)]["status"] == "pending"
+
+    second = await run_mission_module._claim_step(
+        session, tenant_id, mission_id, 2, expected_status="waiting_confirmation"
+    )
+    assert second is False
+    assert session.steps[(str(mission_id), 2)]["status"] == "pending"
+
+
+async def test_mision_nueva_ya_reclamada_no_replanifica_ni_ejecuta():
+    """C8b: un job `run_mission` para una misión que otro run ya reclamó
+    (status `running`, sin pasos) pierde el claim en el paso-1 y sale sin
+    llamar a `plan()` ni a `run()`."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="running")
+    session.seed_tenant(tenant_id, "hosted_pro")
+    deps = make_deps(session_factory=_session_factory(session), vault=lambda s: _FakeLLMVault())
+
+    await run_mission_module.handle(_envelope(mission_id, tenant_id), deps)
+
+    assert FakeOrchestrator.plan_calls == []
+    assert FakeOrchestrator.run_calls == []
+    assert session.missions[str(mission_id)]["status"] == "running"
+
+
+async def test_resume_claim_step_evita_ejecutar_el_paso_dos_veces():
+    """C8b: un job `resume` duplicado (SQS at-least-once) cuyo paso ya fue
+    reclamado a `pending` pierde el claim y no ejecuta nada. El camino de
+    `handle()` llega hasta `_claim_step` y sale antes de construir `Mission`/
+    llamar `run()`."""
+    session = FakeSession()
+    mission_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session.seed_mission(mission_id, tenant_id, status="waiting_confirmation")
+    # El paso 2 ya fue reclamado a "pending" por el primer delivery.
+    session.seed_step(
+        mission_id,
+        tenant_id,
+        seq=2,
+        status="pending",
+        usage={"pending_tool_call": {"id": "call-guardado", "name": "x", "args": {}}},
+    )
+    deps = make_deps(session_factory=_session_factory(session), vault=lambda s: _FakeLLMVault())
+
+    await run_mission_module.handle(
+        _envelope(mission_id, tenant_id, resume=True, approved_step_seq=2), deps
+    )
+
+    assert FakeOrchestrator.plan_calls == []
+    assert FakeOrchestrator.run_calls == []
+    # El paso sigue `pending` (no se re-ejecutó).
+    assert session.steps[(str(mission_id), 2)]["status"] == "pending"

@@ -20,7 +20,9 @@ def _manager(tmp_path: pathlib.Path) -> SessionManager:
 
 
 async def test_salida_aislada_del_comando(tmp_path):
-    proyecto = tmp_path / "repo"; proyecto.mkdir(); (proyecto / "app.txt").write_text("x")
+    proyecto = tmp_path / "repo"
+    proyecto.mkdir()
+    (proyecto / "app.txt").write_text("x")
     mgr = _manager(tmp_path)
     r = await mgr.terminal_compartido(str(proyecto), "ls")
     assert r["ok"] is True
@@ -28,7 +30,9 @@ async def test_salida_aislada_del_comando(tmp_path):
 
 
 async def test_cd_persiste_entre_comandos(tmp_path):
-    proyecto = tmp_path / "repo"; proyecto.mkdir(); (proyecto / "sub").mkdir()
+    proyecto = tmp_path / "repo"
+    proyecto.mkdir()
+    (proyecto / "sub").mkdir()
     mgr = _manager(tmp_path)
     await mgr.terminal_compartido(str(proyecto), "cd sub")
     r = await mgr.terminal_compartido(str(proyecto), "pwd")
@@ -37,7 +41,8 @@ async def test_cd_persiste_entre_comandos(tmp_path):
 
 
 async def test_dos_comandos_comparten_shell(tmp_path):
-    proyecto = tmp_path / "repo"; proyecto.mkdir()
+    proyecto = tmp_path / "repo"
+    proyecto.mkdir()
     mgr = _manager(tmp_path)
     await mgr.terminal_compartido(str(proyecto), "echo hola > creado.txt")
     r = await mgr.terminal_compartido(str(proyecto), "cat creado.txt")
@@ -45,7 +50,8 @@ async def test_dos_comandos_comparten_shell(tmp_path):
 
 
 async def test_paralelo_no_se_ensucia(tmp_path):
-    proyecto = tmp_path / "repo"; proyecto.mkdir()
+    proyecto = tmp_path / "repo"
+    proyecto.mkdir()
     mgr = _manager(tmp_path)
 
     async def a():

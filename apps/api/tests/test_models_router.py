@@ -23,7 +23,7 @@ async def test_catalogo_de_chat_tiene_la_forma_exacta_del_contrato(client) -> No
     body = response.json()
     assert set(body) == {"default", "esfuerzos", "esfuerzo_default", "modelos"}
     assert body["default"] == modelo_chat_por_defecto()
-    assert body["esfuerzos"] == ["bajo", "medio", "alto"]
+    assert body["esfuerzos"] == ["bajo", "medio", "alto", "extremo"]
     assert body["esfuerzo_default"] == "medio"
     for modelo in body["modelos"]:
         assert set(modelo) == {

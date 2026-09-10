@@ -482,6 +482,15 @@ async def get_mcp_tools_for_tenant(request: Request, current_user: CurrentUser) 
     return tools
 
 
+def invalidate_mcp_tools_cache(request: Request, tenant_id: uuid.UUID) -> None:
+    """Fuerza recarga de tools MCP en el siguiente turno tras conectar/desconectar."""
+    cache: dict[uuid.UUID, tuple[float, list[Any]]] | None = getattr(
+        request.app.state, "mcp_tools_cache", None
+    )
+    if cache is not None:
+        cache.pop(tenant_id, None)
+
+
 async def _build_mcp_tools_for_tenant(tenant_id: uuid.UUID) -> list[Any]:
     # Import perezoso CON GUARDIA — ver el comentario de arriba.
     try:

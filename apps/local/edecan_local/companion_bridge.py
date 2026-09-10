@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -26,6 +25,7 @@ from typing import Any
 from edecan_companion import actions
 from edecan_companion.config import CompanionConfig, load_config
 from edecan_companion.ide_runtime import IDE_ACTIONS, execute_ide_action
+from edecan_companion.security import es_comando_peligroso
 
 logger = logging.getLogger(__name__)
 
@@ -138,45 +138,20 @@ _SIN_SESION_BLOQUEADAS = frozenset(
 
 # Comandos de terminal que NUNCA se ejecutan, vengan de donde vengan (bot o
 # dueño): el patrón es más destructivo que útil y un bot comprometido los
-# usaría para dañar la Mac. Denylist por subcadena (fail-closed: un falso
-# positivo cuesta una negativa, un falso negativo cuesta la máquina). El caso
-# `osascript` exige las TRES subcadenas: `osascript` solo (p.ej. para abrir
-# apps) sigue permitido, la combinación con `tell application` + `do shell` es
-# el clásico escalado de privilegios vía AppleScript.
-_PATRONES_PELIGROSOS_RUN_COMMAND: tuple[str, ...] = (
-    "rm -rf", "rm -fr", "rm -r -f", "rm -r - f",
-    "sudo", "; rm", "&& rm", "|| rm",
-    "dd if", "dd of", ">/dev/sda",
-    "chmod -R 777", "chmod 777 -R",
-    "passwd", "shutdown", "reboot",
-    "find / -delete", "diskutil erase",
-    "| bash", "| zsh", "| /bin/sh", "| /bin/bash",
-)
-# Pipe de `curl` a `sh` (`curl -fsSL https://x | sh`): la subcadena literal
-# "curl | sh" NO la cubre (el flag y la URL van en medio), así que se exige
-# "curl" presente + un pipe a `sh` como palabra (`\b` evita falsos positivos
-# como "| sha256sum").
-_PIPE_CURL_A_SH = re.compile(r"\|\s*sh\b")
+# usaría para dañar la Mac. El denylist real vive en
+# `edecan_companion.security.es_comando_peligroso` (mismo helper que usa el
+# companion standalone): parsea con `shlex` y evalúa ejecutable + flags, no
+# subcadenas frágiles (p. ej. `rm  -rf`, `\rm -rf`, `rm -Rf`, `rm --force` se
+# colaban con el denylist literal anterior).
 
 
 def _comando_peligroso(command: str) -> bool:
-    # Portapapeles: un bot no debe leer ni escribir el clipboard
+    # Portapapeles: un bot no debe leer ni escribir el clipboard del dueño.
     for _cmd_clip in ("pbpaste", "pbcopy"):
         if _cmd_clip in command:
             return True
-
-    """True si `command` no debe correr jamás en el terminal compartido."""
-    if any(patron in command for patron in _PATRONES_PELIGROSOS_RUN_COMMAND):
-        return True
-    if "curl" in command and _PIPE_CURL_A_SH.search(command):
-        return True
-    if (
-        "osascript" in command
-        and "tell application" in command
-        and "do shell" in command
-    ):
-        return True
-    return False
+    # Denylist compartido (destructivos: rm -rf, dd, curl|sh, sudo, ...).
+    return es_comando_peligroso(command)
 
 
 class LocalCompanionBridge:
@@ -197,6 +172,20 @@ class LocalCompanionBridge:
     async def ensure_registered(self, tenant_id: uuid.UUID) -> None:
         if not self._manager.is_connected(tenant_id):
             self._manager.register_local(tenant_id, self.execute)
+
+    async def ejecutar_en_mac(
+        self,
+        tenant_id: uuid.UUID,
+        action: str,
+        params: dict[str, Any],
+        timeout: float = 900.0,
+    ) -> dict[str, Any]:
+        """Envía la acción al companion de la MAC por el WebSocket (nunca
+        ejecuta local): es el camino de fydesign_autopost y de todo lo que
+        vive en la Mac del dueño."""
+        return await self._manager.send_command(
+            tenant_id, action, params, timeout=timeout, machine="Mac"
+        )
 
     async def execute(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         async def approve(

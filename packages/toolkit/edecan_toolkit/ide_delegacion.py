@@ -12,15 +12,13 @@ escritorio — el mismo protocolo verificado el 1-sep-2026 (healthz → auth/loc
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from typing import Any
 
 import httpx
 from edecan_core import Tool, ToolContext, ToolResult
-
-logger = logging.getLogger(__name__)
+from edecan_core.safety import redact
 
 _PUERTO_DEFAULT = 8765
 _INTERVALO_POLL = 5.0
@@ -28,6 +26,15 @@ _MAX_ESPERA_SEGUNDOS = 1800
 _MAX_CHARS_TEXTO = 8000
 _ESTADOS_OCUPADO = frozenset({"starting", "running", "plan_pending"})
 _ESTADOS_TERMINAL = frozenset({"completed", "failed", "cancelled"})
+_MAX_DETALLE_ERROR = 200
+
+
+def _redactar(exc: BaseException | str) -> str:
+    texto = str(exc)
+    token = os.environ.get("LOCAL_DESKTOP_CAPABILITY", "").strip()
+    if token and token in texto:
+        texto = texto.replace(token, "***")
+    return texto[:_MAX_DETALLE_ERROR]
 
 
 def _base(ctx: ToolContext) -> str:
@@ -46,20 +53,80 @@ def _token_headers(token: str, capability: str) -> dict[str, str]:
     }
 
 
+async def _fijar_modo_restringido(
+    client: httpx.AsyncClient,
+    base: str,
+    headers: dict[str, str],
+    session_id: str,
+    modo: str,
+) -> ToolResult | None:
+    """Fija un modo CON freno (manual/aceptar_ediciones/plan) y valida que quedó
+    aplicado del lado del servidor. Devuelve `None` solo si el modo pedido quedó
+    fijado y releído; si hay que abortar, devuelve el `ToolResult` de error.
+
+    C2 (auditoría): antes, un fallo del `PUT /v1/ide/agents/{id}/modo` solo se
+    logueaba y la delegación seguía adelante — el agente del IDE quedaba con
+    autonomía total sin los frenos pedidos. Ahora NUNCA se degrada a `auto` en
+    silencio: si el PUT falla, o si el estado real no coincide con lo pedido, se
+    aborta la delegación con un error claro.
+
+    El PUT es idempotente-confirmatorio: un 2xx no es prueba de que el freno
+    quedó aplicado en el motor (AGENTS.md §5, "un 200 no es una prueba"), así
+    que tras el PUT se relee `GET /v1/ide/agents/{id}/modo` y se compara el modo
+    real contra el pedido.
+    """
+    respuesta_modo = await client.put(
+        f"{base}/v1/ide/agents/{session_id}/modo",
+        headers=headers,
+        json={"modo": modo},
+    )
+    if respuesta_modo.status_code >= 400:
+        return ToolResult(
+            content=(
+                f"No pude fijar el modo restringido {modo!r} del agente del IDE "
+                f"(PUT modo → HTTP {respuesta_modo.status_code}). Aborté la delegación "
+                "para no dejar al agente trabajando sin frenos. Revisa la app Edecán "
+                "y reintenta."
+            )
+        )
+    lectura_modo = await client.get(
+        f"{base}/v1/ide/agents/{session_id}/modo", headers=headers
+    )
+    if lectura_modo.status_code != 200:
+        return ToolResult(
+            content=(
+                f"El PUT de modo {modo!r} respondió, pero no pude releer el modo real "
+                f"del agente del IDE (GET modo → HTTP {lectura_modo.status_code}). "
+                "Aborté la delegación para no dejarlo trabajando sin frenos."
+            )
+        )
+    modo_real = str((lectura_modo.json() or {}).get("modo") or "")
+    if modo_real != modo:
+        return ToolResult(
+            content=(
+                f"El IDE no fijó el modo pedido: pedí {modo!r} y quedó {modo_real!r}. "
+                "Aborté la delegación para no dejar al agente trabajando sin frenos."
+            )
+        )
+    return None
+
+
 class DelegarAlIDETool(Tool):
     name = "delegar_al_ide"
     description = (
-        "Delega un encargo de código/ingeniería al IDE de Edecán (su motor opencode "
-        "empaquetado, dentro de la app): corre un agente sobre un workspace, con sus "
-        "modos de permiso, y devuelve el estado final y el texto producido. Úsala para "
-        "trabajo real sobre repos: editar archivos, correr comandos, arreglar bugs. "
-        "Después de delegar, VERIFICA el resultado contra el disco (o `git status`), "
-        "nunca confíes solo en el estado que devuelve. Solo funciona en la Mac del dueño "
-        "con la app Edecán abierta."
+        "Delega ingeniería al IDE de Edecán (opencode en la app): editar repos, "
+        "arreglar bugs como login roto, correr tests. Úsala para encargos grandes de "
+        "código en la Mac con la app abierta; para lecturas rápidas o git status usa "
+        "`acceder_codigo_local`. Verifica siempre contra disco/git, no solo el "
+        "estado que devuelve el IDE."
     )
     category = "code"
     risk_level = "high"
     dangerous = True
+    # El poll del agente del IDE puede esperar hasta _MAX_ESPERA_SEGUNDOS;
+    # el deadline DURO del executor (E-CORE-2) respeta este valor, así que
+    # debe cubrir el máximo real + margen.
+    timeout_seconds = float(_MAX_ESPERA_SEGUNDOS) + 120.0
     input_schema = {
         "type": "object",
         "properties": {
@@ -96,16 +163,142 @@ class DelegarAlIDETool(Tool):
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return ToolResult(content="El encargo no puede ir vacío.")
-        base = _base(ctx)
         capability = _capability()
         if not capability:
+            # SIN capability de escritorio (VPS): la delegación va por el
+            # COMPANION de la Mac, que ejecuta el IDE (opencode) — el mismo
+            # camino del iPhone. No hace falta abrir la app de escritorio.
+            return await self._run_via_companion(ctx, args, prompt)
+        base = _base(ctx)
+        return await self._run_local(ctx, args, prompt, base, capability)
+
+    async def _run_via_companion(
+        self, ctx: ToolContext, args: dict[str, Any], prompt: str
+    ) -> ToolResult:
+        manager = ctx.extras.get("companion_manager")
+        if manager is None:
             return ToolResult(
                 content=(
-                    "No encontré la capability del escritorio: esta tool solo funciona "
-                    "dentro de la app Edecán instalada en la Mac (no en dev ni en el "
-                    "servidor). Si estás en la Mac, abre la app Edecán y reintenta."
+                    "No hay puente con la Mac (companion). Haz el trabajo TÚ con "
+                    "tus tools del box: `acceder_codigo_local` para archivos del "
+                    "repo y `run_command` para comandos/pruebas."
                 )
             )
+        max_espera = min(
+            int(args.get("max_espera_segundos") or _MAX_ESPERA_SEGUNDOS),
+            _MAX_ESPERA_SEGUNDOS,
+        )
+        try:
+            workspaces = await manager.send_command(
+                ctx.tenant_id, "ide_workspace_list", {}, timeout=20, machine="Mac"
+            )
+        except Exception as exc:
+            return ToolResult(
+                content=(
+                    f"La Mac no respondió al listar los workspaces del IDE "
+                    f"({redact(str(exc))}). Verifica que el companion esté vivo "
+                    "y reintenta, o trabaja con tus tools del box."
+                )
+            )
+        lista = workspaces.get("workspaces") or workspaces.get("result") or []
+        if not lista:
+            return ToolResult(
+                content=(
+                    "El IDE de la Mac no tiene workspaces. Crea uno en la app "
+                    "(o pásame workspace_id de uno existente)."
+                )
+            )
+        elegido = None
+        if args.get("workspace_id"):
+            for item in lista:
+                if str(item.get("id") or "") == str(args["workspace_id"]):
+                    elegido = str(item["id"])
+                    break
+            if elegido is None:
+                return ToolResult(
+                    content=(
+                        f"El workspace {args['workspace_id']!r} no existe en el IDE. "
+                        f"Disponibles: {[str(w.get('name') or w.get('id')) for w in lista][:8]}"
+                    )
+                )
+        else:
+            elegido = str(lista[0].get("id") or "")
+
+        try:
+            arranque = await manager.send_command(
+                ctx.tenant_id,
+                "ide_agent_start",
+                {
+                    "workspace_id": elegido,
+                    "prompt": prompt,
+                    "title": args.get("titulo") or "Encargo de bot",
+                },
+                timeout=30,
+                machine="Mac",
+            )
+        except Exception as exc:
+            return ToolResult(
+                content=f"La Mac no pudo arrancar el agente del IDE ({redact(str(exc))})."
+            )
+        session_id = str(
+            arranque.get("session_id")
+            or arranque.get("id")
+            or (arranque.get("session") or {}).get("id")
+            or ""
+        )
+        if not session_id:
+            return ToolResult(
+                content=(
+                    f"El IDE arrancó pero no devolvió sesión: "
+                    f"{redact(str(arranque)[:400])}"
+                )
+            )
+
+        inicio = time.monotonic()
+        cursor = 0
+        texto = ""
+        while time.monotonic() - inicio < max_espera:
+            try:
+                lectura = await manager.send_command(
+                    ctx.tenant_id,
+                    "ide_agent_read",
+                    {"session_id": session_id, "cursor": cursor},
+                    timeout=20,
+                    machine="Mac",
+                )
+            except Exception as exc:
+                return ToolResult(
+                    content=f"Se perdió la lectura del agente del IDE ({redact(str(exc))})."
+                )
+            eventos = lectura.get("events") or []
+            for evento in eventos:
+                texto_evento = evento.get("text") if isinstance(evento, dict) else None
+                if texto_evento:
+                    texto += str(texto_evento)
+            cursor = int(lectura.get("next_cursor") or cursor)
+            estado = str((lectura.get("session") or {}).get("status") or "running")
+            if estado in _ESTADOS_TERMINAL:
+                if estado == "failed":
+                    return ToolResult(
+                        content=(
+                            f"El agente del IDE falló (estado={estado}). "
+                            f"Texto parcial: {texto[:_MAX_CHARS_TEXTO]}"
+                        )
+                    )
+                return ToolResult(
+                    content=texto[:_MAX_CHARS_TEXTO] or "(el agente terminó sin texto)"
+                )
+            await asyncio.sleep(_INTERVALO_POLL)
+        return ToolResult(
+            content=(
+                f"El agente del IDE sigue trabajando tras {max_espera}s. "
+                f"Texto parcial: {texto[:_MAX_CHARS_TEXTO]}"
+            )
+        )
+
+    async def _run_local(
+        self, ctx: ToolContext, args: dict[str, Any], prompt: str, base: str, capability: str
+    ) -> ToolResult:
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:
@@ -188,17 +381,11 @@ class DelegarAlIDETool(Tool):
 
             modo = str(args.get("modo") or "auto")
             if modo != "auto":
-                respuesta_modo = await client.put(
-                    f"{base}/v1/ide/agents/{session_id}/modo",
-                    headers=headers,
-                    json={"modo": modo},
+                error_modo = await _fijar_modo_restringido(
+                    client, base, headers, session_id, modo
                 )
-                if respuesta_modo.status_code >= 400:
-                    logger.warning(
-                        "delegar_al_ide: no pude fijar modo=%s (HTTP %s); sigo igual",
-                        modo,
-                        respuesta_modo.status_code,
-                    )
+                if error_modo is not None:
+                    return error_modo
 
             max_espera = int(args.get("max_espera_segundos") or 1200)
             max_espera = max(30, min(max_espera, _MAX_ESPERA_SEGUNDOS))

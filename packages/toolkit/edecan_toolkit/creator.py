@@ -331,6 +331,8 @@ No es un despliegue ni promete lógica de negocio que no esté en estos archivos
 
 
 class CrearArtefactosTool(Tool):
+    # Genera documentos/imágenes: latencia lenta declarada, darle aire.
+    timeout_seconds = 600.0
     """Planea y materializa uno o varios entregables privados."""
 
     name = "crear_artefactos"

@@ -72,11 +72,21 @@ ORGANIZATION_ACLS_URL = "https://api.linkedin.com/rest/organizationAcls"
 # son opcionales para el flujo de perfil personal existente -- una instalación que no los
 # necesite simplemente nunca llama ``get_organization_urns`` ni pasa ``org_urn`` a
 # ``create_post``.
+# Scopes del PERFIL PERSONAL — suficientes para conectar/desconectar y publicar
+# en el perfil propio. `w_organization_social`/`rw_organization_admin` (publicar
+# en PÁGINAS de empresa, Community Management API) exigen aprobación aparte de
+# LinkedIn y, si van en el authorize por defecto, un app básico falla con
+# `unauthorized_scope_error` — el dueño no podía iniciar sesión. Por eso viven
+# en `SCOPES_ORGANIZACIONES` y se suman SOLO si el conector los necesita (ver
+# `SCOPES` + el docstring de arriba).
 SCOPES = [
     "openid",
     "profile",
     "email",
     "w_member_social",
+]
+
+SCOPES_ORGANIZACIONES = [
     "w_organization_social",
     "rw_organization_admin",
 ]

@@ -70,6 +70,14 @@ __all__ = [
 
 _TIMEOUT = 15.0
 _GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
+# Fallback: Google News devuelve canales VACÍOS desde IPs de datacenter (el
+# dueño lo vivió: "Gemini 3" sin fuentes -> el escritor inventaba un ensayo).
+# Bing News RSS sí responde con items reales desde el box.
+_BING_NEWS_RSS = "https://www.bing.com/news/search"
+_UA_NAVEGADOR = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
 
 _MAXIMO_DEFECTO = 8
 _MAXIMO_LIMITE = 30
@@ -164,7 +172,7 @@ async def titulares_frescos(
     )
 
     try:
-        respuesta = await http.get(url, timeout=_TIMEOUT)
+        respuesta = await http.get(url, timeout=_TIMEOUT, headers={"User-Agent": _UA_NAVEGADOR})
         respuesta.raise_for_status()
         raiz = _ET.fromstring(respuesta.text)
     except Exception:
@@ -174,7 +182,7 @@ async def titulares_frescos(
             consulta,
             exc_info=True,
         )
-        return []
+        raiz = None
 
     titulares: list[Titular] = []
     for item in raiz.findall(".//item"):
@@ -213,6 +221,59 @@ async def titulares_frescos(
         )
         if len(titulares) >= limite:
             break
+
+    if titulares:
+        return titulares
+
+    # FALLBACK Bing News RSS (Google vacío o bloqueado desde datacenter)
+    try:
+        respuesta = await http.get(
+            _BING_NEWS_RSS,
+            params={"q": f"{consulta} when:{dias}d", "format": "rss"},
+            timeout=_TIMEOUT,
+            headers={"User-Agent": _UA_NAVEGADOR},
+        )
+        respuesta.raise_for_status()
+        raiz = _ET.fromstring(respuesta.text)
+        for item in raiz.findall(".//item"):
+            titulo_item = (item.findtext("title") or "").strip()
+            if not titulo_item:
+                continue
+            if excluidos and any(termino in titulo_item.casefold() for termino in excluidos):
+                continue
+            pub_raw = (item.findtext("pubDate") or "").strip()
+            try:
+                publicado = parsedate_to_datetime(pub_raw)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if publicado.tzinfo is None:
+                publicado = publicado.replace(tzinfo=UTC)
+            horas = (momento_actual - publicado).total_seconds() / 3600
+            if horas < 0 or horas > dias * 24:
+                continue
+            link = (item.findtext("link") or "").strip()
+            if not link:
+                continue
+            dominio = _urlparse.urlsplit(link).netloc or "bing.com/news"
+            titulares.append(
+                Titular(
+                    titulo=titulo_item,
+                    snippet=" · ".join(
+                        p for p in (dominio, _antiguedad_legible(horas)) if p
+                    ),
+                    url=link,
+                    fuente=dominio,
+                    fuente_url="https://" + dominio,
+                    publicado_en=publicado.isoformat(),
+                    antiguedad_horas=round(horas, 1),
+                )
+            )
+    except Exception:
+        logger.warning(
+            "Fallback Bing News también falló para %r; sin titulares, sin invención.",
+            consulta,
+            exc_info=True,
+        )
 
     return titulares
 

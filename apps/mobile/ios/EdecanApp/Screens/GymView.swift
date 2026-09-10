@@ -15,9 +15,6 @@ struct GymView: View {
     @State private var descansoActivo: (indice: Int, restantes: Int, total: Int)?
     /// Readiness de HealthKit (sueño/HRV): cómo está el cuerpo hoy.
     @State private var readiness: String?
-    /// Cambiar un ejercicio por otro: tap en el nombre abre la hoja; la IA
-    /// interpreta el nombre (aunque no sea técnico) y propone reemplazo.
-    @State private var swapIndice: Int?
 
     var body: some View {
         let vm = viewModel
@@ -56,8 +53,8 @@ struct GymView: View {
         .navigationTitle("Entrenamiento")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: Binding(
-            get: { swapIndice.map { SwapTarget(indice: $0) } },
-            set: { swapIndice = $0?.indice }
+            get: { viewModel.swapIndice.map { SwapTarget(indice: $0) } },
+            set: { viewModel.swapIndice = $0?.indice }
         )) { destino in
             GymSwapEjercicioView(vm: viewModel, indice: destino.indice, client: session.client)
         }

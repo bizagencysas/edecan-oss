@@ -20,10 +20,16 @@ robusto que depender de en qué config de pytest termina corriendo cada vez.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from edecan_core.agent import Agent
+from edecan_core.agent import (
+    Agent,
+    _llamada_peligrosa_pendiente,
+    _mcp_grant_token_vigente,
+)
+from edecan_core.bot_harness import MCP_OPERATION_READ, mcp_grant_token
 from edecan_core.tools.base import Tool, ToolContext, ToolResult
 from edecan_core.tools.registry import ToolRegistry
 from edecan_schemas import (
@@ -135,6 +141,7 @@ class ExtraTool(Tool):
         dangerous: bool = False,
         requires_flags: frozenset[str] = frozenset(),
         result: ToolResult | None = None,
+        definition_version: str = "",
     ) -> None:
         self.name = name
         self.description = description
@@ -142,6 +149,7 @@ class ExtraTool(Tool):
         self.dangerous = dangerous
         self.requires_flags = requires_flags
         self._result = result or ToolResult(content="resultado remoto")
+        self.definition_version = definition_version
         self.calls: list[dict[str, Any]] = []
 
     async def run(self, ctx: ToolContext, args: dict) -> ToolResult:
@@ -314,6 +322,132 @@ async def test_extra_tool_dangerous_preaprobada_se_ejecuta() -> None:
     tool_end = next(e for e in events if isinstance(e, ToolEndEvent))
     assert "ejecutada tras aprobar" in tool_end.result_preview
     assert isinstance(events[-1], DoneEvent)
+
+
+async def test_extra_tool_mcp_dangerous_no_se_preaprueba_por_nombre() -> None:
+    """BOTS-06: el NOMBRE suelto en `approved_tool_calls` NO salta la tarjeta de
+    una tool MCP — solo un token versionado (`mcp_grant:{name}:{version}`)
+    coincidente con la definición actual lo hace."""
+    registry = ToolRegistry()
+    extra = ExtraTool(dangerous=True, definition_version="v123")
+    provider = FakeProvider([[tool_call_chunk("call-1", "mcp_acme_buscar", {"q": "hola"})]])
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    events = await _collect(
+        agent,
+        ctx=_ctx(approved_tool_calls={"mcp_acme_buscar"}),
+        persona=_persona(),
+        history=[],
+        user_text="busca algo peligroso",
+        flags={},
+        extra_tools=[extra],
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], ConfirmationRequiredEvent)
+    assert extra.calls == []
+
+
+async def test_extra_tool_mcp_dangerous_se_preaprueba_con_token_versionado() -> None:
+    """BOTS-06: el token `mcp_grant:{name}:{op}:{version}` con la versión ACTUAL
+    de la tool y la operación correcta salta la tarjeta y ejecuta."""
+    registry = ToolRegistry()
+    extra = ExtraTool(dangerous=True, definition_version="v123", result=ToolResult(content="ok"))
+    provider = FakeProvider(
+        [
+            [tool_call_chunk("call-1", "mcp_acme_buscar", {"q": "hola"})],
+            [text_chunk("listo")],
+        ]
+    )
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    events = await _collect(
+        agent,
+        ctx=_ctx(
+            approved_tool_calls={
+                mcp_grant_token(
+                    tool_name="mcp_acme_buscar",
+                    operation=MCP_OPERATION_READ,
+                    definition_version="v123",
+                )
+            }
+        ),
+        persona=_persona(),
+        history=[],
+        user_text="busca algo peligroso",
+        flags={},
+        extra_tools=[extra],
+    )
+
+    assert extra.calls == [{"q": "hola"}]
+    assert isinstance(events[-1], DoneEvent)
+
+
+async def test_extra_tool_mcp_dangerous_token_versionado_de_otra_version_no_alcanza() -> None:
+    """BOTS-06: un token con una versión DISTINTA de la definición actual NO
+    salta la tarjeta (una ampliación de schema invalida el grant anterior)."""
+    registry = ToolRegistry()
+    extra = ExtraTool(dangerous=True, definition_version="v-NUEVA")
+    provider = FakeProvider([[tool_call_chunk("call-1", "mcp_acme_buscar", {"q": "hola"})]])
+    agent = Agent(FakeLLMRouter(provider), registry)
+
+    events = await _collect(
+        agent,
+        ctx=_ctx(
+            approved_tool_calls={
+                mcp_grant_token(
+                    tool_name="mcp_acme_buscar",
+                    operation=MCP_OPERATION_READ,
+                    definition_version="v-VIEJA",
+                )
+            }
+        ),
+        persona=_persona(),
+        history=[],
+        user_text="busca algo peligroso",
+        flags={},
+        extra_tools=[extra],
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], ConfirmationRequiredEvent)
+    assert extra.calls == []
+
+
+# ---------------------------------------------------------------------------
+# H5 — una segunda llamada a la MISMA tool MCP en el MISMO turno no re-pregunta
+# ---------------------------------------------------------------------------
+
+
+def test_h5_second_mcp_call_in_same_turn_does_not_reask() -> None:
+    """Tras confirmar una tool MCP, el resume añade el grant-token VIGENTE al set
+    aprobado (no el nombre suelto): una segunda llamada a la misma tool con la
+    misma definición no vuelve a pedir tarjeta."""
+    tool = ExtraTool(dangerous=True, definition_version="v123")
+    token = _mcp_grant_token_vigente(tool, "mcp_acme_buscar")
+    assert token == mcp_grant_token(
+        tool_name="mcp_acme_buscar", operation=MCP_OPERATION_READ, definition_version="v123"
+    )
+
+    first = SimpleNamespace(id="call-1", name="mcp_acme_buscar")
+    second = SimpleNamespace(id="call-2", name="mcp_acme_buscar")
+
+    # Tras confirmar `call-1`, el set aprobado lleva el id confirmado + el token.
+    approved = {"call-1", token}
+    assert not _llamada_peligrosa_pendiente(tool, first, approved)
+    assert not _llamada_peligrosa_pendiente(tool, second, approved)
+
+    # Sin el token vigente, la segunda llamada SÍ vuelve a pedir tarjeta.
+    assert _llamada_peligrosa_pendiente(tool, second, {"call-1"})
+
+
+def test_h5_unclassifiable_mcp_tool_always_reasks() -> None:
+    """Una tool MCP sin clasificación local no produce token: fail-closed, la
+    tarjeta vuelve a pedirse (H3)."""
+    tool = ExtraTool(name="mcp_acme_xyzzy", dangerous=True, definition_version="v1")
+    assert _mcp_grant_token_vigente(tool, "mcp_acme_xyzzy") is None
+    call = SimpleNamespace(id="call-9", name="mcp_acme_xyzzy")
+    assert _llamada_peligrosa_pendiente(tool, call, set())
 
 
 # ---------------------------------------------------------------------------

@@ -830,6 +830,22 @@ class FakeRepo:
             return True
         return False
 
+    async def delete_message(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message_id: uuid.UUID,
+    ) -> bool:
+        row = self.conversations.get(conversation_id)
+        if row is None or row["tenant_id"] != tenant_id or row["user_id"] != user_id:
+            return False
+        mensajes = self.messages.get(conversation_id, [])
+        antes = len(mensajes)
+        self.messages[conversation_id] = [m for m in mensajes if m["id"] != message_id]
+        return len(self.messages[conversation_id]) < antes
+
     async def add_message(
         self,
         *,
@@ -1061,9 +1077,15 @@ class FakeRepo:
         self.memory_items[row["id"]] = row
         return dict(row)
 
-    async def get_agent_memory(self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Row | None:
+    async def get_agent_memory(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, agent_id: uuid.UUID
+    ) -> Row | None:
         row = self.persistent_agents.get(agent_id)
-        if row is not None and row.get("tenant_id") == tenant_id:
+        if (
+            row is not None
+            and row.get("tenant_id") == tenant_id
+            and row.get("user_id") == user_id
+        ):
             return {"id": agent_id, "memory": row.get("memory", {})}
         return None
 
@@ -1455,7 +1477,9 @@ class FakeRepo:
 
     # -- vista remota (control remoto, WP-V2-09) -------------------------------------------
 
-    async def create_remote_session(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
+    async def create_remote_session(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, machine: str | None = None
+    ) -> Row:
         row: Row = {
             "id": uuid.uuid4(),
             "tenant_id": tenant_id,

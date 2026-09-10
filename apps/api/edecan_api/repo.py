@@ -212,6 +212,14 @@ class Repo(Protocol):
     async def delete_conversation(
         self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> bool: ...
+    async def delete_message(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message_id: uuid.UUID,
+    ) -> bool: ...
     async def add_message(
         self,
         *,
@@ -378,6 +386,61 @@ class Repo(Protocol):
     async def sum_usage_by_kind_since(
         self, *, tenant_id: uuid.UUID, since: datetime
     ) -> dict[str, float]: ...
+    async def usage_llm_por_modelo_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR MODELO.
+
+        `since=None` = desde el origen (todo). El `model` vive en el meta del
+        evento (`attribution` del turno); eventos sin modelo (p. ej. un
+        proveedor viejo) se agrupan bajo "desconocido"."""
+        where = "tenant_id = :tenant_id AND kind = 'llm_tokens'"
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if since is not None:
+            where += " AND created_at >= :since"
+            params["since"] = since
+        return await self._all(
+            f"""
+            SELECT
+                COALESCE(NULLIF(meta->>'model', ''), 'desconocido') AS model,
+                COUNT(*) AS llamadas,
+                COALESCE(SUM((meta->>'input_tokens')::numeric), 0) AS tokens_entrada,
+                COALESCE(SUM((meta->>'output_tokens')::numeric), 0) AS tokens_salida,
+                COALESCE(SUM(cost_usd), 0) AS costo_usd
+            FROM usage_events
+            WHERE {where}
+            GROUP BY meta->>'model'
+            ORDER BY (COALESCE(SUM((meta->>'input_tokens')::numeric), 0)
+                      + COALESCE(SUM((meta->>'output_tokens')::numeric), 0)) DESC
+            """,
+            params,
+        )
+
+    async def usage_llm_diario_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR DÍA.
+
+        `since=None` = desde el origen (todo). El día sale de `created_at::date`
+        (zona horaria del servidor Postgres) y las filas vuelven ordenadas por
+        día DESC. Cada fila trae además `dia_completo` (bool, calculado en SQL
+        con `created_at::date < CURRENT_DATE`): el día de HOY del servidor está
+        incompleto y `routers/usage.py` lo salta para la alerta de presupuesto
+        (`USAGE_ALERT_USD_PER_DAY`) — así el criterio de "día completo" usa la
+        MISMA zona horaria que el agrupado, sin reloj Python de por medio."""
+        ...
+
+    async def usage_llm_por_job_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR JOB.
+
+        `since=None` = desde el origen (todo). El job vive en el meta del
+        evento (`meta->>'job'`, p. ej. "memory_consolidate"); eventos sin job
+        (NULL o vacío) se agrupan bajo "sin_job". Filas ordenadas por tokens
+        totales DESC (misma forma que `usage_llm_por_modelo_desde`)."""
+        ...
+
     async def sum_cost_usd_since(self, *, tenant_id: uuid.UUID, since: datetime) -> float: ...
     async def sum_usage_all_tenants_since(self, *, since: datetime) -> list[Row]: ...
     async def quality_snapshot_all_tenants_since(self, *, since: datetime) -> Row: ...
@@ -407,7 +470,7 @@ class Repo(Protocol):
         source_trust: str = "trusted",
     ) -> Row: ...
     async def get_agent_memory(
-        self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, agent_id: uuid.UUID
     ) -> Row | None: ...
     async def delete_memory(self, *, tenant_id: uuid.UUID, memory_id: uuid.UUID) -> bool: ...
     async def delete_all_memory(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> int: ...
@@ -516,7 +579,9 @@ class Repo(Protocol):
     ) -> None: ...
 
     # -- vista remota (control remoto, WP-V2-09) -------------------------------------------
-    async def create_remote_session(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row: ...
+    async def create_remote_session(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, machine: str | None = None
+    ) -> Row: ...
     async def list_remote_sessions(self, *, tenant_id: uuid.UUID) -> list[Row]: ...
     async def get_remote_session(
         self, *, tenant_id: uuid.UUID, session_id: uuid.UUID
@@ -1173,6 +1238,42 @@ class SqlRepo:
             """,
             {"tenant_id": tenant_id, "user_id": user_id, "id": conversation_id},
         )
+        return deleted > 0
+
+    async def delete_message(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message_id: uuid.UUID,
+    ) -> bool:
+        # La conversación debe ser del MISMO usuario autenticado: borrar un
+        # mensaje solo está permitido sobre chats propios, nunca de otro
+        # usuario del tenant.
+        deleted = await self._exec(
+            """
+            DELETE FROM messages
+            WHERE tenant_id = :tenant_id
+              AND conversation_id = :conversation_id
+              AND id = :id
+              AND conversation_id IN (
+                  SELECT id FROM conversations
+                  WHERE tenant_id = :tenant_id AND user_id = :user_id
+              )
+            """,
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "id": message_id,
+            },
+        )
+        if deleted > 0:
+            await self._exec(
+                "UPDATE conversations SET updated_at = :now WHERE id = :id AND tenant_id = :tenant_id",
+                {"id": conversation_id, "tenant_id": tenant_id, "now": _now()},
+            )
         return deleted > 0
 
     async def add_message(
@@ -1853,6 +1954,36 @@ class SqlRepo:
         )
         return {row["kind"]: float(row["total"]) for row in rows}
 
+    async def usage_llm_por_modelo_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR MODELO.
+
+        `since=None` = desde el origen. El `model` vive en el meta del evento
+        (`attribution` del turno); eventos sin modelo se agrupan bajo
+        "desconocido"."""
+        where = "tenant_id = :tenant_id AND kind = 'llm_tokens'"
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if since is not None:
+            where += " AND created_at >= :since"
+            params["since"] = since
+        return await self._all(
+            f"""
+            SELECT
+                COALESCE(NULLIF(meta->>'model', ''), 'desconocido') AS model,
+                COUNT(*) AS llamadas,
+                COALESCE(SUM((meta->>'input_tokens')::numeric), 0) AS tokens_entrada,
+                COALESCE(SUM((meta->>'output_tokens')::numeric), 0) AS tokens_salida,
+                COALESCE(SUM(cost_usd), 0) AS costo_usd
+            FROM usage_events
+            WHERE {where}
+            GROUP BY meta->>'model'
+            ORDER BY (COALESCE(SUM((meta->>'input_tokens')::numeric), 0)
+                      + COALESCE(SUM((meta->>'output_tokens')::numeric), 0)) DESC
+            """,
+            params,
+        )
+
     async def sum_cost_usd_since(self, *, tenant_id: uuid.UUID, since: datetime) -> float:
         row = await self._first(
             """
@@ -1862,6 +1993,74 @@ class SqlRepo:
             {"tenant_id": tenant_id, "since": since},
         )
         return float(row["total"]) if row else 0.0
+
+    async def usage_llm_diario_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR DÍA.
+
+        `since=None` = desde el origen. El día sale de `created_at::date`
+        (zona horaria del servidor Postgres — en el stack compose es UTC) y
+        las filas vuelven ordenadas por día DESC. La columna extra
+        `dia_completo` (`created_at::date < CURRENT_DATE`) marca si el día ya
+        cerró EN EL RELOJ DEL SERVIDOR: `routers/usage.py` la usa para alertar
+        solo sobre el último día completo, sin reloj Python que pueda
+        discrepar de la zona horaria del agrupado."""
+        where = "tenant_id = :tenant_id AND kind = 'llm_tokens'"
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if since is not None:
+            where += " AND created_at >= :since"
+            params["since"] = since
+        return await self._all(
+            f"""
+            SELECT
+                created_at::date AS dia,
+                (created_at::date < CURRENT_DATE) AS dia_completo,
+                COUNT(*) AS llamadas,
+                COALESCE(SUM((meta->>'input_tokens')::numeric), 0) AS tokens_entrada,
+                COALESCE(SUM((meta->>'output_tokens')::numeric), 0) AS tokens_salida,
+                COALESCE(SUM(cost_usd), 0) AS costo_usd
+            FROM usage_events
+            WHERE {where}
+            GROUP BY created_at::date
+            ORDER BY created_at::date DESC
+            """,
+            params,
+        )
+
+    async def usage_llm_por_job_desde(
+        self, *, tenant_id: uuid.UUID, since: datetime | None
+    ) -> list[Row]:
+        """Tokens de entrada/salida + llamadas + costo agrupados POR JOB.
+
+        `since=None` = desde el origen. El job vive en el meta del evento
+        (`meta->>'job'`, p. ej. "memory_consolidate"); eventos sin job (NULL
+        o vacío) se agrupan bajo "sin_job". A diferencia de
+        `usage_llm_por_modelo_desde` (que agrupa por la expresión cruda
+        `meta->>'model'`), acá se agrupa por la MISMA expresión COALESCE que
+        se muestra — así un job NULL y uno vacío caen en una sola fila
+        "sin_job" en vez de duplicarla."""
+        where = "tenant_id = :tenant_id AND kind = 'llm_tokens'"
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if since is not None:
+            where += " AND created_at >= :since"
+            params["since"] = since
+        return await self._all(
+            f"""
+            SELECT
+                COALESCE(NULLIF(meta->>'job', ''), 'sin_job') AS job,
+                COUNT(*) AS llamadas,
+                COALESCE(SUM((meta->>'input_tokens')::numeric), 0) AS tokens_entrada,
+                COALESCE(SUM((meta->>'output_tokens')::numeric), 0) AS tokens_salida,
+                COALESCE(SUM(cost_usd), 0) AS costo_usd
+            FROM usage_events
+            WHERE {where}
+            GROUP BY COALESCE(NULLIF(meta->>'job', ''), 'sin_job')
+            ORDER BY (COALESCE(SUM((meta->>'input_tokens')::numeric), 0)
+                      + COALESCE(SUM((meta->>'output_tokens')::numeric), 0)) DESC
+            """,
+            params,
+        )
 
     async def sum_usage_all_tenants_since(self, *, since: datetime) -> list[Row]:
         return await self._all(
@@ -2091,13 +2290,20 @@ class SqlRepo:
         assert row is not None
         return row
 
-    async def get_agent_memory(self, *, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Row | None:
+    async def get_agent_memory(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, agent_id: uuid.UUID
+    ) -> Row | None:
         """Memoria JSONB de un worker persistente (`persistent_agents.memory`),
         para `GET /v1/memory?namespace=agent:<id>` (directiva §50-54): la memoria
-        del agente vive en su fila, no en `memory_items`."""
+        del agente vive en su fila, no en `memory_items`.
+
+        La memoria del agente es privada de su dueño (BOTS-05): el filtro exige
+        `user_id` además de `tenant_id`, igual que el resto de operaciones sobre
+        `persistent_agents`."""
         return await self._first(
-            "SELECT id, memory FROM persistent_agents WHERE tenant_id = :tenant_id AND id = :id",
-            {"tenant_id": tenant_id, "id": agent_id},
+            "SELECT id, memory FROM persistent_agents "
+            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id",
+            {"tenant_id": tenant_id, "user_id": user_id, "id": agent_id},
         )
 
     async def delete_memory(self, *, tenant_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
@@ -2665,24 +2871,45 @@ class SqlRepo:
 
     _REMOTE_SESSION_COLUMNS = (
         "id, tenant_id, user_id, device_id, kind, status, started_at, ended_at, "
-        "frames_count, created_at, updated_at"
+        "frames_count, machine, created_at, updated_at"
     )
 
-    async def create_remote_session(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
+    async def create_remote_session(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, machine: str | None = None
+    ) -> Row:
         row = await self._first(
             f"""
             INSERT INTO remote_sessions (
-                id, tenant_id, user_id, device_id, kind, status, frames_count
+                id, tenant_id, user_id, device_id, kind, status, frames_count, machine
             )
-            VALUES (:id, :tenant_id, :user_id, NULL, 'view', 'pending', 0)
+            VALUES (:id, :tenant_id, :user_id, NULL, 'view', 'pending', 0, :machine)
             RETURNING {self._REMOTE_SESSION_COLUMNS}
             """,
-            {"id": _uuid(), "tenant_id": tenant_id, "user_id": user_id},
+            {"id": _uuid(), "tenant_id": tenant_id, "user_id": user_id, "machine": machine},
         )
         assert row is not None
         return row
 
     async def list_remote_sessions(self, *, tenant_id: uuid.UUID) -> list[Row]:
+        # Reaper: cierra sesiones que el cliente abandonó sin `/end` (la app
+        # cierra el control remoto y no llama al endpoint -> se acumulaban
+        # sesiones `active`/`pending` para siempre). Un frame reciente refresca
+        # `updated_at`, así que un pending de +10 min o un active de +20 min
+        # sin actividad es una sesión muerta, no una viva.
+        await self._s.execute(
+            text(
+                """
+                UPDATE remote_sessions SET status='ended', updated_at=now()
+                WHERE tenant_id = :tenant_id
+                  AND status IN ('active', 'pending')
+                  AND (
+                    (status = 'pending' AND updated_at < now() - interval '10 minutes')
+                    OR (status = 'active' AND updated_at < now() - interval '20 minutes')
+                  )
+                """
+            ),
+            {"tenant_id": tenant_id},
+        )
         return await self._all(
             f"""
             SELECT {self._REMOTE_SESSION_COLUMNS} FROM remote_sessions

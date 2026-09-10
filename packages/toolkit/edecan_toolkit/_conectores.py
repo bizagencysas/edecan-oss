@@ -17,6 +17,8 @@ from edecan_core import ToolContext, ToolResult
 from sqlalchemy import text
 
 RUTA_CONECTORES = "/app/conectores"
+# Copy amable para el dueño (iOS: Perfil → Conectores; web: panel VPS).
+RUTA_CONECTORES_UI = "Perfil → Conectores"
 
 
 @dataclass(frozen=True)
@@ -27,12 +29,22 @@ class CuentaConectada:
     connector_key: str
 
 
+async def token_bundle_operativo(ctx: ToolContext, connector_account_id: Any) -> bool:
+    """True solo si el vault devuelve un bundle con `access_token` no vacío."""
+    bundle = await ctx.vault.get(ctx.tenant_id, connector_account_id)
+    if bundle is None:
+        return False
+    token = getattr(bundle, "access_token", None)
+    return isinstance(token, str) and bool(token.strip())
+
+
 async def buscar_cuenta_conectada(
     ctx: ToolContext, connector_keys: tuple[str, ...]
 ) -> CuentaConectada | None:
-    """Devuelve la cuenta conectada más reciente del tenant/usuario entre
-    `connector_keys` (p. ej. `("google", "microsoft")` o `("meta",)`), o
-    `None` si no hay ninguna. Si hay varias, se queda con la más reciente.
+    """Devuelve la cuenta más reciente del tenant con token OAuth real en vault.
+
+    Una fila en `connector_accounts` sin token en vault NO cuenta como conectada
+    (evita prometer publicación o estado «conectado» con datos huérfanos).
     """
     if not connector_keys:
         return None
@@ -45,14 +57,18 @@ async def buscar_cuenta_conectada(
         text(
             "SELECT id, connector_key FROM connector_accounts "
             f"WHERE tenant_id = :tenant_id AND connector_key IN ({placeholders}) "
-            "ORDER BY created_at DESC LIMIT 1"
+            "ORDER BY created_at DESC"
         ),
         params,
     )
-    fila = resultado.mappings().first()
-    if fila is None:
-        return None
-    return CuentaConectada(connector_account_id=fila["id"], connector_key=fila["connector_key"])
+    for fila in resultado.mappings().all():
+        account_id = fila["id"]
+        if await token_bundle_operativo(ctx, account_id):
+            return CuentaConectada(
+                connector_account_id=account_id,
+                connector_key=str(fila["connector_key"]),
+            )
+    return None
 
 
 def resultado_falta_conexion(nombre_legible: str) -> ToolResult:
@@ -60,6 +76,7 @@ def resultado_falta_conexion(nombre_legible: str) -> ToolResult:
     return ToolResult(
         content=(
             f"Todavía no tienes conectada una cuenta de {nombre_legible}. "
-            f"Conéctala en {RUTA_CONECTORES} y vuelve a pedírmelo."
+            f"Cuando quieras, puedes conectarla en {RUTA_CONECTORES_UI} "
+            f"(o en {RUTA_CONECTORES} en el navegador) — sin prisa."
         ),
     )

@@ -68,6 +68,30 @@ async def test_list_connectors_includes_oauth_catalog_and_twilio(client) -> None
     assert by_key["twilio"]["display_name"]
 
 
+async def test_list_connectors_oauth_redirect_uses_public_base_url(
+    client, app, test_settings,
+) -> None:
+    """Redirect URI must come from PUBLIC_BASE_URL (VPS), never localhost Mac."""
+    from edecan_api.config import Settings
+
+    custom = Settings(
+        ENV="dev",
+        WEB_BASE_URL="https://app.edecan.test",
+        PUBLIC_BASE_URL="https://edecan.example.com",
+        JWT_SECRET=test_settings.JWT_SECRET,
+    )
+    app.dependency_overrides[edecan_deps.get_settings] = lambda: custom
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), plan_key="hosted_pro")
+
+    response = await client.get("/v1/connectors", headers=headers)
+
+    assert response.status_code == 200
+    linkedin = next(e for e in response.json() if e["key"] == "linkedin")
+    assert linkedin["oauth_redirect_uri"] == (
+        "https://edecan.example.com/v1/connectors/linkedin/callback"
+    )
+
+
 async def test_list_connectors_shows_connected_accounts(client, fake_repo) -> None:
     tenant_id = uuid.uuid4()
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")
@@ -83,6 +107,87 @@ async def test_list_connectors_shows_connected_accounts(client, fake_repo) -> No
     by_key = {entry["key"]: entry for entry in response.json()}
     assert len(by_key["google"]["accounts"]) == 1
     assert by_key["google"]["accounts"][0]["external_account_id"] == "acc-1"
+    # Sin vault en el override por defecto del fixture → honesto NO conectada.
+    assert by_key["google"]["accounts"][0]["has_access_token"] is False
+    assert by_key["google"]["accounts"][0]["status"] == "disconnected"
+
+
+async def test_list_connectors_orphan_account_has_access_token_false(
+    client, app, fake_repo
+) -> None:
+    """Fila huérfana en DB sin token en vault → `has_access_token: false`."""
+    fake_vault = FakeVault()
+    app.dependency_overrides[edecan_deps.get_vault] = lambda: fake_vault
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")
+    await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="linkedin",
+        external_account_id="li-orphan",
+        display_name="LinkedIn",
+        scopes=["w_member_social"],
+    )
+
+    response = await client.get("/v1/connectors", headers=headers)
+    linkedin = next(entry for entry in response.json() if entry["key"] == "linkedin")
+    assert len(linkedin["accounts"]) == 1
+    account = linkedin["accounts"][0]
+    assert account["has_access_token"] is False
+    assert account["status"] == "disconnected"
+    assert fake_vault.store == {}
+
+
+async def test_list_connectors_account_with_vault_token_has_access_token_true(
+    client, app, fake_repo
+) -> None:
+    """Cuenta con `TokenBundle.access_token` real en vault → `has_access_token: true`."""
+    fake_vault = FakeVault()
+    app.dependency_overrides[edecan_deps.get_vault] = lambda: fake_vault
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")
+    row = await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="linkedin",
+        external_account_id="li-real",
+        display_name="LinkedIn (Operator)",
+        scopes=["w_member_social"],
+    )
+    await fake_vault.put(
+        tenant_id,
+        row["id"],
+        TokenBundle(access_token="oauth-token-from-vault", scopes=["w_member_social"]),
+    )
+
+    response = await client.get("/v1/connectors", headers=headers)
+    linkedin = next(entry for entry in response.json() if entry["key"] == "linkedin")
+    account = linkedin["accounts"][0]
+    assert account["has_access_token"] is True
+    assert account["status"] == "active"
+    assert account["external_account_id"] == "li-real"
+
+
+async def test_list_connectors_empty_access_token_counts_as_disconnected(
+    client, app, fake_repo
+) -> None:
+    """Bundle con `access_token` vacío no cuenta como conectada (mismo criterio que tools)."""
+    fake_vault = FakeVault()
+    app.dependency_overrides[edecan_deps.get_vault] = lambda: fake_vault
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")
+    row = await fake_repo.create_connector_account(
+        tenant_id=tenant_id,
+        connector_key="x",
+        external_account_id="x-acc",
+        display_name="X",
+        scopes=[],
+    )
+    await fake_vault.put(tenant_id, row["id"], TokenBundle(access_token="   ", scopes=[]))
+
+    response = await client.get("/v1/connectors", headers=headers)
+    x_entry = next(entry for entry in response.json() if entry["key"] == "x")
+    account = x_entry["accounts"][0]
+    assert account["has_access_token"] is False
+    assert account["status"] == "disconnected"
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +221,31 @@ async def test_authorize_known_connector_returns_url_with_state(client, app) -> 
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth")
     assert "state=" in url
     assert "client_id=test-google-client-id" in url
+
+
+async def test_authorize_mobile_sets_return_to_flag_in_state(client, app, test_settings) -> None:
+    fake_vault = FakeVault()
+    app.dependency_overrides[edecan_deps.get_vault] = lambda: fake_vault
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_pro")
+    await client.put(
+        "/v1/connectors/google/app-credentials",
+        json={"client_id": "gid", "client_secret": "gsecret"},
+        headers=headers,
+    )
+    response = await client.get(
+        "/v1/connectors/google/authorize",
+        params={"return_to": "mobile"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    url = response.json()["url"]
+    state = url.split("state=")[1].split("&")[0]
+    decoded_tid, return_to_mobile = connectors_module._decode_state_token(
+        state, secret=test_settings.JWT_SECRET, expected_key="google"
+    )
+    assert decoded_tid == tenant_id
+    assert return_to_mobile is True
 
 
 async def test_authorize_requires_authentication(client) -> None:
@@ -390,6 +520,75 @@ async def test_callback_success_stores_connector_account_and_token(
 
     actions = [entry["action"] for entry in fake_repo.audit_log]
     assert "connectors.connected" in actions
+
+
+async def test_callback_success_mobile_redirects_to_deeplink(
+    client, app, fake_repo, test_settings, monkeypatch
+) -> None:
+    tenant_id = uuid.uuid4()
+    state = connectors_module._create_state_token(
+        tenant_id=tenant_id,
+        key="google",
+        secret=test_settings.JWT_SECRET,
+        return_to_mobile=True,
+    )
+
+    fake_vault = FakeVault()
+
+    @asynccontextmanager
+    async def fake_get_session(tid):
+        assert tid == tenant_id
+        yield object()
+
+    monkeypatch.setattr(connectors_module, "get_session", fake_get_session)
+    monkeypatch.setattr(connectors_module, "SqlRepo", lambda session: fake_repo)
+    monkeypatch.setattr(connectors_module, "TokenVault", lambda session, key_provider: fake_vault)
+    monkeypatch.setattr(connectors_module, "build_key_provider", lambda settings: None)
+
+    await _seed_app_credentials(client, app, fake_vault, tenant_id, "google", "gid", "gsecret")
+
+    bundle = TokenBundle(access_token="at_123", refresh_token="rt_123", scopes=["gmail.readonly"])
+
+    async def fake_exchange_code(
+        code, redirect_uri, http, *, client_id, client_secret, code_verifier=None
+    ):
+        return bundle
+
+    monkeypatch.setattr(connectors_module.CONNECTORS["google"], "exchange_code", fake_exchange_code)
+
+    response = await client.get(
+        "/v1/connectors/google/callback",
+        params={"code": "the-code", "state": state},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert location.startswith("edecan://conectores?")
+    assert "ok=1" in location
+    assert "key=google" in location
+
+
+async def test_callback_provider_error_mobile_redirects_to_deeplink(
+    client, test_settings
+) -> None:
+    tenant_id = uuid.uuid4()
+    state = connectors_module._create_state_token(
+        tenant_id=tenant_id,
+        key="linkedin",
+        secret=test_settings.JWT_SECRET,
+        return_to_mobile=True,
+    )
+    response = await client.get(
+        "/v1/connectors/linkedin/callback",
+        params={"error": "access_denied", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert location.startswith("edecan://conectores?")
+    assert "error=access_denied" in location
+    assert "key=linkedin" in location
 
 
 # ---------------------------------------------------------------------------

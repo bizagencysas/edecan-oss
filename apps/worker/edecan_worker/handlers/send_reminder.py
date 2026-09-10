@@ -56,13 +56,11 @@ from __future__ import annotations
 import logging
 import uuid
 
-from edecan_core.notifications import ImportantNotificationEvent
 from edecan_schemas import JobEnvelope
 
 from edecan_worker import push
 from edecan_worker.deps import Deps
 from edecan_worker.repo import SqlRepo
-from edecan_worker.universal_notifications import notify_important_event
 
 logger = logging.getLogger(__name__)
 

@@ -9,6 +9,8 @@ de cada colaborador — mismo criterio que `packages/toolkit/tests/conftest.py`.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -251,21 +253,58 @@ def make_agent_factory():
 
 
 class RecordingDeps:
+    """Doble de `orchestrator.RunDeps` (BOTS-23/BOTS-01): en vez de exponer una
+    `AsyncSession`/`vault` compartidos, expone `session_factory` (cada paso
+    abre la suya, y se registra en `sessions_opened` para poder verificar la
+    independencia) y `vault_factory` (un vault por sesión, registrado en
+    `vaults_built`). `cancellation_requested` es configurable (default: nunca
+    cancela) y cuenta sus invocaciones en `cancellation_checks`."""
+
     def __init__(
         self,
         *,
-        session: Any = None,
         settings: Any = None,
-        vault: Any = None,
         flags: dict[str, Any] | None = None,
+        session_factory: Any = None,
+        vault_factory: Any = None,
+        cancellation_requested: Any = None,
     ) -> None:
-        self.session = session
         self.settings = settings if settings is not None else SimpleNamespace()
-        self.vault = vault
         self.flags = flags if flags is not None else {}
+        self._session_factory = session_factory
+        self._vault_factory = vault_factory
+        self._cancellation_requested = cancellation_requested
+        self.sessions_opened: list[Any] = []
+        self.vaults_built: list[Any] = []
+        self.cancellation_checks = 0
         self.step_calls: list[dict[str, Any]] = []
         self.mission_calls: list[dict[str, Any]] = []
         self.insert_steps_calls: list[list[dict[str, Any]]] = []
+
+    @asynccontextmanager
+    async def session_factory(self, tenant_id: Any):
+        if self._session_factory is not None:
+            async with self._session_factory(tenant_id) as session:
+                self.sessions_opened.append(session)
+                yield session
+        else:
+            session = SimpleNamespace()
+            self.sessions_opened.append(session)
+            yield session
+
+    def vault_factory(self, session: Any) -> Any:
+        vault = self._vault_factory(session) if self._vault_factory is not None else SimpleNamespace()
+        self.vaults_built.append(vault)
+        return vault
+
+    async def cancellation_requested(self) -> bool:
+        self.cancellation_checks += 1
+        if self._cancellation_requested is not None:
+            result = self._cancellation_requested()
+            if asyncio.iscoroutine(result):
+                result = await result
+            return bool(result)
+        return False
 
     async def save_step(self, **kwargs: Any) -> None:
         self.step_calls.append(kwargs)

@@ -53,6 +53,9 @@ async def test_pause_all_pausa_solo_idle_y_running(client, fake_session: _FakeSe
     assert "status = 'paused'" in sql
     assert "status IN ('idle', 'running')" in sql
     assert fake_session.updated[0]["params"]["tenant_id"] == str(tenant_id)
+    # Freno de TENANT (E-API-3): el alcance NO puede filtrarse por user_id,
+    # o los bots de otros usuarios del tenant seguirían vivos.
+    assert "user_id" not in fake_session.updated[0]["params"]
 
 
 async def test_pause_all_devuelve_cero_cuando_no_hay_nada(

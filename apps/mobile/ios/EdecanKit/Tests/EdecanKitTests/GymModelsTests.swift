@@ -198,4 +198,32 @@ struct GymModelsTests {
         #expect(plan.imageFileID == "file-collage-001")
         #expect(plan.imageURL == "https://cdn.test/gym.png")
     }
+
+    @Test func decodificaCheckinHoySiConSesion() throws {
+        let json = #"{"fecha": "2026-09-05", "respuesta": "si", "session_id": "gym-s1"}"#
+        let checkin = try APIClient.crearDecoder().decode(GymCheckinHoy.self, from: Data(json.utf8))
+        #expect(checkin.fecha == "2026-09-05")
+        #expect(checkin.respuesta == "si")
+        #expect(checkin.sessionId == "gym-s1")
+    }
+
+    @Test func decodificaCheckinHoyNoSinSesion() throws {
+        let json = #"{"fecha": "2026-09-05", "respuesta": "no", "session_id": null}"#
+        let checkin = try APIClient.crearDecoder().decode(GymCheckinHoy.self, from: Data(json.utf8))
+        #expect(checkin.respuesta == "no")
+        #expect(checkin.sessionId == nil)
+    }
+
+    @Test func sobreDecodificaCheckinHoyAusenteANil() throws {
+        // Contrato del backend: `checkin_hoy` es `null` sin check-in del día.
+        let json = #"{"plan": null, "checkin_hoy": null}"#
+        let sobre = try APIClient.crearDecoder().decode(GymCheckinHoySobre.self, from: Data(json.utf8))
+        #expect(sobre.checkinHoy == nil)
+    }
+}
+
+/// Envoltorio mínimo de `GET /v1/gym/plan/today` para probar el `null`.
+struct GymCheckinHoySobre: Decodable {
+    let checkinHoy: GymCheckinHoy?
+    enum CodingKeys: String, CodingKey { case checkinHoy = "checkin_hoy" }
 }

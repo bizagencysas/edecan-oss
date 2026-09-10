@@ -6,8 +6,8 @@ from edecan_core.bot_persona import bot_turn_instructions, persona_from_worker, 
 
 
 def test_worker_display_name_prefers_display_name():
-    worker = {"name": "worker-1", "display_name": "  Malandri  "}
-    assert worker_display_name(worker) == "Malandri"
+    worker = {"name": "worker-1", "display_name": "  BotBeta  "}
+    assert worker_display_name(worker) == "BotBeta"
 
 
 def test_bot_turn_instructions_incluye_identidad_y_never_refuse():
@@ -34,9 +34,9 @@ def test_bot_turn_instructions_no_inyecta_configuracion_de_una_instalacion():
 
 
 def test_persona_from_worker_usa_nombre_y_memoria():
-    worker = {"name": "x", "display_name": "Fronti", "purpose": "Curioso y breve."}
+    worker = {"name": "x", "display_name": "BotAlpha", "purpose": "Curioso y breve."}
     persona = persona_from_worker(worker, language="es")
-    assert persona.nombre_asistente == "Fronti"
+    assert persona.nombre_asistente == "BotAlpha"
     assert persona.memoria_activada is True
     assert persona.estilo_relacion == "profesional"
-    assert "Fronti" in persona.instrucciones
+    assert "BotAlpha" in persona.instrucciones

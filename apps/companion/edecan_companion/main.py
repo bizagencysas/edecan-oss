@@ -6,8 +6,14 @@ del asistente, los pasa por `actions.execute` (que exige aprobación salvo que
 la acción esté en `auto_approve`) y responde `{"request_id", "ok", "result"}`
 o `{"request_id", "ok": false, "error"}`.
 
-Si se cae la conexión, reconecta solo con backoff exponencial (hasta 60s);
-Ctrl+C cierra el proceso de forma limpia en cualquier momento.
+Si se cae la conexión, reconecta SOLO con el MISMO pair-code y backoff
+exponencial (hasta 60s): la conexión debe mantenerse persistente aunque la
+Mac pierda internet o el servidor reinicie (el par es reutilizable durante
+su TTL de 24h, ver `routers/companion.py`). La ÚNICA salida del loop es un
+403 del handshake (= el par ya no existe en Redis: expiró o lo revocaron al
+generar otro); ahí se hace EXIT para que quien lance este proceso (el loop
+vivo de la Mac) pida un código nuevo y nos relance. Ctrl+C cierra el proceso
+de forma limpia en cualquier momento.
 """
 
 from __future__ import annotations
@@ -16,11 +22,12 @@ import argparse
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import websockets
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from edecan_companion import actions
 from edecan_companion.approval import default_approver
@@ -32,6 +39,23 @@ logger = logging.getLogger("edecan_companion")
 WS_PATH = "/v1/companion/ws"
 INITIAL_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
+
+# Señal de conexión REAL para el watchdog (cc.edecan.companion-watchdog):
+# el archivo existe solo mientras el WebSocket al VPS está establecido. El
+# watchdog mira ESTO (no el `companion.heartbeat`, que solo dice "proceso
+# vivo") para reactivar el job cuando la Mac está viva pero desconectada.
+_CONNECTED_MARKER = Path.home() / ".edecan" / "companion.connected"
+
+
+def _marcar_conectado(conectado: bool) -> None:
+    try:
+        if conectado:
+            _CONNECTED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            _CONNECTED_MARKER.touch()
+        else:
+            _CONNECTED_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
 # El default de `websockets` para mensajes ENTRANTES es 1 MiB, muy por debajo
 # de un `transfer_push` (archivo en base64: hasta ~13.3 MiB para el tope de
 # 10 MiB de `actions.MAX_TRANSFER_BYTES`). Sin subirlo, la librería cerraría la
@@ -47,7 +71,7 @@ def _build_ws_url(server: str, code: str) -> str:
     scheme = _SCHEME_MAP.get(parsed.scheme.lower())
     if not parsed.netloc or scheme is None:
         raise ValueError(f"--server inválido: {server!r} (usa algo como http://localhost:8000)")
-    query = urlencode({"code": code})
+    query = urlencode({"code": code, "name": "Mac"})
     return urlunsplit((scheme, parsed.netloc, WS_PATH, query, ""))
 
 
@@ -97,6 +121,7 @@ async def _run_session(uri: str, config: CompanionConfig, approver: actions.Appr
     ) as ws:
         print("Conectado y emparejado. Esperando comandos del asistente (Ctrl+C para salir)...")
         logger.info("Conexión establecida.")
+        _marcar_conectado(True)
         async for raw_message in ws:
             await _handle_message(ws, raw_message, config, approver)
 
@@ -107,17 +132,36 @@ async def run_forever(
     config: CompanionConfig,
     approver: actions.Approver = default_approver,
 ) -> None:
-    """Mantiene la sesión viva: reconecta con backoff exponencial (máx 60s) ante cualquier corte."""
+    """Mantiene la sesión viva: reconecta con el MISMO código y backoff
+    exponencial (máx 60s) ante cualquier corte; solo devuelve (EXIT) si el
+    servidor rechaza el código con 403 (expirado/inválido)."""
     uri = _build_ws_url(server, code)
     backoff = INITIAL_BACKOFF_SECONDS
 
     while True:
         try:
+            _marcar_conectado(False)
             await _run_session(uri, config, approver)
             logger.info("El servidor cerró la conexión.")
+            _marcar_conectado(False)
             backoff = INITIAL_BACKOFF_SECONDS
         except (WebSocketException, OSError) as exc:
+            _marcar_conectado(False)
             logger.warning("Conexión perdida (%s: %s).", type(exc).__name__, exc)
+            # Un 403 en el handshake = el par ya no está en Redis (expirado
+            # por TTL de 24h, o reemplazado por un código nuevo). El par YA
+            # NO se gasta en el primer uso, así que un corte de red NUNCA
+            # produce 403: reintentar con el MISMO código reconecta. Por
+            # eso, llegar a un 403 es señal de "pedir código nuevo": salimos
+            # y quien nos lanza (el loop vivo) lo pide y nos relanza. Sin
+            # este EXIT, un par expirado sería un bucle de 403 eterno.
+            # Nota: el rechazo por rate-limit de IP del handshake también
+            # llega como 403 (indistinguible antes del accept); EXIT también
+            # es aceptable ahí: la ventana es de 60s y el respawn con código
+            # nuevo no la empeora.
+            if isinstance(exc, InvalidStatus) and getattr(exc.response, "status_code", None) == 403:
+                logger.warning("Pair-code rechazado (403: expirado o inválido): salgo para pedir uno nuevo.")
+                return
 
         logger.info("Reintentando en %.0fs...", backoff)
         await asyncio.sleep(backoff)

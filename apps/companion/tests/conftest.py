@@ -11,6 +11,47 @@ from pathlib import Path
 
 import pytest
 from edecan_companion.config import CompanionConfig
+from edecan_companion.ide_opencode_binario import (
+    BinarioOpencodeNoEncontrado,
+    resolver_binario_opencode,
+)
+
+
+def hay_binario_opencode() -> bool:
+    """True cuando el resolver de producción encuentra un ejecutable.
+
+    Linux/Windows CI no instalan el sidecar; las pruebas que arrancan
+    ``opencode serve`` de verdad se saltan, no se borran.
+    """
+    try:
+        resolver_binario_opencode()
+    except BinarioOpencodeNoEncontrado:
+        return False
+    return True
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "opencode_binario: arranca opencode serve real; se salta si no hay binario",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """CI Linux/Windows no empaqueta el sidecar: las pruebas que arrancan
+    ``opencode serve`` se saltan, no se borran ni se simulan."""
+
+    if hay_binario_opencode():
+        return
+    skip = pytest.mark.skip(
+        reason=(
+            "No hay binario de opencode (bundle / EDECAN_OPENCODE_BIN / PATH); "
+            "CI no empaqueta el sidecar. Las pruebas se saltan, no se simulan."
+        )
+    )
+    for item in items:
+        if item.get_closest_marker("opencode_binario"):
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)

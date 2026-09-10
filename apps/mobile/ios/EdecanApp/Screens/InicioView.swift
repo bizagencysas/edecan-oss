@@ -91,9 +91,8 @@ struct InicioView: View {
                 if !trabajandoAhora.isEmpty {
                     seccionTrabajando
                 }
-                if !proximasRutinas.isEmpty {
-                    seccionProximamente
-                }
+                // La card "Próximamente" (rutinas) salió de Actividad: era
+                // incómoda ahí — las rutinas viven en Automatizaciones.
             }
         } else if briefCargado {
             todoAlDia
@@ -232,45 +231,6 @@ struct InicioView: View {
     }
 
     /// Rutinas con `nextRunAt` en el futuro, ordenadas por su próxima corrida.
-    /// "Próximamente" es un vistazo tranquilo a lo que viene, no un muro de
-    /// reglas: se muestran solo las primeras.
-    private var seccionProximamente: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Próximamente")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(EdecanTheme.azul)
-
-            ForEach(proximasRutinas) { rutina in
-                NavigationLink {
-                    AutomatizacionesView()
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "clock")
-                            .foregroundStyle(EdecanTheme.azul)
-                            .padding(.top, 1)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(rutina.nombre.isEmpty ? "Rutina" : rutina.nombre)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.primary)
-                            Text(rutina.trigger.resumen)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        if let proxima = rutina.nextRunAt {
-                            Text(proximaRelativa(proxima))
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .tarjetaVidrio(esquina: 16)
-    }
 
     /// "En 5 min" / "En 2 h" / "En 3 d" — misma voz que el "Hace X" del
     /// roster, para que Inicio se lea como la misma app.

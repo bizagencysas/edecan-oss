@@ -121,26 +121,17 @@ def test_todos_los_perfiles_tienen_nombre_descripcion_y_system_prompt_no_vacios(
 
 
 def test_model_alias_distingue_trabajo_profundo_de_tareas_creativas_rapidas():
-    profundos = {
-        "research",
-        "data_analyst",
-        "ceo",
-        "developer",
-        "finance",
-        "design",
-        "legal",
-        "qa",
-        "security",
-        "devops",
-    }
+    con_vision = {"research", "data_analyst"}
     for key, perfil in PROFILES.items():
-        esperado = "profundo" if key in profundos else "principal"
+        esperado = (
+            "worker_vision" if key in con_vision else "worker"
+        )
         assert perfil.model_alias == esperado, key
 
 
 def test_research_incluye_las_herramientas_exactas_del_wp():
     assert PROFILES["research"].allowed_tools == frozenset(
-        {"buscar_web", "navegar_web", "extraer_datos_web", "consultar_documentos", "hora_actual"}
+        {"buscar_web", "navegar_web", "extraer_datos_web", "consultar_documentos", "hora_actual", "acceder_codigo_local"}
     )
 
 
@@ -218,10 +209,10 @@ def test_finance_marketing_sales_social_media_developer_qa_security_devops_manti
         {"publicar_social", "generar_contenido", "leer_mensajes", "enviar_mensaje"}
     )
     assert PROFILES["developer"].allowed_tools == frozenset(
-        {"usar_computadora", "consultar_documentos", "buscar_web"}
+        {"usar_computadora", "acceder_codigo_local", "consultar_documentos", "buscar_web"}
     )
-    assert PROFILES["qa"].allowed_tools == frozenset({"usar_computadora", "consultar_documentos"})
-    assert PROFILES["security"].allowed_tools == frozenset({"usar_computadora", "buscar_web"})
+    assert PROFILES["qa"].allowed_tools == frozenset({"usar_computadora", "acceder_codigo_local", "consultar_documentos"})
+    assert PROFILES["security"].allowed_tools == frozenset({"usar_computadora", "acceder_codigo_local", "buscar_web"})
     assert PROFILES["devops"].allowed_tools == frozenset({"usar_computadora"})
 
 

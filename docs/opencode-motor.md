@@ -605,7 +605,7 @@ $ npm run lint
 $ grep -rn "\[#[0-9a-fA-F]\{3,8\}\]" src/components/ide/
 (sin coincidencias, exit 1)
 
-$ cd /Users/example/Edecan-Nuevo/edecan
+$ cd /Users/example/edecan
 $ uv run ruff check apps/companion/ apps/api/edecan_api/routers/ide.py
 All checks passed!
 
@@ -632,7 +632,7 @@ No se corrió `npm run build` ni `build-app.sh` (regla dura del encargo). No se 
 ## 6bis. Verificación de la ronda de cierre anterior (histórico, salida real)
 
 ```
-$ cd /Users/example/Edecan-Nuevo/edecan
+$ cd /Users/example/edecan
 $ uv run ruff check apps/companion/
 All checks passed!
 
@@ -681,7 +681,7 @@ eslint . --max-warnings=0: sin salida, sin errores.
 $ grep -rn "\[#" src/components/ide/
 (sin coincidencias)
 
-$ cd /Users/example/Edecan-Nuevo/edecan && uv run ruff check apps/companion/
+$ cd /Users/example/edecan && uv run ruff check apps/companion/
 All checks passed!
 ```
 

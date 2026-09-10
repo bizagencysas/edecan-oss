@@ -8,6 +8,11 @@ import EdecanKit
 /// `waiting_confirmation`. Alcanzable desde el acceso directo "Misiones" en
 /// ``InicioView`` — no es una pestaña propia (`RootTabView` no cambia).
 struct MisionesView: View {
+    /// Ruta de detalle con identidad ESTABLE: al usar NavigationLink(value:)
+    /// con el id String, cada re-render del listado (polling) re-creaba la
+    /// vista de detalle — la pantalla "recargaba" varias veces por toque y
+    /// a veces volvía sola a la lista.
+    @State private var rutaDetalle: RutaMisionDetalle?
     @Environment(SessionStore.self) private var session
     @State private var viewModel = MisionesViewModel()
     @State private var nuevoObjetivo = ""
@@ -49,8 +54,8 @@ struct MisionesView: View {
             }
             estadosObservados = actuales
         }
-        .navigationDestination(for: String.self) { id in
-            MisionDetalleView(missionId: id, viewModel: viewModel)
+        .navigationDestination(item: $rutaDetalle) { ruta in
+            MisionDetalleView(missionId: ruta.missionId, viewModel: viewModel)
         }
     }
 
@@ -115,7 +120,9 @@ struct MisionesView: View {
             Text("Tus misiones").font(.headline)
             VStack(spacing: 10) {
                 ForEach(viewModel.misiones) { mision in
-                    NavigationLink(value: mision.id) {
+                    Button {
+                        rutaDetalle = RutaMisionDetalle(missionId: mision.id)
+                    } label: {
                         FilaMision(mision: mision)
                     }
                     .buttonStyle(.plain)
@@ -178,13 +185,21 @@ struct MisionDetalleView: View {
         .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
         .navigationTitle("Misión")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
+        // `id: missionId` fija la identidad: el .task NO se re-ejecuta por
+        // re-renders del listado (el polling de la lista re-dibuja el padre
+        // y antes recargaba el detalle varias veces por toque).
+        .task(id: missionId) {
+            if viewModel.detalle?.mission.id != missionId {
+                viewModel.cerrarDetalle()
+            }
             await viewModel.cargarDetalle(id: missionId, client: session.client)
             viewModel.iniciarPollingDetalle(id: missionId, client: session.client)
         }
         .onDisappear {
+            // SOLO se detiene el polling: el detalle queda en memoria para
+            // que el pop de vuelta no muestre el triángulo de "No se pudo
+            // cargar" mientras la transición corre.
             viewModel.detenerPollingDetalle()
-            viewModel.cerrarDetalle()
         }
     }
 
@@ -215,7 +230,11 @@ struct MisionDetalleView: View {
                         .disabled(viewModel.accionEnCurso)
                     }
                 }
-                Text(detalle.mission.objetivo).font(.title3.weight(.semibold))
+                TextoLargoColapsable(
+                    texto: detalle.mission.objetivo,
+                    fuente: .title3.weight(.semibold),
+                    limiteLineas: 4
+                )
                 if !detalle.mission.esTerminal {
                     CampoSteerMision(deshabilitado: viewModel.accionEnCurso) { instruction in
                         Task { await viewModel.redirigir(instruction: instruction, client: session.client) }
@@ -236,7 +255,7 @@ struct MisionDetalleView: View {
                 if let resultado = detalle.mission.resultado {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Resultado").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text(resultado).font(.subheadline)
+                        TextoMarkdown(texto: resultado)
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -281,6 +300,7 @@ struct MisionDetalleView: View {
 
 private struct FilaPaso: View {
     let paso: MissionStepOut
+    @State private var expandido = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -291,10 +311,14 @@ private struct FilaPaso: View {
                     Text(nombreAgente).font(.subheadline.weight(.medium))
                     EtiquetaEstadoPaso(status: paso.status)
                 }
-                Text(paso.instruccion).font(.footnote).foregroundStyle(.secondary)
+                TextoLargoColapsable(
+                    texto: paso.instruccion,
+                    fuente: .footnote,
+                    limiteLineas: 3,
+                    color: .secondary
+                )
                 if let resultado = paso.resultado, !resultado.isEmpty {
-                    Text(resultado)
-                        .font(.caption)
+                    TextoMarkdown(texto: resultado, fuente: .caption)
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
@@ -416,5 +440,70 @@ private struct CampoSteerMision: View {
             }
             .disabled(deshabilitado || texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+    }
+}
+
+
+/// Identidad estable de la ruta de detalle de misión.
+struct RutaMisionDetalle: Identifiable, Hashable {
+    let missionId: String
+    var id: String { missionId }
+}
+
+
+/// Texto largo con "mostrar más": el muro de texto del objetivo/pasos no
+/// empuja todo el resto de la pantalla fuera de la vista.
+struct TextoLargoColapsable: View {
+    let texto: String
+    let fuente: Font
+    var limiteLineas: Int = 4
+    var color: Color = .primary
+    @State private var expandido = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(texto)
+                .font(fuente)
+                .foregroundStyle(color)
+                .lineLimit(expandido ? nil : limiteLineas)
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    expandido.toggle()
+                }
+            } label: {
+                Text(expandido ? "Menos" : "Más")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(EdecanTheme.morado)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// Markdown renderizado (nada de ** crudo en pantalla): negritas, listas,
+/// código — el resultado de una misión se lee como informe, no como texto.
+struct TextoMarkdown: View {
+    let texto: String
+    var fuente: Font = .subheadline
+
+    var cuerpoRenderizado: AttributedString? {
+        try? AttributedString(
+            markdown: texto,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        )
+    }
+
+    var body: some View {
+        Group {
+            if let renderizado = cuerpoRenderizado {
+                Text(renderizado)
+            } else {
+                Text(texto)
+            }
+        }
+        .font(fuente)
+        .textSelection(.enabled)
     }
 }

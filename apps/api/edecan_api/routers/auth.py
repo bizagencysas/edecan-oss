@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import secrets
 import time
@@ -34,6 +35,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DUMMY_PASSWORD_HASH = hash_password("dummy-password-used-only-to-equalize-login-timing")
 _LOCAL_TENANT_NAME = "Mi Edecán"
 _LOCAL_DESKTOP_HEADER = "X-Edecan-Desktop-Capability"
+_LOCAL_REGISTRATION_HEADER = "X-Edecan-Registration-Code"
 _LOCAL_OWNER_LOCK = asyncio.Lock()
 
 
@@ -218,6 +220,36 @@ async def _get_or_create_local_owner(repo: Repo) -> dict:
         return selected_owner
 
 
+def _local_registration_code(settings: Settings) -> str:
+    return str(
+        getattr(settings, "LOCAL_REGISTRATION_CODE", None)
+        or os.environ.get("LOCAL_REGISTRATION_CODE", "")
+    ).strip()
+
+
+def _remember_local_owner(request: Request, owner: dict) -> None:
+    registry = getattr(request.app.state, "tool_registry", None)
+    remember = getattr(registry, "remember_local_owner", None)
+    if callable(remember):
+        remember(user_id=owner["user_id"], tenant_id=owner["tenant_id"])
+
+
+async def _deny_used_local_registration(repo: Repo, request: Request) -> None:
+    owner = await repo.get_local_owner()
+    if owner is None:
+        owner = await repo.get_first_active_owner()
+        if owner is not None:
+            owner = await repo.set_local_owner(
+                user_id=owner["user_id"], tenant_id=owner["tenant_id"]
+            )
+    if owner is not None:
+        _remember_local_owner(request, owner)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="El registro local de esta instalación ya fue utilizado.",
+        )
+
+
 @router.post("/local", response_model=TokenPairOut)
 async def local_desktop_session(
     request: Request,
@@ -253,6 +285,7 @@ async def local_desktop_session(
         identity="local-desktop",
     )
     owner = await _get_or_create_local_owner(repo)
+    _remember_local_owner(request, owner)
     ensure_local_companion = getattr(request.app.state, "ensure_local_companion", None)
     if ensure_local_companion is not None:
         # La app instalada contiene el controlador de ESTA computadora. Al
@@ -278,34 +311,68 @@ async def register(
 ) -> TokenPairOut:
     """Crea tenant + usuario (owner) + persona por defecto, y devuelve tokens."""
     await _enforce_auth_rate_limit(request, redis_client, settings, identity=body.email)
-    existing = await repo.get_user_by_email(body.email)
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Ya existe una cuenta con ese correo."
+
+    async def _create(*, select_local_owner: bool) -> TokenPairOut:
+        existing = await repo.get_user_by_email(body.email)
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe una cuenta con ese correo.",
+            )
+
+        password_hash = hash_password(body.password)
+        user = await repo.create_user(email=body.email, password_hash=password_hash)
+        tenant = await repo.create_tenant(
+            name=body.tenant_name,
+            slug=_slugify(body.tenant_name),
+            plan_key="free_selfhost",
+        )
+        await repo.create_membership(user_id=user["id"], tenant_id=tenant["id"], role="owner")
+        await repo.create_persona_default(tenant_id=tenant["id"], user_id=user["id"])
+
+        if select_local_owner:
+            selected = await repo.set_local_owner(user_id=user["id"], tenant_id=tenant["id"])
+            if selected["user_id"] != user["id"] or selected["tenant_id"] != tenant["id"]:
+                # Another process consumed the one-time registration first.
+                # The platform transaction rolls back this losing account.
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="El registro local de esta instalación ya fue utilizado.",
+                )
+            _remember_local_owner(request, selected)
+
+        await repo.add_audit_log(
+            tenant_id=tenant["id"],
+            actor_user_id=user["id"],
+            action="auth.register",
+            target=str(user["id"]),
+        )
+        return await _issue_token_pair(
+            user_id=user["id"],
+            tenant_id=tenant["id"],
+            plan_key=tenant["plan_key"],
+            settings=settings,
+            redis_client=redis_client,
         )
 
-    password_hash = hash_password(body.password)
-    user = await repo.create_user(email=body.email, password_hash=password_hash)
+    if not settings.EDECAN_LOCAL_MODE:
+        return await _create(select_local_owner=False)
 
-    tenant = await repo.create_tenant(
-        name=body.tenant_name, slug=_slugify(body.tenant_name), plan_key="free_selfhost"
-    )
-    await repo.create_membership(user_id=user["id"], tenant_id=tenant["id"], role="owner")
-    await repo.create_persona_default(tenant_id=tenant["id"], user_id=user["id"])
-    await repo.add_audit_log(
-        tenant_id=tenant["id"],
-        actor_user_id=user["id"],
-        action="auth.register",
-        target=str(user["id"]),
-    )
+    expected_code = _local_registration_code(settings)
+    provided_code = request.headers.get(_LOCAL_REGISTRATION_HEADER, "").strip()
+    if (
+        not expected_code
+        or not provided_code
+        or not secrets.compare_digest(provided_code, expected_code)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="El registro local requiere el código privado de instalación.",
+        )
 
-    return await _issue_token_pair(
-        user_id=user["id"],
-        tenant_id=tenant["id"],
-        plan_key=tenant["plan_key"],
-        settings=settings,
-        redis_client=redis_client,
-    )
+    async with _LOCAL_OWNER_LOCK:
+        await _deny_used_local_registration(repo, request)
+        return await _create(select_local_owner=True)
 
 
 @router.post("/login", response_model=TokenPairOut)

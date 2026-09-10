@@ -143,6 +143,9 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
     public let enabled: Bool
     public let workspace: String?
     public let updatedAt: Date?
+    /// Conversación del chat 1:1 del bot. Con esto el deeplink de un push
+    /// abre DIRECTAMENTE el chat del bot (sin pasar por el chat principal).
+    public let conversationId: String?
 
     // Perfil rico (migración 0048, `persistent_agents.py`). Todos opcionales:
     // un worker viejo (o una respuesta incompleta) no debe romper el decode.
@@ -173,6 +176,7 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
         case autonomyLevel = "autonomy_level"
         case modelPolicy = "model_policy"
         case updatedAt = "updated_at"
+        case conversationId = "conversation_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -196,6 +200,7 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
         approvalPolicy = try container.decodeIfPresent([String: JSONValue].self, forKey: .approvalPolicy)
         autonomyLevel = try container.decodeIfPresent(String.self, forKey: .autonomyLevel)
         modelPolicy = try container.decodeIfPresent([String: JSONValue].self, forKey: .modelPolicy)
+        conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
     }
 
     /// Nombre para mostrar en el roster: `display_name` si existe y no está
@@ -204,6 +209,16 @@ public struct PersistentWorker: Codable, Sendable, Equatable, Identifiable {
         let candidato = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let candidato, !candidato.isEmpty { return candidato }
         return name
+    }
+
+    /// `true` cuando el backend reporta un turno en curso (`running`, `busy`, …).
+    public var estaTrabajando: Bool {
+        switch status.lowercased() {
+        case "running", "busy", "working", "processing":
+            return true
+        default:
+            return false
+        }
     }
 
     /// Cargo para mostrar: `role_title` si existe; si no, cae a `purpose`.

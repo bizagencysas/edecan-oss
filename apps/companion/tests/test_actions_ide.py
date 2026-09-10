@@ -149,6 +149,25 @@ def test_list_tree_rejects_path_traversal(companion_config):
         actions._list_tree({"path": "../../etc"}, companion_config)
 
 
+def test_list_tree_accepts_absolute_path_inside_sandbox(companion_config):
+    nested = companion_config.sandbox_dir / "Documents" / "Proyectos"
+    nested.mkdir(parents=True)
+    (nested / "README.md").write_text("ok")
+
+    result = actions._list_tree({"path": str(nested)}, companion_config)
+
+    assert result["path"] == "Documents/Proyectos"
+    assert [entry["name"] for entry in result["entries"]] == ["README.md"]
+
+
+def test_list_tree_rejects_absolute_path_outside_sandbox(companion_config, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(actions.ActionError, match="fuera del sandbox"):
+        actions._list_tree({"path": str(outside)}, companion_config)
+
+
 def test_list_tree_does_not_descend_into_symlink_that_escapes_sandbox(companion_config, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -453,7 +472,7 @@ def test_macos_ventanas_visibles_pone_al_frente_la_primera(monkeypatch):
                     "kCGWindowLayer": 0,
                     "kCGWindowBounds": {"Width": 1400, "Height": 900},
                     "kCGWindowOwnerName": "Cursor",
-                    "kCGWindowName": "Edecan-Nuevo",
+                    "kCGWindowName": "Mi Proyecto",
                 },
                 {
                     "kCGWindowLayer": 0,
@@ -471,7 +490,7 @@ def test_macos_ventanas_visibles_pone_al_frente_la_primera(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "Quartz", _Quartz)
     vistas = actions._macos_ventanas_visibles()
-    assert vistas[0] == {"app": "Cursor", "titulo": "Edecan-Nuevo", "al_frente": True}
+    assert vistas[0] == {"app": "Cursor", "titulo": "Mi Proyecto", "al_frente": True}
     assert vistas[1] == {"app": "Safari", "titulo": "GitHub"}
     assert all(v["app"] != "Control Center" for v in vistas)
 
@@ -490,13 +509,13 @@ def test_screenshot_para_el_modelo_recorta_y_adjunta_ocr(companion_config, monke
         lambda: [
             {
                 "app": "Cursor",
-                "titulo": "Edecan-Nuevo",
+                "titulo": "Mi Proyecto",
                 "bounds": {"X": 200, "Y": 80, "Width": 900, "Height": 640},
             }
         ],
     )
     monkeypatch.setattr(actions, "_macos_pointer_display_bounds", lambda params: (0, 0, 1200, 800))
-    monkeypatch.setattr(actions, "_macos_ventanas_visibles", lambda: [{"app": "Cursor", "titulo": "Edecan-Nuevo", "al_frente": True}])
+    monkeypatch.setattr(actions, "_macos_ventanas_visibles", lambda: [{"app": "Cursor", "titulo": "Mi Proyecto", "al_frente": True}])
     monkeypatch.setattr(actions, "_macos_foco_accesibilidad", lambda: {"app": "Cursor", "valor": "hola"})
     monkeypatch.setattr(actions, "_ocr_vision_macos", lambda _b: ["hola del chat"])
 

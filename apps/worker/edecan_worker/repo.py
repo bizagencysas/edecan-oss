@@ -229,10 +229,15 @@ class Repo(Protocol):
     ) -> Row: ...
 
     # -- push de resumen de llamada (`notify_phone_call_summary`) -------------
-    async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None: ...
+    async def get_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> Row | None: ...
     async def claim_phone_call_summary_push(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
     ) -> bool: ...
+    async def mark_phone_call_summary_push_attempted(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> None: ...
     async def has_phone_call_event(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str
     ) -> bool: ...
@@ -570,11 +575,13 @@ class SqlRepo:
             {"tenant_id": tenant_id, "user_id": user_id},
         )
 
-    async def resolve_main_conversation(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Row:
+    async def resolve_main_conversation(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row:
         # Get-or-create de la conversación PRINCIPAL (is_main, título
         # "Actividad"). Espeja `apps/api/edecan_api/repo.py::resolve_main_conversation`.
         # Ahí aterrizan TODOS los eventos automáticos (posts de cron, avisos de
-        # llamada), igual que el hilo de avisos de REFERENCIA. INSERT con ON CONFLICT
+        # llamada), igual que el hilo de avisos de JARVIS. INSERT con ON CONFLICT
         # contra el índice único parcial `uq_conversations_tenant_user_main`.
         row = await self._first(
             """
@@ -667,7 +674,9 @@ class SqlRepo:
 
     # -- push de resumen de llamada -------------------------------------------
 
-    async def get_phone_call(self, *, tenant_id: uuid.UUID, call_id: uuid.UUID) -> Row | None:
+    async def get_phone_call(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> Row | None:
         return await self._first(
             "SELECT * FROM phone_calls WHERE tenant_id = :tenant_id AND id = :id",
             {"tenant_id": tenant_id, "id": call_id},
@@ -688,6 +697,25 @@ class SqlRepo:
             {"tenant_id": tenant_id, "id": call_id, "now": utcnow()},
         )
         return row is not None
+
+    async def mark_phone_call_summary_push_attempted(
+        self, *, tenant_id: uuid.UUID, call_id: uuid.UUID
+    ) -> None:
+        """Marca la llamada como avisada tras encolar el wake del compañero.
+
+        No es un claim (no compite): el wake ya se encoló y su dedupe por
+        `wake_key` es el que evita duplicados; esto solo evita que el poll de
+        respaldo vuelva a despertar la MISMA llamada en cada scan."""
+        await self._s.execute(
+            text(
+                """
+                UPDATE phone_calls
+                SET summary_push_attempted_at = :now, updated_at = :now
+                WHERE tenant_id = :tenant_id AND id = :id AND summary IS NOT NULL
+                """
+            ),
+            {"tenant_id": tenant_id, "id": call_id, "now": utcnow()},
+        )
 
     async def has_phone_call_event(
         self, *, tenant_id: uuid.UUID, call_id: uuid.UUID, event_type: str

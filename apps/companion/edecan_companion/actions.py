@@ -56,6 +56,7 @@ from urllib.parse import urlparse
 from edecan_companion import audit, linux_session
 from edecan_companion.config import CompanionConfig
 from edecan_companion.personal_apps import PERSONAL_APP_ACTIONS, PersonalAppError
+from edecan_companion.security import es_comando_peligroso
 
 logger = logging.getLogger(__name__)
 
@@ -221,19 +222,17 @@ def _resolve_in_sandbox(
     `root` es la carpeta efectiva de confinamiento: `config.sandbox_dir` para
     el uso histórico, o la carpeta `workspace_scope` de un agente cuando la
     tool `usar_computadora` la inyecta como `params["workspace_root"]`. En
-    ambos casos `raw_path` se trata como relativo a esa raíz (se descarta
-    cualquier apariencia de ruta absoluta) y se resuelve siguiendo enlaces
-    simbólicos (`Path.resolve`), así que tanto un "../.." como un symlink
-    que apunte fuera terminan rechazados por el chequeo final de
-    `relative_to`.
+    Las rutas relativas se interpretan desde esa raíz. Una ruta absoluta se
+    conserva únicamente cuando resuelve dentro de la misma raíz; esto permite
+    usar rutas reales de Linux/macOS/Windows sin debilitar el confinamiento.
+    Tanto un "../.." como un symlink que apunte fuera terminan rechazados por
+    el chequeo final de `relative_to`.
     """
-    root = root if root is not None else config.sandbox_dir
+    root = (root if root is not None else config.sandbox_dir).resolve()
     raw_path = (raw_path or ".").strip() or "."
 
-    # Nunca interpretar el path del usuario como absoluto: siempre relativo
-    # al root, aunque venga con "/" al inicio.
-    relative = raw_path.replace("\\", "/").lstrip("/")
-    candidate = (root / relative).resolve()
+    requested = Path(os.path.expanduser(raw_path.replace("\\", "/")))
+    candidate = requested.resolve() if requested.is_absolute() else (root / requested).resolve()
 
     try:
         candidate.relative_to(root)
@@ -1060,6 +1059,7 @@ def _argv_para_windows(argv: list[str]) -> list[str]:
     return [resuelto, *argv[1:]]
 
 
+
 def _run_command(params: dict[str, Any], config: CompanionConfig) -> dict[str, Any]:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -1072,6 +1072,16 @@ def _run_command(params: dict[str, Any], config: CompanionConfig) -> dict[str, A
 
     if not argv:
         raise ActionError("comando vacío")
+
+    # Denylist de comandos destructivos (defensa en profundidad): corre ANTES
+    # de la allowlist para que ni `allow_all_commands=true` ni un ejecutable
+    # en `allowed_commands` (p. ej. `rm`) permitan un `rm -rf`/`dd`/`curl|sh`
+    # en silencio. Mismo helper que usa el puente local instalado
+    # (security.es_comando_peligroso), para que no haya dos listas negras.
+    if es_comando_peligroso(command):
+        raise ActionError(
+            "comando bloqueado por seguridad: patrón peligroso (denylist del terminal)"
+        )
 
     # La comprobación de permiso corre SIEMPRE contra el nombre literal que
     # configuró el dueño en allowed_commands (p.ej. "npm") -- nunca contra
@@ -2167,7 +2177,13 @@ class _QuartzInputBackend:
                 "'edecan-companion[remote-input]' (o: pip install pyobjc-framework-Quartz)"
             ) from exc
 
-        if not Quartz.AXIsProcessTrusted():
+        # `AXIsProcessTrusted` vive en ApplicationServices, NO en Quartz
+        # (pyobjc la movió; con solo pyobjc-framework-Quartz el atributo no
+        # existe y el backend moría con AttributeError antes de siquiera
+        # poder reportar el permiso).
+        import ApplicationServices  # type: ignore[import-not-found]
+
+        if not ApplicationServices.AXIsProcessTrusted():
             raise ActionError(
                 "este proceso no tiene el permiso de Accesibilidad concedido en macOS. "
                 "Abre Edecán → Ajustes → Permisos de esta computadora y pulsa "
@@ -2238,6 +2254,11 @@ class _QuartzInputBackend:
                 event = Quartz.CGEventCreateKeyboardEvent(None, 0, key_down)
                 Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            # macOS pierde eventos si se postean sin respiro: el down+up de la
+            # tecla siguiente llega antes de que el sistema procese la actual
+            # y se caen caracteres (en español se nota con las más frecuentes,
+            # e/d). Un delay corto entre teclas lo estabiliza.
+            time.sleep(0.025)
 
     def press_key(self, key: str, modifiers: tuple[str, ...] = ()) -> None:
         Quartz = self._Quartz

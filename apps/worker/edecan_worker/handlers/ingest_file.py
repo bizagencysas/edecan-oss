@@ -60,7 +60,7 @@ _IMAGE_EXTENSION_MIMES = {
     ".gif": "image/gif",
 }
 _MAX_IMAGEN_BYTES = 5 * 1024 * 1024  # 5 MB, mismo límite que analizar_imagen
-_VISION_MAX_TOKENS = 200
+_VISION_MAX_TOKENS = 1024
 _VISION_SYSTEM_PROMPT = (
     "Eres un asistente que describe imágenes de forma breve y precisa, para "
     "que ese texto sirva de índice de búsqueda. Responde en 1-2 frases, en "
@@ -309,7 +309,7 @@ async def _ingest_image(
     # necesita `tenant_flags` para resolverse (`LLMRouter._resolve_model`),
     # así que pasar `{}` es seguro y evita una consulta extra a `tenants`
     # solo para leer el plan.
-    provider, model = llm_router.resolve("rapido", {})
+    provider, model = llm_router.resolve("worker_vision", {})
 
     b64 = base64.b64encode(raw_bytes).decode("ascii")
     request = CompletionRequest(

@@ -437,6 +437,8 @@ async def get_tenant_search_provider(ctx: Any) -> SearchProvider:
 
 
 class BuscarWebTool(Tool):
+    # Fetch + parse de varias páginas: 60s justos, darle margen real.
+    timeout_seconds = 120.0
     name = "buscar_web"
     description = "Busca en la web y devuelve los resultados más relevantes (título, url, resumen)."
     category = "research"

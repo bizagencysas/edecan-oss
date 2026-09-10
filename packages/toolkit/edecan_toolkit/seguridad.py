@@ -400,6 +400,8 @@ async def _run_pentestgpt(
 
 
 class AuditarSeguridadProyectoTool(Tool):
+    # Escaneo de miles de archivos en segundo plano: heredar 60s lo truncaría.
+    timeout_seconds = 1800.0
     name = "auditar_seguridad_proyecto"
     description = (
         "Audita de forma estática y de solo lectura un proyecto local autorizado. Detecta "
@@ -456,6 +458,11 @@ class AuditarSeguridadProyectoTool(Tool):
 
 
 class EjecutarPentestGPTAutorizadoTool(Tool):
+    # El subprocess puede correr horas (_DEFAULT_TIMEOUT_SECONDS = 3600s,
+    # máximo configurable 14400s); el deadline duro del executor (E-CORE-2)
+    # respeta ESTE valor, así que debe cubrir el máximo real + margen —
+    # antes heredaba 60s y el pentest moría siempre.
+    timeout_seconds = 14700.0
     name = "ejecutar_pentestgpt_autorizado"
     description = (
         "Ejecuta PentestGPT en modo pentest únicamente contra un objetivo cuyo dueño declaró "

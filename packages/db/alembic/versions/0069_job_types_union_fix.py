@@ -23,6 +23,7 @@ depends_on = None
 _JOB_TYPES_UNION: tuple[str, ...] = (
     "automation_scan",
     "companion_wake_scan",
+    "create_organization_linkedin_post",
     "create_linkedin_post",
     "event_log_cleanup",
     "generate_content",

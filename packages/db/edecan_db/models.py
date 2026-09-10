@@ -777,6 +777,7 @@ class Job(IDMixin, TimestampMixin, Base):
                 "notify_incoming_phone_call",
                 "notify_important_event",
                 "create_linkedin_post",
+                "create_organization_linkedin_post",
                 "run_persistent_agent",
                 "persistent_agent_scan",
                 "proactive_scan",

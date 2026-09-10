@@ -30,7 +30,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from contextvars import ContextVar
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -38,6 +39,7 @@ from typing import Any
 import redis.asyncio as redis_asyncio
 from edecan_db.session import get_session
 from edecan_db.vault import KmsKeyProvider, LocalKeyProvider, TokenVault
+from edecan_llm.base import Usage
 from edecan_llm.config import LLMProviderConfig
 from edecan_llm.router import LLMRouter
 from edecan_schemas.plans import PLANES
@@ -46,6 +48,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
+from edecan_api.llm_attribution import build_llm_usage_meta
 from edecan_api.repo import Repo, SqlRepo
 from edecan_api.security import ACCESS_TOKEN_TTL_SECONDS, DecodedToken, TokenError, decode_token
 
@@ -88,6 +91,9 @@ class CurrentUser:
     @property
     def tenant_id(self) -> uuid.UUID:
         return self.tenant.tenant_id
+
+
+_usage_tenant_ctx: ContextVar[uuid.UUID | None] = ContextVar("edecan_usage_tenant", default=None)
 
 
 def flags_for_plan(plan_key: str) -> dict[str, Any]:
@@ -239,6 +245,7 @@ async def get_current_user(
     tenant = TenantCtx(
         tenant_id=decoded.ten, plan_key=plan_key, flags=flags_for_plan(plan_key)
     )
+    _usage_tenant_ctx.set(decoded.ten)
     return CurrentUser(user_id=decoded.sub, tenant=tenant)
 
 
@@ -624,3 +631,54 @@ async def require_superadmin(
             status_code=status.HTTP_403_FORBIDDEN, detail="Requiere privilegios de superadmin."
         )
     return current_user
+
+
+
+def make_llm_usage_persister(
+    *,
+    tenant_getter: Callable[[], uuid.UUID | None],
+) -> Callable[[str, Usage], Awaitable[None]]:
+    """Arma el callback `on_usage(modelo, usage)` -> `usage_events` (fail-open).
+
+    El tenant sale de `tenant_getter` (un ContextVar del task en curso), NO del
+    callback. Cada invocacion abre su propia sesion de DB y un fallo de
+    persistencia jamas rompe la llamada LLM (solo log)."""
+
+    async def on_usage(model: str, usage: Usage) -> None:
+        tenant_id = tenant_getter()
+        if tenant_id is None:
+            return
+        total = usage.input_tokens + usage.output_tokens
+        if total <= 0:
+            return
+        meta = build_llm_usage_meta(
+            attribution={"model": model},
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+        )
+        meta["input_tokens"] = usage.input_tokens
+        meta["output_tokens"] = usage.output_tokens
+        try:
+            async with get_session(tenant_id) as session:
+                await SqlRepo(session).add_usage_event(
+                    tenant_id=tenant_id,
+                    kind="llm_tokens",
+                    quantity=float(total),
+                    meta=meta,
+                    cost_usd=meta.get("cost_usd"),
+                )
+        except Exception:
+            logger.warning(
+                "on_usage: fallo persistir usage_events (tenant_id=%s, model=%s); "
+                "telemetria best-effort.",
+                tenant_id, model, exc_info=True,
+            )
+
+    return on_usage
+
+
+def _ensure_usage_callback(router: LLMRouter) -> None:
+    """Cablea `on_usage` en el router global UNA sola vez (idempotente)."""
+    if getattr(router, "_on_usage", None) is None:
+        router._on_usage = make_llm_usage_persister(tenant_getter=_usage_tenant_ctx.get)

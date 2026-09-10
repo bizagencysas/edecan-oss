@@ -59,11 +59,20 @@ class FakeConnection:
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         assert "FOR UPDATE SKIP LOCKED" in query
-        limit = args[0]
-        queued = sorted(
-            (j for j in self._jobs.values() if j["status"] == "queued"),
-            key=lambda j: j["created_at"],
-        )
+        # (lease_seconds, batch_size) -- el lease se usa para reclamar
+        # huérfanos 'running' con updated_at viejo.
+        lease = args[0] if len(args) > 0 else 0
+        limit = args[1] if len(args) > 1 else args[0]
+        now = datetime.now(UTC)
+        candidatos = [
+            j for j in self._jobs.values()
+            if j["status"] == "queued"
+            or (
+                j["status"] == "running"
+                and (now - j["updated_at"]).total_seconds() > lease
+            )
+        ]
+        candidatos = sorted(candidatos, key=lambda j: j["created_at"])
         # `payload` viaja como `str` (JSON) igual que asyncpg de verdad
         # (ver `worker_loop._decode_payload`).
         return [
@@ -74,7 +83,7 @@ class FakeConnection:
                 "payload": json.dumps(j["payload"]),
                 "attempts": j["attempts"],
             }
-            for j in queued[:limit]
+            for j in candidatos[:limit]
         ]
 
     async def execute(self, query: str, *args: Any) -> None:
@@ -82,6 +91,7 @@ class FakeConnection:
         if "SET status = 'running'" in query:
             for job_id in args[0]:
                 self._jobs[job_id]["status"] = "running"
+                self._jobs[job_id]["updated_at"] = datetime.now(UTC)
         elif "SET status = 'done'" in query:
             (job_id,) = args
             self._jobs[job_id]["status"] = "done"
@@ -136,6 +146,7 @@ def _job_row(
     status: str = "queued",
     created_at: datetime | None = None,
 ) -> dict[str, Any]:
+    now = datetime.now(UTC)
     return {
         "id": uuid.uuid4(),
         "tenant_id": tenant_id if tenant_id is not None else uuid.uuid4(),
@@ -144,7 +155,9 @@ def _job_row(
         "attempts": attempts,
         "status": status,
         "last_error": None,
-        "created_at": created_at or datetime.now(UTC),
+        "created_at": created_at or now,
+        # `updated_at` es el lease del job (ver worker_loop).
+        "updated_at": now,
     }
 
 
@@ -213,16 +226,37 @@ async def test_fetch_and_claim_batch_not_before_ilegible_se_procesa_igual() -> N
     assert len(claimed) == 1
 
 
-async def test_fetch_and_claim_batch_ignora_jobs_no_queued() -> None:
-    running = _job_row(status="running")
+async def test_fetch_and_claim_batch_ignora_done_y_error() -> None:
     done = _job_row(status="done")
     error = _job_row(status="error")
-    jobs = {j["id"]: j for j in (running, done, error)}
+    running_fresco = _job_row(status="running")  # updated_at = ahora (lease vigente)
+    jobs = {j["id"]: j for j in (done, error, running_fresco)}
     pool = FakePool(jobs)
 
     claimed = await worker_loop._fetch_and_claim_batch(pool)
 
+    # done/error jamás se tocan; un 'running' FRESCO (lease vigente) tampoco.
     assert claimed == []
+
+
+async def test_fetch_and_claim_batch_reclama_running_huerfano() -> None:
+    """Un job 'running' cuyo lease venció (app reiniciada a mitad) se reclama.
+
+    Es el fix de fiabilidad del post de LinkedIn que no llegó al chat: sin
+    esto, el job quedaba 'running' para siempre (la app se reinició mientras
+    lo procesaba y nadie lo volvía a tomar)."""
+    viejo = datetime.now(UTC) - timedelta(seconds=worker_loop.JOB_LEASE_SECONDS + 10)
+    huerfano = _job_row(status="running", created_at=viejo)
+    huerfano["updated_at"] = viejo
+    jobs = {huerfano["id"]: huerfano}
+    pool = FakePool(jobs)
+
+    claimed = await worker_loop._fetch_and_claim_batch(pool)
+
+    assert len(claimed) == 1
+    assert claimed[0]["id"] == huerfano["id"]
+    assert jobs[huerfano["id"]]["status"] == "running"  # reclamado (lease renovado)
+    assert (datetime.now(UTC) - jobs[huerfano["id"]]["updated_at"]).total_seconds() < 1
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +491,7 @@ async def test_process_job_sin_handler_registrado_marca_error(
 
 def _fake_deps_para_scheduler_tick() -> SimpleNamespace:
     """`_run_scheduler_tick` recibe `deps` completo (no solo `settings`)
-    desde WP-REFERENCIA-PARIDAD: además de `enqueue(deps.settings, ...)` también
+    desde WP-JARVIS-PARIDAD: además de `enqueue(deps.settings, ...)` también
     llama `ensure_linkedin_automations_seeded(deps)`
     (`edecan_local.linkedin_automations_seed`), que necesita
     `deps.session_factory`. Acá no hace falta un fake realista de esa
@@ -474,7 +508,7 @@ def _fake_deps_para_scheduler_tick() -> SimpleNamespace:
     )
 
 
-async def test_run_scheduler_tick_encola_los_dos_tipos_de_job(
+async def test_run_scheduler_tick_encola_jobs_de_30s(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     encoladas: list[str] = []
@@ -487,7 +521,7 @@ async def test_run_scheduler_tick_encola_los_dos_tipos_de_job(
 
     await worker_loop._run_scheduler_tick(_fake_deps_para_scheduler_tick())
 
-    assert encoladas == list(worker_loop.SCHEDULED_JOB_TYPES)
+    assert encoladas == list(worker_loop.JOBS_PERIODICOS_30S)
 
 
 async def test_run_scheduler_tick_aisla_fallos_por_tipo(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -503,7 +537,22 @@ async def test_run_scheduler_tick_aisla_fallos_por_tipo(monkeypatch: pytest.Monk
 
     await worker_loop._run_scheduler_tick(_fake_deps_para_scheduler_tick())  # no debe lanzar
 
-    assert encoladas == ["automation_scan"]
+    assert encoladas == ["sync_connector"]
+
+
+def test_persistent_agent_scan_esta_en_scheduler_60s() -> None:
+    assert "persistent_agent_scan" in worker_loop.JOBS_PERIODICOS_60S_PERSISTENT
+
+
+def test_daily_brief_no_esta_en_scheduler_local() -> None:
+    """Outreach conversacional no es cron con texto plantilla: daily_brief no se agenda."""
+    todos = (
+        worker_loop.JOBS_PERIODICOS_30S
+        + worker_loop.JOBS_PERIODICOS_60S_AUTOMATIONS
+        + worker_loop.JOBS_PERIODICOS_60S_PERSISTENT
+        + worker_loop.JOBS_PERIODICOS_300S
+    )
+    assert "daily_brief" not in todos
 
 
 def test_limpiar_archivos_viejos_es_diario_no_por_tick() -> None:

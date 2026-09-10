@@ -64,9 +64,12 @@ ARCHITECTURE.md §10.11) es `< MAX_ATTEMPTS` → reintenta: `attempts + 1`,
 Cada tick del scheduler local encola jobs de sistema con las MISMAS cadencias
 que `edecan_worker.scheduler` (30s / 60s / 300s): `send_reminder_scan` y
 `sync_connector` cada 30s; `automation_scan` y `persistent_agent_scan` cada
-60s; `proactive_scan` cada 300s. Además, `refresh_skills` cada 7 días y
-`event_log_cleanup` cada 24 h, cadencias que no tienen equivalente en el
-scheduler de dev. Así
+60s; `proactive_scan` cada 300s. Además, `refresh_skills` cada 7 días
+(`SCHEDULER_INTERVAL_REFRESH_SKILLS_SECONDS`) y `limpiar_archivos_viejos`
+cada 24 h (`SCHEDULER_INTERVAL_LIMPIAR_ARCHIVOS_SECONDS`, retención de 7 días
+de los archivos `datacred-linkedin-*`), cadencias que no tienen equivalente
+en el scheduler de dev: refrescar catálogos remotos no tiene sentido a ritmo
+de minutos, y la limpieza de archivos solo necesita una pasada al día. Así
 las rutinas y workers persistentes siguen corriendo con la app/iPhone
 cerrados mientras el runner local (`edecan_local.runtime`) siga vivo — no
 dependen del WebSocket del companion.
@@ -79,6 +82,26 @@ scheduler ni se registra aquí. `proactive_scan` solo persiste sugerencias
 deshabilitadas en `automations` (`enabled=false`); tampoco es outreach
 conversacional.
 
+## Sembrado de las automatizaciones de LinkedIn (paridad JARVIS)
+
+El mismo tick de 30s también llama
+`edecan_local.linkedin_automations_seed.ensure_linkedin_automations_seeded`
+(idempotente, ver su docstring) — deliberadamente PERIÓDICO y no una sola
+vez en `edecan_local.runtime.run()`: el dueño local puede no existir
+todavía en el arranque MÁS temprano (instalación recién creada, nadie abrió
+la app todavía, ver `apps/api/edecan_api/routers/auth.py
+::_get_or_create_local_owner`) — poner el sembrado acá, en el mismo tick que
+ya reintenta solo cada 30s para siempre, evita depender de en qué orden
+exacto ocurren "arranca el runtime" vs. "el dueño abre la app por primera
+vez" sin agregar un segundo mecanismo de reintento propio. Una vez sembradas
+las 5 filas, cada tick subsiguiente es dos `SELECT` baratos (dueño +
+`seed_id`s ya existentes) que no hacen nada más.
+
+El mismo tick también llama
+`edecan_local.datacred_linkedin_profile_seed.ensure_datacred_linkedin_profile_seeded`
+(idempotente vía `_seed_version`, ver su docstring): aplica la voz/pilares/banco de
+contexto reales de la página de LinkedIn de DataCred al perfil editorial de este tenant.
+Mismo motivo para que sea periódico y no un one-shot en `runtime.run()`.
 """
 
 from __future__ import annotations
@@ -114,10 +137,18 @@ SCHEDULER_INTERVAL_SECONDS = 30.0
 SCHEDULER_INTERVAL_AUTOMATIONS_SECONDS = 60.0
 SCHEDULER_INTERVAL_PERSISTENT_AGENTS_SECONDS = 60.0
 SCHEDULER_INTERVAL_PROACTIVE_SECONDS = 300.0
+# Vida digital: Edecán explora Mail/WhatsApp/LinkedIn del dueño y le escribe
+# como amigo. Lectura cada 1h (el costo del turno es real; media hora de
+# conversación nueva justifica la visita).
+SCHEDULER_INTERVAL_VIDA_DIGITAL_SECONDS = 3600.0
 # Refresco de skills de catálogos remotos: semanal (7 días). Un catálogo de
 # SKILL.md no cambia a ritmo de minutos y cada pasada descarga un tarball;
 # una vez por semana alcanza (y sobra) para seguirlo.
 SCHEDULER_INTERVAL_REFRESH_SKILLS_SECONDS = 7 * 24 * 3600.0
+# Limpieza de archivos de posts de DataCred: diaria (24 h). Los videos/
+# posters `datacred-linkedin-*` se borran a los 7 días de creados; una pasada
+# al día alcanza para mantener la retención sin pagar borrados S3 + DELETEs
+# de `files` a ritmo de minutos.
 SCHEDULER_INTERVAL_LIMPIAR_ARCHIVOS_SECONDS = 24 * 3600.0
 BATCH_SIZE = 5
 # Un job 'running' más viejo que esto (lease sin renovar) se considera huérfano
@@ -137,13 +168,21 @@ JOBS_PERIODICOS_30S: tuple[str, ...] = ("send_reminder_scan", "sync_connector")
 JOBS_PERIODICOS_60S_AUTOMATIONS: tuple[str, ...] = ("automation_scan",)
 JOBS_PERIODICOS_60S_PERSISTENT: tuple[str, ...] = ("persistent_agent_scan",)
 JOBS_PERIODICOS_300S: tuple[str, ...] = ("proactive_scan",)
+# Vida digital: un solo job global que despierta el turno del companion por
+# cada dueño con companion activo (ver handlers/scan_vida_digital.py).
+JOBS_PERIODICOS_3600S_VIDA_DIGITAL: tuple[str, ...] = ("scan_vida_digital",)
 # Refresco semanal de skills de catálogos remotos (ver
 # handlers/refresh_skills.py): barrido global, `tenant_id=None`.
 JOBS_PERIODICOS_SEMANALES: tuple[str, ...] = ("refresh_skills",)
-# Auto-eliminación diaria de las filas de `event_log` con más de 7 días.
-JOBS_PERIODICOS_DIARIOS: tuple[str, ...] = ("event_log_cleanup",)
+# Limpieza diaria de archivos de posts de DataCred (ver
+# handlers/limpiar_archivos_viejos.py) y auto-eliminación diaria de las filas
+# de `event_log` con más de 7 días (handlers/event_log_cleanup.py, migración
+# 0067 — la plataforma de logging TOTAL no puede crecer infinita). Ambos son
+# barridos globales, `tenant_id=None`.
+JOBS_PERIODICOS_DIARIOS: tuple[str, ...] = ("limpiar_archivos_viejos", "event_log_cleanup")
 # Alias histórico usado por tests: tick de 30s solamente.
 SCHEDULED_JOB_TYPES: tuple[str, ...] = JOBS_PERIODICOS_30S
+CONVAI_SCHEDULER_INTERVAL_SECONDS = 180.0
 
 
 def compute_backoff_seconds(attempt: int) -> int:
@@ -516,6 +555,22 @@ async def _process_job(pool: asyncpg.Pool, deps: Any, job: dict[str, Any]) -> No
 # ---------------------------------------------------------------------------
 
 
+async def _enqueue_convai_poll(deps: Any) -> None:
+    """Encola el poll de respaldo ConvAI (~cada 3 min mientras el runner local vive)."""
+    from edecan_core.queue import enqueue
+
+    try:
+        job_id = await enqueue(deps.settings, "ingest_elevenlabs_convai_calls", {}, None)
+        logger.info(
+            "worker_loop: ingest_elevenlabs_convai_calls encolado (scheduler ConvAI) job_id=%s",
+            job_id,
+        )
+    except Exception:
+        logger.exception(
+            "worker_loop: fallo al encolar ingest_elevenlabs_convai_calls (scheduler ConvAI)"
+        )
+
+
 async def _enqueue_scheduled_jobs(deps: Any, job_types: tuple[str, ...]) -> None:
     from edecan_core.queue import enqueue
 
@@ -542,6 +597,9 @@ async def _run_scheduler_tick(deps: Any) -> None:
     # error. Sin este `try`, no tenerlos tumbaba el worker entero en cada tick del
     # scheduler, que es una forma absurda de morir por un archivo opcional.
     for nombre_modulo, nombre_funcion in (
+        ("edecan_local.linkedin_automations_seed", "ensure_linkedin_automations_seeded"),
+        ("edecan_local.datacred_linkedin_profile_seed", "ensure_datacred_linkedin_profile_seeded"),
+        ("edecan_local.personal_linkedin_profile_seed", "ensure_personal_linkedin_profile_seeded"),
         ("edecan_local.gym_automations_seed", "ensure_gym_automations_seeded"),
     ):
         try:
@@ -583,6 +641,8 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
     ultimo_tick_automations = time.monotonic()
     ultimo_tick_persistent = time.monotonic()
     ultimo_tick_proactive = time.monotonic()
+    ultimo_tick_vida_digital = time.monotonic()
+    ultimo_tick_convai = time.monotonic()
     ultimo_tick_semanal = time.monotonic()
     ultimo_tick_limpiar_archivos = time.monotonic()
     try:
@@ -609,7 +669,8 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
                 # La Mac con la app de escritorio ABIERTA (IDE + computadora
                 # física) NO debe correr sus automatizaciones: las corre el
                 # VPS 24/7. Sin este gate, cada scheduler local re-encola
-                # jobs, wakes y escaneos → trabajo duplicado.
+                # posts de DataCred, wakes y escaneos → trabajo DUPLICADO y
+                # cuota quemada (el motivo original de desactivar la app).
                 # Solo quedan vivos: dispatch del outbox y el poll de la cola
                 # (que nadie llena localmente).
                 try:
@@ -645,6 +706,23 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
                     await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_300S)
                 except Exception:
                     logger.exception("worker_loop: fallo inesperado en el tick proactivo")
+            if (
+                ahora - ultimo_tick_vida_digital
+                >= SCHEDULER_INTERVAL_VIDA_DIGITAL_SECONDS
+            ):
+                ultimo_tick_vida_digital = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_3600S_VIDA_DIGITAL)
+                except Exception:
+                    logger.exception(
+                        "worker_loop: fallo inesperado en el tick de vida digital"
+                    )
+            if ahora - ultimo_tick_convai >= CONVAI_SCHEDULER_INTERVAL_SECONDS:
+                ultimo_tick_convai = ahora
+                try:
+                    await _enqueue_convai_poll(deps)
+                except Exception:
+                    logger.exception("worker_loop: fallo inesperado en el tick ConvAI local")
             if (
                 ahora - ultimo_tick_semanal
                 >= SCHEDULER_INTERVAL_REFRESH_SKILLS_SECONDS

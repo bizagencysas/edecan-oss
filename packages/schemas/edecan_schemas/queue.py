@@ -62,6 +62,12 @@ JOB_TYPES: tuple[str, ...] = (
     # tiempo de sobra y entrega el post como card + push. Ver
     # `apps/worker/edecan_worker/handlers/create_linkedin_post.py`.
     "create_linkedin_post",
+    # Variante PRODUCT-LED para la página de Acme: fydesign elige una
+    # pantalla real de la app y entrega el brief editorial; el worker escribe el
+    # post con un modelo directo (sin pasar por el motor del seed) y pide el
+    # visual a fydesign. Ver
+    # `apps/worker/edecan_worker/handlers/create_organization_social_post.py`.
+    "create_organization_linkedin_post",
     # Workers persistentes always-on (PHASE3): el handler y el scan son
     # aditivos y se agregan al final para preservar índices históricos.
     "run_persistent_agent",

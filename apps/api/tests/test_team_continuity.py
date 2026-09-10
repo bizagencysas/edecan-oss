@@ -101,7 +101,10 @@ async def test_team_retry_replays_exact_stream_without_second_turn(
     assert first.headers["Idempotency-Key"] == key
     assert replay.headers["Idempotency-Replayed"] == "true"
     assert team_env["runs"] == ["Revisen esto"]
-    assert session.commits == 1
+    # El commit a mitad de stream se eliminó (cerraba la transacción de
+    # get_tenant_session y reventaba los guardados posteriores); la transacción
+    # del request la confirma get_session al cerrar, no el stream.
+    assert session.commits == 0
 
 
 async def test_team_turn_lock_preserves_message_order(

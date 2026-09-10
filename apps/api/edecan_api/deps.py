@@ -379,12 +379,13 @@ async def ide_rate_limit(
 
 
 # ---------------------------------------------------------------------------
-# LLM router — sin callback de uso: la persistencia de `usage_events` de
-# tokens ocurre al recibir el evento `done` del turno (ver `routers/conversations.py`)
-# para no contar dos veces.
+# LLM router — `get_llm_router` entrega el router global de `app.state`
+# (construido en `main.py` con `on_usage=None`) y le cablea el persister de
+# `usage_events` una sola vez vía `_ensure_usage_callback` (idempotente).
 #
-# Workers AI sigue siendo el default del host. Si el tenant conectó un
-# proveedor propio, su config cifrada gana para ese request.
+# Workers AI es infraestructura del host y el Task Router decide el modelo:
+# el chat ya no resuelve proveedor por tenant. `load_tenant_llm_config` queda
+# como helper para leer la credencial LLM cifrada de un tenant (bring-your-own).
 # ---------------------------------------------------------------------------
 
 
@@ -413,21 +414,21 @@ async def load_tenant_llm_config(
 
 
 async def get_llm_router(
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session, scope="request"),
-    settings: Settings = Depends(get_settings),
 ) -> LLMRouter:
-    """Router del tenant; exige una selección explícita en Configuración."""
-    provider_config = await load_tenant_llm_config(session, settings, current_user.tenant_id)
-    if provider_config is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "No hay un proveedor de inteligencia conectado. "
-                "Elige uno en Configuración antes de conversar."
-            ),
-        )
-    return LLMRouter(settings, on_usage=None, provider_config=provider_config)
+    """Router automático global para chat, voz y herramientas ligeras.
+
+    ``current_user`` y ``session`` permanecen en la firma para conservar el
+    contrato de dependencias de FastAPI, pero la elección de modelo ya no
+    depende de una preferencia del usuario ni de credenciales por tenant.
+    La instancia vive durante todo el proceso para reutilizar conexiones HTTP.
+    """
+    del current_user, session
+    router = request.app.state.llm_router
+    _ensure_usage_callback(router)
+    return router
 
 
 # ---------------------------------------------------------------------------

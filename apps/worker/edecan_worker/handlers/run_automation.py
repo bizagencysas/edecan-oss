@@ -471,9 +471,9 @@ def _build_registry(tenant_id: UUID | None = None) -> ToolRegistry:
 
     root = os.environ.get("EDECAN_PLUGINS_DIR") or "/opt/edecan/data/plugins"
     if tenant_id is None:
-        # Llamadores que todavía no pasan tenant conservan el comportamiento
-        # previo: solo el nivel raíz, sin subdirectorio por tenant — sin
-        # regresión (mismo criterio que `run_mission._build_registry`).
+        # Llamadores que todavía no pasan tenant (p. ej. `run_companion_turn`,
+        # fuera del alcance BOTS-14) conservan el comportamiento previo: solo
+        # el nivel raíz, sin subdirectorio por tenant — sin regresión.
         registry = ToolRegistry()
         registry.load_entry_points(group="edecan.tools")
         registry.load_plugin_dir(root)

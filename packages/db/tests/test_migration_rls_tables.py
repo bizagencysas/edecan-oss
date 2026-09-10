@@ -73,6 +73,7 @@ _MIGRACIONES_CON_RLS_TABLES: tuple[str, ...] = (
     "0040_unified_sessions",
     "0043_persistent_agents",
     "0044_persistent_agent_handoffs",
+    "0047_li_personal_daily",
     "0049_pending_approvals",
     "0053_skill_teach_sessions",
     "0054_agent_takeover",

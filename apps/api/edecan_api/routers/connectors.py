@@ -94,7 +94,7 @@ import hmac
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from edecan_connectors.base import ConnectorError
@@ -105,7 +105,7 @@ from edecan_db.session import get_session
 from edecan_db.vault import TokenVault
 from edecan_schemas import UNLIMITED, TokenBundle
 from edecan_schemas.plans import FLAG_VOICE_TELEPHONY, LIMIT_PHONE_NUMBERS
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -148,7 +148,20 @@ STATE_TTL_SECONDS = 600
 # rango [43, 128] que RFC 7636 §4.1 exige para un `code_verifier`.
 _STATE_TENANT_LEN = 16
 _STATE_EXP_LEN = 4
+_STATE_FLAGS_LEN = 1
+_STATE_PAYLOAD_LEN_LEGACY = _STATE_TENANT_LEN + _STATE_EXP_LEN
+_STATE_PAYLOAD_LEN = _STATE_PAYLOAD_LEN_LEGACY + _STATE_FLAGS_LEN
 _STATE_SIG_LEN = 16
+_STATE_FLAG_MOBILE = 0x01
+
+# Deep link que iOS abre tras OAuth social (`ASWebAuthenticationSession` con
+# `callbackURLScheme: edecan`). El callback HTTPS del VPS redirige aquí cuando
+# `authorize?return_to=mobile` — sin depender del Mac companion.
+_MOBILE_OAUTH_DEEPLINK_BASE = "edecan://conectores"
+
+# Conectores OAuth de redes sociales que los bots consultan vía
+# `estado_conectores_sociales` (LinkedIn, X, Meta, YouTube).
+SOCIAL_OAUTH_CONNECTOR_KEYS = frozenset({"linkedin", "x", "meta", "youtube"})
 
 # Conector key reservado para Twilio (fuera de `CONNECTORS`: ver docstring del
 # módulo). No es un connector OAuth, pero comparte tabla `connector_accounts`
@@ -231,15 +244,38 @@ class WhatsAppCredentialsIn(BaseModel):
     validate_: bool = Field(default=True, alias="validate")
 
 
-def _connector_account_out(row: dict[str, Any]) -> dict[str, Any]:
+async def _account_has_access_token(
+    vault: TokenVault | None, *, tenant_id: uuid.UUID, account_id: uuid.UUID
+) -> bool:
+    """True solo si el vault devuelve un `TokenBundle` con `access_token` no vacío.
+
+    Mismo criterio operativo que `edecan_toolkit._conectores.token_bundle_operativo`:
+    una fila en `connector_accounts` sin token en vault NO cuenta como conectada.
+    """
+    if vault is None:
+        return False
+    bundle = await vault.get(tenant_id, account_id)
+    if bundle is None:
+        return False
+    token = getattr(bundle, "access_token", None)
+    return isinstance(token, str) and bool(token.strip())
+
+
+def _connector_account_out(row: dict[str, Any], *, has_access_token: bool) -> dict[str, Any]:
+    status = row.get("status")
+    if not has_access_token:
+        # Honestidad OAuth: la fila DB puede quedar huérfana; el status heredado
+        # ("active") no debe implicar conexión operativa sin token en vault.
+        status = "disconnected"
     return {
         "id": row["id"],
         "connector_key": row["connector_key"],
         "external_account_id": row.get("external_account_id"),
         "display_name": row.get("display_name"),
-        "status": row.get("status"),
+        "status": status,
         "scopes": row.get("scopes") or [],
         "created_at": row.get("created_at"),
+        "has_access_token": has_access_token,
     }
 
 
@@ -248,21 +284,26 @@ def _state_signature(payload: bytes, key: str, secret: str) -> bytes:
     return mac.digest()[:_STATE_SIG_LEN]
 
 
-def _create_state_token(*, tenant_id: uuid.UUID, key: str, secret: str) -> str:
+def _create_state_token(
+    *, tenant_id: uuid.UUID, key: str, secret: str, return_to_mobile: bool = False
+) -> str:
     exp = int(time.time()) + STATE_TTL_SECONDS
-    payload = tenant_id.bytes + exp.to_bytes(_STATE_EXP_LEN, "big")
+    flags = bytes([_STATE_FLAG_MOBILE if return_to_mobile else 0x00])
+    payload = tenant_id.bytes + exp.to_bytes(_STATE_EXP_LEN, "big") + flags
     signature = _state_signature(payload, key, secret)
     return base64.urlsafe_b64encode(payload + signature).rstrip(b"=").decode("ascii")
 
 
-def _decode_state_token(token: str, *, secret: str, expected_key: str) -> uuid.UUID:
+def _decode_state_token(token: str, *, secret: str, expected_key: str) -> tuple[uuid.UUID, bool]:
     padded = token + "=" * (-len(token) % 4)
     try:
         raw = base64.urlsafe_b64decode(padded)
     except ValueError as exc:
         raise TokenError(f"state inválido: {exc}") from exc
 
-    if len(raw) != _STATE_TENANT_LEN + _STATE_EXP_LEN + _STATE_SIG_LEN:
+    legacy_len = _STATE_PAYLOAD_LEN_LEGACY + _STATE_SIG_LEN
+    mobile_len = _STATE_PAYLOAD_LEN + _STATE_SIG_LEN
+    if len(raw) not in {legacy_len, mobile_len}:
         raise TokenError("state con formato inesperado.")
 
     payload, signature = raw[:-_STATE_SIG_LEN], raw[-_STATE_SIG_LEN:]
@@ -270,10 +311,64 @@ def _decode_state_token(token: str, *, secret: str, expected_key: str) -> uuid.U
         raise TokenError("state no corresponde a este conector.")
 
     tenant_bytes = payload[:_STATE_TENANT_LEN]
-    exp = int.from_bytes(payload[_STATE_TENANT_LEN:], "big")
+    exp = int.from_bytes(payload[_STATE_TENANT_LEN:_STATE_PAYLOAD_LEN_LEGACY], "big")
     if exp < int(time.time()):
         raise TokenError("state inválido o expirado.")
-    return uuid.UUID(bytes=tenant_bytes)
+    return_to_mobile = False
+    if len(raw) == mobile_len:
+        return_to_mobile = payload[_STATE_PAYLOAD_LEN_LEGACY] == _STATE_FLAG_MOBILE
+    return uuid.UUID(bytes=tenant_bytes), return_to_mobile
+
+
+def _mobile_oauth_deeplink(*, key: str, ok: bool, error: str | None = None) -> str:
+    from urllib.parse import urlencode
+
+    params: dict[str, str] = {"key": key}
+    if ok:
+        params["ok"] = "1"
+    else:
+        params["error"] = (error or "sin_codigo").strip()
+    return f"{_MOBILE_OAUTH_DEEPLINK_BASE}?{urlencode(params)}"
+
+
+def _post_oauth_redirect(
+    settings: Any, *, return_to_mobile: bool, key: str, ok: bool, error: str | None = None
+) -> RedirectResponse:
+    if return_to_mobile:
+        return RedirectResponse(url=_mobile_oauth_deeplink(key=key, ok=ok, error=error))
+    web_base = settings.WEB_BASE_URL.rstrip("/")
+    if ok:
+        return RedirectResponse(url=f"{web_base}/app/conectores?ok=1")
+    err = error or "sin_codigo"
+    return RedirectResponse(url=f"{web_base}/app/conectores?error={err}&key={key}")
+
+
+def _try_mobile_return_from_state(
+    state: str | None, *, secret: str, expected_key: str
+) -> bool:
+    """Best-effort: ¿el `state` del callback pidió volver a iOS?"""
+    if not state:
+        return False
+    try:
+        _, return_to_mobile = _decode_state_token(state, secret=secret, expected_key=expected_key)
+    except TokenError:
+        return False
+    return return_to_mobile
+
+
+def _oauth_failure_response(
+    settings: Any,
+    connector: Any,
+    *,
+    key: str,
+    return_to_mobile: bool,
+    error: str | None,
+    error_description: str | None,
+) -> Response:
+    if return_to_mobile:
+        err = (error or error_description or "sin_codigo").strip()
+        return _post_oauth_redirect(settings, return_to_mobile=True, key=key, ok=False, error=err)
+    return _oauth_error_page(connector, error, error_description)
 
 
 def _bundle_account_hint(bundle: Any) -> str:
@@ -379,6 +474,7 @@ async def _configure_twilio_incoming_webhook(
 async def list_connectors(
     current_user: CurrentUser = Depends(get_current_user),
     repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
     settings: Settings = Depends(get_settings),
 ) -> list[dict[str, Any]]:
     accounts = await repo.list_connector_accounts(tenant_id=current_user.tenant_id)
@@ -392,7 +488,12 @@ async def list_connectors(
         if is_app_config_connector_key(connector_key):
             app_client_ids[base_connector_key(connector_key)] = account["external_account_id"]
             continue
-        by_key.setdefault(connector_key, []).append(_connector_account_out(account))
+        has_token = await _account_has_access_token(
+            vault, tenant_id=current_user.tenant_id, account_id=account["id"]
+        )
+        by_key.setdefault(connector_key, []).append(
+            _connector_account_out(account, has_access_token=has_token)
+        )
 
     oauth_connectors = [
         {
@@ -495,6 +596,7 @@ async def delete_app_credentials(
 @router.get("/{key}/authorize", response_model=AuthorizeOut, dependencies=[Depends(rate_limit)])
 async def authorize(
     key: str,
+    return_to: Literal["web", "mobile"] = Query(default="web"),
     current_user: CurrentUser = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
     repo: Repo = Depends(get_repo),
@@ -516,7 +618,10 @@ async def authorize(
     client_id, _client_secret = creds
 
     state = _create_state_token(
-        tenant_id=current_user.tenant_id, key=key, secret=settings.JWT_SECRET
+        tenant_id=current_user.tenant_id,
+        key=key,
+        secret=settings.JWT_SECRET,
+        return_to_mobile=return_to == "mobile",
     )
     redirect_uri = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/v1/connectors/{key}/callback"
     try:
@@ -604,16 +709,36 @@ async def callback(
     if connector is None:
         raise HTTPException(status_code=404, detail=f"Conector desconocido: {key}")
 
+    return_to_mobile = _try_mobile_return_from_state(
+        state, secret=settings.JWT_SECRET, expected_key=key
+    )
+
     # El proveedor puede redirigir al callback SIN `code` (usuario canceló, o
     # scopes rechazados/no aprobados — LinkedIn `unauthorized_scope_error`).
     # Mostramos el motivo real en vez de un 422 críptico de validación.
     if error or not code:
-        return _oauth_error_page(connector, error, error_description)
+        return _oauth_failure_response(
+            settings,
+            connector,
+            key=key,
+            return_to_mobile=return_to_mobile,
+            error=error,
+            error_description=error_description,
+        )
     if not state:
-        return _oauth_error_page(connector, "missing_state", "Faltó el parámetro 'state'.")
+        return _oauth_failure_response(
+            settings,
+            connector,
+            key=key,
+            return_to_mobile=return_to_mobile,
+            error="missing_state",
+            error_description="Faltó el parámetro 'state'.",
+        )
 
     try:
-        tenant_id = _decode_state_token(state, secret=settings.JWT_SECRET, expected_key=key)
+        tenant_id, return_to_mobile = _decode_state_token(
+            state, secret=settings.JWT_SECRET, expected_key=key
+        )
     except TokenError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -664,6 +789,14 @@ async def callback(
             # El proveedor rechazó el code, o la app del tenant está mal
             # configurada (p. ej. redirect_uri no coincide) -- nunca debe
             # llegar como 500 sin explicación.
+            if return_to_mobile:
+                return _post_oauth_redirect(
+                    settings,
+                    return_to_mobile=True,
+                    key=key,
+                    ok=False,
+                    error=str(exc),
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"No se pudo completar la conexión con '{key}': {exc}",
@@ -681,8 +814,9 @@ async def callback(
             tenant_id=tenant_id, actor_user_id=None, action="connectors.connected", target=key
         )
 
-    web_base = settings.WEB_BASE_URL.rstrip("/")
-    return RedirectResponse(url=f"{web_base}/app/conectores?ok=1")
+    return _post_oauth_redirect(
+        settings, return_to_mobile=return_to_mobile, key=key, ok=True
+    )
 
 
 def _require_voice_telephony(tenant: TenantCtx) -> None:

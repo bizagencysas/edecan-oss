@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 MobilePlatform = Literal["ios", "android", "web", "desktop"]
 
@@ -78,6 +78,9 @@ class MobileServerConfig(BaseModel):
     )
     flags: MobileFeatureFlags = Field(default_factory=MobileFeatureFlags)
     quick_actions: list[MobileActionConfig] = Field(default_factory=list)
+    # Server-driven UI (el dueño pidió iterar SIN TestFlight): sección libre
+    # que el servidor puede evolucionar y los clientes consumen con fallback.
+    ui: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def default_mobile_server_config(*, version: int = 1) -> MobileServerConfig:

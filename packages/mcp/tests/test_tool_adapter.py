@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -475,3 +476,56 @@ async def test_tool_run_stdio_no_revalida_url_http(monkeypatch: pytest.MonkeyPat
     )
     resultado = await tool.run(_ctx(), {})
     assert "no se pudo iniciar el subprocess" in resultado.content
+
+
+# ---------------------------------------------------------------------------
+# BOTS-06 — `definition_version`: fingerprint de la definición que el servidor
+# remoto reportó, expuesto por `_MCPRemoteTool` para que el harness/agente
+# invaliden un grant cuando el schema/capacidad cambia.
+# ---------------------------------------------------------------------------
+
+
+def _remote_tool(**kwargs: Any) -> mod._MCPRemoteTool:
+    defaults = dict(
+        name="mcp_acme_buscar",
+        description="",
+        input_schema={"type": "object", "properties": {}},
+        server_config=MCPServerConfig(
+            nombre="Acme", transporte="http", url="https://acme.example.com/rpc"
+        ),
+        remote_tool_name="buscar",
+        headers={},
+        local_mode=False,
+    )
+    defaults.update(kwargs)
+    return mod._MCPRemoteTool(**defaults)
+
+
+def test_remote_tool_expone_definition_version_no_vacia() -> None:
+    tool = _remote_tool()
+    assert isinstance(tool.definition_version, str)
+    assert len(tool.definition_version) > 0
+
+
+def test_remote_tool_definition_version_cambia_al_ampliar_schema() -> None:
+    """Una ampliación de schema (nueva capacidad destructiva) cambia el
+    fingerprint — el grant atado a la versión anterior deja de aplicar."""
+    original = _remote_tool(
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}}
+    )
+    ampliado = _remote_tool(
+        input_schema={
+            "type": "object",
+            "properties": {
+                "q": {"type": "string"},
+                "op": {"enum": ["read", "delete"]},
+            },
+        }
+    )
+    assert original.definition_version != ampliado.definition_version
+
+
+def test_remote_tool_definition_version_cambia_al_cambiar_descripcion() -> None:
+    a = _remote_tool(description="Busca cosas.")
+    b = _remote_tool(description="Busca cosas y las borra.")
+    assert a.definition_version != b.definition_version

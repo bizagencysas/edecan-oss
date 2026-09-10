@@ -8,25 +8,24 @@ Cloudflare with another provider later is isolated to a provider factory.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from inspect import isawaitable
 from typing import Any, Literal, Protocol
 
-from .anthropic import AnthropicProvider
 from .base import CompletionRequest, CompletionResponse, LLMProvider, Usage
-from .claude_cli import ClaudeCLIProvider
-from .codex_cli import CodexCLIProvider
-from .config import LLMProviderConfig
-from .errors import LLMError
-from .ollama import OllamaProvider
-from .task_router import TaskDecision, TaskRouter, azure_activo, modelo_para_perfil
-from .vertex import VertexAIProvider
+from .errors import LLMError, ProviderDownError, RateLimitedError
+from .task_router import (
+    TaskDecision,
+    TaskRouter,
+    _provider_activo,
+    azure_activo,
+    modelo_para_perfil,
+)
 from .workers_ai import WorkersAIProvider
 
-Alias = Literal["principal", "rapido", "profundo", "ingenieria_software"]
+Alias = Literal["principal", "rapido", "profundo", "ingenieria_software", "orquestador", "worker", "worker_vision"]
 logger = logging.getLogger(__name__)
-_LOCAL_ONLY_KINDS = frozenset({"claude_cli", "codex_cli", "ollama"})
-_DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 class SettingsLike(Protocol):
@@ -40,68 +39,135 @@ class SettingsLike(Protocol):
     AZURE_AI_FOUNDRY_API_KEY: str | None
     OPENAI_COMPAT_BASE_URL: str | None
     OPENAI_COMPAT_API_KEY: str | None
-    EDECAN_LOCAL_MODE: bool
-    CLAUDE_CLI_PATH: str | None
-    CODEX_CLI_PATH: str | None
-    OLLAMA_BASE_URL: str | None
-    LLM_CLI_TIMEOUT_SECONDS: int
 
 
 OnUsage = Callable[[str, Usage], Awaitable[None]]
 ProviderFactory = Callable[[SettingsLike], LLMProvider]
 
 
-class _EarlyFailureFallbackProvider:
-    """Reintenta una sola vez si el proveedor falla antes de emitir texto."""
+def _es_fallo_transitorio(exc: BaseException) -> bool:
+    """True SOLO para transport/5xx/429/timeout: reintentable y sin side effects.
 
-    def __init__(self, primary: LLMProvider, fallback_model: str | None) -> None:
+    `RateLimitedError` (429 y 5xx agotados) y `ProviderDownError` (timeout y
+    conexión caída) son los únicos fallos que el fallback puede arreglar. Los
+    errores 4xx/auth — `PeticionInvalidaError`, `CredencialInvalidaError` y el
+    `LLMError` genérico que `openai_compat` levanta para `status_code >= 400` —
+    son permanentes: reintentar un 400/401 no lo convierte en 200 y antes
+    gastaba un presupuesto nuevo en cada intento (C9b).
+    """
+    return isinstance(exc, (RateLimitedError, ProviderDownError))
+
+
+def _deadline_s_del_request(request: CompletionRequest, default: float = 300.0) -> float:
+    """Lee `metadata["deadline_s"]` (el mismo contrato que `WorkersAIProvider`),
+    con default compartido — un valor ausente/corrupto nunca revienta el
+    enrutado."""
+    try:
+        valor = request.metadata.get("deadline_s")
+        return max(0.0, float(valor)) if valor is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+class _EarlyFailureFallbackProvider:
+    """Reintenta una sola vez si el proveedor falla antes de emitir texto.
+
+    `fallback_provider` es el proveedor del MODELO de fallback: si el modelo
+    es `@cf/` (Workers AI) y el primario es Azure, el fallback DEBE ir al
+    proveedor workers — antes se reusaba el primario y el @cf/ moría 400.
+
+    Dos reglas de seguridad de reintento (C9b):
+    - Solo reintenta fallos transitorios (`_es_fallo_transitorio`); un 4xx/auth
+      sube directo.
+    - Primario y fallback comparten UN deadline único: el reintento recibe solo
+      el tiempo restante, no un presupuesto nuevo completo.
+    """
+
+    def __init__(
+        self,
+        primary: LLMProvider,
+        fallback_model: str | None,
+        fallback_provider: LLMProvider | None = None,
+    ) -> None:
         self._primary = primary
         self._fallback_model = fallback_model or None
+        self._fallback_provider = fallback_provider
         self.name = str(getattr(primary, "name", "provider"))
         self.last_fallback_used = False
         self.last_model_used: str | None = None
+
+    def _objetivo_del_fallback(self) -> LLMProvider:
+        return self._fallback_provider or self._primary
+
+    def _fallback_request(self, request: CompletionRequest, deadline: float) -> CompletionRequest:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise LLMError(
+                "El presupuesto compartido de la llamada se agotó antes de poder "
+                "reintentar con el modelo de fallback.",
+                provider=self.name,
+            )
+        return request.model_copy(
+            update={
+                "model": self._fallback_model,
+                # metadata nuevo (no se muta el del request original) con el
+                # tiempo restante para que Workers AI comparta el deadline.
+                "metadata": {**request.metadata, "deadline_s": remaining},
+            }
+        )
 
     def stream(self, request: CompletionRequest) -> AsyncIterator[Any]:
         return self._stream(request)
 
     async def _stream(self, request: CompletionRequest) -> AsyncIterator[Any]:
         emitted = False
+        deadline = time.monotonic() + _deadline_s_del_request(request)
         self.last_fallback_used = False
         self.last_model_used = request.model
         try:
             async for chunk in self._primary.stream(request):
                 emitted = True
                 yield chunk
-        except Exception:
+        except Exception as exc:
+            if not _es_fallo_transitorio(exc):
+                raise
             if emitted or not self._fallback_model or request.model == self._fallback_model:
                 raise
             self.last_fallback_used = True
             logger.warning("LLM primary model failed before output; using configured fallback")
-            fallback_request = request.model_copy(update={"model": self._fallback_model})
+            fallback_request = self._fallback_request(request, deadline)
             self.last_model_used = fallback_request.model
-            async for chunk in self._primary.stream(fallback_request):
+            async for chunk in self._objetivo_del_fallback().stream(fallback_request):
                 yield chunk
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        deadline = time.monotonic() + _deadline_s_del_request(request)
         self.last_fallback_used = False
         self.last_model_used = request.model
         try:
             return await self._primary.complete(request)
-        except Exception:
+        except Exception as exc:
+            if not _es_fallo_transitorio(exc):
+                raise
             if not self._fallback_model or request.model == self._fallback_model:
                 raise
             self.last_fallback_used = True
             logger.warning("LLM primary completion failed; using configured fallback")
-            fallback_request = request.model_copy(update={"model": self._fallback_model})
+            fallback_request = self._fallback_request(request, deadline)
             self.last_model_used = fallback_request.model
-            return await self._primary.complete(fallback_request)
+            return await self._objetivo_del_fallback().complete(fallback_request)
 
     async def aclose(self) -> None:
-        close = getattr(self._primary, "aclose", None)
-        if close is not None:
-            result = close()
-            if isawaitable(result):
-                await result
+        cerrados: set[int] = set()
+        for objetivo in (self._primary, self._fallback_provider):
+            if objetivo is None or id(objetivo) in cerrados:
+                continue
+            cerrados.add(id(objetivo))
+            close = getattr(objetivo, "aclose", None)
+            if close is not None:
+                result = close()
+                if isawaitable(result):
+                    await result
 
 
 def build_workers_ai_provider(settings: SettingsLike) -> LLMProvider:
@@ -148,6 +214,7 @@ def build_azure_openai_provider(settings: SettingsLike) -> LLMProvider:
         base_url=base,
         api_key=api_key,
         key_auth_mode="api-key",
+        use_max_completion_tokens=True,
     )
 
 
@@ -158,7 +225,7 @@ def build_provider_from_settings(settings: SettingsLike) -> LLMProvider:
     default). Cambiar `LLM_PROVIDER=azure_openai` en `platform-config.json`
     mueve la inferencia a Azure sin tocar código; volver a `workers_ai` (o
     borrar la clave) restaura Cloudflare."""
-    kind = str(getattr(settings, "LLM_PROVIDER", None) or "workers_ai").strip().lower()
+    kind = _provider_activo(settings) or "workers_ai"
     if kind == "azure_openai":
         return build_azure_openai_provider(settings)
     if kind == "openai_compat":
@@ -191,44 +258,36 @@ class LLMRouter:
         provider_factory: ProviderFactory = build_provider_from_settings,
         provider: LLMProvider | None = None,
         task_router: TaskRouter | None = None,
-        provider_config: LLMProviderConfig | None = None,
+        workers_provider_factory: ProviderFactory = build_workers_ai_provider,
     ) -> None:
         self._settings = settings
         self._on_usage = on_usage
         self._provider_factory = provider_factory
         self._provider = provider
-        self._provider_config = provider_config
+        self._workers_provider_factory = workers_provider_factory
+        # Workers AI como SEGUNDO proveedor (los trabajadores de los bots):
+        # los modelos `@cf/...` se rutean acá aunque el principal sea Azure.
+        # GPT (Azure) queda para el chat y Astra (el jefe).
+        self._workers_provider: LLMProvider | None = None
         self._fallback_model = (
-            None
-            if provider_config is not None
-            else (str(getattr(settings, "WORKERS_AI_FALLBACK_MODEL", None) or "").strip() or None)
+            str(getattr(settings, "WORKERS_AI_FALLBACK_MODEL", None) or "").strip() or None
         )
-        if provider_config is not None:
-            principal, rapido, profundo = self._config_models(provider_config)
-            chat_m = rapido or principal
-            deep_m = profundo or principal or chat_m
-            self._task_router = task_router or TaskRouter(
-                chat_model=chat_m,
-                principal_model=principal,
-                deep_model=deep_m,
-                voice_model=rapido or principal,
-                engineering_model=principal,
-                allow_catalog_selection=provider_config.kind in {"workers_ai", "azure_openai"},
-                allow_empty_models=True,
-            )
-        elif azure_activo():
+        if azure_activo(self._settings):
             # Con Azure, el "modelo" es el nombre del deployment; ignora
             # WORKERS_AI_CHAT_MODEL (que sigue apuntando al catálogo de
-            # Cloudflare) y usa el primer deployment ("Sol" por default).
+            # Cloudflare) y usa el primer deployment ("Sol" por default). El
+            # ESCRITOR de posts ("profundo") también: mandar el id de GLM del
+            # catálogo de Workers AI sobre el proveedor Azure fallaría.
+            # `azure_activo(self._settings)` lee la MISMA fuente que
+            # `build_provider_from_settings` (C9b: una sola fuente de verdad).
             chat_m = modelo_para_perfil("chat_rapido")
-            deep_m = getattr(settings, "WORKERS_AI_MODEL_PROFUNDO", None)
-            self._task_router = task_router or TaskRouter(chat_model=chat_m, deep_model=deep_m)
+            deep_m = modelo_para_perfil("profundo")
         else:
             chat_m = getattr(settings, "WORKERS_AI_CHAT_MODEL", None) or modelo_para_perfil(
                 "chat_rapido"
             )
             deep_m = getattr(settings, "WORKERS_AI_MODEL_PROFUNDO", None)
-            self._task_router = task_router or TaskRouter(chat_model=chat_m, deep_model=deep_m)
+        self._task_router = task_router or TaskRouter(chat_model=chat_m, deep_model=deep_m)
 
     def resolve(
         self,
@@ -249,7 +308,13 @@ class LLMRouter:
 
         del tenant_flags
         decision = self._task_router.decide(alias=alias, metadata=metadata)
-        return self._get_provider(), decision.model
+        model = decision.model
+        if str(model or "").startswith("@cf/"):
+            # Los trabajadores de los bots corren en Workers AI (gratis/barato)
+            # aunque el proveedor principal sea Azure. El chat y Astra (jefes)
+            # siguen con el proveedor principal.
+            return self._get_workers_provider(), model
+        return self._get_provider(), model
 
     def resolve_with_attribution(
         self,
@@ -261,7 +326,18 @@ class LLMRouter:
         """Resuelve y conserva la decisión auditable del `TaskRouter`."""
         del tenant_flags
         decision = self._task_router.decide(alias=alias, metadata=metadata)
-        provider = self._with_fallback(self._get_provider())
+        model = decision.model
+        if str(model or "").startswith("@cf/"):
+            # Misma regla que `resolve()`: los trabajadores de los bots corren
+            # en Workers AI aunque el principal sea Azure. Antes esta rama NO
+            # existía aquí y cada paso de misión mandaba un modelo `@cf/` al
+            # endpoint de Azure → 400 unknown model (bug E-LLM-1). El wrapper
+            # de fallback SÍ aplica: si Workers AI falla antes del primer
+            # chunk y hay WORKERS_AI_FALLBACK_MODEL, reintenta con él (el
+            # wrapper enruta un fallback @cf/ al provider workers).
+            provider = self._with_fallback(self._get_workers_provider())
+        else:
+            provider = self._with_fallback(self._get_provider())
         attribution = {
             "router": "task_router",
             "router_alias": str(alias),
@@ -276,7 +352,12 @@ class LLMRouter:
         """Añade fallback solo cuando está configurado, sin cambiar defaults."""
         if not self._fallback_model:
             return provider
-        return _EarlyFailureFallbackProvider(provider, self._fallback_model)
+        fallback_provider: LLMProvider | None = None
+        if str(self._fallback_model or "").startswith("@cf/"):
+            # El modelo de fallback es de Workers AI: el reintento va al
+            # proveedor workers, no al primario (Azure rechaza ids @cf/).
+            fallback_provider = self._get_workers_provider()
+        return _EarlyFailureFallbackProvider(provider, self._fallback_model, fallback_provider)
 
     def route(
         self,
@@ -284,10 +365,21 @@ class LLMRouter:
         *,
         alias: Alias = "rapido",
     ) -> tuple[LLMProvider, TaskDecision]:
-        """Classify a concrete request and return its provider decision."""
+        """Classify a concrete request and return its provider decision.
+
+        Igual que `resolve()`/`resolve_with_attribution()`: un modelo `@cf/`
+        (trabajadores de los bots) va SIEMPRE al proveedor de Workers AI
+        aunque el primario sea Azure (C9b — antes `route()`/`complete()`
+        mandaban `@cf/` al primario y moría 400 en Azure).
+        """
 
         decision = self._task_router.decide(request, alias=alias)
-        return self._with_fallback(self._get_provider()), decision
+        base = (
+            self._get_workers_provider()
+            if str(decision.model or "").startswith("@cf/")
+            else self._get_provider()
+        )
+        return self._with_fallback(base), decision
 
     async def complete(
         self,
@@ -307,101 +399,36 @@ class LLMRouter:
             )
         return response
 
+    def _get_workers_provider(self) -> LLMProvider:
+        if self._workers_provider is None:
+            self._workers_provider = self._workers_provider_factory(self._settings)
+        return self._workers_provider
+
     def _get_provider(self) -> LLMProvider:
         if self._provider is None:
             try:
-                self._provider = (
-                    self._build_provider_from_config(self._provider_config)
-                    if self._provider_config is not None
-                    else self._provider_factory(self._settings)
-                )
+                self._provider = self._provider_factory(self._settings)
             except LLMError:
                 raise
             except Exception as exc:
                 raise LLMError(f"No se pudo inicializar el proveedor de inferencia: {exc}") from exc
         return self._provider
 
-    @staticmethod
-    def _config_models(config: LLMProviderConfig) -> tuple[str, str, str]:
-        principal = (config.model_principal or "").strip()
-        rapido = (config.model_rapido or principal).strip()
-        profundo = (config.model_profundo or principal or rapido).strip()
-        return principal, rapido, profundo
-
-    def _build_provider_from_config(self, config: LLMProviderConfig) -> LLMProvider:
-        if config.kind == "workers_ai":
-            account_id = str(config.extra.get("account_id") or "").strip()
-            if not account_id or not config.api_key:
-                raise LLMError(
-                    "Workers AI requiere account_id y API token en Configuración.",
-                    provider="workers_ai",
-                )
-            return WorkersAIProvider(
-                account_id=account_id,
-                api_token=config.api_key,
-                timeout=float(getattr(self._settings, "WORKERS_AI_TIMEOUT_SECONDS", 120.0)),
-            )
-        if config.kind == "anthropic":
-            if not config.api_key:
-                raise LLMError("Proveedor 'anthropic' seleccionado sin api_key.")
-            return AnthropicProvider(api_key=config.api_key)
-        if config.kind == "openai_compat":
-            if not config.base_url:
-                raise LLMError("Proveedor 'openai_compat' seleccionado sin base_url.")
-            from .openai_compat import OpenAICompatProvider
-
-            return OpenAICompatProvider(base_url=config.base_url, api_key=config.api_key or "")
-        if config.kind == "vertex":
-            return VertexAIProvider(config)
-        if config.kind in _LOCAL_ONLY_KINDS and not bool(
-            getattr(self._settings, "EDECAN_LOCAL_MODE", False)
-        ):
-            raise LLMError(
-                f"Proveedor {config.kind!r} requiere EDECAN_LOCAL_MODE=True en la app desktop."
-            )
-        if config.kind == "claude_cli":
-            return ClaudeCLIProvider(
-                **self._cli_provider_kwargs(config, path_setting="CLAUDE_CLI_PATH")
-            )
-        if config.kind == "codex_cli":
-            kwargs = self._cli_provider_kwargs(config, path_setting="CODEX_CLI_PATH")
-            if config.model_profundo and config.reasoning_effort_profundo:
-                kwargs["reasoning_effort_by_model"] = {
-                    config.model_profundo: config.reasoning_effort_profundo
-                }
-            return CodexCLIProvider(**kwargs)
-        if config.kind == "ollama":
-            return OllamaProvider(
-                base_url=config.base_url
-                or getattr(self._settings, "OLLAMA_BASE_URL", None)
-                or _DEFAULT_OLLAMA_BASE_URL,
-                model_principal=config.model_principal,
-            )
-        raise LLMError(f"kind de proveedor LLM desconocido: {config.kind!r}")
-
-    def _cli_provider_kwargs(
-        self, config: LLMProviderConfig, *, path_setting: str
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "binary_path": config.extra.get("binary_path")
-            or getattr(self._settings, path_setting, None)
-        }
-        timeout_seconds = config.extra.get("timeout_seconds") or getattr(
-            self._settings, "LLM_CLI_TIMEOUT_SECONDS", None
-        )
-        if timeout_seconds:
-            kwargs["timeout_seconds"] = float(timeout_seconds)
-        return kwargs
-
     async def aclose(self) -> None:
         """Release provider-owned network resources, if initialized."""
 
-        provider, self._provider = self._provider, None
-        if provider is None:
-            return
-        close = getattr(provider, "aclose", None)
-        if close is None:
-            return
-        result = close()
-        if isawaitable(result):
-            await result
+        for current in (
+            ("primario", self._provider),
+            ("workers", self._workers_provider),
+        ):
+            _, provider = current
+            if provider is None:
+                continue
+            close = getattr(provider, "aclose", None)
+            if close is None:
+                continue
+            result = close()
+            if isawaitable(result):
+                await result
+        self._provider = None
+        self._workers_provider = None

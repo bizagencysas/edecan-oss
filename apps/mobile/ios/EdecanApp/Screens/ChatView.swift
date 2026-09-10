@@ -51,6 +51,13 @@ struct ChatView: View {
     /// Datos fuente del autocompletado `@`/`/` del composer, cargados una vez.
     @State private var datosMenciones = DatosMenciones()
     private let estadoLocal = ChatLocalStateStore()
+
+    /// Purga única de borradores persistidos por builds viejas: el texto
+    /// sin mandar no debe perseguir al dueño en cada apertura.
+    static let purgarBorradoresViejos: Void = {
+        ChatLocalStateStore().purgarBorradoresPersistidos()
+        return ()
+    }()
     private let anclaFinal = "chat-final"
     @FocusState private var campoEnfocado: Bool
 
@@ -162,7 +169,13 @@ struct ChatView: View {
                     .accessibilityLabel("Nuevo chat")
                 }
             }
+            .onAppear {
+                viewModel.pintarHiloCacheadoSiAunNoInicio(
+                    preferredId: tabRouter.conversacionPendiente?.conversationId
+                )
+            }
             .task {
+                _ = Self.purgarBorradoresViejos
                 guard let client = session.client else { return }
                 // Frente 5: en frío la pestaña aterriza en la conversación
                 // PRINCIPAL persistente, no en un chat nuevo y vacío (ver
@@ -262,10 +275,12 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if viewModel.cargandoConversacion {
-                        ProgressView("Cargando conversacion…")
+                    if viewModel.cargandoConversacion && viewModel.mensajes.isEmpty {
+                        ProgressView()
+                            .controlSize(.large)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 60)
+                            .accessibilityLabel("Cargando conversación")
                     } else if viewModel.mensajes.isEmpty {
                         EmptyStateView(
                             icono: "bubble.left.and.bubble.right.fill",
@@ -321,6 +336,14 @@ struct ChatView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                if viewModel.sincronizandoEnSilencio {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .padding(.top, 8)
+                        .accessibilityLabel("Actualizando conversación")
+                }
+            }
             .onTapGesture {
                 campoEnfocado = false
             }
@@ -375,7 +398,7 @@ struct ChatView: View {
                     )
                 }
             },
-            onReply: { textoActual = "> \(mensaje.texto)\n\n" },
+            onReply: { reenviar(mensaje) },
             onReaccionar: { emoji in
                 guard let client = session.client else { return }
                 Task {
@@ -571,17 +594,6 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                     .tarjetaVidrio(esquina: 18)
 
-                Button {
-                    viewModel.modoTrabajar.toggle()
-                } label: {
-                    Image(systemName: viewModel.modoTrabajar ? "briefcase.fill" : "briefcase")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                        .foregroundStyle(viewModel.modoTrabajar ? EdecanTheme.morado : .secondary)
-                        .tarjetaVidrio(esquina: 18)
-                }
-                .accessibilityLabel(viewModel.modoTrabajar ? "Modo trabajar activo" : "Modo trabajar")
-
                 botonModeloIA
 
                 if viewModel.estaGenerando {
@@ -631,6 +643,7 @@ struct ChatView: View {
             }
         }
         .padding()
+        .background(FondoGlowComposer())
     }
 
     /// Botón de IA (un solo icono `sparkles` con el degradado de marca) que abre
@@ -1163,7 +1176,33 @@ struct ChatView: View {
             viewModel.errorMensaje = "No hay sesión activa."
             return
         }
-        viewModel.reintentarDesdeVista(mensajeId: id, client: client)
+        // El envío fallido nunca llegó al servidor: se saca del hilo y su
+        // texto va al composer limpio (sin ">"), listo para corregir y
+        // mandar. Si por alguna razón la burbuja ya no está, se reintenta
+        // el envío original.
+        if let texto = viewModel.quitarMensajeFallido(id: id) {
+            textoActual = texto
+            campoEnfocado = true
+        } else {
+            viewModel.reintentarDesdeVista(mensajeId: id, client: client)
+        }
+    }
+
+    /// Reenviar un mensaje: su texto va al composer (sin ">") y, si es un
+    /// mensaje propio, sale del chat — local y en el servidor — para no
+    /// quedar duplicado cuando el reenvío se mande.
+    private func reenviar(_ mensaje: ChatViewModel.Mensaje) {
+        textoActual = mensaje.textoEnviado
+        guard mensaje.rol == .usuario else { return }
+        guard viewModel.quitarMensaje(id: mensaje.id) else { return }
+        guard let client = session.client, let conversationId = viewModel.conversacionId else { return }
+        Task {
+            // El borrado es best-effort: si falla, el original vuelve al
+            // reabrir el chat, pero la vista ya no lo muestra.
+            try? await client.borrarMensaje(
+                conversacionId: conversationId, mensajeId: mensaje.id
+            )
+        }
     }
 
     private func guardarBorrador(_ texto: String, conversationId: String?) {
@@ -1438,6 +1477,7 @@ struct GaleriaEdecanPicker: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.ultraThinMaterial)
+        .background(FondoGlowComposer(arriba: true))
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(.separator.opacity(0.35))
@@ -1591,16 +1631,24 @@ struct GaleriaEdecanPicker: View {
 
     @MainActor
     private func cargarRecursos() {
+        // AppHang (Sentry, build 175): `PHAsset.fetchAssets` + enumeración
+        // síncrona en el MAIN thread materializaba la metadata genérica de
+        // CoreLocation (StoredLocationBase) y bloqueaba la app ≥2s la primera
+        // vez. Se mueve a un hilo de fondo; solo el estado se setea en main.
         let opciones = PHFetchOptions()
         opciones.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         opciones.fetchLimit = 1_000
-        let resultado = PHAsset.fetchAssets(with: .image, options: opciones)
-        var nuevos: [PHAsset] = []
-        nuevos.reserveCapacity(resultado.count)
-        resultado.enumerateObjects { recurso, _, _ in
-            nuevos.append(recurso)
+        Task.detached(priority: .userInitiated) {
+            let resultado = PHAsset.fetchAssets(with: .image, options: opciones)
+            var nuevos: [PHAsset] = []
+            nuevos.reserveCapacity(resultado.count)
+            resultado.enumerateObjects { recurso, _, _ in
+                nuevos.append(recurso)
+            }
+            await MainActor.run { [nuevos] in
+                recursos = nuevos
+            }
         }
-        recursos = nuevos
     }
 
     private func alternar(_ id: String) {

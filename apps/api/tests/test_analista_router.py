@@ -86,9 +86,16 @@ class FakeSession:
 class _FakeBody:
     def __init__(self, data: bytes) -> None:
         self._data = data
+        self._pos = 0
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, amt: int | None = None) -> bytes:
+        # StreamingBody real avanza un cursor, devuelve menos de `amt` antes
+        # del EOF y b"" al terminar; el productor lee en loop (ACT-01).
+        if amt is None:
+            amt = len(self._data) - self._pos
+        trozo = self._data[self._pos : self._pos + amt]
+        self._pos += len(trozo)
+        return trozo
 
 
 class _FakeS3Client:

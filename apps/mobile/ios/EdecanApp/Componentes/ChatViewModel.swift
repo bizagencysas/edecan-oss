@@ -291,6 +291,9 @@ final class ChatViewModel {
     private(set) var enviando = false
     private(set) var cargandoHistorial = false
     private(set) var cargandoConversacion = false
+    /// GET en vuelo sobre un hilo que ya se pintó desde disco. La UI no debe
+    /// tapar las burbujas con "Cargando conversacion…".
+    private(set) var sincronizandoEnSilencio = false
     private(set) var confirmacionPendiente: ConfirmacionPendiente?
     var errorMensaje: String?
     var modoTrabajar = false
@@ -328,6 +331,10 @@ final class ChatViewModel {
 
     private let sseClient = SSEClient()
     private let pendingAttemptStore: PendingChatAttemptStore
+    private let localState: ChatLocalStateStore
+    private let snapshotStore: ConversationSnapshotStore
+    private var tituloSnapshot: String?
+    private var snapshotEsPrincipal = false
     private var inicializado = false
     private var inicioCompleto = false
     private var seguimientoMisiones: [String: Task<Void, Never>] = [:]
@@ -341,21 +348,30 @@ final class ChatViewModel {
     /// se queda en su turno sin tocar el servidor hasta salir de la fila.
     private var misionesArrancadas = 0
 
-    init(pendingAttemptStore: PendingChatAttemptStore = PendingChatAttemptStore()) {
+    init(
+        pendingAttemptStore: PendingChatAttemptStore = PendingChatAttemptStore(),
+        localState: ChatLocalStateStore = ChatLocalStateStore(),
+        snapshotStore: ConversationSnapshotStore = ConversationSnapshotStore()
+    ) {
         self.pendingAttemptStore = pendingAttemptStore
+        self.localState = localState
+        self.snapshotStore = snapshotStore
     }
 
     var tituloConversacionActual: String {
-        guard let conversacionId,
-              let conversation = conversaciones.first(where: { $0.id == conversacionId })
-        else { return "Nuevo chat" }
-        // La conversación "principal" se titula "Actividad" en el backend
-        // (ahí aterrizan los avisos automáticos que el dueño no pidió), pero
-        // ese título leído en la cabecera del chat parece el nombre de un
-        // feed que no es. Un rótulo neutro evita esa confusión.
-        if conversation.isMain { return "Edecán" }
-        let title = conversation.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return title.isEmpty ? "Conversación" : title
+        guard let conversacionId else { return "Nuevo chat" }
+        if let conversation = conversaciones.first(where: { $0.id == conversacionId }) {
+            // La conversación "principal" se titula "Actividad" en el backend
+            // (ahí aterrizan los avisos automáticos que el dueño no pidió), pero
+            // ese título leído en la cabecera del chat parece el nombre de un
+            // feed que no es. Un rótulo neutro evita esa confusión.
+            if conversation.isMain { return "Edecán" }
+            let title = conversation.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return title.isEmpty ? "Conversación" : title
+        }
+        if snapshotEsPrincipal { return "Edecán" }
+        let titulo = tituloSnapshot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return titulo.isEmpty ? "Edecán" : titulo
     }
 
     /// Mensajes del asistente posteriores a la última marca de lectura local.
@@ -470,6 +486,19 @@ final class ChatViewModel {
         )
     }
 
+    /// Primera pintura síncrona: si hay recorte en disco, el dueño ve el
+    /// hilo en el primer frame, no cuando termina el GET a Virginia.
+    func pintarHiloCacheadoSiAunNoInicio(preferredId: String?) {
+        guard !inicializado, conversacionId == nil, mensajes.isEmpty else { return }
+        if let preferredId, !preferredId.isEmpty {
+            pintarSnapshotSiExiste(id: preferredId)
+            return
+        }
+        if let principalId = localState.principalConversationId, !principalId.isEmpty {
+            pintarSnapshotSiExiste(id: principalId)
+        }
+    }
+
     /// Arranca el chat. Un intento pendiente por recuperar o un
     /// `preferredConversationId` explícito (p. ej. un deeplink) SIEMPRE
     /// ganan. Sin ninguno de los dos, la pestaña aterriza en la conversación
@@ -484,16 +513,27 @@ final class ChatViewModel {
         // bloquear el arranque del chat por él sería cambiar una etiqueta por
         // un retraso en lo único que el dueño vino a hacer, escribir.
         Task { await cargarCatalogoModelos(client: client) }
-        await cargarConversaciones(client: client)
+        // La lista del historial no bloquea el hilo abierto: Colombia↔Virginia
+        // son ~150–200 ms por hop; tres hops en serie eran los ~10 s percibidos
+        // más el spinner. El GET de conversaciones corre en paralelo.
+        Task { await cargarConversaciones(client: client) }
 
         let pending = cargarIntentoPendienteValido()
         // Un envío a medias SIEMPRE gana: perder esa burbuja sería perder un
         // mensaje que ya salió hacia el servidor.
         let preferredId = pending?.conversationId ?? preferredConversationId
-        if let preferredId,
-           conversaciones.contains(where: { $0.id == preferredId }) {
+        if let preferredId, !preferredId.isEmpty {
+            pintarSnapshotSiExiste(id: preferredId)
             await abrirConversacion(id: preferredId, client: client)
-        } else if preferredId == nil {
+        } else if let principalId = localState.principalConversationId, !principalId.isEmpty {
+            pintarSnapshotSiExiste(id: principalId)
+            let abierta = await abrirConversacion(id: principalId, client: client)
+            if !abierta {
+                localState.principalConversationId = nil
+                snapshotStore.remove(conversationId: principalId)
+                await abrirConversacionPrincipalSiEsPosible(client: client)
+            }
+        } else {
             await abrirConversacionPrincipalSiEsPosible(client: client)
         }
 
@@ -506,16 +546,18 @@ final class ChatViewModel {
     /// Resuelve (o crea, si es la primera vez) la conversación principal del
     /// dueño y la deja abierta. Un fallo aquí (sin red, backend viejo sin el
     /// endpoint) no debe bloquear el arranque: se cae al chat nuevo de
-    /// siempre, que sigue siendo un estado válido.
+    /// siempre, que sigue siendo un estado válido. Si ya conocemos el id de
+    /// la principal (sesión anterior), `iniciar` se salta este GET.
     private func abrirConversacionPrincipalSiEsPosible(client: APIClient) async {
         guard let principal = try? await client.conversacionPrincipal() else { return }
-        // La lista ya se cargó arriba (`cargarConversaciones`); si esta es la
-        // primerísima vez que se crea la principal, todavía no aparece ahí.
+        // Si esta es la primerísima vez que se crea la principal, todavía no
+        // aparece en el historial (el GET de la lista corre en paralelo).
         // Se inserta a mano para que `tituloConversacionActual` la encuentre
         // de inmediato en vez de mostrar "Nuevo chat" por un instante.
         if !conversaciones.contains(where: { $0.id == principal.id }) {
             conversaciones.insert(principal, at: 0)
         }
+        localState.principalConversationId = principal.id
         await abrirConversacion(id: principal.id, client: client)
     }
 
@@ -533,9 +575,11 @@ final class ChatViewModel {
     /// reiniciar el escritorio vuelve a pedir el GET. Sin esto, el dueño
     /// abre iOS y el chat "no tiene" lo que Mac sí.
     func refrescarConversacionAbierta(client: APIClient) async {
-        guard let conversacionId,
+        guard inicioCompleto,
+              let conversacionId,
               !enviando,
               !cargandoConversacion,
+              !sincronizandoEnSilencio,
               confirmacionPendiente == nil
         else { return }
         do {
@@ -546,6 +590,7 @@ final class ChatViewModel {
             iniciarSeguimientosPersistidos(client: client)
             modeloElegido = detail.model
             esfuerzoElegido = detail.effort
+            persistirSnapshot(detail)
         } catch {
             // Sync en silencio: un fallo de red aquí no debe tapar el hilo
             // que el dueño ya está leyendo.
@@ -613,14 +658,32 @@ final class ChatViewModel {
         }
     }
 
-    func abrirConversacion(id: String, client: APIClient) async {
-        guard !enviando else { return }
+    @discardableResult
+    func abrirConversacion(id: String, client: APIClient) async -> Bool {
+        guard !enviando else { return false }
         if conversacionId != id {
             soltarMisionViva()
+            if conversacionId != nil {
+                pintarSnapshotSiExiste(id: id)
+                if conversacionId != id {
+                    mensajes = []
+                    conversacionId = id
+                    tituloSnapshot = nil
+                    snapshotEsPrincipal = false
+                }
+            }
         }
-        cargandoConversacion = true
+        let yaHayHilo = conversacionId == id && !mensajes.isEmpty
+        if yaHayHilo {
+            sincronizandoEnSilencio = true
+        } else {
+            cargandoConversacion = true
+        }
         errorMensaje = nil
-        defer { cargandoConversacion = false }
+        defer {
+            cargandoConversacion = false
+            sincronizandoEnSilencio = false
+        }
         do {
             let detail = try await client.obtenerConversacion(id: id)
             conversacionId = detail.id
@@ -633,15 +696,91 @@ final class ChatViewModel {
             herramientaActiva = nil
             restaurarConfirmacion(detail.pendingConfirmation)
             iniciarSeguimientosPersistidos(client: client)
+            persistirSnapshot(detail)
+            return true
         } catch {
+            if yaHayHilo {
+                // El dueño ya está leyendo el recorte local; un GET fallido
+                // (túnel lento, VPS lejos) no debe borrar esas burbujas.
+                return true
+            }
             errorMensaje = Self.mensajeErrorUsuario(error.localizedDescription)
+            return false
         }
+    }
+
+    private func pintarSnapshotSiExiste(id: String) {
+        guard let snap = snapshotStore.load(conversationId: id) else { return }
+        conversacionId = snap.conversationId
+        tituloSnapshot = snap.title
+        snapshotEsPrincipal = snap.isMain || localState.principalConversationId == snap.conversationId
+        modeloElegido = snap.model
+        esfuerzoElegido = snap.effort.flatMap(EsfuerzoChat.init(rawValue:))
+        mensajes = snap.messages.compactMap(Self.mensajeDesdeSnapshot)
+        herramientaActiva = nil
+        confirmacionPendiente = nil
+        cargandoConversacion = false
+    }
+
+    private func persistirSnapshot(_ detail: ConversationDetail) {
+        let isMain = conversaciones.first(where: { $0.id == detail.id })?.isMain
+            ?? (localState.principalConversationId == detail.id)
+        if isMain {
+            localState.principalConversationId = detail.id
+        }
+        tituloSnapshot = detail.title
+        snapshotEsPrincipal = isMain
+        let rows = Self.mensajesDesdeHistorial(detail.messages).compactMap { mensaje -> CachedChatMessage? in
+            let role: String
+            switch mensaje.rol {
+            case .usuario: role = "user"
+            case .asistente: role = "assistant"
+            case .sistema: return nil
+            }
+            return CachedChatMessage(
+                id: mensaje.id,
+                role: role,
+                text: mensaje.texto.isEmpty ? mensaje.textoApertura : mensaje.texto,
+                createdAt: mensaje.createdAt,
+                pinned: mensaje.pinned,
+                bookmark: mensaje.bookmark
+            )
+        }
+        snapshotStore.save(
+            CachedConversationSnapshot(
+                conversationId: detail.id,
+                title: detail.title,
+                isMain: isMain,
+                model: detail.model,
+                effort: detail.effort?.rawValue,
+                messages: rows
+            )
+        )
+    }
+
+    private static func mensajeDesdeSnapshot(_ row: CachedChatMessage) -> Mensaje? {
+        let role: Mensaje.Rol
+        switch row.role {
+        case "user": role = .usuario
+        case "assistant": role = .asistente
+        default: return nil
+        }
+        return Mensaje(
+            id: row.id,
+            rol: role,
+            texto: row.text,
+            createdAt: row.createdAt,
+            pinned: row.pinned,
+            bookmark: row.bookmark
+        )
     }
 
     func nuevaConversacion() {
         guard !enviando, confirmacionPendiente == nil else { return }
         conversacionId = nil
         mensajes = []
+        tituloSnapshot = nil
+        snapshotEsPrincipal = false
         herramientaActiva = nil
         errorMensaje = nil
         soltarMisionViva()
@@ -922,6 +1061,26 @@ final class ChatViewModel {
         }) else { return false }
         mensajes[index].falloEnvio = false
         return await ejecutarEnvio(mensajeId: mensajeId, client: client)
+    }
+
+    /// Reintentar un envío fallido sin dejar duplicado: saca la burbuja
+    /// fallida del hilo y devuelve el texto tal cual se mandó para que la
+    /// vista lo ponga en el composer. El envío fallido nunca llegó al
+    /// servidor, así que quitarlo del hilo es real (no reaparece al reabrir).
+    func quitarMensajeFallido(id: String) -> String? {
+        guard let index = mensajes.firstIndex(where: {
+            $0.id == id && $0.rol == .usuario && $0.falloEnvio
+        }) else { return nil }
+        let texto = mensajes[index].textoEnviado
+        mensajes.remove(at: index)
+        return texto
+    }
+
+    /// Saca un mensaje del hilo local. Devuelve `true` si estaba y se quitó.
+    func quitarMensaje(id: String) -> Bool {
+        guard let index = mensajes.firstIndex(where: { $0.id == id }) else { return false }
+        mensajes.remove(at: index)
+        return true
     }
 
     // MARK: - Detención de generación
@@ -1706,6 +1865,10 @@ final class ChatViewModel {
         case .error(let mensaje):
             errorMensaje = Self.mensajeErrorUsuario(mensaje)
         case .followUpTurn:
+            break
+        case .messageStart, .messageEnd:
+            // Solo los chats de bot/equipo (BotChatView) usan estos límites;
+            // el chat principal conserva su turno único por burbuja.
             break
         case .unknown:
             break

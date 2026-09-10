@@ -431,9 +431,16 @@ async def _insert_plan(
     user_id: uuid.UUID,
     fecha: date,
     plan: WorkoutPlan,
-) -> uuid.UUID:
+) -> uuid.UUID | None:
+    """Inserta el plan de hoy y devuelve su `id`, o `None` si otro check-in
+    concurrente ya creó el plan del día (UNIQUE `tenant_id, user_id, fecha`).
+
+    Aquí se resuelve la carrera del check-in: dos POST simultáneos del mismo
+    día generan dos planes, pero solo el primero persiste; el segundo obtiene
+    `None` y el `checkin` reutiliza el plan/sesión existentes sin duplicar.
+    """
     plan_id = uuid.uuid4()
-    await session.execute(
+    result = await session.execute(
         text(
             """
             INSERT INTO workout_plans (
@@ -443,6 +450,8 @@ async def _insert_plan(
                 :id, :tenant_id, :user_id, :fecha, :titulo, :objetivo, :duracion_min,
                 CAST(:ejercicios AS jsonb), :imagen_url, :imagen_file_id
             )
+            ON CONFLICT (tenant_id, user_id, fecha) DO NOTHING
+            RETURNING id
             """
         ),
         {
@@ -458,7 +467,8 @@ async def _insert_plan(
             "imagen_file_id": plan.imagen_file_id,
         },
     )
-    return plan_id
+    row = result.mappings().first()
+    return plan_id if row is not None else None
 
 
 async def _insert_session(
@@ -537,6 +547,7 @@ async def _insert_checkin(
             """
             INSERT INTO gym_checkins (id, tenant_id, user_id, fecha, respuesta, session_id)
             VALUES (:id, :tenant_id, :user_id, :fecha, :respuesta, :session_id)
+            ON CONFLICT (tenant_id, user_id, fecha) DO NOTHING
             """
         ),
         {
@@ -548,6 +559,91 @@ async def _insert_checkin(
             "session_id": session_id,
         },
     )
+
+
+async def _load_checkin_hoy(
+    session: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID, fecha: date
+) -> dict[str, Any] | None:
+    """Fila de `gym_checkins` de hoy para el usuario, o `None`.
+
+    Es la fuente de verdad de "¿ya respondió la tarjeta hoy?" — `plan/today`
+    la expone como `checkin_hoy` para que iOS no vuelva a mostrar la tarjeta
+    Sí/No tras cerrar y reabrir la app.
+    """
+    result = await session.execute(
+        text(
+            """
+            SELECT id, tenant_id, user_id, fecha, respuesta, session_id
+            FROM gym_checkins
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND fecha = :fecha
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ),
+        {"tenant_id": tenant_id, "user_id": user_id, "fecha": fecha},
+    )
+    row = result.mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _checkin_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """Contrato `checkin_hoy` que consume iOS: `{fecha, respuesta, session_id}`."""
+    fecha = row.get("fecha")
+    if hasattr(fecha, "isoformat"):
+        fecha_str = fecha.isoformat()
+    elif isinstance(fecha, str):
+        fecha_str = fecha[:10]
+    else:
+        fecha_str = None
+    session_id = row.get("session_id")
+    return {
+        "fecha": fecha_str,
+        "respuesta": row.get("respuesta"),
+        "session_id": str(session_id) if session_id is not None else None,
+    }
+
+
+async def _respuesta_checkin_existente(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    existente: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Mapea una fila de `gym_checkins` ya existente a la respuesta HTTP.
+
+    Devuelve `None` si no se puede reutilizar (p. ej. un "si" sin sesión, un
+    estado que el flujo normal no produce) — entonces el caller genera de nuevo.
+    """
+    if existente.get("respuesta") == "no":
+        return {
+            "ok": True,
+            "plan": None,
+            "session": None,
+            "mensaje": "Entendido, hoy toca descansar. Te pregunto de nuevo mañana.",
+        }
+    if existente.get("session_id") is not None:
+        fila = await _load_session(
+            session, tenant_id=tenant_id, session_id=existente["session_id"]
+        )
+        if fila is not None:
+            historial = await _historial_para_plan(
+                session, tenant_id=tenant_id, user_id=user_id
+            )
+            workout_previo = _session_from_row(fila)
+            return {
+                "ok": True,
+                "plan": _plan_to_dict(_plan_from_row(fila)),
+                "session": _session_to_dict(
+                    workout_previo,
+                    uuid.UUID(str(fila["id"])),
+                    previo=_previo_desde_historial(historial),
+                ),
+                "mensaje": (
+                    "Ya te había registrado el check-in de hoy: tu plan sigue "
+                    f"igual. Cuando quieras, toca 'Iniciar' en Entrenamiento. {_GUARDRAIL_SALUD}"
+                ),
+            }
+    return None
 
 
 async def _load_plan_today(
@@ -664,12 +760,12 @@ async def _generar_plan_gym(
     readiness: str | None = None,
 ) -> WorkoutPlan:
     async def completar(system: str, user: str) -> str:
+        # El plan es JSON estructurado: modelo RÁPIDO y SIN reasoning_effort
+        # alto. Con xhigh el "Sí" del check-in tardaba 110s y la app
+        # abandonaba por timeout ("No se pudo conectar con el servidor").
         kwargs: dict[str, Any] = {"max_tokens": _MAX_TOKENS_PLAN}
-        if azure_activo():
-            # El entrenador corre en modo ULTRA cuando el proveedor es Azure.
-            kwargs["reasoning_effort"] = "xhigh"
         response = await llm_router.complete(
-            _ALIAS_LLM,
+            "rapido",
             flags,
             CompletionRequest(
                 model="",
@@ -884,6 +980,22 @@ async def checkin(
     user_id = current_user.user_id
     hoy = date.today()
 
+    # IDEMPOTENCIA del check-in: un solo check-in por día. La tarjeta de
+    # "¿Vas a ir al gym?" puede re-dispararse (push + chat + re-apertura de la
+    # app); si HOY ya existe una respuesta, ESA manda — un segundo "Sí" no
+    # genera otro plan/sesión (mismo contrato que el camino normal) y un
+    # segundo "No" no inserta otra fila. La primera respuesta del día es la
+    # que vale.
+    existente = await _load_checkin_hoy(
+        session, tenant_id=tenant_id, user_id=user_id, fecha=hoy
+    )
+    if existente is not None:
+        respuesta = await _respuesta_checkin_existente(
+            session, tenant_id=tenant_id, user_id=user_id, existente=existente
+        )
+        if respuesta is not None:
+            return respuesta
+
     if not va:
         await _insert_checkin(
             session,
@@ -901,42 +1013,6 @@ async def checkin(
         }
 
     historial = await _historial_para_plan(session, tenant_id=tenant_id, user_id=user_id)
-
-    # IDEMPOTENCIA del check-in: la push/card de "¿Vas a ir al gym?" NO se
-    # borra del teléfono al tocarla — un segundo "Sí" (hoy mismo) NO debe
-    # generar otro plan y otra sesión. Si ya hay check-in "si" de hoy con
-    # sesión, se devuelve ESA sesión/plan y se acaba (mismo contrato que el
-    # camino normal).
-    previa_row = (
-        await session.execute(
-            text(
-                "SELECT session_id FROM gym_checkins "
-                "WHERE tenant_id = :tenant_id AND user_id = :user_id "
-                "AND fecha = :hoy AND respuesta = 'si' AND session_id IS NOT NULL "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"tenant_id": str(tenant_id), "user_id": str(user_id), "hoy": hoy},
-        )
-    ).mappings().first()
-    if previa_row and previa_row["session_id"]:
-        fila = await _load_session(
-            session, tenant_id=tenant_id, session_id=previa_row["session_id"]
-        )
-        if fila is not None:
-            workout_previo = _session_from_row(fila)
-            return {
-                "ok": True,
-                "plan": _plan_to_dict(_plan_from_row(fila)),
-                "session": _session_to_dict(
-                    workout_previo,
-                    uuid.UUID(str(fila["id"])),
-                    previo=_previo_desde_historial(historial),
-                ),
-                "mensaje": (
-                    "Ya te había registrado el check-in de hoy: tu plan sigue "
-                    f"igual. Cuando quieras, toca 'Iniciar' en Entrenamiento. {_GUARDRAIL_SALUD}"
-                ),
-            }
 
     # Continuidad de objetivo: el siguiente plan persigue el MISMO objetivo que
     # el último (hipertrofia, fuerza, etc.) salvo que el check-in lo cambie. Sin
@@ -957,6 +1033,24 @@ async def checkin(
     plan_id = await _insert_plan(
         session, tenant_id=tenant_id, user_id=user_id, fecha=hoy, plan=plan
     )
+    if plan_id is None:
+        # Perdimos la carrera del día: otro POST concurrente ya creó el plan
+        # (y su check-in). Devolvemos lo existente sin duplicar sesión/check-in.
+        existente = await _load_checkin_hoy(
+            session, tenant_id=tenant_id, user_id=user_id, fecha=hoy
+        )
+        if existente is not None:
+            respuesta = await _respuesta_checkin_existente(
+                session, tenant_id=tenant_id, user_id=user_id, existente=existente
+            )
+            if respuesta is not None:
+                return respuesta
+        # Defensivo: no debería ocurrir — el conflicto del plan implica un
+        # check-in "si" ya commiteado. 409 antes que duplicar filas.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ya hay un check-in para hoy.",
+        )
     # La sesión nace "planned" (el señor la inicia cuando toque en Entrenamiento),
     # NO "active": darle "Sí" a la card no debe arrancar el cronómetro.
     workout = WorkoutSession(plan)
@@ -1015,8 +1109,6 @@ async def swap_ejercicio(
     `solo_opciones=true` solo devuelve candidatos (la UI los lista para que
     el dueño escoja).
     """
-    from edecan_schemas import ChatMessage
-
     fila = await _load_plan_today(
         session,
         tenant_id=current_user.tenant_id,
@@ -1085,7 +1177,7 @@ async def swap_ejercicio(
         }
 
     plan.ejercicios[body.ejercicio_idx] = nuevo
-    session.execute(
+    await session.execute(
         text(
             """
             UPDATE workout_plans
@@ -1116,16 +1208,34 @@ async def plan_today(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session),
 ) -> dict[str, Any]:
+    """Plan de hoy + estado del check-in del día (`checkin_hoy`).
+
+    `checkin_hoy` es la fuente de verdad para que iOS NO vuelva a mostrar la
+    tarjeta "¿Vas a ir al gym?" tras responder (Sí o No) y reabrir la app:
+    `{fecha, respuesta, session_id}` si ya hay check-in de hoy, `null` si no.
+    """
     row = await _load_plan_today(
         session,
         tenant_id=current_user.tenant_id,
         user_id=current_user.user_id,
         fecha=date.today(),
     )
+    checkin = await _load_checkin_hoy(
+        session,
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        fecha=date.today(),
+    )
     if row is None:
-        return {"plan": None}
+        return {
+            "plan": None,
+            "checkin_hoy": _checkin_to_dict(checkin) if checkin is not None else None,
+        }
     plan = _plan_from_row(row)
-    return {"plan": _plan_to_dict(plan)}
+    return {
+        "plan": _plan_to_dict(plan),
+        "checkin_hoy": _checkin_to_dict(checkin) if checkin is not None else None,
+    }
 
 
 @router.get("/session")

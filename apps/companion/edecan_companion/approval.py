@@ -24,12 +24,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import sys
 import threading
 import time
 from typing import Any
 
 from edecan_companion.audit import sanitize_params
 from edecan_companion.config import CompanionConfig
+from edecan_companion.security import es_comando_peligroso
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,15 @@ def _remember_approval(key: str, config: CompanionConfig, *, minutes: int | None
     config.approval_memory[key] = time.monotonic() + effective_minutes * 60
 
 
+def _interactive_stdin() -> bool:
+    """True si el proceso corre con una terminal real (el dueño puede
+    responder [y/N]); False en launchd/systemd sin TTY."""
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except Exception:  # noqa: BLE001 - nunca debe romper la aprobación
+        return False
+
+
 def _input_remember_key(action: str, session_id: str) -> str:
     """Clave de `approval_memory` para `input_pointer`/`input_key`: SIEMPRE
     incluye el `session_id` de la sesión de control remoto -- así una
@@ -143,6 +154,20 @@ async def _approve_input_action(
     raw_session_id = params.get("session_id")
     memory_key = _input_remember_key(action, str(raw_session_id)) if raw_session_id else None
 
+    # Consentimiento del DUEÑO a través del chat: `usar_computadora` es
+    # `dangerous` y pasó por la confirmación humana; el VPS fija
+    # `owner_approved` server-side desde `approved_tool_calls` (el modelo no
+    # puede falsificarlo). Es la MISMA señal que ya acepta el bridge local
+    # (`companion_bridge.py`) para el turno proactivo de vida digital — sin
+    # esto, un bot aprobado en el chat seguía topándose con "sin aprobación".
+    if params.get("owner_approved") is True:
+        logger.info(
+            "Acción de control remoto %r aprobada por owner_approved "
+            "(usar_computadora confirmada por el dueño).",
+            action,
+        )
+        return True
+
     if memory_key is not None and _consume_remembered_approval(memory_key, config):
         logger.info(
             "Acción de control remoto %r reutiliza una aprobación recordada de esta "
@@ -150,6 +175,29 @@ async def _approve_input_action(
             action,
             raw_session_id,
             config.remote_input_remember_minutes,
+        )
+        return True
+
+    # Companion HEADLESS (p. ej. el vivo de launchd, sin terminal): no hay
+    # humano al que preguntar EN ESTA Mac. El consentimiento real es la
+    # sesión remota que el DUEÑO abrió desde el teléfono: el VPS ya validó
+    # su autenticación, el `session_id` y el pairing de esta conexión.
+    # Preguntar acá y obtener EOF (y N) negaba el toque justo después de
+    # que el dueño lo dio — la sesión ES la aprobación.
+    if (
+        raw_session_id is not None
+        and getattr(config, "remote_input_autoapprove_owner_session", False)
+        and not _interactive_stdin()
+    ):
+        if config.remote_input_remember_minutes > 0:
+            _remember_approval(
+                memory_key, config, minutes=config.remote_input_remember_minutes
+            )
+        logger.info(
+            "Acción de control remoto %r aprobada por sesión del dueño "
+            "(companion headless, session_id=%s).",
+            action,
+            raw_session_id,
         )
         return True
 
@@ -193,11 +241,21 @@ async def default_approver(
             f"¿Mover a la PAPELERA «{action}» con {shown_params}? [y/N] ", timeout=timeout
         )
 
-    if action in config.auto_approve:
+    # `run_command` con patrón destructivo NUNCA se auto-aprueba ni usa una
+    # aprobación recordada: `allow_all_commands=true` agrega `run_command` a
+    # `auto_approve`, pero un `rm -rf`/`dd`/`curl|sh` debe pasar por el humano
+    # (o rechazarse en headless, sin TTY), no correr en silencio. Defensa en
+    # profundidad: la última palabra la tiene `actions._run_command`, que
+    # además bloquea el comando en seco con el mismo denylist.
+    comando_peligroso = False
+    if action == "run_command":
+        comando_peligroso = es_comando_peligroso(str(params.get("command") or ""))
+
+    if action in config.auto_approve and not comando_peligroso:
         logger.info("Acción %r auto-aprobada por configuración (auto_approve).", action)
         return True
 
-    if _consume_remembered_approval(action, config):
+    if not comando_peligroso and _consume_remembered_approval(action, config):
         logger.info(
             "Acción %r reutiliza una aprobación recordada (remember_approvals_minutes=%s).",
             action,

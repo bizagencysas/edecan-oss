@@ -68,6 +68,24 @@ test("cada enlace directo del menú tiene una página y los intents terminan en 
   }
 });
 
+test("la página de workspaces usa el cliente que distingue 404 de lista vacía", () => {
+  const page = source("./src/app/(app)/app/workspaces/page.tsx");
+  assert.match(page, /listWorkspaces\(/);
+  assert.doesNotMatch(page, /listWorkspacesTolerant/);
+  assert.match(page, /Próximamente/);
+  assert.match(page, /isNotFound/);
+  assert.match(page, /EmptyState/);
+});
+
+test("la página de computadora usa el plano de control real y no finge la vista remota", () => {
+  const page = source("./src/app/(app)/app/computer/page.tsx");
+  assert.match(page, /listComputerSessions\(/);
+  assert.match(page, /pauseComputerSession/);
+  assert.match(page, /Próximamente/);
+  assert.match(page, /isNotFound/);
+  assert.doesNotMatch(page, /RemoteViewer/);
+});
+
 test("el menú avanzado se filtra por capacidad y sigue disponible en móvil", () => {
   const sidebar = source("./src/components/layout/Sidebar.tsx");
   const shell = source("./src/components/layout/AppShell.tsx");

@@ -117,14 +117,18 @@ def _ojo(seed: str, lado: str) -> dict[str, float | int]:
     return {"x": x, "y": y, "rx": rx, "ry": ry, "rotation": rotacion}
 
 
-def generar_avatar_grok_face(seed: str, acento: str | None = None) -> dict:
+def generar_avatar_grok_face(
+    seed: str, acento: str | None = None, forma: str | None = None
+) -> dict:
     """Descriptor de cara estilo Grok Bot: forma + relleno sólido + ojos inclinados.
 
     Devuelve `{style, seed, shape, fill, eyes}` listo para que iOS/web lo dibujen.
-    Determinista para un mismo `seed`; `acento` fuerza el color de relleno si viene.
+    Determinista para un mismo `seed`; `acento` fuerza el color de relleno y
+    `forma` fuerza la forma geométrica si vienen (el dueño elige figura y
+    color al crear el bot — antes se descartaban).
     """
     fill = _normalizar_hex(acento) if acento is not None else _GROK_FILLS[_indice(seed, len(_GROK_FILLS), "grok-fill")]
-    shape = _GROK_SHAPES[_indice(seed, len(_GROK_SHAPES), "grok-shape")]
+    shape = forma if forma in _GROK_SHAPES else _GROK_SHAPES[_indice(seed, len(_GROK_SHAPES), "grok-shape")]
     return {
         "style": "grok_face",
         "seed": seed,
@@ -169,11 +173,14 @@ _ESTILOS = {
 }
 
 
-def avatar_para_agente(seed: str, style: str = "grok_face", acento: str | None = None) -> dict:
+def avatar_para_agente(
+    seed: str, style: str = "grok_face", acento: str | None = None, forma: str | None = None
+) -> dict:
     """Descriptor listo para guardar en `persistent_agents.avatar`.
 
     Por defecto usa `grok_face` (cara geométrica estilo Grok Bot). Estilos
-    legacy `geometric`/`professional` siguen disponibles.
+    legacy `geometric`/`professional` siguen disponibles. `acento`/`forma`
+    respetan la elección del dueño (color y figura del bot nuevo).
     """
     try:
         generar = _ESTILOS[style]
@@ -182,4 +189,6 @@ def avatar_para_agente(seed: str, style: str = "grok_face", acento: str | None =
             f"estilo de avatar desconocido: {style!r} "
             f"(se espera 'grok_face', 'geometric' o 'professional')"
         ) from None
+    if style == "grok_face":
+        return generar(seed, acento, forma)
     return generar(seed, acento)

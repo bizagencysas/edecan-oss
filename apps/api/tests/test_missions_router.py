@@ -46,9 +46,15 @@ PLAN_UNLIMITED = "free_selfhost"  # agents.missions=True, limits.missions_per_da
 
 
 class _FakeResult:
-    def __init__(self, rows: list[dict] | None = None, scalar_value: int | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict] | None = None,
+        scalar_value: int | None = None,
+        rowcount: int = 1,
+    ) -> None:
         self._rows = rows or []
         self._scalar_value = scalar_value
+        self.rowcount = rowcount
 
     def mappings(self) -> _FakeResult:
         return self
@@ -216,6 +222,14 @@ class FakeSession:
         if primer == "UPDATE" and es_missions:
             row = self.missions.get(params["id"])
             if row is not None and row["tenant_id"] == params["tenant_id"]:
+                # C8b: CAS de `_update_mission_status` (`AND status =
+                # :expected_status`) — si la fila ya no está en el estado
+                # esperado, el claim pierde (rowcount 0) y no se toca.
+                if "AND status = :expected_status" in sql:
+                    if row["status"] != params["expected_status"]:
+                        return _FakeResult(rowcount=0)
+                    row["status"] = params["status"]
+                    return _FakeResult(rowcount=1)
                 if "status" in params:
                     row["status"] = params["status"]
                 if "archived_at" in sql:
@@ -267,9 +281,28 @@ def _install_fake_enqueue(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     return calls
 
 
+def _install_fake_outbox(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    """C8b: `confirm`/`resume` encolan vía outbox transaccional. Registra cada
+    `enqueue_outbox` como `(session, job_type, payload, tenant_id)` — con la
+    MISMA sesión que el cambio de estado, para poder afirmar atomicidad."""
+    calls: list[tuple] = []
+
+    async def fake_enqueue_outbox(session, *, tenant_id, job_type, payload):
+        calls.append((session, job_type, payload, tenant_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(missions, "enqueue_outbox", fake_enqueue_outbox)
+    return calls
+
+
 @pytest.fixture(autouse=True)
 def fake_enqueue_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     return _install_fake_enqueue(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def fake_outbox_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    return _install_fake_outbox(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -937,7 +970,10 @@ async def test_confirm_rechazado_cancela_mision_y_marca_paso_skipped(
 
 
 async def test_confirm_aprobado_reencola_resume_con_el_seq_pendiente(
-    client, fake_session: FakeSession, fake_enqueue_calls: list[tuple]
+    client,
+    fake_session: FakeSession,
+    fake_enqueue_calls: list[tuple],
+    fake_outbox_calls: list[tuple],
 ) -> None:
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     mission_id = uuid.uuid4()
@@ -962,11 +998,13 @@ async def test_confirm_aprobado_reencola_resume_con_el_seq_pendiente(
     assert response.json()["status"] == "running"
     assert fake_session.missions[str(mission_id)]["status"] == "running"
 
-    assert len(fake_enqueue_calls) == 1
-    _settings, job_type, payload, enq_tenant_id = fake_enqueue_calls[0]
+    # C8b: el job va por outbox transaccional, no por enqueue inmediato.
+    assert len(fake_enqueue_calls) == 0
+    assert len(fake_outbox_calls) == 1
+    _session, job_type, payload, out_tenant_id = fake_outbox_calls[0]
     assert job_type == "run_mission"
     assert payload == {"mission_id": str(mission_id), "resume": True, "approved_step_seq": 2}
-    assert str(enq_tenant_id) == str(tenant_id)
+    assert str(out_tenant_id) == str(tenant_id)
 
 
 async def test_confirm_aprobado_sin_paso_pendiente_devuelve_409(
@@ -1068,7 +1106,10 @@ async def test_archive_rechaza_mision_activa(client, fake_session: FakeSession) 
 
 
 async def test_pause_y_resume_conservan_la_mision_y_reencolan(
-    client, fake_session: FakeSession, fake_enqueue_calls: list[tuple]
+    client,
+    fake_session: FakeSession,
+    fake_enqueue_calls: list[tuple],
+    fake_outbox_calls: list[tuple],
 ) -> None:
     tenant_id, user_id, mission_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     fake_session.seed_mission(
@@ -1083,7 +1124,11 @@ async def test_pause_y_resume_conservan_la_mision_y_reencolan(
     resumed = await client.post(f"/v1/missions/{mission_id}/resume", headers=headers)
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "running"
-    assert fake_enqueue_calls[-1][2] == {"mission_id": str(mission_id), "resume_paused": True}
+    # C8b: resume encola por outbox transaccional, no por enqueue inmediato.
+    assert fake_enqueue_calls == []
+    assert [c[2] for c in fake_outbox_calls] == [
+        {"mission_id": str(mission_id), "resume_paused": True}
+    ]
 
 
 async def test_steer_guarda_instruccion_sin_reiniciar(
@@ -1106,3 +1151,165 @@ async def test_steer_guarda_instruccion_sin_reiniciar(
     notes = body["presupuesto"]["steering"]
     assert notes[-1]["instruction"] == "Usa más datos de Medellín."
     assert fake_enqueue_calls == []
+
+
+# ---------------------------------------------------------------------------
+# C8b: claim durable — CAS + outbox transaccional. Dos confirm/resume
+# concurrentes encolan UN solo job; un rollback del estado no deja job.
+# ---------------------------------------------------------------------------
+
+
+async def test_confirm_aprobado_escribe_job_en_la_misma_sesion_que_el_cambio_de_estado(
+    client,
+    fake_session: FakeSession,
+    fake_outbox_calls: list[tuple],
+) -> None:
+    """C8b: `enqueue_outbox` se llama con la MISMA sesión que el CAS del estado
+    (no con una conexión aparte): estado y job se comprometen juntos."""
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    mission_id = uuid.uuid4()
+    fake_session.seed_mission(
+        mission_id=mission_id, tenant_id=tenant_id, user_id=user_id, status="waiting_confirmation"
+    )
+    fake_session.seed_step(
+        mission_id=mission_id,
+        tenant_id=tenant_id,
+        seq=2,
+        status="waiting_confirmation",
+        usage={"pending_tool_call": {"id": "call-1", "name": "x", "args": {}}},
+    )
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key=PLAN_WITH_MISSIONS)
+
+    response = await client.post(
+        f"/v1/missions/{mission_id}/confirm", json={"approved": True}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert len(fake_outbox_calls) == 1
+    session_used, _job_type, _payload, _tenant = fake_outbox_calls[0]
+    assert session_used is fake_session
+
+
+async def test_confirm_aprobado_segundo_confirm_devuelve_409_sin_encolar(
+    client,
+    fake_session: FakeSession,
+    fake_outbox_calls: list[tuple],
+) -> None:
+    """C8b: dos confirm concurrentes → UN solo run. El primero gana el claim y
+    encola; el segundo ve la misión ya `running` (o pierde el CAS) y devuelve
+    409 sin encolar un segundo job."""
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    mission_id = uuid.uuid4()
+    fake_session.seed_mission(
+        mission_id=mission_id, tenant_id=tenant_id, user_id=user_id, status="waiting_confirmation"
+    )
+    fake_session.seed_step(
+        mission_id=mission_id,
+        tenant_id=tenant_id,
+        seq=2,
+        status="waiting_confirmation",
+        usage={"pending_tool_call": {"id": "call-1", "name": "x", "args": {}}},
+    )
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key=PLAN_WITH_MISSIONS)
+
+    first = await client.post(
+        f"/v1/missions/{mission_id}/confirm", json={"approved": True}, headers=headers
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "running"
+    assert len(fake_outbox_calls) == 1
+
+    second = await client.post(
+        f"/v1/missions/{mission_id}/confirm", json={"approved": True}, headers=headers
+    )
+    assert second.status_code == 409
+    # Sigue habiendo UN solo job encolado.
+    assert len(fake_outbox_calls) == 1
+
+
+async def test_resume_segundo_resume_devuelve_409_sin_encolar(
+    client,
+    fake_session: FakeSession,
+    fake_outbox_calls: list[tuple],
+) -> None:
+    """C8b: dos resume concurrentes → UN solo run; el segundo devuelve 409."""
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    mission_id = uuid.uuid4()
+    fake_session.seed_mission(
+        mission_id=mission_id, tenant_id=tenant_id, user_id=user_id, status="paused"
+    )
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key=PLAN_WITH_MISSIONS)
+
+    first = await client.post(f"/v1/missions/{mission_id}/resume", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["status"] == "running"
+    assert len(fake_outbox_calls) == 1
+
+    second = await client.post(f"/v1/missions/{mission_id}/resume", headers=headers)
+    assert second.status_code == 409
+    assert len(fake_outbox_calls) == 1
+
+
+async def test_update_mission_status_es_cas():
+    """C8b: `_update_mission_status` con `expected_status` es un compare-and-
+    swap — gana solo si la fila sigue en el estado esperado."""
+    session = FakeSession()
+    tenant_id, user_id, mission_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    session.seed_mission(
+        mission_id=mission_id, tenant_id=tenant_id, user_id=user_id, status="waiting_confirmation"
+    )
+
+    won = await missions._update_mission_status(
+        session, tenant_id, mission_id, "running", expected_status="waiting_confirmation"
+    )
+    assert won is True
+    assert session.missions[str(mission_id)]["status"] == "running"
+
+    lost = await missions._update_mission_status(
+        session, tenant_id, mission_id, "running", expected_status="waiting_confirmation"
+    )
+    assert lost is False
+    assert session.missions[str(mission_id)]["status"] == "running"
+
+
+async def test_confirm_si_el_outbox_falla_falla_cerrado_sin_dejar_job(
+    client,
+    fake_session: FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C8b: el job se escribe en el outbox EN LA MISMA transacción que el CAS
+    del estado. Si la escritura del outbox falla, el fallo se propaga (fail-
+    closed, no se traga) — en producción `get_tenant_session` rueda atrás la
+    transacción entera (estado + job), de modo que no queda job huérfano."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    mission_id = uuid.uuid4()
+    fake_session.seed_mission(
+        mission_id=mission_id, tenant_id=tenant_id, user_id=user_id, status="waiting_confirmation"
+    )
+    fake_session.seed_step(
+        mission_id=mission_id,
+        tenant_id=tenant_id,
+        seq=2,
+        status="waiting_confirmation",
+        usage={"pending_tool_call": {"id": "call-1", "name": "x", "args": {}}},
+    )
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key=PLAN_WITH_MISSIONS)
+
+    calls: list[tuple] = []
+
+    async def falla(session, *, tenant_id, job_type, payload):
+        calls.append((session, job_type, payload))
+        raise SQLAlchemyError("job_outbox insert failed")
+
+    monkeypatch.setattr(missions, "enqueue_outbox", falla)
+
+    with pytest.raises(SQLAlchemyError):
+        await client.post(
+            f"/v1/missions/{mission_id}/confirm", json={"approved": True}, headers=headers
+        )
+
+    # El ÚNICO camino de encolado es el outbox y su escritura falló: no hay job
+    # encolado ni despachado.
+    assert len(calls) == 1

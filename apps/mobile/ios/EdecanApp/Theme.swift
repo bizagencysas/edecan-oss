@@ -163,11 +163,29 @@ struct ContenedorVidrioBots<Content: View>: View {
     }
 }
 
-/// Fondo light mode compartido por pantallas Bots.
+/// Fondo compartido por pantallas Bots: airy claro en modo claro, airy
+/// OSCURO en modo oscuro (antes forzábamos light y se derramaba a toda la
+/// app al tocar el tabbar — bug reportado por el dueño). Sigue el sistema.
 struct FondoBotsLight: View {
+    @Environment(\.colorScheme) private var esquema
+
     var body: some View {
-        EdecanTheme.fondoBotsLight
-            .ignoresSafeArea()
+        Group {
+            if esquema == .dark {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.10, green: 0.11, blue: 0.14),
+                        Color(red: 0.08, green: 0.10, blue: 0.16),
+                        Color(red: 0.12, green: 0.10, blue: 0.16),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                EdecanTheme.fondoBotsLight
+            }
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -197,7 +215,6 @@ extension View {
 
     func estiloPantallaBots() -> some View {
         self
-            .preferredColorScheme(.light)
             .background(FondoBotsLight())
     }
 }
@@ -212,5 +229,37 @@ struct VidrioMorphIDModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Glow de marca para las zonas del composer (inferior) y de la cabecera
+/// (superior) del chat: degradado adaptativo que en dark se ve como un
+/// aura morada profunda y en light como un lila airy — con el borde del
+/// sistema para que el texto siempre sea legible. iOS 26.
+public struct FondoGlowComposer: View {
+    var arriba: Bool = false
+    @Environment(\.colorScheme) private var esquema
+
+    public init(arriba: Bool = false) {
+        self.arriba = arriba
+    }
+
+    public var body: some View {
+        let tinte: Color = esquema == .dark
+            ? Color(red: 0.20, green: 0.13, blue: 0.38)
+            : EdecanTheme.morado.opacity(0.15)
+        let borde: Color = esquema == .dark
+            ? Color(red: 0.07, green: 0.08, blue: 0.13).opacity(0.92)
+            : Color.white.opacity(0.88)
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: tinte, location: 0.55),
+                .init(color: borde, location: 1),
+            ],
+            startPoint: arriba ? .bottom : .top,
+            endPoint: arriba ? .top : .bottom
+        )
+        .ignoresSafeArea(edges: arriba ? .top : .bottom)
     }
 }

@@ -72,7 +72,7 @@ public struct TeamDelegation: Codable, Sendable, Equatable {
 /// Mensaje persistido de `GET /v1/teams/{id}/messages`. `kind` distingue un
 /// mensaje normal (`nil`/`"message"`) de un evento de delegación; `senderName`
 /// vacío o `"user"`/`"owner"` se dibuja como la persona dueña.
-public struct TeamMessage: Codable, Sendable, Equatable, Identifiable {
+public struct TeamMessage: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
     public let senderId: String?
     public let senderName: String?
@@ -88,12 +88,30 @@ public struct TeamMessage: Codable, Sendable, Equatable, Identifiable {
     public let cara: CaraSnapshot?
     /// Imágenes/archivos adjuntos (ids ya subidos a /v1/files).
     public let adjuntos: [AdjuntoMensaje]?
+    /// Historial de tools del mensaje (harness P0): trae `blocks` de
+    /// `preguntar_al_usuario` para que los widgets sobrevivan al reabrir.
+    public let toolCalls: [ChatEvent]
+    /// Auto-assign (`kind=evento`, `evento=asignacion`): id estable del bot.
+    public let assignedWorkerId: String?
+    /// Nombre visible del bot asignado; fallback legacy `de`.
+    public let assignedWorkerName: String?
+    /// BotBeta caec108d: `worker_id` canónico en metadata de turno/mensaje.
+    public let workerId: String?
+    /// Nombre técnico del worker en metadata (`name`).
+    public let workerName: String?
+    /// Display del worker en metadata (`display_name`).
+    public let workerDisplayName: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, text, kind, delegation, evento, de, goal, cara, adjuntos
+        case id, text, kind, delegation, evento, de, goal, cara, adjuntos, name
         case senderId = "sender_id"
         case senderName = "sender_name"
         case createdAt = "created_at"
+        case toolCalls = "tool_calls"
+        case assignedWorkerId = "assigned_worker_id"
+        case assignedWorkerName = "assigned_worker_name"
+        case workerId = "worker_id"
+        case workerDisplayName = "display_name"
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +128,43 @@ public struct TeamMessage: Codable, Sendable, Equatable, Identifiable {
         goal = try container.decodeIfPresent(String.self, forKey: .goal)
         cara = try container.decodeIfPresent(CaraSnapshot.self, forKey: .cara)
         adjuntos = try container.decodeIfPresent([AdjuntoMensaje].self, forKey: .adjuntos)
+        toolCalls = (try? container.decode([ChatEvent].self, forKey: .toolCalls)) ?? []
+        assignedWorkerId = try container.decodeIfPresent(String.self, forKey: .assignedWorkerId)
+        assignedWorkerName = try container.decodeIfPresent(String.self, forKey: .assignedWorkerName)
+        workerId = try container.decodeIfPresent(String.self, forKey: .workerId)
+        workerName = try container.decodeIfPresent(String.self, forKey: .name)
+        workerDisplayName = try container.decodeIfPresent(String.self, forKey: .workerDisplayName)
+    }
+
+    /// Bloques ricos (preguntas, media, links) reconstruidos desde tool_calls.
+    public var bloquesDesdeToolCalls: [ChatBlock] {
+        var bloques: [ChatBlock] = []
+        for evento in toolCalls {
+            guard case .toolEnd(_, _, _, _, let version, let eventBlocks, _) = evento,
+                  version == 1
+            else { continue }
+            for bloque in eventBlocks where !bloques.contains(bloque) {
+                bloques.append(bloque)
+            }
+        }
+        return bloques
+    }
+
+    public var artefactosDesdeToolCalls: [ArtifactRef] {
+        var arts: [ArtifactRef] = []
+        var vistos = Set<String>()
+        for evento in toolCalls {
+            guard case .toolEnd(_, _, _, let artifacts, _, let eventBlocks, _) = evento else { continue }
+            for a in artifacts where vistos.insert(a.fileId).inserted {
+                arts.append(a)
+            }
+            for bloque in eventBlocks {
+                if case .media(let media) = bloque, vistos.insert(media.artifact.fileId).inserted {
+                    arts.append(media.artifact)
+                }
+            }
+        }
+        return arts
     }
 
     /// `true` si este mensaje lo escribió la persona dueña (no un agente).
@@ -120,6 +175,38 @@ public struct TeamMessage: Codable, Sendable, Equatable, Identifiable {
 
     public var esDelegacion: Bool {
         kind == "delegation" || delegation != nil
+    }
+
+    /// Routing automático: fila persistida antes del turno (`persist_team_assignment_event`).
+    public var esEventoAsignacion: Bool {
+        kind == "evento" && evento == "asignacion"
+    }
+
+    /// Resuelve `worker_id` + nombre para el chip «Asignado a …» (BotBeta caec108d).
+    /// Prioridad id: `assigned_worker_id` → `worker_id` → `sender_id` (mensaje del bot).
+    /// Prioridad nombre: `assigned_worker_name` → `display_name` → `name` → `de` → cache.
+    /// Nunca handoff ni IDs de handoff entre workers.
+    public func resolverAsignacionAuto(workers: [PersistentWorker]) -> (id: String, nombre: String, cara: CaraSnapshot?) {
+        let wid = nonEmpty(assignedWorkerId)
+            ?? nonEmpty(workerId)
+            ?? nonEmpty(senderId)
+            ?? UUID().uuidString
+        let cached = workers.first(where: { $0.id == wid })
+        let nombre = nonEmpty(assignedWorkerName)
+            ?? nonEmpty(workerDisplayName)
+            ?? nonEmpty(workerName)
+            ?? nonEmpty(de)
+            ?? nonEmpty(senderName)
+            ?? cached?.nombreVisible
+            ?? "Bot"
+        return (wid, nombre, cara)
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 }
 

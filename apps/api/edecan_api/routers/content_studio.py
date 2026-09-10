@@ -932,17 +932,11 @@ async def create_social_content(
         temperature=0.55,
     )
     response = await llm_router.complete(_LLM_ALIAS, current_user.tenant.flags, request)
-    await repo.add_usage_event(
-        tenant_id=current_user.tenant_id,
-        kind="llm_tokens",
-        quantity=float(response.usage.input_tokens + response.usage.output_tokens),
-        meta={
-            "alias": _LLM_ALIAS,
-            "job": "content_studio_social",
-            "platform": body.platform,
-            "target": body.target if body.platform == "linkedin" else None,
-        },
-    )
+
+    # El uso de tokens ya no se persiste acá a mano: el callback `on_usage` del
+    # router global (`edecan_api.deps`) registra esta completion en
+    # `usage_events` con el modelo real — hacerlo también acá lo contaría dos
+    # veces.
 
     args = _generated_args(response.text, body)
     args["fuentes"] = sources

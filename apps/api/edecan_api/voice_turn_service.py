@@ -21,7 +21,11 @@ from edecan_core.speech_tags import enriquecer_speech_tags
 from edecan_core.tools import ToolContext
 from edecan_llm.router import LLMRouter
 
-from edecan_api.chat_context import ChatContextLimits, build_contextual_history
+from edecan_api.chat_context import (
+    ChatContextLimits,
+    build_contextual_history,
+    resumen_llm_hilo_anterior,
+)
 from edecan_api.chat_delegation import (
     build_delegation_prefix,
     ejecutar_delegaciones,
@@ -113,19 +117,22 @@ async def execute_voice_text_turn(
         limit=max(50, int(settings.CHAT_CONTEXT_MAX_MESSAGES)),
         after=conversation.get("context_cleared_at"),
     )
+    limits = ChatContextLimits(
+        enabled=settings.CHAT_CONTEXT_ENABLED,
+        recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
+        max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
+        max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
+        cross_chat_enabled=False,
+        cross_chat_conversations=0,
+        cross_chat_messages_per_conversation=0,
+        cross_chat_max_chars=0,
+    )
+    resumen_llm = await resumen_llm_hilo_anterior(history_rows, limits, llm_router=llm_router)
     history = build_contextual_history(
         current_rows=history_rows,
         cross_chat_rows=[],
-        limits=ChatContextLimits(
-            enabled=settings.CHAT_CONTEXT_ENABLED,
-            recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
-            max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
-            max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
-            cross_chat_enabled=False,
-            cross_chat_conversations=0,
-            cross_chat_messages_per_conversation=0,
-            cross_chat_max_chars=0,
-        ),
+        limits=limits,
+        current_summary=resumen_llm or None,
     )
     persona = persona_from_row(
         await repo.get_persona(

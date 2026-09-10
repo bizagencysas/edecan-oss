@@ -41,12 +41,16 @@ paths, no de comandos.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
 from edecan_core import Tool, ToolContext, ToolResult
+from sqlalchemy import text
 
 _TIMEOUT_SEGUNDOS = 60.0
 _LIMITE_BYTES_LECTURA = 200_000  # ~200KB: suficiente para casi cualquier archivo de código
@@ -57,6 +61,63 @@ _SIN_CONFIGURAR = (
     "El acceso local al repo no está configurado en esta instancia -- necesita "
     "EDECAN_LOCAL_MODE=true y EDECAN_LOCAL_REPO_PATH apuntando al clon local del repo."
 )
+_SOLO_DUENO = (
+    "El acceso al código local pertenece al dueño de esta instalación de Edecán. "
+    "La cuenta actual no puede usarlo."
+)
+
+_MAC_HOME_RE = re.compile(r"^(/Users/[^/]+)(?:/|$)")
+_MAC_REPO_SUFIJO = "edecan"
+_MAC_REPO_EJEMPLO = "/Users/example/edecan"
+
+
+def _home_mac_desde_ruta(ruta: str) -> str | None:
+    match = _MAC_HOME_RE.match(ruta.replace("\\", "/"))
+    return match.group(1) if match else None
+
+
+def _ruta_mac_fuera_repo_para_companion(ruta_pedida: str) -> tuple[str, str] | None:
+    """Raíz y path relativo para el companion: el path absoluto se descarta.
+
+    `edecan_companion.actions._resolve_in_sandbox` trata todo path como
+    relativo a `workspace_root` (le quita el `/` inicial). Hay que mandar
+    el home de la Mac como raíz y `Documents/...` relativo; si se manda el
+    repo como raíz + path absoluto, el companion lo anida debajo del repo
+    y no lee el archivo.
+    """
+    normalizada = str(ruta_pedida or "").strip().replace("\\", "/")
+    home = _home_mac_desde_ruta(normalizada)
+    if home is None:
+        return None
+    if normalizada == home:
+        return home, "."
+    if normalizada.startswith(home + "/"):
+        return home, normalizada[len(home) + 1 :] or "."
+    return home, normalizada.lstrip("/") or "."
+
+
+def _remap_ruta_mac_a_local(ruta_pedida: str) -> tuple[str | None, bool]:
+    """Mapea rutas del repo en la Mac al espejo local del box.
+
+    Returns:
+        (ruta_relativa_local, es_mac_fuera_del_repo)
+        - Mapeable al espejo: (relativa, False)
+        - /Users/<cuenta>/... pero fuera del repo Mac: (None, True)
+        - No es ruta Mac: (None, False)
+    """
+    ruta = str(ruta_pedida or "").strip()
+    if not ruta:
+        return None, False
+
+    normalizada = ruta.replace("\\", "/")
+    if _MAC_REPO_SUFIJO in normalizada:
+        idx = normalizada.index(_MAC_REPO_SUFIJO)
+        relativa = normalizada[idx + len(_MAC_REPO_SUFIJO) :].lstrip("/") or "."
+        return relativa, False
+
+    if _home_mac_desde_ruta(normalizada):
+        return None, True
+    return None, False
 
 
 def _raiz(ctx: ToolContext) -> Path | None:
@@ -69,6 +130,54 @@ def _raiz(ctx: ToolContext) -> Path | None:
     if not raiz.is_dir():
         return None
     return raiz
+
+
+async def _es_dueno_de_instalacion(ctx: ToolContext) -> bool:
+    raw_owner = getattr(ctx.settings, "LOCAL_OWNER_USER_ID", None) or os.environ.get(
+        "LOCAL_OWNER_USER_ID"
+    )
+    if raw_owner:
+        try:
+            return uuid.UUID(str(raw_owner).strip()) == ctx.user_id
+        except (TypeError, ValueError):
+            return False
+
+    session = getattr(ctx, "session", None)
+    if session is None:
+        return False
+    try:
+        result = await session.execute(
+            text(
+                """
+                SELECT owner_user_id AS user_id, owner_tenant_id AS tenant_id
+                FROM local_installation
+                WHERE installation_key = 'local'
+                """
+            )
+        )
+        owner = result.mappings().first()
+        if owner is None:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT m.user_id, m.tenant_id
+                    FROM memberships m
+                    JOIN tenants t ON t.id = m.tenant_id
+                    WHERE m.role = 'owner' AND t.status = 'active'
+                    ORDER BY m.created_at ASC, m.id ASC
+                    LIMIT 1
+                    """
+                )
+            )
+            owner = result.mappings().first()
+    except Exception:  # noqa: BLE001 - authorization lookup must fail closed
+        return False
+
+    # No authenticated production request exists before the first owner is
+    # persisted; this branch only preserves first-run/isolated tool bootstrap.
+    if owner is None:
+        return True
+    return owner.get("user_id") == ctx.user_id and owner.get("tenant_id") == ctx.tenant_id
 
 
 def _resolver_dentro_de_raiz(raiz: Path, ruta_relativa: str) -> Path | None:
@@ -111,13 +220,17 @@ async def _correr(
 
 
 class AccederCodigoLocalTool(Tool):
+    # Subprocess interno con timeout de 60s: el deadline de la tool debe
+    # quedar por ENCIMA para que el kill interno corra antes (R-2).
+    timeout_seconds = 130.0
     name = "acceder_codigo_local"
     description = (
-        "Lee/escribe archivos, corre comandos y hace commits LOCALES (nunca push) directo "
-        "sobre el clon del repo en esta máquina -- solo disponible en instancias de "
-        "desarrollo configuradas explícitamente (EDECAN_LOCAL_MODE + EDECAN_LOCAL_REPO_PATH), "
-        "nunca en el hosted compartido. Requiere confirmación porque actúa de verdad sobre "
-        "el código fuente."
+        "Lee, escribe, busca y ejecuta git/shell sobre el repo del box (listar, "
+        "leer_archivo, git_status, git_diff, git_commit). Úsala cuando el dueño "
+        "pida arreglar login/código, explorar el repo («mira qué hay»), revisar "
+        "cambios o editar archivos — sin pedirle que nombre esta herramienta. "
+        "Solo en instancias con EDECAN_LOCAL_MODE + EDECAN_LOCAL_REPO_PATH; "
+        "requiere confirmación porque actúa de verdad sobre el código."
     )
     category = "code"
     risk_level = "high"
@@ -179,8 +292,41 @@ class AccederCodigoLocalTool(Tool):
         raiz = _raiz(ctx)
         if raiz is None:
             return ToolResult(content=_SIN_CONFIGURAR)
+        if not await _es_dueno_de_instalacion(ctx):
+            return ToolResult(
+                content=_SOLO_DUENO,
+                data={"authorized": False},
+                is_error=True,
+            )
 
         accion = str(args.get("accion", "")).strip()
+        # Modo SOLO LECTURA (perfiles de misión read_only): las acciones que
+        # mutan el repo se rechazan con error honesto — el guardrail de
+        # dangerous queda intacto y el subagente puede leer código real.
+        if ctx.extras.get("codigo_solo_lectura") and accion in (
+            "escribir_archivo",
+            "ejecutar_comando",
+            "git_commit",
+        ):
+            return ToolResult(
+                content=(
+                    f"Acción '{accion}' bloqueada: este agente tiene el repo "
+                    "en SOLO LECTURA (solo puede leer, listar, buscar y ver git)."
+                ),
+                data={"read_only": True},
+                is_error=True,
+            )
+        # Rutas de la MAC del dueño: si apuntan al repo Edecán, el espejo del
+        # box (/opt/edecan/app) sirve aunque el companion esté offline. Solo
+        # rutas Mac fuera de ese repo van por el companion (solo lectura).
+        ruta_pedida = str(args.get("ruta") or args.get("path") or "")
+        remapeada, mac_fuera_repo = _remap_ruta_mac_a_local(ruta_pedida)
+        if remapeada is not None:
+            args = dict(args)
+            args["ruta"] = remapeada
+        elif mac_fuera_repo or bool(_home_mac_desde_ruta(ruta_pedida)):
+            return await self._via_companion_mac(ctx, accion, args, raiz)
+
         handler = {
             "leer_archivo": self._leer_archivo,
             "escribir_archivo": self._escribir_archivo,
@@ -194,6 +340,87 @@ class AccederCodigoLocalTool(Tool):
         if handler is None:
             return ToolResult(content=f"Acción desconocida: {accion!r}.")
         return await handler(raiz, args)
+
+    async def _via_companion_mac(
+        self, ctx: ToolContext, accion: str, args: dict[str, Any], raiz: Path
+    ) -> ToolResult:
+        """Lee archivos/listados/búsquedas de la MAC del dueño por el
+        companion (solo lectura). Rutas del repo Mac ya se remapean al box."""
+        companion = ctx.extras.get("companion")
+        if companion is None:
+            return ToolResult(
+                content=(
+                    "Esa ruta está en tu Mac (fuera del espejo del box) y ahora "
+                    "mismo no hay companion conectado. Para el repo Edecán usa "
+                    f"rutas relativas al espejo local ({raiz}), por ejemplo "
+                    "'packages/core/edecan_core/bot_persona.py' en lugar de "
+                    f"'{_MAC_REPO_EJEMPLO}/packages/core/...'. Enciende la Mac si "
+                    "necesitas archivos que no están en /opt/edecan/app."
+                ),
+                data={"mac_offline": True},
+                is_error=True,
+            )
+        if accion in ("escribir_archivo", "ejecutar_comando", "git_commit"):
+            return ToolResult(
+                content=(
+                    "Escribir o ejecutar en la Mac desde una misión no está "
+                    "permitido (solo lectura). Para cambiar algo en tu Mac, "
+                    "pídemelo en el chat y lo hago con tu aprobación."
+                ),
+                is_error=True,
+            )
+        mapeo = {
+            "leer_archivo": "read_file",
+            "listar_directorio": "list_tree",
+            "buscar": "search_files",
+        }
+        accion_mac = mapeo.get(accion)
+        if accion_mac is None:
+            return ToolResult(
+                content=(
+                    f"La acción '{accion}' sobre una ruta de la Mac no está "
+                    "soportada por el puente; usa leer_archivo, "
+                    "listar_directorio o buscar."
+                ),
+                is_error=True,
+            )
+        # La MAC completa (home) como workspace_root: el companion confina las
+        # lecturas a esa raíz y el `path` viaja RELATIVO a ella.
+        ruta_pedida = str(args.get("ruta") or args.get("path") or "")
+        par = _ruta_mac_fuera_repo_para_companion(ruta_pedida)
+        if par is None:
+            return ToolResult(
+                content=(
+                    "Esa ruta no es una ruta de Mac reconocible. Usa una ruta "
+                    "bajo el home de la Mac o una ruta relativa al espejo "
+                    f"del box ({raiz})."
+                ),
+                is_error=True,
+            )
+        raiz_mac, relativa = par
+        parametros: dict[str, Any] = {
+            "workspace_root": raiz_mac,
+            "path": relativa,
+        }
+        if accion == "buscar":
+            parametros["query"] = str(args.get("patron") or args.get("consulta") or "")
+        try:
+            resultado = await companion(accion_mac, parametros)
+        except Exception as exc:
+            return ToolResult(
+                content=(
+                    f"La Mac no respondió a {accion_mac} ({exc}). "
+                    "Reintenta o usa el espejo del box: /opt/edecan/app."
+                ),
+                is_error=True,
+            )
+        contenido = (
+            resultado.get("contenido")
+            or resultado.get("content")
+            or resultado.get("text")
+            or json.dumps(resultado, default=str, ensure_ascii=False)
+        )
+        return ToolResult(content=str(contenido)[:20000])
 
     async def _leer_archivo(self, raiz: Path, args: dict[str, Any]) -> ToolResult:
         ruta = _resolver_dentro_de_raiz(raiz, str(args.get("ruta", "")))

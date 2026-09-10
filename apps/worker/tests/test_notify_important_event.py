@@ -84,7 +84,7 @@ async def test_handler_accepts_apns_text_overrides(monkeypatch: pytest.MonkeyPat
             "kind": "agent_message",
             "event_id": str(event_id),
             "chat_id": str(uuid.uuid4()),
-            "apns_title": "Fronti  terminó   ",
+            "apns_title": "BotAlpha  terminó   ",
             "apns_body": "La respuesta   con espacios  dobles. " + "x" * 300,
         },
     )
@@ -92,8 +92,119 @@ async def test_handler_accepts_apns_text_overrides(monkeypatch: pytest.MonkeyPat
     await handler.handle(env, make_deps())
 
     assert len(seen) == 1
-    assert seen[0].apns_title == "Fronti terminó"
+    assert seen[0].apns_title == "BotAlpha terminó"
     # 200 chars máximo, sin saltos dobles.
     assert seen[0].apns_body is not None
     assert len(seen[0].apns_body) <= 200
     assert "  " not in seen[0].apns_body
+
+
+class _FakePresencia:
+    """Registro de presencia falso: `esta_activa` responde según un set."""
+
+    def __init__(self, activos: set[uuid.UUID]) -> None:
+        self.activos = activos
+        self.consultas: list[uuid.UUID] = []
+
+    def esta_activa(self, conversation_id: uuid.UUID) -> bool:
+        self.consultas.append(conversation_id)
+        return conversation_id in self.activos
+
+
+async def test_handler_suppresses_push_when_owner_is_in_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regla del producto: no hay push si el dueño está DENTRO del chat."""
+    chat_id = uuid.uuid4()
+    seen = []
+
+    async def notify(_deps, event):
+        seen.append(event)
+
+    fake_presencia = _FakePresencia({chat_id})
+    monkeypatch.setattr(handler, "notify_important_event", notify)
+    monkeypatch.setattr(handler, "_presencia", lambda: fake_presencia)
+    env = JobEnvelope(
+        job_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        type="notify_important_event",
+        payload={
+            "user_id": str(uuid.uuid4()),
+            "kind": "agent_message",
+            "event_id": str(uuid.uuid4()),
+            "chat_id": str(chat_id),
+        },
+    )
+
+    resultado = await handler.handle(env, make_deps())
+
+    assert seen == []
+    assert fake_presencia.consultas == [chat_id]
+    assert resultado is not None
+    assert resultado["suppressed"] is True
+    assert resultado["reason"] == "suppressed_in_chat"
+    assert resultado["chat_id"] == str(chat_id)
+
+
+async def test_handler_delivers_push_when_owner_is_not_in_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin presencia activa en el chat, la entrega sigue normal."""
+    chat_id = uuid.uuid4()
+    seen = []
+
+    async def notify(_deps, event):
+        seen.append(event)
+
+    fake_presencia = _FakePresencia(set())
+    monkeypatch.setattr(handler, "notify_important_event", notify)
+    monkeypatch.setattr(handler, "_presencia", lambda: fake_presencia)
+    env = JobEnvelope(
+        job_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        type="notify_important_event",
+        payload={
+            "user_id": str(uuid.uuid4()),
+            "kind": "agent_message",
+            "event_id": str(uuid.uuid4()),
+            "chat_id": str(chat_id),
+        },
+    )
+
+    resultado = await handler.handle(env, make_deps())
+
+    assert len(seen) == 1
+    assert seen[0].chat_id == chat_id
+    assert fake_presencia.consultas == [chat_id]
+    assert resultado is None
+
+
+async def test_handler_falls_open_si_falta_el_modulo_de_presencia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker sin la API (sin `edecan_api.presencia`): entrega el push igual."""
+    chat_id = uuid.uuid4()
+    seen = []
+
+    async def notify(_deps, event):
+        seen.append(event)
+
+    monkeypatch.setattr(handler, "notify_important_event", notify)
+    monkeypatch.setattr(handler, "_presencia", lambda: None)
+    env = JobEnvelope(
+        job_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        type="notify_important_event",
+        payload={
+            "user_id": str(uuid.uuid4()),
+            "kind": "agent_message",
+            "event_id": str(uuid.uuid4()),
+            "chat_id": str(chat_id),
+        },
+    )
+
+    resultado = await handler.handle(env, make_deps())
+
+    assert len(seen) == 1
+    assert seen[0].chat_id == chat_id
+    assert resultado is None

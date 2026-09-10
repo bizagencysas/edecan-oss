@@ -605,6 +605,12 @@ def test_skills_sin_flag_de_plan_router_y_tools_coinciden() -> None:
 # "<job_type>", ...)`), NO solo sobre `apps/api/edecan_api/routers/` — ver el
 # detalle completo por tipo en `docs/seguridad-modelo-amenazas.md`.
 _SUPERFICIES_DE_ENCOLADO: dict[str, str] = {
+    "refresh_skills": (
+        "Solo el scheduler interno del worker (JOBS_PERIODICOS_SEMANALES) -- nunca un tenant directo."
+    ),
+    "event_log_cleanup": (
+        "Solo el scheduler interno del worker (JOBS_PERIODICOS_DIARIOS) -- nunca un tenant directo."
+    ),
     "ingest_file": "POST /v1/files (routers/files.py) -- sin flag, capacidad base.",
     "sync_connector": (
         "Solo el scheduler interno del worker (JOBS_PERIODICOS) -- nunca un tenant directo."

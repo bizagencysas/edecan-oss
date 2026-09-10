@@ -35,10 +35,14 @@ class _Session:
         self.existing_suggestion = existing_suggestion
         self.inserted: list[dict] = []
         self.queries: list[tuple[str, dict]] = []
+        self.lock_keys: list[str] = []
 
     async def execute(self, statement, params):
         sql = str(statement)
         self.queries.append((sql, params))
+        if "pg_advisory_xact_lock" in sql:
+            self.lock_keys.append(params["lock_key"])
+            return _Result()
         if "FROM agent_missions" in sql:
             return _Result(self.missions)
         if "FROM automations" in sql and "SELECT 1" in sql:
@@ -131,3 +135,66 @@ async def test_scan_agrupa_por_tenant_usuario_de_forma_independiente():
     assert len(registradas) == 2
     assert {r["tenant_id"] for r in registradas} == {str(tenant_a), str(tenant_b)}
     assert len(session.inserted) == 2
+
+
+async def test_record_suggestion_advisory_lock_antes_del_select():
+    """BOTS-22: el dedup atómico serializa SELECT+INSERT con un advisory lock
+    transaccional POR TENANT, y el lock se adquiere ANTES del SELECT de dedup
+    (dos scans simultáneos del mismo tenant producen UNA fila)."""
+    tenant_id, user_id = uuid4(), uuid4()
+    session = _Session()
+
+    await scan_module._record_suggestion(session, tenant_id, user_id, {"task": "Tarea X"})
+
+    lock_idx = next(
+        i for i, (sql, _) in enumerate(session.queries) if "pg_advisory_xact_lock" in sql
+    )
+    select_idx = next(
+        i for i, (sql, _) in enumerate(session.queries) if "SELECT 1 FROM automations" in sql
+    )
+    assert lock_idx < select_idx
+    assert session.lock_keys == [f"proactive_suggestion:{tenant_id}"]
+
+
+async def test_record_suggestion_lock_key_es_por_tenant():
+    """El lock es POR TENANT (no global): dos tenants distintos usan claves
+    distintas y no se bloquean entre sí."""
+    tenant_a, tenant_b = uuid4(), uuid4()
+    user_id = uuid4()
+    session_a, session_b = _Session(), _Session()
+
+    await scan_module._record_suggestion(session_a, tenant_a, user_id, {"task": "Tarea A"})
+    await scan_module._record_suggestion(session_b, tenant_b, user_id, {"task": "Tarea A"})
+
+    assert session_a.lock_keys == [f"proactive_suggestion:{tenant_a}"]
+    assert session_b.lock_keys == [f"proactive_suggestion:{tenant_b}"]
+
+
+async def test_record_suggestion_no_duplica_si_ya_existe_bajo_lock():
+    """La fila ya existente se detecta DESPUÉS del lock y NO se inserta de
+    nuevo (regresión del dedup, ahora serializado)."""
+    tenant_id, user_id = uuid4(), uuid4()
+    session = _Session(existing_suggestion=True)
+
+    resultado = await scan_module._record_suggestion(
+        session, tenant_id, user_id, {"task": "Tarea repetida"}
+    )
+
+    assert resultado is False
+    assert session.inserted == []
+    assert session.lock_keys == [f"proactive_suggestion:{tenant_id}"]
+
+
+async def test_record_suggestion_dedup_ignora_enabled():
+    """AUD-22a: el SELECT de dedup considera sugerencias anteriores por
+    nombre/identidad SIN importar `enabled` — una sugerencia ya ACEPTADA
+    (enabled=true) bloquea la re-insertión (no reaparece una vez decidida)."""
+    tenant_id, user_id = uuid4(), uuid4()
+    session = _Session()
+
+    await scan_module._record_suggestion(session, tenant_id, user_id, {"task": "Tarea X"})
+
+    dedup_sql = next(
+        sql for sql, _ in session.queries if "SELECT 1 FROM automations" in sql
+    )
+    assert "enabled" not in dedup_sql

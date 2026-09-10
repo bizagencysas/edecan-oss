@@ -4,15 +4,33 @@ import SwiftUI
 /// Tarjeta `gym_checkin` en el chat: la pregunta "¿Vas a ir al gym hoy?" con
 /// botones Sí/No. Tocar uno llama a `APIClient.gymCheckin(respuesta:)` con la
 /// respuesta que corresponde a la `accion` del botón (`gym_yes`/`gym_no`).
-/// Una vez respondida queda deshabilitada, igual que ``QuestionCardView``.
+///
+/// Persistencia de la respuesta (bug "la tarjeta reaparece al reabrir"):
+/// - El servidor guarda el check-in (`/plan/today` → `checkin_hoy`) y es la
+///   fuente de verdad.
+/// - Al responder, además se persiste el día en `GymCheckinEstadoLocal`
+///   (UserDefaults, namespaced por usuario) para no depender de la red al
+///   reabrir.
+/// - Al aparecer, la tarjeta de HOY restaura ese estado: flag local primero
+///   (sin red) y, si no hay, `checkin_hoy` del servidor (cubre
+///   re-instalación/otro dispositivo). La tarjeta NUNCA se marca respondida
+///   antes del tap: solo tras un check-in aceptado o ya existente.
 struct GymCheckinCardView: View {
     let bloque: GymCheckinBlock
     let client: APIClient?
+    /// `createdAt` del mensaje que trae este bloque: solo la tarjeta de HOY
+    /// consulta el estado del check-in del día. Las tarjetas viejas del
+    /// historial se muestran como quedaron (sin auto-marcarse).
+    let fechaMensaje: Date?
 
     @State private var respondido = false
     @State private var enviando = false
     @State private var aviso: String?
     @State private var plan: GymPlan?
+    @State private var usuarioID: String?
+
+    /// Flag local persistido por usuario y día (UserDefaults real de la app).
+    private let estadoLocal = GymCheckinEstadoLocal()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -65,6 +83,9 @@ struct GymCheckinCardView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(EdecanTheme.morado.opacity(respondido ? 0.12 : 0.32), lineWidth: 1.2)
         )
+        .task {
+            await restaurarEstadoRespondido()
+        }
     }
 
     @ViewBuilder
@@ -87,6 +108,43 @@ struct GymCheckinCardView: View {
         }
     }
 
+    /// Solo la tarjeta del mensaje de HOY refleja el check-in de hoy. Un
+    /// mensaje aún no persistido (`createdAt == nil`, se está transmitiendo)
+    /// también cuenta como "de hoy".
+    private var esDeHoy: Bool {
+        guard let fechaMensaje else { return true }
+        return Calendar.current.isDateInToday(fechaMensaje)
+    }
+
+    private func restaurarEstadoRespondido() async {
+        guard esDeHoy, !respondido, let client else { return }
+        if usuarioID == nil {
+            usuarioID = (try? await client.me())?.user.id
+        }
+        // 1) Flag local: sobrevive al cierre de la app aunque no haya red.
+        if let uid = usuarioID,
+            let respuesta = estadoLocal.respuesta(
+                dia: estadoLocal.diaISO(), usuarioID: uid
+            ) {
+            if respuesta == "si" || respuesta == "no" {
+                respondido = true
+                return
+            }
+        }
+        // 2) Servidor: `checkin_hoy` es la fuente de verdad y cubre
+        //    re-instalación, otro dispositivo o un flag local ajeno.
+        if let checkin = try? await client.gymCheckinDeHoy() {
+            respondido = true
+            if let uid = usuarioID {
+                estadoLocal.marcar(
+                    respuesta: checkin.respuesta,
+                    dia: estadoLocal.diaISO(),
+                    usuarioID: uid
+                )
+            }
+        }
+    }
+
     private func responder(_ boton: GymCheckinBoton) {
         let respuesta: String
         switch boton.accion {
@@ -100,6 +158,20 @@ struct GymCheckinCardView: View {
             do {
                 let out = try await client.gymCheckin(respuesta: respuesta)
                 respondido = true
+                // Persistir SOLO tras un check-in aceptado por el servidor:
+                // la tarjeta no puede desaparecer antes de que la respuesta
+                // exista. Sin `usuarioID` (me() caído), el estado queda en
+                // memoria y la próxima apertura lo restaura `checkin_hoy`.
+                if usuarioID == nil {
+                    usuarioID = (try? await client.me())?.user.id
+                }
+                if let uid = usuarioID {
+                    estadoLocal.marcar(
+                        respuesta: respuesta,
+                        dia: estadoLocal.diaISO(),
+                        usuarioID: uid
+                    )
+                }
                 aviso = out.message.isEmpty ? nil : out.message
                 if respuesta == "si" { plan = out.plan }
             } catch {

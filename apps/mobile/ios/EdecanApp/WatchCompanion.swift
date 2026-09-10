@@ -19,6 +19,7 @@ final class WatchCompanion {
     private let health = HealthKitManager.compartido
     private var chat: ChatViewModel?
     private var idsAprobacionesConocidas: Set<String>?
+    private var ultimoAvisoPorTool: [String: Date] = [:]
 
     func configurar(client: APIClient?) {
         self.client = client
@@ -526,9 +527,20 @@ final class WatchCompanion {
         defer { idsAprobacionesConocidas = ids }
         guard let previas = idsAprobacionesConocidas else { return }
         for item in pendientes where !previas.contains(item.id) {
+            let nombre = item.name ?? "Herramienta"
+            // Tope anti-spam: máximo 1 aviso por tool cada 4 horas.
+            // El backend reutiliza el id de la confirmación pendiente, pero
+            // si un turno nuevo llega con id distinto del MISMO tool, aquí
+            // se calla igual ("Edecán pide tu sí acceder_codigo_local"
+            // llegó a sonar 20 veces en un día).
+            if let ultimo = ultimoAvisoPorTool[nombre],
+               Date().timeIntervalSince(ultimo) < 4 * 3600 {
+                continue
+            }
+            ultimoAvisoPorTool[nombre] = Date()
             LocalNotificationScheduler.approval(
                 id: item.id,
-                nombre: item.name ?? "Herramienta",
+                nombre: nombre,
                 detalle: String(item.argsPreview.prefix(80))
             )
         }

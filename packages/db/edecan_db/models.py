@@ -364,7 +364,7 @@ class Persona(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 class Conversation(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`conversations(tenant_id, user_id, title, channel: web|voice|phone|api, is_main)`.
 
-    `is_main` (`0026_conversations_main`, frente 5 de paridad reference implementation): a lo
+    `is_main` (`0026_conversations_main`, frente 5 de paridad JARVIS): a lo
     sumo una fila `is_main = true` por tenant+usuario -- la conversación
     donde aterrizan los eventos automáticos que el dueño no pidió. Mismo
     patrón de índice único parcial que `uq_personas_tenant_id_default`
@@ -777,12 +777,19 @@ class Job(IDMixin, TimestampMixin, Base):
                 "notify_incoming_phone_call",
                 "notify_important_event",
                 "create_linkedin_post",
-                "create_organization_social_post",
+                "create_organization_linkedin_post",
                 "run_persistent_agent",
                 "persistent_agent_scan",
                 "proactive_scan",
                 "run_companion_turn",
                 "companion_wake_scan",
+                # Refresco semanal de skills de catálogos (migración
+                # `0066_job_refresh_skills`, que actualiza el CHECK real).
+                "refresh_skills",
+                # `0067_event_log` y `0068_job_limpiar_archivos` agregan los
+                # dos últimos: un CHECK del modelo que no los menciona queda
+                # desincronizado del CHECK real (bug E-INF-1).
+                "event_log_cleanup",
             ),
         ),
     )
@@ -1277,6 +1284,78 @@ class AgentMessage(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String, nullable=False, server_default="pending")
 
 
+class JobOutbox(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Transactional outbox entry for dispatching a durable worker job."""
+
+    __tablename__ = "job_outbox"
+    __table_args__ = (
+        _enum_check("status", ("queued", "sent", "dead")),
+        Index("ix_job_outbox_status_available_at", "status", "available_at"),
+    )
+
+    job_type: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BotRun(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Durable execution state for one persistent-agent run."""
+
+    __tablename__ = "bot_runs"
+    __table_args__ = (
+        _enum_check("status", ("queued", "running", "succeeded", "failed", "cancelled")),
+        UniqueConstraint("run_key", name="uq_bot_runs_run_key"),
+        Index("ix_bot_runs_tenant_worker_status", "tenant_id", "worker_id", "status"),
+    )
+
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("persistent_agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    origen: Mapped[str] = mapped_column(String, nullable=False, server_default="chat")
+    run_key: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="queued")
+    claim_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    delivery_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class RunEvent(IDMixin, TenantScopedMixin, Base):
+    """Immutable, ordered event emitted by a durable bot run."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (
+        UniqueConstraint("run_key", "seq", name="uq_run_events_run_key_seq"),
+    )
+
+    run_key: Mapped[str] = mapped_column(String, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class AgentMission(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     """`agent_missions(user_id, objetivo, status, plan nullable, resultado
     nullable, presupuesto, error nullable)` — misión por objetivo (WP-V2-06).
@@ -1526,6 +1605,7 @@ class RemoteSession(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     frames_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    machine: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Order(IDMixin, TenantScopedMixin, TimestampMixin, Base):
@@ -1821,6 +1901,51 @@ class SocialDraft(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class LinkedinPersonalDailyState(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Un día local de scouting del perfil personal: pool + a lo sumo un final autónomo."""
+
+    __tablename__ = "linkedin_personal_daily_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "platform",
+            "local_date",
+            name="uq_linkedin_personal_daily_state_day",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(Text, nullable=False, server_default="linkedin_personal")
+    local_date: Mapped[date] = mapped_column(Date, nullable=False)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False, server_default="UTC")
+    candidate_pool: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    autonomous_final_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    autonomous_final_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scouting_runs: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+
+class LinkedinPersonalSignal(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """Señal editorial capturada en una conversación (PROACTIVE_CAPTURE)."""
+
+    __tablename__ = "linkedin_personal_signals"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(Text, nullable=False, server_default="linkedin_personal")
+    senal: Mapped[str] = mapped_column(Text, nullable=False)
+    sensibilidad: Mapped[str] = mapped_column(Text, nullable=False, server_default="ask")
+    provenance: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="user_supplied_turn"
+    )
+    conversation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Gimnasio (`/v1/gym`) — plan de entrenamiento + sesión + check-in diario.
 # Dominio puro en `edecan_gym` (paquete `packages/gym`), persistencia acá.
@@ -1841,6 +1966,13 @@ class WorkoutPlan(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     pudo generar/subir)."""
 
     __tablename__ = "workout_plans"
+    # Un solo plan por día y usuario: es la backstop de la carrera del check-in
+    # (dos POST concurrentes del mismo día no pueden persistir dos planes).
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "user_id", "fecha", name="uq_workout_plans_tenant_id_user_id_fecha"
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -1897,7 +2029,14 @@ class GymCheckin(IDMixin, TenantScopedMixin, TimestampMixin, Base):
     sesión se borre."""
 
     __tablename__ = "gym_checkins"
-    __table_args__ = (_enum_check("respuesta", ("si", "no")),)
+    __table_args__ = (
+        _enum_check("respuesta", ("si", "no")),
+        # Un solo check-in por día y usuario: backstop de la carrera del
+        # check-in (dos POST concurrentes no pueden insertar dos filas).
+        UniqueConstraint(
+            "tenant_id", "user_id", "fecha", name="uq_gym_checkins_tenant_id_user_id_fecha"
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -2536,6 +2675,9 @@ ALL_MODELS: tuple[type[Base], ...] = (
     McpServerHealth,
     AgentMessage,
     AgentDirectChat,
+    JobOutbox,
+    BotRun,
+    RunEvent,
     AgentStep,
     UnifiedSession,
     Automation,
@@ -2552,6 +2694,8 @@ ALL_MODELS: tuple[type[Base], ...] = (
     UserProfile,
     SocialEditorialProfile,
     SocialDraft,
+    LinkedinPersonalDailyState,
+    LinkedinPersonalSignal,
     # --- gimnasio (feature /v1/gym) -------------------------------------------
     WorkoutPlan,
     WorkoutSession,

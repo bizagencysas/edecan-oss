@@ -12,6 +12,7 @@ import pyotp
 from conftest import TEST_JWT_SECRET
 from httpx import ASGITransport, AsyncClient
 
+from edecan_api import deps as edecan_deps
 from edecan_api.security import decode_token
 
 LOCAL_DESKTOP_HEADERS = {
@@ -616,3 +617,62 @@ async def test_totp_disable_without_totp_enabled_returns_400(client) -> None:
         headers={"Authorization": f"Bearer {access_token}"},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# C10: get_current_user re-valida membresía + estado de tenant + plan contra la
+# DB — un miembro removido o un tenant desactivado deja de pasar aunque su
+# access token (TTL 30 días) no haya expirado.
+# ---------------------------------------------------------------------------
+
+
+async def test_access_token_de_miembro_removido_es_rechazado(client, fake_repo) -> None:
+    register = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "removido@example.com",
+            "password": "clave-removido-1",
+            "tenant_name": "Removed Co",
+        },
+    )
+    assert register.status_code == 201
+    access_token = register.json()["access_token"]
+    decoded = decode_token(access_token, secret=TEST_JWT_SECRET, expected_typ="access")
+
+    # Antes de la revocación, el access token sí pasa.
+    antes = await client.get("/v1/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert antes.status_code == 200
+
+    # Revocar la membresía (el usuario sigue existiendo en `users`).
+    fake_repo.memberships[:] = [
+        row
+        for row in fake_repo.memberships
+        if not (row["user_id"] == decoded.sub and row["tenant_id"] == decoded.ten)
+    ]
+
+    # La re-validación tiene caché corta (60s): se vacía para simular que el
+    # TTL ya venció y así probar la re-validación REAL, no el acierto de caché.
+    edecan_deps._clear_auth_revalidation_cache()
+
+    despues = await client.get("/v1/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert despues.status_code == 401
+
+
+async def test_access_token_de_tenant_desactivado_es_rechazado(client, fake_repo) -> None:
+    register = await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "suspendido@example.com",
+            "password": "clave-suspendido-1",
+            "tenant_name": "Suspended Co",
+        },
+    )
+    assert register.status_code == 201
+    access_token = register.json()["access_token"]
+    decoded = decode_token(access_token, secret=TEST_JWT_SECRET, expected_typ="access")
+
+    fake_repo.tenants[decoded.ten]["status"] = "suspended"
+
+    response = await client.get("/v1/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert response.status_code == 401
+    assert "ya no tiene acceso" in response.json()["detail"]

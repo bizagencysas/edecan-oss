@@ -14,6 +14,7 @@ silenciosamente hacia quien consume `run_turn`, típicamente el endpoint SSE de
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -56,6 +57,7 @@ from edecan_schemas import (
 )
 
 from .action_ledger import record_action_effect
+from .bot_harness import mcp_grant_token, mcp_tool_local_operation
 from .capability_routing import (
     build_capability_guidance,
     build_slash_command_guidance,
@@ -87,7 +89,7 @@ from .tool_call_text import (
     parece_llamada_en_corchetes,
     parse_emitted_tool_calls,
 )
-from .tools.base import Tool, ToolContext, ToolResult
+from .tools.base import Tool, ToolContext, ToolResult, confirmaciones_desactivadas
 from .tools.registry import ToolRegistry, _flags_satisfechos
 from .visual_memory import VisualMemory
 from .web_security import sanitize_web_content, scan_for_injection, wrap_untrusted
@@ -124,7 +126,23 @@ _MAX_TOKENS_POR_ESFUERZO: dict[str, int] = {
     "bajo": 2048,
     "medio": _MAX_TOKENS_POR_ITERACION,
     "alto": 8192,
+    "extremo": 16384,
 }
+
+
+_ESFUERZO_A_REASONING: dict[str, str] = {
+    "bajo": "low",
+    "medio": "medium",
+    "alto": "high",
+    "extremo": "xhigh",
+}
+
+
+def _esfuerzo_a_reasoning(esfuerzo: str | None) -> str | None:
+    """Traduce el Esfuerzo del selector a `reasoning_effort` de Azure
+    (low/medium/high/xhigh). `None` o un nivel desconocido = sin dial."""
+    nivel = str(esfuerzo or "").strip().lower()
+    return _ESFUERZO_A_REASONING.get(nivel)
 
 
 def _max_tokens_por_esfuerzo(esfuerzo: str | None) -> int:
@@ -181,6 +199,29 @@ _EXTRAS_MEMORY_STORE = "memory_store"
 _EXTRAS_APPROVED_TOOL_CALLS = "approved_tool_calls"
 
 
+def _mcp_grant_token_vigente(tool: Any, name: str) -> str | None:
+    """Token versionado vigente para una tool MCP, o `None` si no puede emitirse.
+
+    H3/H5: el token codifica la clasificación LOCAL de la operación. Si la tool
+    no tiene `definition_version` o no se puede clasificar localmente, no hay
+    token (fail-closed) — la tarjeta vuelve a pedirse, nunca se salta en
+    silencio.
+    """
+    if tool is None or not str(name).startswith("mcp_"):
+        return None
+    version = str(getattr(tool, "definition_version", "") or "")
+    if not version:
+        return None
+    operation = mcp_tool_local_operation(
+        name=str(name), input_schema=getattr(tool, "input_schema", None)
+    )
+    if operation is None:
+        return None
+    return mcp_grant_token(
+        tool_name=str(name), operation=operation, definition_version=version
+    )
+
+
 def _llamada_peligrosa_pendiente(tool: Any, call: Any, approved: set[str]) -> bool:
     """True si hay que pedir confirmación antes de ejecutar.
 
@@ -188,10 +229,24 @@ def _llamada_peligrosa_pendiente(tool: Any, call: Any, approved: set[str]) -> bo
     tool. Así, al aprobar `usar_computadora` una vez en el turno, abrir +
     clic + escribir + enviar no piden cuatro tarjetas más. Otras tools
     peligrosas (correo, pago) siguen pidiendo cada una.
-    """
+
+    `EDECAN_SIN_CONFIRMACIONES=1` (asistente PERSONAL, un solo dueño) apaga
+    la tarjeta por completo — el interruptor maestro de `tools/base.py`."""
     if tool is None or not getattr(tool, "dangerous", False):
         return False
-    return str(call.id) not in approved and str(call.name) not in approved
+    if confirmaciones_desactivadas():
+        return False
+    if str(call.id) in approved:
+        return False
+    if str(call.name).startswith("mcp_"):
+        # BOTS-06 + H3: una tool MCP NUNCA se pre-aprueba por NOMBRE suelto. Solo
+        # un token versionado (`mcp_grant:{name}:{operation}:{version}`) cuyo
+        # fingerprint coincida con la definición ACTUAL y cuya operación
+        # coincida con la clasificación LOCAL salta la tarjeta. Sin clasificación
+        # local no hay token posible → siempre tarjeta (fail-closed).
+        token = _mcp_grant_token_vigente(tool, str(call.name))
+        return token is None or token not in approved
+    return str(call.name) not in approved
 
 
 _EXTRAS_PENDING_QUESTION_TOOLS = "tools_con_pregunta_pendiente"
@@ -206,6 +261,23 @@ invariante "quien pregunta tiene que poder oír la respuesta" (ver
 _QUESTION_BLOCK_TYPE = "question"
 _ASK_USER_TOOL_NAME = "preguntar_al_usuario"
 TOOL_PROGRESS_INTERVAL_SECONDS = 3.0
+
+
+class _ToolDeadlineExceeded(Exception):
+    """Una tool excedió su `Tool.timeout_seconds` y el turno la canceló."""
+
+    def __init__(self, name: str, deadline: float) -> None:
+        super().__init__(f"tool {name} excedió {deadline}s")
+        self.name = name
+        self.deadline = deadline
+
+
+class _ToolResultadoNulo(Exception):
+    """Una tool devolvió None (contrato roto): error honesto, no timeout."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"tool {name} devolvió None")
+        self.name = name
 """Frecuencia de latidos públicos durante herramientas de larga duración."""
 _MAX_GROUNDING_CONTENT = 14_000
 
@@ -574,7 +646,11 @@ def _effective_model(provider: Any, requested_model: str) -> str:
 
 
 def _done_attribution(
-    provider: Any, model: str, model_alias: str, routing_attribution: dict[str, str] | None
+    provider: Any,
+    model: str,
+    model_alias: str,
+    routing_attribution: dict[str, str] | None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, str]:
     """Construye atribución pública sin ocultar el fallback efectivo."""
     effective_model = _effective_model(provider, model)
@@ -586,7 +662,23 @@ def _done_attribution(
     }
     if bool(getattr(provider, "last_fallback_used", False)):
         attribution["fallback_used"] = "true"
+    attribution["reasoning_effort"] = reasoning_effort or "none"
     return attribution
+
+
+def _run_tool_in_thread(tool: Tool, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """Execute a tool entry point wholly inside a worker thread.
+
+    ``Tool.run`` is async by contract, but an opted-in implementation may do
+    blocking work before its first await (or may be a legacy synchronous
+    implementation).  Creating and driving the coroutine in this function is
+    what keeps that work off the agent event loop.
+    """
+
+    result = tool.run(ctx, args)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 class PendingTurnValidationError(RuntimeError):
@@ -624,12 +716,14 @@ class Agent:
         event_bus: EventBus | None = None,
         max_tool_iterations: int | None = None,
         reasoning_effort: str | None = None,
+        budget_gate: Any | None = None,
     ) -> None:
         self._llm_router = llm_router
         self._registry = registry
         self._model_alias = model_alias or _LLM_ALIAS
         self._provider_health = provider_health
         self._event_bus = event_bus
+        self._budget_gate = budget_gate
         # Tope de iteraciones de herramientas de ESTA instancia (default:
         # MAX_TOOL_ITERATIONS). Turnos largos multi-paso (p. ej. el companion
         # explorando WhatsApp/LinkedIn con visión) necesitan uno mayor.
@@ -962,6 +1056,9 @@ class Agent:
             max_tokens=_max_tokens_por_esfuerzo(
                 seleccion.esfuerzo if seleccion is not None else None
             ),
+            esfuerzo_razonamiento=_esfuerzo_a_reasoning(
+                seleccion.esfuerzo if seleccion is not None else None
+            ),
             confidence=confidence,
             visual_memory=visual_mem,
             routing_attribution=routing_attribution,
@@ -1143,9 +1240,22 @@ class Agent:
             str(item) for item in (*pending.approved_tool_call_ids, approved_tool_call_id)
         }
         approved = set(approved_ids)
+        # H5: al confirmar una tool MCP, se añade su grant-token VIGENTE (no el
+        # nombre suelto) al set aprobado del turno. Así una segunda llamada a la
+        # MISMA tool en el MISMO turno no vuelve a pedir tarjeta (el nombre suelto
+        # no alcanza para `mcp_*` — ver `_llamada_peligrosa_pendiente`).
+        tool_by_call_name = {
+            call.name: tool for call, tool, _reason in resolved_calls if tool is not None
+        }
         for pending_call in pending.tool_calls:
             if str(pending_call.id) in approved_ids:
                 approved.add(str(pending_call.name))
+                if str(pending_call.name).startswith("mcp_"):
+                    token = _mcp_grant_token_vigente(
+                        tool_by_call_name.get(pending_call.name), str(pending_call.name)
+                    )
+                    if token is not None:
+                        approved.add(token)
         for call, tool, _unresolved_reason in resolved_calls:
             if _llamada_peligrosa_pendiente(tool, call, approved):
                 next_pending = pending.model_copy(
@@ -1205,6 +1315,12 @@ class Agent:
             max_tokens=_max_tokens_por_esfuerzo(
                 seleccion.esfuerzo if seleccion is not None else None
             ),
+            # E-CORE-1: el turno reanudado conservaba el budget de tokens
+            # pero PERDÍA el reasoning_effort elegido (iba con None y Azure
+            # usaba su default). Se re-pasa la misma traducción del selector.
+            esfuerzo_razonamiento=_esfuerzo_a_reasoning(
+                seleccion.esfuerzo if seleccion is not None else None
+            ),
             routing_attribution=routing_attribution,
         ):
             yield event
@@ -1229,12 +1345,19 @@ class Agent:
         confidence: ConfidenceTracker | None = None,
         visual_memory: VisualMemory | None = None,
         routing_attribution: dict[str, str] | None = None,
+        esfuerzo_razonamiento: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if confidence is None:
             confidence = ConfidenceTracker()
         usage_totals.setdefault("input_tokens", 0)
         usage_totals.setdefault("output_tokens", 0)
         empty_retry_done = False
+        effective_reasoning_effort = (
+            esfuerzo_razonamiento or self._reasoning_effort
+            if (esfuerzo_razonamiento or self._reasoning_effort)
+            and str(model or "").startswith(("gpt-5", "gpt-6"))
+            else None
+        )
         for iteration in range(start_iteration, self._max_tool_iterations):
             request = CompletionRequest(
                 model=model,
@@ -1242,11 +1365,7 @@ class Agent:
                 messages=list(messages),
                 tools=tool_specs,
                 max_tokens=max_tokens,
-                reasoning_effort=(
-                    self._reasoning_effort
-                    if (self._reasoning_effort and str(model or "").startswith("gpt-5"))
-                    else None
-                ),
+                reasoning_effort=effective_reasoning_effort,
             )
             text_parts: list[str] = []
             raw_tool_calls: list[Any] = []
@@ -1256,6 +1375,10 @@ class Agent:
             iteration_started = time.monotonic()
             iteration_input_tokens = 0
             iteration_output_tokens = 0
+            if self._budget_gate is not None:
+                gate_result = self._budget_gate(request)
+                if inspect.isawaitable(gate_result):
+                    await gate_result
             async for chunk in self._stream_provider(provider, request):
                 if chunk.type == "text" and chunk.text:
                     # Llama 3.3 a veces escribe la tool call como JSON en
@@ -1343,9 +1466,7 @@ class Agent:
                 duration_seconds=time.monotonic() - iteration_started,
                 input_tokens=iteration_input_tokens,
                 output_tokens=iteration_output_tokens,
-                reasoning_effort=(
-                    self._reasoning_effort if str(model or "").startswith("gpt-5") else None
-                ),
+                reasoning_effort=effective_reasoning_effort,
             )
 
             if not raw_tool_calls:
@@ -1393,7 +1514,11 @@ class Agent:
                     usage=usage_totals,
                     explanation=_public_execution_explanation(tool_log),
                     attribution=_done_attribution(
-                        provider, model, self._model_alias, routing_attribution
+                        provider,
+                        model,
+                        self._model_alias,
+                        routing_attribution,
+                        effective_reasoning_effort,
                     ),
                 )
                 return
@@ -1481,7 +1606,11 @@ class Agent:
                     usage=usage_totals,
                     explanation=_public_execution_explanation(tool_log),
                     attribution=_done_attribution(
-                        provider, model, self._model_alias, routing_attribution
+                        provider,
+                        model,
+                        self._model_alias,
+                        routing_attribution,
+                        effective_reasoning_effort,
                     ),
                 )
                 return
@@ -1494,7 +1623,13 @@ class Agent:
         yield DoneEvent(
             usage=usage_totals,
             explanation=_public_execution_explanation(tool_log),
-            attribution=_done_attribution(provider, model, self._model_alias, routing_attribution),
+            attribution=_done_attribution(
+                provider,
+                model,
+                self._model_alias,
+                routing_attribution,
+                effective_reasoning_effort,
+            ),
         )
 
     def _resolve_calls(
@@ -1593,10 +1728,28 @@ class Agent:
                     "tool.started",
                     {"name": call.name, "tool_call_id": call.id},
                 )
-            task = asyncio.create_task(tool.run(ctx, call.arguments))
+            runs_in_thread = bool(getattr(tool, "async_run_in_thread", False))
+            if runs_in_thread:
+                task = asyncio.create_task(
+                    asyncio.to_thread(_run_tool_in_thread, tool, ctx, call.arguments)
+                )
+            else:
+                task = asyncio.create_task(tool.run(ctx, call.arguments))
+            # `Tool.timeout_seconds` (§62) era declarativo hasta el bug
+            # E-CORE-2: nadie lo aplicaba y una tool colgada (p. ej. un
+            # regex catastrófico en una búsqueda) colgaba el turno sin tope.
+            # Ahora es un deadline DURO: al excederse, la tool se cancela y
+            # el modelo recibe un error honesto en vez de un turno infinito.
+            deadline_seconds = float(getattr(tool, "timeout_seconds", 0) or 0)
+            result = None
+            agotado = False
             try:
                 started_at = time.monotonic()
                 while True:
+                    transcurrido = time.monotonic() - started_at
+                    if deadline_seconds and transcurrido >= deadline_seconds:
+                        agotado = True
+                        break
                     try:
                         result = await asyncio.wait_for(
                             asyncio.shield(task), timeout=TOOL_PROGRESS_INTERVAL_SECONDS
@@ -1612,6 +1765,32 @@ class Agent:
                             ),
                             None,
                         )
+                if result is None:
+                    if agotado:
+                        raise _ToolDeadlineExceeded(call.name, deadline_seconds)
+                    # La tool devolvió None sin tardar: contrato roto, pero el
+                    # mensaje NO debe culpar al timeout (H-5).
+                    raise _ToolResultadoNulo(call.name)
+            except _ToolDeadlineExceeded as exc:
+                logger.warning(
+                    "La herramienta %r excedió su timeout (%.0fs) y se canceló",
+                    call.name,
+                    exc.deadline,
+                )
+                timeout_message = (
+                    f"Error: la herramienta {call.name} excedió su tiempo "
+                    f"límite ({int(exc.deadline)}s) y se canceló."
+                )
+                if runs_in_thread:
+                    timeout_message = (
+                        f"Error: la herramienta {call.name} excedió su tiempo "
+                        f"límite ({int(exc.deadline)}s); dejé de esperar, pero el trabajo "
+                        "en curso pudo quedar sin detenerse."
+                    )
+                result = ToolResult(
+                    content=timeout_message,
+                    is_error=True,
+                )
             except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar el turno
                 logger.warning("La herramienta %r lanzó una excepción", call.name, exc_info=True)
                 result = ToolResult(content=f"Error: {redact(str(exc))}")
@@ -1721,6 +1900,19 @@ class Agent:
                     if relato_mac is not None:
                         relato_mac.clear()
                         relato_mac.append(_relato_de_la_mac(data))
+            if call.name == "navegar_web_interactivo" and pantallas is not None:
+                data = result.data if isinstance(result.data, dict) else None
+                imagen = _imagen_del_navegador(data)
+                if imagen is not None:
+                    pantallas.clear()
+                    pantallas.append(imagen)
+                    if relato_mac is not None:
+                        relato_mac.clear()
+                        relato_mac.append(
+                            "Así se ve el navegador propio de Edecán (perfil del "
+                            "dueño) ahora. Describe SOLO lo que aparece en la foto. "
+                            "Si no puedes leer algo, dilo; no inventes contenido."
+                        )
             contenido_para_el_modelo = (
                 f"{aviso_fidelidad}\n\n{result.content}" if aviso_fidelidad else result.content
             )
@@ -1870,6 +2062,12 @@ def _chat_message_from_pending(message: PendingChatMessage) -> ChatMessage:
 def _imagen_de_la_mac(data: dict[str, Any] | None) -> dict[str, Any] | None:
     """Pasa la captura de `usar_computadora` al siguiente turno, como visión."""
     return _bloque_imagen_b64(data, "image_b64", "mime")
+
+
+def _imagen_del_navegador(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pasa la captura de `navegar_web_interactivo` (el navegador PROPIO de
+    Edecán, perfil persistente) al siguiente turno, como visión."""
+    return _bloque_imagen_b64(data, "screenshot_b64", "mime")
 
 
 def _imagen_recorte_mac(data: dict[str, Any] | None) -> dict[str, Any] | None:

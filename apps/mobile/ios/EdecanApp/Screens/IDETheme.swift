@@ -135,11 +135,6 @@ enum IDETheme {
 // MARK: - Modificadores reutilizables
 
 extension View {
-    /// Fuerza light mode en todo el árbol del IDE (regla de producto).
-    func ideLightOnly() -> some View {
-        preferredColorScheme(.light)
-    }
-
     /// Tarjeta elevada del estudio light.
     func idePanel(esquina: CGFloat = 16) -> some View {
         background(IDETheme.superficie, in: RoundedRectangle(cornerRadius: esquina, style: .continuous))

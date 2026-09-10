@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from edecan_llm.base import Usage
 from edecan_llm.costs import COSTOS, estimate
+
+logger = logging.getLogger(__name__)
 
 _ATTRIBUTION_KEYS = frozenset(
     {
@@ -35,6 +38,15 @@ def build_llm_usage_meta(
     }
     model = safe.get("model")
     if not model or model not in COSTOS:
+        # Honesto y ruidoso a propósito (C9a): un modelo real sin precio no
+        # debe pasar desapercibido — se loguea para que el operador complete
+        # `COSTOS`/`precio_referencia` en vez de que el gasto se estime en 0
+        # en silencio (lo que dejaba muerta la alerta `USAGE_ALERT_USD_PER_DAY`).
+        if model:
+            logger.warning(
+                "Uso de LLM sin precio conocido (cost_status=unknown): model=%s",
+                model,
+            )
         safe.update(
             {"cost_status": "unknown", "estimated_cost_usd": None, "cost_usd": None}
         )

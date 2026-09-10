@@ -562,7 +562,7 @@ async def test_stream_tras_captura_de_la_mac_pide_tokens_nativos_sin_tools() -> 
             return httpx.Response(200, text="".join(lines))
         seen["sin_tools"] += 1
         lines = [
-            'data: {"response":"Cursor abierto con Edecan-Nuevo."}\n\n',
+            'data: {"response":"Cursor abierto con Mi Proyecto."}\n\n',
             "data: [DONE]\n\n",
         ]
         return httpx.Response(200, text="".join(lines))
@@ -602,7 +602,7 @@ async def test_stream_tras_captura_de_la_mac_pide_tokens_nativos_sin_tools() -> 
 
     assert seen["con_tools"] == 1
     assert seen["sin_tools"] == 1
-    assert "".join(c.text for c in chunks if c.text) == "Cursor abierto con Edecan-Nuevo."
+    assert "".join(c.text for c in chunks if c.text) == "Cursor abierto con Mi Proyecto."
     await provider.aclose()
 
 

@@ -9,8 +9,12 @@ confirmación explícita del usuario.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 import aioboto3
 import httpx
@@ -26,6 +30,7 @@ _TIPOS_CONTENIDO = ("post", "guion", "email")
 _REDES_SOPORTADAS = ("linkedin", "meta", "x", "youtube")
 _TIMEOUT = 30.0
 _MAX_SOCIAL_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_VIDEO_BYTES = 200 * 1024 * 1024
 
 _SYSTEM_PROMPT = (
     "Eres un redactor experto en marketing de contenidos en español. Escribes "
@@ -46,10 +51,15 @@ def _tenant_flags(ctx: ToolContext) -> dict[str, Any]:
 
 
 class GenerarContenidoTool(Tool):
+    # LLM interno (ctx.llm.complete) puede tardar más de 60s.
+    timeout_seconds = 130.0
     name = "generar_contenido"
     description = (
-        "Redacta un borrador de contenido (post, guion o email) a partir de un brief, "
-        "usando el modelo principal. Solo devuelve texto — nunca publica nada."
+        "Redacta un borrador (post, guion o email) a partir de un brief. Úsala cuando "
+        "pidan «escribe/sube un post de esto», copy para redes o texto antes de publicar "
+        "— solo devuelve texto, nunca publica. Para LinkedIn con research usa "
+        "`crear_post_linkedin`; para publicar de verdad usa `publicar_social` tras "
+        "aprobación del dueño."
     )
     category = "creative"
     risk_level = "medium"
@@ -113,9 +123,11 @@ class GenerarContenidoTool(Tool):
 class PublicarSocialTool(Tool):
     name = "publicar_social"
     description = (
-        "Publica contenido de verdad en una red social ya conectada por el tenant. "
-        "Redes soportadas: linkedin, meta, x, youtube. Requiere confirmación: publica algo "
-        "real y visible públicamente."
+        "Publica contenido de verdad en una red ya conectada (OAuth en /app/conectores). "
+        "Úsala cuando el dueño pida «sube/publica el post» en LinkedIn, X, Meta o "
+        "YouTube — después de redactar y de su OK explícito. Requiere confirmación: "
+        "efecto externo visible. Si solo piden redactar, usa `generar_contenido` o "
+        "`crear_post_linkedin` primero."
     )
     category = "external_comm"
     risk_level = "high"
@@ -351,6 +363,39 @@ async def _publicar_en_meta(texto: str, bundle: Any, http: httpx.AsyncClient) ->
     )
 
 
+async def _validar_url_video(video_url: str) -> str | None:
+    """Valida la URL del video ANTES de descargarla (C3, auditoría SSRF).
+
+    Devuelve un mensaje de error (para abortar la publicación) o `None` si la
+    URL es pública y segura para descargar. Aplica el mismo patrón de
+    `_check_source_availability` en `research.py`: esquema http/https únicamente
+    y host cuya resolución DNS no apunte a IP privada / loopback / link-local /
+    metadata (169.254.169.254) — todo lo que no sea `is_global` se bloquea.
+    """
+    partes = urlsplit(video_url)
+    host = partes.hostname or ""
+    if partes.scheme not in {"http", "https"} or not host:
+        return "la URL del video debe ser http:// o https:// con un host válido"
+    try:
+        literal = ipaddress.ip_address(host)
+        addresses = [literal]
+    except ValueError:
+        if host.casefold() in {"localhost", "localhost.localdomain"}:
+            return "la URL del video apunta a un host privado (localhost)"
+        try:
+            infos = await asyncio.to_thread(
+                socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM
+            )
+            addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+        except (OSError, ValueError):
+            return "no pude resolver el host de la URL del video (DNS)"
+    if not addresses:
+        return "la URL del video no resolvió a ninguna dirección"
+    if any(not address.is_global for address in addresses):
+        return "la URL del video apunta a una IP privada o no pública (bloqueado)"
+    return None
+
+
 async def _publicar_en_youtube(
     texto: str, args: dict[str, Any], bundle: Any, http: httpx.AsyncClient
 ) -> ToolResult:
@@ -371,9 +416,57 @@ async def _publicar_en_youtube(
                 "(la URL pública del archivo de video a subir)."
             )
         )
-    descarga = await http.get(video_url)
-    descarga.raise_for_status()
-    resultado = await youtube.upload_video(http, bundle, titulo, texto, descarga.content)
+    error_url = await _validar_url_video(video_url)
+    if error_url is not None:
+        return ToolResult(
+            content=(
+                f"No publiqué el video a YouTube: {error_url}. Pásame una URL pública "
+                "del archivo de video (https://...) y reintenta."
+            )
+        )
+    try:
+        async with http.stream("GET", video_url, follow_redirects=False) as descarga:
+            if 300 <= descarga.status_code < 400:
+                return ToolResult(
+                    content=(
+                        "No publiqué el video a YouTube: la URL responde con un redirect "
+                        "y no lo sigo. Pásame la URL final del archivo de video."
+                    )
+                )
+            descarga.raise_for_status()
+            content_length = descarga.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > _MAX_VIDEO_BYTES:
+                        return ToolResult(
+                            content=(
+                                "No publiqué el video a YouTube: supera el límite de "
+                                "200 MB."
+                            )
+                        )
+                except ValueError:
+                    pass
+            trozos: list[bytes] = []
+            total = 0
+            async for trozo in descarga.aiter_bytes(1024 * 1024):
+                total += len(trozo)
+                if total > _MAX_VIDEO_BYTES:
+                    return ToolResult(
+                        content=(
+                            "No publiqué el video a YouTube: supera el límite de "
+                            "200 MB."
+                        )
+                    )
+                trozos.append(trozo)
+            video_bytes = b"".join(trozos)
+    except httpx.HTTPError as exc:
+        return ToolResult(
+            content=(
+                f"No publiqué el video a YouTube: no pude descargarlo de la URL "
+                f"(error de red: {str(exc)[:200]}). Verifica la URL e intenta de nuevo."
+            )
+        )
+    resultado = await youtube.upload_video(http, bundle, titulo, texto, video_bytes)
     return ToolResult(
         content=f"Video «{titulo}» subido a YouTube.", data={"resultado": resultado}
     )

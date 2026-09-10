@@ -62,7 +62,6 @@ from edecan_core.notifications import record_daily_brief_delivery
 from edecan_schemas import JobEnvelope
 from sqlalchemy import text
 
-from edecan_worker import push
 from edecan_worker.deps import Deps
 from edecan_worker.repo import SqlRepo
 

@@ -359,7 +359,7 @@ async def test_run_mission_registra_tool_mcp_antes_de_construir_orchestrator(
 
     _FakeOrchestratorQueSnapshotea.instancias = []
     _install_fake_edecan_agents(monkeypatch)
-    monkeypatch.setattr(run_mission_module, "_build_registry", lambda: ToolRegistry())
+    monkeypatch.setattr(run_mission_module, "_build_registry", lambda _tenant_id: ToolRegistry())
 
     async def _fake_mcp_tools_para(tenant_id: Any, session: Any, flags: Any) -> list[Any]:
         return [_FakeMCPTool()]
@@ -485,7 +485,7 @@ async def test_run_automation_registra_tool_mcp_antes_del_perfil(
 
     _run_automation_capturas.clear()
     _install_fake_edecan_automations(monkeypatch)
-    monkeypatch.setattr(run_automation_module, "_build_registry", lambda: ToolRegistry())
+    monkeypatch.setattr(run_automation_module, "_build_registry", lambda _tenant_id: ToolRegistry())
 
     async def _fake_mcp_tools_para(tenant_id: Any, session: Any, flags: Any) -> list[Any]:
         return [_FakeMCPTool()]

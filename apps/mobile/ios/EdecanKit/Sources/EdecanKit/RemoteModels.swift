@@ -9,6 +9,52 @@ import Foundation
 // frame/comando es una petición HTTP suelta, igual que
 // `apps/web/src/lib/api-remoto.ts`.
 
+// MARK: - `/v1/remote/machines` — equipos disponibles para este tenant
+
+/// Fila de `GET /v1/remote/machines` (`routers/remote.py::list_machines`,
+/// `companion_manager.py::list_machines`): cada equipo contra el que se
+/// puede abrir una sesión de vista remota — la computadora local del runtime
+/// (`kind="local"`, p. ej. el VPS) y la Mac del dueño conectada por
+/// WebSocket (`kind="remote"`). No trae `tenant_id`/`user_id`: el servidor
+/// ya filtra la lista por tenant. `kind` es `String` crudo, no un enum
+/// Swift cerrado, mismo criterio que `RemoteSession.kind`: si el backend
+/// suma un `kind` nuevo, decodificar no debe romperse.
+public struct RemoteMachine: Codable, Sendable, Equatable, Identifiable {
+    public let machineId: String
+    /// Texto corto para pintar en la UI (hoy siempre igual a `name`).
+    public let label: String
+    public let name: String
+    /// `"local"` (computadora del runtime) o `"remote"` (Mac del dueño vía WebSocket).
+    public let kind: String
+    public let connected: Bool
+
+    public var id: String { machineId }
+
+    enum CodingKeys: String, CodingKey {
+        case machineId, label, name, kind, connected
+    }
+
+    public init(machineId: String, label: String, name: String, kind: String, connected: Bool) {
+        self.machineId = machineId
+        self.label = label
+        self.name = name
+        self.kind = kind
+        self.connected = connected
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        machineId = try container.decode(String.self, forKey: .machineId)
+        label = (try? container.decode(String.self, forKey: .label)) ?? machineId
+        name = (try? container.decode(String.self, forKey: .name)) ?? machineId
+        kind = (try? container.decode(String.self, forKey: .kind)) ?? "remote"
+        connected = (try? container.decode(Bool.self, forKey: .connected)) ?? false
+    }
+
+    /// `true` para la computadora del runtime (VPS); `false` para la Mac del dueño.
+    public var esLocal: Bool { kind == "local" }
+}
+
 /// Fila de `remote_sessions`, espejo EXACTO de lo que devuelven
 /// `POST /v1/remote/sessions`, `GET /v1/remote/sessions[/{id}]` y
 /// `POST /v1/remote/sessions/{id}/end` (`Repo._REMOTE_SESSION_COLUMNS`,

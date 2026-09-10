@@ -66,7 +66,7 @@ JOB_TYPES: tuple[str, ...] = (
     # pantalla real de la app y entrega el brief editorial; el worker escribe el
     # post con un modelo directo (sin pasar por el motor del seed) y pide el
     # visual a fydesign. Ver
-    # `apps/worker/edecan_worker/handlers/create_organization_linkedin_post.py`.
+    # `apps/worker/edecan_worker/handlers/create_organization_social_post.py`.
     "create_organization_linkedin_post",
     # Workers persistentes always-on (PHASE3): el handler y el scan son
     # aditivos y se agregan al final para preservar índices históricos.
@@ -83,6 +83,17 @@ JOB_TYPES: tuple[str, ...] = (
     "companion_wake_scan",
     # Poll de respaldo: ingestar resúmenes ConvAI (ElevenLabs) cuando el webhook
     # post-call no llegó o el túnel estaba caído.
+    # Refresco semanal de skills de catálogos remotos (ver el handler
+    # `apps/worker/edecan_worker/handlers/refresh_skills.py`): re-importa los
+    # SKILL.md de los catálogos con upsert idempotente por slug para todos
+    # los tenants con skills instaladas (o el dueño por default). Se encola
+    # con `tenant_id=None` desde el scheduler local (cadencia semanal).
+    "refresh_skills",
+    # Auto-eliminación diaria de las filas de `event_log` con más de 7 días
+    # (migración 0067): el DELETE por `created_at` mantiene acotada la
+    # plataforma de logging TOTAL. Se encola con `tenant_id=None` desde el
+    # scheduler local (cadencia diaria).
+    "event_log_cleanup",
 )
 
 

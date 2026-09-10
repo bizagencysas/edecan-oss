@@ -21,7 +21,11 @@ struct CapabilitiesView: View {
 
             Section("Habilidades") {
                 if let skillsError {
-                    Text(skillsError).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(skillsError).foregroundStyle(.secondary)
+                        Button("Reintentar") { Task { await cargar() } }
+                            .font(.footnote.weight(.semibold))
+                    }
                 } else if skills.isEmpty && !loading {
                     Text("No hay habilidades adicionales instaladas.").foregroundStyle(.secondary)
                 } else {
@@ -42,9 +46,13 @@ struct CapabilitiesView: View {
 
             Section("Conexiones externas") {
                 if let mcpError {
-                    Text(mcpError).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(mcpError).foregroundStyle(.secondary)
+                        Button("Reintentar") { Task { await cargar() } }
+                            .font(.footnote.weight(.semibold))
+                    }
                 } else if servers.isEmpty && !loading {
-                    Text("No hay servicios externos conectados.").foregroundStyle(.secondary)
+                    Text("Ningún MCP en el VPS (GET /v1/mcp/servers vacío).").foregroundStyle(.secondary)
                 } else {
                     ForEach(servers) { server in
                         HStack {
@@ -56,8 +64,9 @@ struct CapabilitiesView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Circle().fill(server.estado == "active" ? Color.green : Color.orange)
-                                .frame(width: 8, height: 8)
+                            Text(server.etiquetaSalud)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

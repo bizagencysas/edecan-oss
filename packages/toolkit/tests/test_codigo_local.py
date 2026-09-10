@@ -195,6 +195,66 @@ async def test_git_status_diff_commit_flujo_completo(make_ctx, repo_local):
     assert "primer commit de prueba" in log.stdout
 
 
+async def test_leer_archivo_ruta_mac_repo_se_remapea_sin_companion(make_ctx, repo_local):
+    ctx = make_ctx(settings=_settings_local(repo_local))
+    mac_path = "/Users/example/edecan/archivo.txt"
+    resultado = await AccederCodigoLocalTool().run(
+        ctx, {"accion": "leer_archivo", "ruta": mac_path}
+    )
+    assert "hola mundo" in resultado.content
+    assert "companion" not in resultado.content.lower()
+
+
+async def test_leer_archivo_ruta_mac_otra_cuenta_tambien_se_remapea(make_ctx, repo_local):
+    ctx = make_ctx(settings=_settings_local(repo_local))
+    mac_path = "/Users/" + "cuenta-distinta" + "/edecan/archivo.txt"
+    resultado = await AccederCodigoLocalTool().run(
+        ctx, {"accion": "leer_archivo", "ruta": mac_path}
+    )
+    assert "hola mundo" in resultado.content
+
+
+async def test_leer_archivo_ruta_mac_fuera_repo_sin_companion(make_ctx, repo_local):
+    ctx = make_ctx(settings=_settings_local(repo_local))
+    resultado = await AccederCodigoLocalTool().run(
+        ctx,
+        {
+            "accion": "leer_archivo",
+            "ruta": "/Users/example/Documents/otro.txt",
+        },
+    )
+    assert "companion" in resultado.content.lower()
+    assert "/opt/edecan/app" in resultado.content or str(repo_local) in resultado.content
+
+
+async def test_remap_ruta_mac_a_local_sufijo_en_ruta():
+    from edecan_toolkit.codigo_local import _remap_ruta_mac_a_local
+
+    relativa, fuera = _remap_ruta_mac_a_local(
+        "algo/proyectos/edecan/packages/foo.py"
+    )
+    assert relativa == "packages/foo.py"
+    assert fuera is False
+
+
+def test_remap_ruta_mac_fuera_repo_cualquier_cuenta():
+    from edecan_toolkit.codigo_local import _remap_ruta_mac_a_local
+
+    relativa, fuera = _remap_ruta_mac_a_local("/Users/example/Documents/notas.md")
+    assert relativa is None
+    assert fuera is True
+
+
+def test_ruta_mac_fuera_repo_para_companion_es_relativa_al_home():
+    from edecan_toolkit.codigo_local import _ruta_mac_fuera_repo_para_companion
+
+    raiz, relativa = _ruta_mac_fuera_repo_para_companion(
+        "/Users/example/Documents/otro.txt"
+    )
+    assert raiz == "/Users/" + "example"
+    assert relativa == "Documents/otro.txt"
+
+
 async def test_git_commit_sin_mensaje(make_ctx, repo_local):
     ctx = make_ctx(settings=_settings_local(repo_local))
     resultado = await AccederCodigoLocalTool().run(ctx, {"accion": "git_commit"})

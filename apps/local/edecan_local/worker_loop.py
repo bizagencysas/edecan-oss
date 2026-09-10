@@ -61,21 +61,36 @@ ARCHITECTURE.md §10.11) es `< MAX_ATTEMPTS` → reintenta: `attempts + 1`,
 (estado terminal — no hay una tabla DLQ separada en modo local, `status=
 'error'` ES el equivalente).
 
-Cada `SCHEDULER_INTERVAL_SECONDS` (30s) se encolan `send_reminder_scan` y
-`automation_scan` (mismo rol que `edecan_worker.scheduler` en dev, pero con
-una sola cadencia — este runner no tiene el matiz de doble cadencia de ese
-módulo, ver su docstring, porque acá ambos tipos son igual de baratos de
-encolar cada 30s).
+Cada tick del scheduler local encola jobs de sistema con las MISMAS cadencias
+que `edecan_worker.scheduler` (30s / 60s / 300s): `send_reminder_scan` y
+`sync_connector` cada 30s; `automation_scan` y `persistent_agent_scan` cada
+60s; `proactive_scan` cada 300s. Además, `refresh_skills` cada 7 días y
+`event_log_cleanup` cada 24 h, cadencias que no tienen equivalente en el
+scheduler de dev. Así
+las rutinas y workers persistentes siguen corriendo con la app/iPhone
+cerrados mientras el runner local (`edecan_local.runtime`) siga vivo — no
+dependen del WebSocket del companion.
+
+**Despertar ≠ outreach en chat.** `persistent_agent_scan` solo encola
+`run_persistent_agent` (turno headless del companion/worker persistente vía
+`run_automation`); el agente puede elegir silencio — no inserta texto plantilla
+en conversaciones. `daily_brief` (brief determinista en chat) NO está en este
+scheduler ni se registra aquí. `proactive_scan` solo persiste sugerencias
+deshabilitadas en `automations` (`enabled=false`); tampoco es outreach
+conversacional.
 
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -86,15 +101,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Tenant del job en curso (task-local): el callback `on_usage` del router local
+# solo recibe (modelo, usage) — lee el tenant de acá. `_process_job` lo fija
+# alrededor de cada handler, así los turnos de worker (wakes, memorias,
+# automatizaciones, tools que llaman `ctx.llm.complete`) registran su uso en
+# `usage_events` como el resto de la app.
+_job_tenant_ctx: ContextVar[UUID | None] = ContextVar("edecan_job_tenant", default=None)
+
+_SIN_AUTOMATIZACIONES = os.getenv("EDECAN_SIN_AUTOMATIZACIONES") == "1"
 POLL_INTERVAL_SECONDS = 2.0
 SCHEDULER_INTERVAL_SECONDS = 30.0
+SCHEDULER_INTERVAL_AUTOMATIONS_SECONDS = 60.0
+SCHEDULER_INTERVAL_PERSISTENT_AGENTS_SECONDS = 60.0
+SCHEDULER_INTERVAL_PROACTIVE_SECONDS = 300.0
+# Refresco de skills de catálogos remotos: semanal (7 días). Un catálogo de
+# SKILL.md no cambia a ritmo de minutos y cada pasada descarga un tarball;
+# una vez por semana alcanza (y sobra) para seguirlo.
+SCHEDULER_INTERVAL_REFRESH_SKILLS_SECONDS = 7 * 24 * 3600.0
+SCHEDULER_INTERVAL_LIMPIAR_ARCHIVOS_SECONDS = 24 * 3600.0
 BATCH_SIZE = 5
+# Un job 'running' más viejo que esto (lease sin renovar) se considera huérfano
+# tras un reinicio del proceso y se reclamar para reprocesarlo (fiabilidad).
+JOB_LEASE_SECONDS = 300
+# Tope de reloj de pared por job: ningún handler puede congelar la cola
+# local indefinidamente (un LLM colgado, un shell que no responde). Al
+# excederse, el job se marca error y la cola sigue con el siguiente.
+JOB_TIMEOUT_SECONDS = 1200.0
 MAX_ATTEMPTS = 5
 MAX_BACKOFF_SECONDS = 900
 BASE_BACKOFF_SECONDS = 30
 
 _NOT_BEFORE_KEY = "_not_before"
-SCHEDULED_JOB_TYPES: tuple[str, ...] = ("send_reminder_scan", "automation_scan")
+# Paridad con `edecan_worker.scheduler.JOBS_PERIODICOS*` (ARCHITECTURE.md §10.11).
+JOBS_PERIODICOS_30S: tuple[str, ...] = ("send_reminder_scan", "sync_connector")
+JOBS_PERIODICOS_60S_AUTOMATIONS: tuple[str, ...] = ("automation_scan",)
+JOBS_PERIODICOS_60S_PERSISTENT: tuple[str, ...] = ("persistent_agent_scan",)
+JOBS_PERIODICOS_300S: tuple[str, ...] = ("proactive_scan",)
+# Refresco semanal de skills de catálogos remotos (ver
+# handlers/refresh_skills.py): barrido global, `tenant_id=None`.
+JOBS_PERIODICOS_SEMANALES: tuple[str, ...] = ("refresh_skills",)
+# Auto-eliminación diaria de las filas de `event_log` con más de 7 días.
+JOBS_PERIODICOS_DIARIOS: tuple[str, ...] = ("event_log_cleanup",)
+# Alias histórico usado por tests: tick de 30s solamente.
+SCHEDULED_JOB_TYPES: tuple[str, ...] = JOBS_PERIODICOS_30S
 
 
 def compute_backoff_seconds(attempt: int) -> int:
@@ -161,9 +210,13 @@ def _build_embedder(settings: Any) -> Any:
 
 
 def _build_llm_router(settings: Any) -> Any:
+    from edecan_api.deps import make_llm_usage_persister
     from edecan_llm.router import LLMRouter
 
-    return LLMRouter(settings)
+    return LLMRouter(
+        settings,
+        on_usage=make_llm_usage_persister(tenant_getter=_job_tenant_ctx.get),
+    )
 
 
 def _build_vault_factory(settings: Any) -> Callable[[AsyncSession], Any]:
@@ -178,7 +231,7 @@ def _build_vault_factory(settings: Any) -> Callable[[AsyncSession], Any]:
     return vault_factory
 
 
-def build_local_deps(settings: Any) -> Any:
+def build_local_deps(settings: Any, companion: Any = None) -> Any:
     """`AsyncContextManager[edecan_worker.deps.Deps]` -- arma `Deps` "de
     verdad" para este runner, mismo espíritu que `edecan_worker.deps.
     build_deps` pero SOLO con un cliente S3 (`sqs=None`, ver docstring del
@@ -219,6 +272,7 @@ def build_local_deps(settings: Any) -> Any:
                     embedder=_build_embedder(settings),
                     llm_router=llm_router,
                     vault=_build_vault_factory(settings),
+                    companion=companion,
                 )
             finally:
                 await llm_router.aclose()
@@ -265,14 +319,37 @@ async def _fetch_and_claim_batch(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     `running` en la MISMA transacción -- ver docstring del módulo."""
     now = datetime.now(UTC)
     async with pool.acquire() as conn, conn.transaction():
+        # Incluye jobs `queued` (pendientes) Y `running` con lease vencido
+        # (updated_at viejo = la app se reinició a mitad del procesamiento y
+        # el job quedó huérfano; sin esto se perdía para siempre — el caso del
+        # post de LinkedIn que no llegó al chat). El lease viejo se "toma" al
+        # marcarlo running de nuevo con updated_at = now().
+        # Auditoría F2 (head-of-line): antes el LIMIT era BATCH_SIZE y las
+        # filas retrasadas (p. ej. backoff de 900s) tapaban a las listas.
+        # Ahora se mira una VENTANA mayor y solo se reclaman las listas.
         rows = await conn.fetch(
             "SELECT id, tenant_id, type, payload, attempts FROM jobs "
-            "WHERE status = 'queued' ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED",
-            BATCH_SIZE,
+            "WHERE status = 'queued' OR "
+            "(status = 'running' AND updated_at < now() - make_interval(secs => $1)) "
+            "ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED",
+            JOB_LEASE_SECONDS,
+            BATCH_SIZE * 5,
         )
         ready: list[dict[str, Any]] = []
         for row in rows:
-            payload = _decode_payload(row["payload"])
+            if len(ready) >= BATCH_SIZE:
+                break
+            try:
+                payload = _decode_payload(row["payload"])
+            except Exception:
+                # Fila envenenada: no se puede decodificar el payload. La marco
+                # error para que no bloquee la cola local para siempre.
+                await conn.execute(
+                    "UPDATE jobs SET status = 'error', updated_at = now() WHERE id = $1",
+                    row["id"],
+                )
+                logger.error("worker_loop: fila envenenada descartada (id=%s)", row["id"])
+                continue
             if not _is_ready(payload, now=now):
                 continue
             ready.append(
@@ -287,7 +364,13 @@ async def _fetch_and_claim_batch(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
         if ready:
             ids = [job["id"] for job in ready]
-            await conn.execute("UPDATE jobs SET status = 'running' WHERE id = ANY($1::uuid[])", ids)
+            # `updated_at` es el lease del job: se renueva al reclamarlo, así
+            # un job en marcha lo mantiene fresco y uno huérfano (app reiniciada
+            # a mitad) queda viejo y se puede reclamar por el próximo worker.
+            await conn.execute(
+                "UPDATE jobs SET status = 'running', updated_at = now() WHERE id = ANY($1::uuid[])",
+                ids,
+            )
         return ready
 
 
@@ -412,33 +495,60 @@ async def _process_job(pool: asyncpg.Pool, deps: Any, job: dict[str, Any]) -> No
         job_id=job_id, tenant_id=tenant_id, type=job_type, payload=payload, attempt=attempts
     )
     logger.info("worker_loop: procesando %s", _env_ctx(env))
+    token = _job_tenant_ctx.set(tenant_id)
     try:
-        await handler(env, deps)
+        await asyncio.wait_for(handler(env, deps), timeout=JOB_TIMEOUT_SECONDS)
     except Exception as exc:
         logger.exception("worker_loop: fallo procesando %s", _env_ctx(env))
         await _mark_failure(
             pool, job_id, job_type, payload, attempts, f"{type(exc).__name__}: {exc}"
         )
         return
+    finally:
+        _job_tenant_ctx.reset(token)
 
     await _mark_done(pool, job_id)
     logger.info("worker_loop: completado %s", _env_ctx(env))
 
 
 # ---------------------------------------------------------------------------
-# Scheduler local (30s): send_reminder_scan + automation_scan
+# Scheduler local (paridad multi-cadencia con edecan_worker.scheduler)
 # ---------------------------------------------------------------------------
 
 
-async def _run_scheduler_tick(deps: Any) -> None:
+async def _enqueue_scheduled_jobs(deps: Any, job_types: tuple[str, ...]) -> None:
     from edecan_core.queue import enqueue
 
-    for job_type in SCHEDULED_JOB_TYPES:
+    for job_type in job_types:
         try:
             job_id = await enqueue(deps.settings, job_type, {}, None)
             logger.info("worker_loop: %s encolado (scheduler local) job_id=%s", job_type, job_id)
         except Exception:
             logger.exception("worker_loop: fallo al encolar %s (scheduler local)", job_type)
+
+
+async def _run_scheduler_tick(deps: Any) -> None:
+    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_30S)
+
+    # Sembrados de ESTA instalación: los horarios de LinkedIn y la voz editorial de su
+    # página. Ver los docstrings de cada módulo -- ya son best-effort y nunca lanzan por
+    # dentro, así que no hace falta un try/except alrededor de la llamada (a diferencia
+    # del loop de arriba, que sí necesita aislar un `job_type` de otro).
+    #
+    # El import SÍ va protegido, y no por paranoia: estos dos módulos son DATOS de una
+    # instalación concreta (sus pilares, su voz, sus horarios), no código del producto.
+    # Una instalación que no los tenga -- otra empresa, un despliegue limpio, el repo
+    # público del que se quitan por ser contenido de marca -- es un caso NORMAL, no un
+    # error. Sin este `try`, no tenerlos tumbaba el worker entero en cada tick del
+    # scheduler, que es una forma absurda de morir por un archivo opcional.
+    for nombre_modulo, nombre_funcion in (
+        ("edecan_local.gym_automations_seed", "ensure_gym_automations_seeded"),
+    ):
+        try:
+            modulo = importlib.import_module(nombre_modulo)
+        except ModuleNotFoundError:
+            continue
+        await getattr(modulo, nombre_funcion)(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +564,12 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
     `asyncpg` siempre al salir, incluso si el loop revienta.
     """
     import asyncpg
+    from edecan_core.queue import QueueTransport, dispatch_outbox
 
     stop_event = stop_event or asyncio.Event()
     dsn = _to_asyncpg_dsn(deps.settings.DATABASE_URL)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=max(BATCH_SIZE, 2))
+    outbox_transport = QueueTransport(deps.settings)
     logger.info(
         "edecan_local.worker_loop escuchando la tabla 'jobs' (poll=%ss, scheduler=%ss).",
         POLL_INTERVAL_SECONDS,
@@ -468,8 +580,23 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
     # `edecan_worker.scheduler.run_forever`: el primer tick del loop no debe
     # disparar el scheduler de inmediato.
     ultimo_tick_scheduler = time.monotonic()
+    ultimo_tick_automations = time.monotonic()
+    ultimo_tick_persistent = time.monotonic()
+    ultimo_tick_proactive = time.monotonic()
+    ultimo_tick_semanal = time.monotonic()
+    ultimo_tick_limpiar_archivos = time.monotonic()
     try:
         while not stop_event.is_set():
+            try:
+                await dispatch_outbox(
+                    session_factory=deps.session_factory,
+                    transport=outbox_transport,
+                )
+            except Exception:
+                # La cola de jobs existente debe seguir avanzando aunque el
+                # dispatcher de outbox tenga un fallo transitorio.
+                logger.exception("worker_loop: fallo inesperado despachando job_outbox")
+
             try:
                 jobs = await _fetch_and_claim_batch(pool)
                 for job in jobs:
@@ -478,12 +605,68 @@ async def run_forever(deps: Any, *, stop_event: asyncio.Event | None = None) -> 
                 logger.exception("worker_loop: fallo inesperado en el ciclo de poll")
 
             ahora = time.monotonic()
+            if _SIN_AUTOMATIZACIONES:
+                # La Mac con la app de escritorio ABIERTA (IDE + computadora
+                # física) NO debe correr sus automatizaciones: las corre el
+                # VPS 24/7. Sin este gate, cada scheduler local re-encola
+                # jobs, wakes y escaneos → trabajo duplicado.
+                # Solo quedan vivos: dispatch del outbox y el poll de la cola
+                # (que nadie llena localmente).
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
+                except TimeoutError:
+                    pass
+                continue
             if ahora - ultimo_tick_scheduler >= SCHEDULER_INTERVAL_SECONDS:
                 ultimo_tick_scheduler = ahora
                 try:
                     await _run_scheduler_tick(deps)
                 except Exception:
                     logger.exception("worker_loop: fallo inesperado en el tick del scheduler local")
+            if ahora - ultimo_tick_automations >= SCHEDULER_INTERVAL_AUTOMATIONS_SECONDS:
+                ultimo_tick_automations = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_60S_AUTOMATIONS)
+                except Exception:
+                    logger.exception(
+                        "worker_loop: fallo inesperado en el tick de automatizaciones"
+                    )
+            if ahora - ultimo_tick_persistent >= SCHEDULER_INTERVAL_PERSISTENT_AGENTS_SECONDS:
+                ultimo_tick_persistent = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_60S_PERSISTENT)
+                except Exception:
+                    logger.exception(
+                        "worker_loop: fallo inesperado en el tick de workers persistentes"
+                    )
+            if ahora - ultimo_tick_proactive >= SCHEDULER_INTERVAL_PROACTIVE_SECONDS:
+                ultimo_tick_proactive = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_300S)
+                except Exception:
+                    logger.exception("worker_loop: fallo inesperado en el tick proactivo")
+            if (
+                ahora - ultimo_tick_semanal
+                >= SCHEDULER_INTERVAL_REFRESH_SKILLS_SECONDS
+            ):
+                ultimo_tick_semanal = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_SEMANALES)
+                except Exception:
+                    logger.exception(
+                        "worker_loop: fallo inesperado en el tick semanal de refresco de skills"
+                    )
+            if (
+                ahora - ultimo_tick_limpiar_archivos
+                >= SCHEDULER_INTERVAL_LIMPIAR_ARCHIVOS_SECONDS
+            ):
+                ultimo_tick_limpiar_archivos = ahora
+                try:
+                    await _enqueue_scheduled_jobs(deps, JOBS_PERIODICOS_DIARIOS)
+                except Exception:
+                    logger.exception(
+                        "worker_loop: fallo inesperado en el tick diario de limpieza de archivos"
+                    )
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)

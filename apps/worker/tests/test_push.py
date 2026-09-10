@@ -331,6 +331,33 @@ async def test_enviar_apns_sin_category_no_inyecta_el_campo() -> None:
     assert "category" not in payload["aps"]
 
 
+@respx.mock
+async def test_enviar_apns_inyecta_thread_id_y_mutable_content() -> None:
+    _, p8_pem = _par_ec_p8()
+    cred = _cred_apns(p8_pem)
+    respx.post(f"https://{push._APNS_HOST_PRODUCTION}/3/device/tok-bot").mock(
+        return_value=httpx.Response(200)
+    )
+
+    await push.enviar_apns(
+        cred,
+        "tok-bot",
+        "Astra",
+        "Hola",
+        category="EDECAN_BOT_MESSAGE",
+        thread_id="chat-123",
+        mutable_content=True,
+        data={"event": "agent_bot_message", "sender_id": "w-1"},
+    )
+
+    payload = json.loads(respx.calls.last.request.content)
+    assert payload["aps"]["category"] == "EDECAN_BOT_MESSAGE"
+    assert payload["aps"]["thread-id"] == "chat-123"
+    assert payload["aps"]["mutable-content"] == 1
+    assert payload["event"] == "agent_bot_message"
+    assert payload["sender_id"] == "w-1"
+
+
 async def test_enviar_apns_sin_pyjwt_lanza_push_no_disponible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

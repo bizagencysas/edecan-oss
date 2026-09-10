@@ -17,11 +17,13 @@ def test_path_traversal_is_rejected(companion_config):
         actions._resolve_in_sandbox(companion_config, "../../etc/passwd")
 
 
-def test_absolute_path_is_treated_as_relative_to_sandbox_not_rejected(companion_config):
-    # Una ruta que "parece" absoluta nunca se interpreta como tal: se
-    # reinterpreta como relativa al sandbox, así que queda DENTRO de él.
-    resolved = actions._resolve_in_sandbox(companion_config, "/etc/passwd")
-    resolved.relative_to(companion_config.sandbox_dir)  # no lanza
+def test_absolute_path_outside_sandbox_is_rejected(companion_config):
+    # Comportamiento vigente: una ruta absoluta REAL se preserva si resuelve
+    # dentro del sandbox, y se RECHAZA si apunta fuera (antes se
+    # reinterpretaba como relativa y "/etc/passwd" se leía como
+    # sandbox/etc/passwd).
+    with pytest.raises(actions.ActionError, match="fuera del sandbox"):
+        actions._resolve_in_sandbox(companion_config, "/etc/passwd")
 
 
 def test_symlink_escaping_sandbox_is_rejected(companion_config, tmp_path):

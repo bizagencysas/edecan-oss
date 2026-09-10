@@ -232,12 +232,15 @@ def _public_automation(row: dict[str, Any], *, settings: Settings) -> dict[str, 
                 str(trigger.get("rrule") or ""), timezone=row.get("timezone")
             ),
         }
+    accion = _from_jsonb(row.get("accion")) or {}
+    if not accion.get("instruccion"):
+        accion["instruccion"] = ""
     return {
         "id": str(row["id"]),
         "nombre": row["nombre"],
         "descripcion": row.get("descripcion") or "",
         "trigger": trigger,
-        "accion": _from_jsonb(row.get("accion")),
+        "accion": accion,
         "enabled": bool(row["enabled"]),
         "next_run_at": _iso(row.get("next_run_at")),
         "last_run_at": _iso(row.get("last_run_at")),
@@ -369,7 +372,9 @@ async def list_automations(
 ) -> list[dict[str, Any]]:
     result = await session.execute(
         text(
-            "SELECT * FROM automations WHERE tenant_id = :tenant_id ORDER BY created_at DESC"
+            "SELECT * FROM automations WHERE tenant_id = :tenant_id "
+            "AND trigger->>'kind' IS DISTINCT FROM 'suggestion' "
+            "ORDER BY created_at DESC"
         ),
         {"tenant_id": current_user.tenant_id},
     )
@@ -381,8 +386,13 @@ async def list_automations(
 async def list_automation_suggestions(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session),
+    worker_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
-    """Sugerencias de revisión; nunca crea ni activa automatizaciones."""
+    """Sugerencias de revisión; nunca crea ni activa automatizaciones.
+
+    Con `worker_id`, filtra rutinas detectadas por ese bot (`agent_id`). Las
+    alertas de automatización fallida siguen siendo tenant-wide.
+    """
     result = await session.execute(
         text(
             "SELECT id, nombre, consecutive_failures, enabled FROM automations "
@@ -446,6 +456,14 @@ async def list_automation_suggestions(
     for suggestion in suggestions:
         suggestion["stage"] = clasificar_proactividad(suggestion)
         suggestion.setdefault("agent_id", None)
+    if worker_id is not None:
+        wid = str(worker_id)
+        suggestions = [
+            item
+            for item in suggestions
+            if item.get("kind") == "automation_suggestion"
+            or str(item.get("agent_id") or "") == wid
+        ]
     return suggestions
 
 

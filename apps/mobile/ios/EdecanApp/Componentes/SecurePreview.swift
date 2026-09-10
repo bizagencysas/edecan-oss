@@ -166,11 +166,67 @@ fileprivate struct ArtifactPreview: View {
     private func preview(_ download: DownloadedArtifact) -> some View {
         let mime = artifact.mime?.lowercased() ?? ""
         if mime.hasPrefix("image/"), let image = UIImage(data: download.data) {
-            ImagenConZoom(image: image)
+            VStack(spacing: 0) {
+                HStack {
+                    Label(artifact.filename, systemImage: "photo")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(EdecanTheme.morado)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(Int(image.size.width))×\(Int(image.size.height))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                ImagenConZoom(image: image)
+            }
         } else if mime == "application/pdf" || artifact.filename.lowercased().hasSuffix(".pdf") {
             PDFPreview(data: download.data)
         } else if isHTML(mime: mime, filename: artifact.filename) {
             LocalHTMLPreview(data: download.data)
+        } else if isMarkdown(mime: mime, filename: artifact.filename) {
+            // Preview rico (Grok-style): markdown renderizado, no monospace crudo.
+            let cuerpo = String(decoding: download.data.prefix(2_000_000), as: UTF8.self)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(artifact.filename, systemImage: "doc.richtext")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(EdecanTheme.morado)
+                    Text(textoMarkdown(cuerpo))
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding()
+            }
+            .background(Color.secondary.opacity(0.04))
+        } else if isCode(mime: mime, filename: artifact.filename) {
+            let cuerpo = String(decoding: download.data.prefix(2_000_000), as: UTF8.self)
+            let lang = lenguajeDe(artifact.filename)
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text(lang.uppercased())
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .foregroundStyle(.white)
+                            .background(EdecanTheme.azul, in: Capsule())
+                        Text(artifact.filename)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    Text(cuerpo)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding()
+            }
+            .background(Color.black.opacity(0.04))
         } else if isText(mime: mime, filename: artifact.filename) {
             ScrollView {
                 Text(String(decoding: download.data.prefix(2_000_000), as: UTF8.self))
@@ -218,10 +274,40 @@ fileprivate struct ArtifactPreview: View {
         self.shareURL = nil
     }
 
+    private func isMarkdown(mime: String, filename: String) -> Bool {
+        let name = filename.lowercased()
+        return mime.contains("markdown") || name.hasSuffix(".md") || name.hasSuffix(".markdown")
+    }
+
+    private func isCode(mime: String, filename: String) -> Bool {
+        let name = filename.lowercased()
+        let exts = [
+            ".swift", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
+            ".c", ".h", ".cpp", ".hpp", ".m", ".mm", ".cs", ".rb", ".php", ".sh", ".zsh",
+            ".css", ".scss", ".sql", ".toml", ".gradle", ".dart", ".lua", ".r",
+        ]
+        if exts.contains(where: { name.hasSuffix($0) }) { return true }
+        return mime == "text/x-swift" || mime == "text/x-python" || mime == "application/typescript"
+    }
+
+    private func lenguajeDe(_ filename: String) -> String {
+        let name = filename.lowercased()
+        let mapa: [(String, String)] = [
+            (".swift", "swift"), (".py", "python"), (".ts", "ts"), (".tsx", "tsx"),
+            (".js", "js"), (".jsx", "jsx"), (".go", "go"), (".rs", "rust"),
+            (".java", "java"), (".kt", "kotlin"), (".c", "c"), (".cpp", "c++"),
+            (".h", "c"), (".m", "objc"), (".cs", "c#"), (".rb", "ruby"),
+            (".sh", "shell"), (".css", "css"), (".sql", "sql"), (".toml", "toml"),
+        ]
+        return mapa.first { name.hasSuffix($0.0) }?.1 ?? "code"
+    }
+
     private func isText(mime: String, filename: String) -> Bool {
-        mime.hasPrefix("text/") || mime == "application/json" || mime.hasSuffix("+json") ||
+        if isCode(mime: mime, filename: filename) { return false }
+        if isMarkdown(mime: mime, filename: filename) { return false }
+        return mime.hasPrefix("text/") || mime == "application/json" || mime.hasSuffix("+json") ||
             mime == "application/xml" || mime.hasSuffix("+xml") ||
-            [".md", ".txt", ".csv", ".json", ".xml", ".yaml", ".yml"].contains {
+            [".txt", ".csv", ".json", ".xml", ".yaml", ".yml"].contains {
                 filename.lowercased().hasSuffix($0)
             }
     }

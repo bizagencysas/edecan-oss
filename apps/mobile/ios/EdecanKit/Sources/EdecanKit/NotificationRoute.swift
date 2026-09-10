@@ -8,6 +8,10 @@ public enum NotificationRoute: String, Sendable, Equatable, CaseIterable {
     case settings
     case create
     case remote
+    /// Push de un mensaje de BOT (`event: agent_message` + `chat_id`): abre
+    /// DIRECTO el chat del bot en la pestaña Bots, sin pasar por el chat
+    /// principal (antes el tap caía en "cargando conversación" y tardaba).
+    case botChat
 
     public static func parse(userInfo: [AnyHashable: Any]) -> NotificationRoute {
         let raw = (userInfo["route"] as? String)
@@ -67,6 +71,16 @@ public struct NotificationDestino: Sendable, Equatable {
         // ruta no es `assistant` dejaba a la persona en Actividad vacía.
         if let conversationId = parseNonEmpty(userInfo["chat_id"])
             ?? parseDeeplinkId(userInfo["deeplink"], host: "chat") {
+            // Mensaje de BOT (`agent_bot_message`, kind dedicado desde el
+            // 6-sep): ruta directa al chat del bot (pestaña Bots). El
+            // `agent_message` genérico es del CHAT PRINCIPAL y debe seguir
+            // abriendo el asistente — antes compartían kind y TODOS los push
+            // caían en Bots.
+            if (userInfo["event"] as? String) == "agent_bot_message" {
+                return NotificationDestino(
+                    route: .botChat, conversationId: conversationId, callId: nil, missionId: nil
+                )
+            }
             return NotificationDestino(
                 route: .assistant, conversationId: conversationId, callId: nil, missionId: nil
             )

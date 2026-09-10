@@ -106,6 +106,234 @@ async def test_azure_gpt56_max_completion_tokens_sin_temperature() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_gpt6_con_tools_manda_reasoning_effort_none() -> None:
+    """gpt-6-* trae un reasoning_effort POR DEFECTO en Azure: con tools hay
+    que mandarlo "none" explícito (omitir el campo no basta, Azure responde
+    400 "set reasoning_effort to 'none'"), o el turno del chat muere.
+    """
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        response = await provider.complete(
+            _req(
+                model="gpt-6-astra",
+                tools=[ToolSpec(name="buscar_web", description="busca", input_schema={"type": "object"})],
+                reasoning_effort="xhigh",
+            )
+        )
+        assert response.text == "Listo."
+        body = json.loads(respx.calls.last.request.content)
+        assert body["model"] == "gpt-6-astra"
+        assert body["reasoning_effort"] == "none"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_luna_gpt56_con_tools_xhigh_descarta_effort_explicito() -> None:
+    """BOTS-15: gpt-5.6 (Luna) + tools + xhigh NO viaja por `/chat/completions`
+    de Azure (lo rechaza), pero la decisión queda EXPLÍCITA en metadata del
+    request y en `last_effort_resolution` — antes se perdía en silencio.
+    """
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        req = _req(
+            model="gpt-5.6-luna",
+            tools=[ToolSpec(name="buscar_web", description="busca", input_schema={"type": "object"})],
+            reasoning_effort="xhigh",
+        )
+        await provider.complete(req)
+
+        body = json.loads(respx.calls.last.request.content)
+        assert "reasoning_effort" not in body
+        assert provider.last_effort_resolution is not None
+        assert provider.last_effort_resolution.status == "dropped"
+        assert provider.last_effort_resolution.requested == "xhigh"
+        assert req.metadata["reasoning_effort_resolution"]["status"] == "dropped"
+        assert req.metadata["reasoning_effort_resolution"]["wire"] is None
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openai_oficial_gpt6_con_tools_envia_effort() -> None:
+    """OpenAI oficial (bearer) sí documenta effort+tools para Astra: el effort
+    viaja tal cual, sin el workaround `none` que es específico del deployment
+    Azure (BOTS-15: separar ambos contratos)."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(base_url="https://api.openai.com/v1", api_key="TU_API_KEY_AQUI")
+    try:
+        req = _req(
+            model="gpt-6-astra",
+            tools=[ToolSpec(name="buscar_web", description="busca", input_schema={"type": "object"})],
+            reasoning_effort="xhigh",
+        )
+        await provider.complete(req)
+
+        body = json.loads(respx.calls.last.request.content)
+        assert body["reasoning_effort"] == "xhigh"
+        assert provider.last_effort_resolution is not None
+        assert provider.last_effort_resolution.status == "sent"
+        assert req.metadata["reasoning_effort_resolution"]["wire"] == "xhigh"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gpt6_azure_con_tools_forza_none_explicito_en_metadata() -> None:
+    """Combinación no soportada queda EXPLÍCITA (BOTS-15): el workaround de
+    Azure para gpt-6 + tools fuerza `none` y lo registra en metadata, sin
+    fallback silencioso."""
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        req = _req(
+            model="gpt-6-astra",
+            tools=[ToolSpec(name="buscar_web", description="busca", input_schema={"type": "object"})],
+            reasoning_effort="xhigh",
+        )
+        await provider.complete(req)
+
+        body = json.loads(respx.calls.last.request.content)
+        assert body["reasoning_effort"] == "none"
+        assert provider.last_effort_resolution is not None
+        assert provider.last_effort_resolution.status == "forced_none"
+        assert req.metadata["reasoning_effort_resolution"]["requested"] == "xhigh"
+        assert req.metadata["reasoning_effort_resolution"]["wire"] == "none"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gpt6_azure_con_tools_sin_effort_pedido_sigue_forzando_none() -> None:
+    """El workaround de Azure aplica AUNQUE no haya effort pedido: el deployment
+    trae un reasoning_effort POR DEFECTO y omitir el campo no basta."""
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        await provider.complete(
+            _req(
+                model="gpt-6-astra",
+                tools=[ToolSpec(name="buscar_web", description="busca", input_schema={"type": "object"})],
+            )
+        )
+        body = json.loads(respx.calls.last.request.content)
+        assert body["reasoning_effort"] == "none"
+        assert provider.last_effort_resolution.status == "forced_none"
+        assert provider.last_effort_resolution.requested is None
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gpt6_sin_tools_conserva_el_effort_xhigh() -> None:
+    """Sin tools (p. ej. el plan del orquestador), el xhigh de Astra viaja tal
+    cual: es la profundidad fija del jefe."""
+    respx.post(AZURE_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Listo."}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example-resource.openai.azure.com/openai/v1",
+        api_key="clave-azure",
+        key_auth_mode="api-key",
+        use_max_completion_tokens=True,
+    )
+    try:
+        response = await provider.complete(_req(model="gpt-6-astra", reasoning_effort="xhigh"))
+        assert response.text == "Listo."
+        body = json.loads(respx.calls.last.request.content)
+        assert body["reasoning_effort"] == "xhigh"
+        assert "tools" not in body
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_mapeo_tool_calls_de_respuesta() -> None:
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(

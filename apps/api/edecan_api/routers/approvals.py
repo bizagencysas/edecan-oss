@@ -40,7 +40,11 @@ from edecan_api.deps import (
     rate_limit,
 )
 from edecan_api.repo import Repo
-from edecan_api.routers.conversations import _resume_approved_turn
+from edecan_api.routers.conversations import (
+    _args_digest,
+    _mask_sensitive_args,
+    _resume_approved_turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,20 +77,27 @@ def _snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _public_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Vista pública sin `pending_turn` (contiene mensajes del usuario)."""
+    """Vista pública sin `pending_turn` (contiene mensajes del usuario).
+
+    Los argumentos se proyectan enmascarando por nombre los campos sensibles
+    (BOTS-19): el secreto no viaja al cliente, pero el usuario sigue viendo qué
+    acción autoriza. `approve` usa el snapshot íntegro, nunca esta proyección.
+    """
     snapshot = _snapshot(row)
-    return jsonable_encoder(
-        {
-            "id": _as_str(row["id"]),
-            "conversation_id": _as_str(row["conversation_id"]),
-            "tool_call_id": row["tool_call_id"],
-            "name": snapshot.get("name"),
-            "args": snapshot.get("args") or {},
-            "status": row["status"],
-            "created_at": _as_iso(row["created_at"]),
-            "decided_at": _as_iso(row["decided_at"]),
-        }
-    )
+    payload = {
+        "id": _as_str(row["id"]),
+        "conversation_id": _as_str(row["conversation_id"]),
+        "tool_call_id": row["tool_call_id"],
+        "name": snapshot.get("name"),
+        "args": _mask_sensitive_args(snapshot.get("args") or {}),
+        "status": row["status"],
+        "created_at": _as_iso(row["created_at"]),
+        "decided_at": _as_iso(row["decided_at"]),
+    }
+    worker_id = snapshot.get("worker_id")
+    if worker_id:
+        payload["worker_id"] = str(worker_id)
+    return jsonable_encoder(payload)
 
 
 async def _load_pending(
@@ -111,14 +122,31 @@ async def _load_pending(
 async def list_approvals(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session),
+    conversation_id: uuid.UUID | None = None,
+    worker_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
+    clauses = [
+        "tenant_id = :tenant_id",
+        "user_id = :user_id",
+        "status = 'pending'",
+    ]
+    params: dict[str, Any] = {
+        "tenant_id": str(user.tenant_id),
+        "user_id": str(user.user_id),
+    }
+    if conversation_id is not None:
+        clauses.append("conversation_id = :conversation_id")
+        params["conversation_id"] = str(conversation_id)
+    if worker_id is not None:
+        clauses.append("agent_snapshot->>'worker_id' = :worker_id")
+        params["worker_id"] = str(worker_id)
     result = await session.execute(
         text(
             f"SELECT {_COLUMNS} FROM pending_approvals "
-            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND status = 'pending' "
+            f"WHERE {' AND '.join(clauses)} "
             "ORDER BY created_at DESC"
         ),
-        {"tenant_id": str(user.tenant_id), "user_id": str(user.user_id)},
+        params,
     )
     return [_public_row(row) for row in result.mappings().all()]
 
@@ -148,6 +176,39 @@ async def approve_approval(
         "args": snapshot.get("args") or {},
         "pending_turn": snapshot.get("pending_turn"),
     }
+    # F2 (resume sin filtro de autonomía): si la aprobación pertenece a un
+    # turno de bot (`snapshot_extra.worker_id`), se propaga el id para que
+    # `_resume_approved_turn` re-aplique la matriz de autonomía con el nivel
+    # VIGENTE del worker (el dueño pudo bajar a read_only entre turno y approve).
+    worker_id = snapshot.get("worker_id")
+    if worker_id:
+        pending["worker_id"] = str(worker_id)
+
+    # BOTS-19: reanudar solo con los argumentos ORIGINALES. El digest guardado
+    # por `_persist_pending_approval` se recalcula sobre el snapshot íntegro; si
+    # no coincide, los args se alteraron después de la confirmación y se rechaza
+    # sin marcar la fila (fail closed). Las filas legacy (previas al digest) se
+    # toleran por compatibilidad con aprobaciones durables ya emitidas.
+    stored_digest = snapshot.get("args_digest")
+    if stored_digest is not None and _args_digest(pending["args"]) != stored_digest:
+        logger.error(
+            "approval args_digest mismatch — se rechaza la reanudación "
+            "(approval_id=%s conversation_id=%s tool_call_id=%s)",
+            approval_id,
+            row["conversation_id"],
+            tool_call_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Los argumentos de esta aprobación fueron alterados y no pueden reanudarse con seguridad.",
+        )
+    if stored_digest is None:
+        logger.warning(
+            "approval sin args_digest (legacy) — se reanuda sin verificación de "
+            "integridad (approval_id=%s tool_call_id=%s)",
+            approval_id,
+            tool_call_id,
+        )
 
     conversation = await repo.get_conversation(
         tenant_id=user.tenant_id,

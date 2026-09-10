@@ -47,6 +47,43 @@ struct EmptyDevicePairingCredentialStore: DevicePairingCredentialStoring {
     func clear() {}
 }
 
+/// Historial de un bot junto con el epoch de su conversación (BOTS-09).
+/// `conversationEpoch` es opcional: el backend lo añade en paralelo y puede
+/// no venir todavía; `nil` conserva el comportamiento actual.
+public struct WorkerMessagesConEpoch: Sendable {
+    public let messages: [TeamMessage]
+    public let conversationEpoch: Int64?
+
+    public init(messages: [TeamMessage], conversationEpoch: Int64?) {
+        self.messages = messages
+        self.conversationEpoch = conversationEpoch
+    }
+}
+
+/// Página de historial paginada por cursor (AUD-12a / BOTS-12). El backend
+/// devuelve `{"messages": [...], "next_cursor": ..., "has_more": ...}` cuando
+/// se le pasa `before`; el cursor es opaco y el cliente lo reenvía tal cual.
+/// `conversationEpoch` viaja como header `x-conversation-epoch` (opcional, como
+/// en ``WorkerMessagesConEpoch``).
+public struct WorkerMessagesPage: Sendable {
+    public let messages: [TeamMessage]
+    public let nextCursor: String?
+    public let hasMore: Bool
+    public let conversationEpoch: Int64?
+
+    public init(
+        messages: [TeamMessage],
+        nextCursor: String?,
+        hasMore: Bool,
+        conversationEpoch: Int64?
+    ) {
+        self.messages = messages
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+        self.conversationEpoch = conversationEpoch
+    }
+}
+
 /// Cliente tipado a mano contra `/v1/*` (`docs/api.md`, `ARCHITECTURE.md`
 /// §10.12) usando `URLSession` + `async/await` — sin generar código, sin
 /// dependencias externas, para que quede claro exactamente qué pide y qué
@@ -377,6 +414,41 @@ public actor APIClient {
         return url
     }
 
+    /// Host estable del portal de producción (OAuth/conectores). Neutral por
+    /// default: cada instalación fija el suyo en el Info.plist
+    /// (`EDECAN_PORTAL_HOST`) o al emparejar, sin publicar dominios privados.
+    public static let portalProduccionHost =
+        (Bundle.main.object(forInfoDictionaryKey: "EDECAN_PORTAL_HOST") as? String)
+        .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .flatMap { $0.isEmpty ? nil : $0 } ?? "edecan.example.com"
+
+    /// Portal web de conectores. Casa = VPS prod estable; si el pairing ya
+    /// apunta a un subdominio del portal se respeta ese host, si no (Mac/local/IP)
+    /// se fuerza el portal configurado para no abrir OAuth en el companion.
+    public func urlPortalWeb(_ path: String = "/app/conectores") throws -> URL {
+        let pathFinal = path.hasPrefix("/") ? path : "/" + path
+        let hostEmparejado = (baseURL.host ?? "").lowercased()
+        // Dominio base del portal configurado (p. ej. "example.com" para
+        // "edecan.example.com"): respeta subdominios del MISMO portal sin
+        // fijar dominios privados en el código.
+        let partesPortal = Self.portalProduccionHost.split(separator: ".")
+        let dominioBase = partesPortal.count > 1
+            ? partesPortal.suffix(2).joined(separator: ".") : Self.portalProduccionHost
+        let hostPortal: String
+        if hostEmparejado == Self.portalProduccionHost
+            || hostEmparejado.hasSuffix("." + dominioBase) {
+            hostPortal = hostEmparejado
+        } else {
+            hostPortal = Self.portalProduccionHost
+        }
+        var componentes = URLComponents()
+        componentes.scheme = "https"
+        componentes.host = hostPortal
+        componentes.path = pathFinal
+        guard let url = componentes.url else { throw APIError.urlInvalida }
+        return url
+    }
+
     // MARK: - Perfil y conversaciones
 
     /// `GET /v1/me`.
@@ -580,6 +652,17 @@ public actor APIClient {
     public func eliminarConversacion(id: String) async throws {
         try await conAutoRefresh {
             try await self.enviarSinCuerpo("/v1/conversations/\(id)", method: "DELETE")
+        }
+    }
+
+    /// Borra UN mensaje del historial (`DELETE /v1/conversations/{cid}/messages/{mid}`).
+    /// Usado al reenviar un mensaje propio: el original sale del chat de
+    /// verdad, no solo de la pantalla — no reaparece al reabrir.
+    public func borrarMensaje(conversacionId: String, mensajeId: String) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo(
+                "/v1/conversations/\(conversacionId)/messages/\(mensajeId)", method: "DELETE"
+            )
         }
     }
 
@@ -1305,10 +1388,64 @@ public actor APIClient {
     }
 
     /// `GET /v1/agents/workers/{id}/messages` — historial normalizado del chat del bot.
-    public func listWorkerMessages(workerId: String) async throws -> [TeamMessage] {
+    /// `limit` recorta el GET (default 50, igual que el chat principal). La
+    /// lista de previews usa `1` para no bajar el hilo entero por cada fila.
+    ///
+    /// `limit` recorta el GET (default 50). La lista de previews usa `1`. Para
+    /// paginar hacia atrás por cursor usa ``listWorkerMessagesPage`` (AUD-12a):
+    /// este método legacy entrega los `limit` más recientes en orden ascendente
+    /// sin cursor. La ventana de contexto LLM del servidor es independiente de
+    /// este límite navegable (no se confunden historial visible y contexto).
+    public func listWorkerMessages(workerId: String, limit: Int = 50) async throws -> [TeamMessage] {
         try await conAutoRefresh {
-            try await self.obtener("/v1/agents/workers/\(workerId)/messages")
+            try await self.obtenerConQuery(
+                "/v1/agents/workers/\(workerId)/messages",
+                [("limit", String(limit))]
+            )
         }
+    }
+
+    /// BOTS-09: mismo historial que ``listWorkerMessages`` pero además devuelve
+    /// el `conversation_epoch` de la conversación cuando el backend lo manda.
+    /// Viaja como header `x-conversation-epoch` (numérico, opcional): si no
+    /// viene, `conversationEpoch` es `nil` y el comportamiento es el de siempre.
+    public func listWorkerMessagesConEpoch(
+        workerId: String,
+        limit: Int = 50
+    ) async throws -> WorkerMessagesConEpoch {
+        let url = try urlConQuery(
+            "/v1/agents/workers/\(workerId)/messages",
+            [("limit", String(limit))]
+        )
+        // La URL se arma y el JSON se decodifica FUERA del closure `@Sendable`
+        // (son métodos síncronos del actor); dentro solo viaja la petición
+        // asíncrona y se extrae el header de epoch (String, Sendable).
+        let (data, epochRaw): (Data, String?) = try await conAutoRefresh {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            let (data, http) = try await self.ejecutarAutenticadoData(request)
+            return (data, http.value(forHTTPHeaderField: "x-conversation-epoch"))
+        }
+        let messages = try decodificar([TeamMessage].self, data)
+        let epoch = Self.extraerConversationEpoch(epochRaw)
+        return WorkerMessagesConEpoch(messages: messages, conversationEpoch: epoch)
+    }
+
+    /// `GET /v1/agents/workers/{id}/messages` paginado por cursor (AUD-12a).
+    /// Con `before` (cursor opaco del lote anterior) el backend devuelve una
+    /// `HistoryPage`; `nextCursor`/`hasMore` se propagan tal cual para el
+    /// siguiente «Cargar mensajes anteriores». Sin `before` se pide la primera
+    /// página (sentinel de tope superior) para obtener `hasMore` de entrada.
+    public func listWorkerMessagesPage(
+        workerId: String,
+        limit: Int = 50,
+        before: String? = nil
+    ) async throws -> WorkerMessagesPage {
+        try await paginaDeMensajes(
+            path: "/v1/agents/workers/\(workerId)/messages",
+            limit: limit,
+            before: before
+        )
     }
 
     /// `POST /v1/agents/workers/{id}/clear` — reinicia el chat del bot
@@ -1329,6 +1466,7 @@ public actor APIClient {
         purpose: String,
         displayName: String? = nil,
         avatarAccentHex: String? = nil,
+        avatarForma: String? = nil,
         roleTitle: String? = nil,
         roleShort: String? = nil,
         jobDescription: String? = nil,
@@ -1364,8 +1502,17 @@ public actor APIClient {
             }
         }
         var avatar: [String: String] = [:]
+        if let avatarForma, !avatarForma.isEmpty {
+            avatar["shape"] = avatarForma
+        }
         if let avatarAccentHex, !avatarAccentHex.isEmpty {
             avatar["accent"] = avatarAccentHex
+        }
+        if !avatar.isEmpty {
+            // El backend preserva el descriptor cuando trae "style": sin
+            // esto reemplazaba TODO y descartaba la figura y el color
+            // elegidos (bug del bot nuevo).
+            avatar["style"] = "grok_face"
         }
         let body = Body(
             name: name,
@@ -1456,10 +1603,16 @@ public actor APIClient {
     /// `DELETE /v1/agents/workers/{id}` — elimina el bot y su chat 1:1.
     /// Idempotente desde el punto de vista del cliente: 404 después de borrar
     /// no debe verse como error del flujo (la lista se recarga igual).
+    ///
+    /// BOTS-09: tras el DELETE exitoso se invalida el snapshot local de ese
+    /// worker. Va aquí (capa de transporte) porque es el único punto que
+    /// atraviesa TODO borrado de bot, sin importar la pantalla que lo dispare:
+    /// así un cold open offline no resucita el chat del bot eliminado.
     public func deleteWorker(id: String) async throws {
         try await conAutoRefresh {
             try await self.enviarSinCuerpo("/v1/agents/workers/\(id)", method: "DELETE")
         }
+        BotChatSnapshotStore().remove(workerId: id)
     }
 
     public func listWorkerHandoffs() async throws -> [WorkerHandoff] {
@@ -1561,9 +1714,22 @@ public actor APIClient {
 
     // MARK: - Aprobaciones (`apps/api/edecan_api/routers/approvals.py`)
 
-    /// `GET /v1/approvals` — aprobaciones pendientes del chat, más recientes primero.
-    public func listApprovals() async throws -> [PendingApproval] {
-        try await conAutoRefresh { try await self.obtener("/v1/approvals") }
+    /// `GET /v1/approvals` — aprobaciones pendientes. Opcional `conversation_id` /
+    /// `worker_id` (harness bot durable) para filtrar envíos del companion.
+    public func listApprovals(
+        conversationId: String? = nil,
+        workerId: String? = nil
+    ) async throws -> [PendingApproval] {
+        let queryItems: [(String, String)] = [
+            conversationId.flatMap { $0.isEmpty ? nil : ("conversation_id", $0) },
+            workerId.flatMap { $0.isEmpty ? nil : ("worker_id", $0) },
+        ].compactMap { $0 }
+        return try await conAutoRefresh {
+            if queryItems.isEmpty {
+                return try await self.obtener("/v1/approvals")
+            }
+            return try await self.obtenerConQuery("/v1/approvals", queryItems)
+        }
     }
 
     /// `POST /v1/approvals/{id}/approve` — reanuda el turno aprobando la tool.
@@ -1606,8 +1772,13 @@ public actor APIClient {
 
     /// `GET /v1/automations/suggestions` — sugerencias de revisión; nunca crea
     /// ni activa automatizaciones (solo lectura).
-    public func listAutomationSuggestions() async throws -> [AutomationSuggestion] {
-        try await conAutoRefresh { try await self.obtener("/v1/automations/suggestions") }
+    public func listAutomationSuggestions(workerId: String? = nil) async throws -> [AutomationSuggestion] {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/automations/suggestions",
+                [("worker_id", workerId)]
+            )
+        }
     }
 
     // MARK: - Mensajes entre agentes (`/v1/agents/messages`, contrato en
@@ -1803,20 +1974,40 @@ public actor APIClient {
     // (nunca WebRTC, ver §1.1 de ese documento): sin SSE ni socket propio en
     // este cliente, cada frame/comando es una petición suelta.
 
-    /// `POST /v1/remote/sessions {consent: true, kind}`. `consent` SIEMPRE
-    /// `true` — el `422` que el backend devolvería si no lo fuera no aplica
-    /// aquí: este método solo se llama después de que ``RemotoView`` ya
+    /// `GET /v1/remote/machines` — equipos contra los que este tenant puede
+    /// abrir una sesión remota: la computadora local del runtime
+    /// (`kind="local"`, p. ej. el VPS) y la Mac del dueño conectada por
+    /// WebSocket (`kind="remote"`). La lista llega ya filtrada por tenant
+    /// (`companion_manager.py::list_machines`); la pantalla "Computadora"
+    /// la usa para mostrar los equipos del dueño.
+    public func listRemoteMachines() async throws -> [RemoteMachine] {
+        try await conAutoRefresh { try await self.obtener("/v1/remote/machines") }
+    }
+
+    /// `POST /v1/remote/sessions {consent: true, kind, machine}`. `consent`
+    /// SIEMPRE `true` — el `422` que el backend devolvería si no lo fuera no
+    /// aplica aquí: este método solo se llama después de que ``RemotoView`` ya
     /// mostró el diálogo de consentimiento explícito y el usuario lo aceptó,
     /// nunca antes. `kind` default `"view"`; pasa `"control"` para además
     /// poder mandar input de teclado/mouse más adelante (exige el flag de
     /// plan `companion.remote_input` — `403` con mensaje claro si el plan no
     /// lo trae, ver ``APIError/servidor(status:mensaje:)``).
+    ///
+    /// `machine` (`GET /v1/remote/machines`) es opcional: cuando llega, la
+    /// sesión apunta a ESE equipo (p. ej. la Mac del dueño); cuando es `nil`
+    /// (se omite del JSON — `encodeIfPresent` del `Codable` sintetizado), el
+    /// backend cae al destino por defecto (la computadora del runtime, el
+    /// box/VPS), mismo contrato que `SessionCreateIn.machine` en
+    /// `routers/remote.py`.
     @discardableResult
-    public func createRemoteSession(kind: String = "view") async throws -> RemoteSession {
-        struct Body: Encodable { let consent: Bool; let kind: String }
+    public func createRemoteSession(
+        kind: String = "view", machine: String? = nil
+    ) async throws -> RemoteSession {
+        struct Body: Encodable { let consent: Bool; let kind: String; let machine: String? }
         return try await conAutoRefresh {
             try await self.enviar(
-                "/v1/remote/sessions", method: "POST", body: Body(consent: true, kind: kind)
+                "/v1/remote/sessions", method: "POST",
+                body: Body(consent: true, kind: kind, machine: machine)
             )
         }
     }
@@ -1946,6 +2137,90 @@ public actor APIClient {
         try await conAutoRefresh { try await self.obtener("/v1/mcp/servers") }
     }
 
+    /// `GET /v1/mcp/health` — resumen agregado de salud MCP del tenant.
+    public func getMCPHealth() async throws -> MCPHealthSummary {
+        try await conAutoRefresh { try await self.obtener("/v1/mcp/health") }
+    }
+
+    /// `GET /v1/mcp/servers/{nombre}/tools` — tools reales del handshake MCP.
+    public func listMCPServerTools(nombre: String) async throws -> [MCPToolSummary] {
+        let encoded = nombre.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? nombre
+        let envelope: MCPToolsEnvelope = try await conAutoRefresh {
+            try await self.obtener("/v1/mcp/servers/\(encoded)/tools")
+        }
+        return envelope.tools
+    }
+
+    /// `PUT /v1/mcp/servers` — registra o actualiza un servidor MCP (valida handshake por defecto).
+    public func putMCPServer(_ input: MCPServerInput) async throws {
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta("/v1/mcp/servers", method: "PUT", body: input)
+        }
+    }
+
+    /// `DELETE /v1/mcp/servers/{nombre}` — idempotente.
+    public func deleteMCPServer(nombre: String) async throws {
+        let encoded = nombre.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? nombre
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/mcp/servers/\(encoded)", method: "DELETE")
+        }
+    }
+
+    // MARK: - Conectores OAuth (`/v1/connectors` — casa = VPS, no Mac)
+
+    /// `GET /v1/connectors` — catálogo + cuentas conectadas del tenant.
+    public func listConnectors() async throws -> [ConnectorListItem] {
+        try await conAutoRefresh { try await self.obtener("/v1/connectors") }
+    }
+
+    /// `GET /v1/connectors/{key}/authorize?return_to=mobile|web` — URL del proveedor.
+    public func getConnectorAuthorizeUrl(key: String, returnTo: String = "mobile") async throws -> ConnectorAuthorizeOut {
+        let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        return try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/connectors/\(encoded)/authorize",
+                [("return_to", returnTo)]
+            )
+        }
+    }
+
+    /// Atajo iOS: authorize con `return_to=mobile` → callback `edecan://conectores`.
+    public func authorizeConnector(key: String) async throws -> URL {
+        let out = try await getConnectorAuthorizeUrl(key: key, returnTo: "mobile")
+        guard let url = URL(string: out.url) else { throw APIError.urlInvalida }
+        return url
+    }
+
+    /// `DELETE /v1/connectors/{key}/{accountId}` — revoca una cuenta OAuth.
+    public func disconnectConnector(key: String, accountId: String) async throws {
+        let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        let encodedId = accountId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? accountId
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/connectors/\(encodedKey)/\(encodedId)", method: "DELETE")
+        }
+    }
+
+    /// `PUT /v1/connectors/{key}/app-credentials` — pega client_id/secret de la
+    /// app OAuth propia del tenant (BYO). Sin esto, `authorize` rechaza `key`.
+    public func putConnectorAppCredentials(key: String, clientId: String, clientSecret: String?) async throws {
+        let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        try await conAutoRefresh {
+            try await self.enviarSinRespuesta(
+                "/v1/connectors/\(encoded)/app-credentials",
+                method: "PUT",
+                body: OAuthAppCredentialsBody(clientId: clientId, clientSecret: clientSecret)
+            )
+        }
+    }
+
+    /// `DELETE /v1/connectors/{key}/app-credentials` — quita la app OAuth BYO.
+    public func deleteConnectorAppCredentials(key: String) async throws {
+        let encoded = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpo("/v1/connectors/\(encoded)/app-credentials", method: "DELETE")
+        }
+    }
+
     // MARK: - Gimnasio (`/v1/gym`, contrato en paralelo — ver ``GymModels``)
 
     /// `POST /v1/gym/checkin {respuesta: "si"|"no"}` — el dueño responde si
@@ -1971,6 +2246,25 @@ public actor APIClient {
                 try await self.obtener("/v1/gym/plan/today")
             }
             return out.plan
+        } catch APIError.servidor(let status, _) where status == 404 {
+            return nil
+        }
+    }
+
+    /// `GET /v1/gym/plan/today` → `checkin_hoy`: el check-in de HOY del
+    /// usuario (fuente de verdad del servidor) o `nil` si todavía no respondió
+    /// la tarjeta. Degrada a `nil` en `404` (router viejo) o si el campo no
+    /// vino — la tarjeta Sí/No decide con su flag local en esos casos.
+    public func gymCheckinDeHoy() async throws -> GymCheckinHoy? {
+        struct PlanDeHoyEnvelope: Decodable, Sendable {
+            let checkinHoy: GymCheckinHoy?
+            enum CodingKeys: String, CodingKey { case checkinHoy = "checkin_hoy" }
+        }
+        do {
+            let out: PlanDeHoyEnvelope = try await conAutoRefresh {
+                try await self.obtener("/v1/gym/plan/today")
+            }
+            return out.checkinHoy
         } catch APIError.servidor(let status, _) where status == 404 {
             return nil
         }
@@ -2132,6 +2426,14 @@ public actor APIClient {
         }
     }
 
+    /// `GET /v1/usage/modelos?periodo=7|30|todo` — tokens de entrada/salida,
+    /// llamadas y costo por LLM (control de gastos de Perfil).
+    public func usoPorModelo(periodo: String = "30") async throws -> UsoModelosOut {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery("/v1/usage/modelos", [("periodo", periodo)])
+        }
+    }
+
     // MARK: - Equipos (`/v1/teams`, contrato en paralelo — ver
     // ``Team``/``TeamMessage``/``TeamStreamEvent``). El turno de mensaje
     // (POST streaming) no vive acá: la lectura del stream es de
@@ -2177,16 +2479,45 @@ public actor APIClient {
     }
 
     /// `GET /v1/teams/{id}/messages` — historial del hilo del equipo.
-    public func listTeamMessages(teamId: String) async throws -> [TeamMessage] {
-        try await conAutoRefresh { try await self.obtener("/v1/teams/\(teamId)/messages") }
+    ///
+    /// Paginación (BOTS-12): misma ventana por `limit` que ``listWorkerMessages``
+    /// (más recientes en orden ascendente, cap 1–200). Las vistas suben la
+    /// ventana para revelar mensajes anteriores; `limit=1` para previews.
+    public func listTeamMessages(teamId: String, limit: Int = 50) async throws -> [TeamMessage] {
+        try await conAutoRefresh {
+            try await self.obtenerConQuery(
+                "/v1/teams/\(teamId)/messages",
+                [("limit", String(limit))]
+            )
+        }
+    }
+
+    /// `GET /v1/teams/{id}/messages` paginado por cursor (AUD-12a). Paridad con
+    /// ``listWorkerMessagesPage``: `before` es el cursor opaco del lote previo.
+    public func listTeamMessagesPage(
+        teamId: String,
+        limit: Int = 50,
+        before: String? = nil
+    ) async throws -> WorkerMessagesPage {
+        try await paginaDeMensajes(
+            path: "/v1/teams/\(teamId)/messages",
+            limit: limit,
+            before: before
+        )
     }
 
     /// Arma la `URLRequest` de `POST /v1/teams/{id}/message` (SSE) para
     /// ``SSEClient``. `speaker` es `user` (dueño) o el id de un bot miembro.
+    ///
+    /// `idempotencyKey` (BOTS-10): identidad del envío generada UNA vez por
+    /// ``TeamConversationView`` y reutilizada en los reintentos. Con la misma
+    /// clave el servidor (`teams.py`) desacopla el turno del socket y entrega
+    /// el replay exacto sin duplicar trabajo — paridad con el chat 1:1.
     public func peticionMensajeEquipo(
         teamId: String,
         text: String,
-        speaker: String = "user"
+        speaker: String = "user",
+        idempotencyKey: String? = nil
     ) async throws -> URLRequest {
         let url = try await urlCompleta("/v1/teams/\(teamId)/message")
         let token = try await tokenDeAccesoValido()
@@ -2194,6 +2525,9 @@ public actor APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let idempotencyKey, !idempotencyKey.isEmpty {
+            request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        }
         struct Body: Encodable {
             let text: String
             let speaker: String
@@ -2522,24 +2856,43 @@ public actor APIClient {
         var request = request
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         if Self.esRutaIDEAvanzada(request.url?.path) {
-            guard let deviceId = devicePairingStore.deviceId(),
-                  let deviceToken = devicePairingStore.deviceToken()
-            else {
-                throw APIError.servidor(
-                    status: 403,
-                    mensaje: "Vuelve a conectar este iPhone con el QR de Edecán."
-                )
+            // Las credenciales durables del dispositivo van SOLO si existen
+            // (emparejamiento por QR). Con login correo/clave sin QR no hay
+            // pairing: se envía la petición igual y el SERVIDOR decide — en
+            // modo local de un dueño el JWT basta (ide_security), y en
+            // hosted responde 403 con mensaje claro. Antes se lanzaba el
+            // error LOCALMENTE y la pantalla del IDE caía a "no disponible"
+            // sin siquiera intentar.
+            if let deviceId = devicePairingStore.deviceId(),
+               let deviceToken = devicePairingStore.deviceToken() {
+                request.setValue(deviceId, forHTTPHeaderField: "X-Edecan-Device-Id")
+                request.setValue(deviceToken, forHTTPHeaderField: "X-Edecan-Device-Token")
             }
-            request.setValue(deviceId, forHTTPHeaderField: "X-Edecan-Device-Id")
-            request.setValue(deviceToken, forHTTPHeaderField: "X-Edecan-Device-Token")
         }
-        let (data, response) = try await realizar(request)
-        let http = try httpResponse(response)
-        if http.statusCode == 401 {
-            throw APIError.sesionExpirada
+        // Reintento acotado de fallas TRANSITORIAS del servidor (deploy/restart
+        // del VPS → 502/503/504 desde Cloudflare, o 429 con Retry-After): solo
+        // peticiones GET (idempotentes) en 5xx — un POST re-reintentado podría
+        // duplicar un efecto — y CUALQUIER método en 429 (el servidor pide
+        // esperar, no procesó nada).
+        var intento = 0
+        while true {
+            let (data, response) = try await realizar(request)
+            let http = try httpResponse(response)
+            if http.statusCode == 401 {
+                throw APIError.sesionExpirada
+            }
+            let transitorio = Self.esStatusTransitorio(http.statusCode)
+            let reintentable = transitorio
+                && (http.statusCode == 429 || request.httpMethod == "GET")
+            if reintentable, intento < Self.maxReintentosTransitorios {
+                intento += 1
+                let espera = Self.esperaRetryAfter(http) ?? Double(intento)
+                try await Task.sleep(for: .seconds(espera))
+                continue
+            }
+            try validarStatus(http, data: data)
+            return (data, http)
         }
-        try validarStatus(http, data: data)
-        return (data, http)
     }
 
     /// Las credenciales durables del dispositivo solo salen hacia las rutas
@@ -2812,12 +3165,97 @@ public actor APIClient {
         }
     }
 
+    /// Status que indican falla TRANSITORIA del servidor, no un error del
+    /// cliente: reintentables con backoff. 429 (rate limit) + 502/503/504
+    /// (Cloudflare bad gateway / servicio caído durante un deploy/restart).
+    private static let maxReintentosTransitorios = 2
+
+    private static func esStatusTransitorio(_ status: Int) -> Bool {
+        status == 429 || status == 502 || status == 503 || status == 504
+    }
+
+    /// Segundos a esperar antes del reintento: el `Retry-After` del servidor
+    /// (acotado a [0.5, 10]), o `nil` para el backoff por defecto del caller.
+    private static func esperaRetryAfter(_ http: HTTPURLResponse) -> Double? {
+        guard let crudo = http.value(forHTTPHeaderField: "Retry-After"),
+              let segundos = Double(crudo.trimmingCharacters(in: .whitespaces))
+        else { return nil }
+        return min(max(segundos, 0.5), 10.0)
+    }
+
     private func decodificar<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw APIError.respuestaInvalida
         }
+    }
+
+    // MARK: - Paginación por cursor (AUD-12a)
+
+    /// Sentinel de primera página: un cursor mayor que cualquier mensaje real.
+    /// El backend lo trata como «sin límite inferior» y devuelve los `limit`
+    /// más recientes con `has_more`/`next_cursor` para arrancar el bucle de
+    /// paginación por cursor (el cliente jamás reconstruye un cursor real: solo
+    /// reenvía el `next_cursor` opaco que el servidor entrega).
+    private static let cursorPrimeraPagina =
+        "9999-12-31T23:59:59.999999+00:00,ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+    /// Forma cruda de `HistoryPage` (`messages`, `next_cursor`, `has_more`).
+    private struct PaginaCruda: Decodable {
+        let messages: [TeamMessage]
+        let nextCursor: String?
+        let hasMore: Bool
+        enum CodingKeys: String, CodingKey {
+            case messages
+            case nextCursor = "next_cursor"
+            case hasMore = "has_more"
+        }
+    }
+
+    /// Descarga una página de historial por cursor. `before` nil = primera
+    /// página (sentinel). El epoch viaja por header y se comparte con el parse
+    /// de ``listWorkerMessagesConEpoch`` (nunca duplicado).
+    private func paginaDeMensajes(
+        path: String,
+        limit: Int,
+        before: String?
+    ) async throws -> WorkerMessagesPage {
+        let cursorEfectivo = before ?? Self.cursorPrimeraPagina
+        let url = try urlConQuery(path, [("limit", String(limit)), ("before", cursorEfectivo)])
+        let (data, epochRaw): (Data, String?) = try await conAutoRefresh {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            let (data, http) = try await self.ejecutarAutenticadoData(request)
+            return (data, http.value(forHTTPHeaderField: "x-conversation-epoch"))
+        }
+        let pagina = try decodificarPagina(data, limit: limit)
+        return WorkerMessagesPage(
+            messages: pagina.messages,
+            nextCursor: pagina.nextCursor,
+            hasMore: pagina.hasMore,
+            conversationEpoch: Self.extraerConversationEpoch(epochRaw)
+        )
+    }
+
+    /// Decodifica la respuesta de historial: prefiere la forma `HistoryPage`
+    /// (con `before`); si llega una lista plana (backend viejo o sin soporte de
+    /// cursor), se acepta y `has_more` se deriva de la ventana completa.
+    private func decodificarPagina(
+        _ data: Data,
+        limit: Int
+    ) throws -> (messages: [TeamMessage], nextCursor: String?, hasMore: Bool) {
+        if let pagina = try? decodificar(PaginaCruda.self, data) {
+            return (pagina.messages, pagina.nextCursor, pagina.hasMore)
+        }
+        let lista = try decodificar([TeamMessage].self, data)
+        return (lista, nil, lista.count >= limit)
+    }
+
+    /// Parse compartido (nunca duplicado) del header `x-conversation-epoch`:
+    /// lo usan ``listWorkerMessagesConEpoch`` y las páginas por cursor.
+    private static func extraerConversationEpoch(_ raw: String?) -> Int64? {
+        raw.flatMap(Int64.init)
     }
 
     /// FastAPI manda `{"detail": "..."}` en sus errores — se usa tal cual

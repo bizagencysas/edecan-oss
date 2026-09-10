@@ -13,6 +13,10 @@ struct EdecanApp: App {
     @State private var push = PushNotificationCoordinator()
     @State private var updates = AppUpdateCoordinator()
 
+    init() {
+        EdecanObservabilidad.arrancar()
+    }
+
     var body: some Scene {
         WindowGroup {
             RaizDeLaApp()
@@ -60,6 +64,8 @@ private struct RaizDeLaApp: View {
                     UserDefaults.standard.set(String(text.prefix(10_000)), forKey: "cc.edecan.pending-share.v1")
                     NotificationCenter.default.post(name: .edecanShareText, object: text)
                 }
+            } else if url.scheme == "edecan", url.host == "conectores" {
+                NotificationCenter.default.post(name: .edecanConectoresOAuth, object: url)
             } else if url.scheme == "edecan", url.host == "chat" || url.host == "activity" {
                 let destino = NotificationDestino.parse(userInfo: [
                     "deeplink": url.absoluteString,

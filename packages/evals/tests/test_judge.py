@@ -1,7 +1,8 @@
 """Tests de `edecan_evals.judge` — 100% offline: inyecta `FakeLLMProvider` en
 un `LLMRouter` real (mismo patrón que `packages/llm/tests/test_llm_router.py`,
-`router._provider = ...`), así que nunca hay red real ni costo. `edecan_llm`
-ya es un paquete real del workspace, así que este test SÍ puede importarlo.
+`provider=` + `workers_provider_factory=`), así que nunca hay red real ni
+costo. `edecan_llm` ya es un paquete real del workspace, así que este test SÍ
+puede importarlo.
 """
 
 from __future__ import annotations
@@ -15,9 +16,16 @@ from edecan_llm.router import LLMRouter
 
 
 def _router_con_respuesta(texto: str) -> LLMRouter:
-    router = LLMRouter(SimpleNamespace())
-    router._provider = FakeLLMProvider({".*": GuionEntry(texto=texto)})  # noqa: SLF001
-    return router
+    fake = FakeLLMProvider({".*": GuionEntry(texto=texto)})
+    # El alias "rapido" resuelve un modelo @cf/ (Workers AI), así que el router
+    # rutea al proveedor *workers* (C9b). El doble se inyecta en ambos para que
+    # `evaluar_tono_persona` lo consulte sin construir un proveedor real con
+    # credenciales vacías.
+    return LLMRouter(
+        SimpleNamespace(),
+        provider=fake,
+        workers_provider_factory=lambda _settings: fake,
+    )
 
 
 async def test_evaluar_tono_persona_parsea_formato_esperado() -> None:

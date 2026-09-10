@@ -73,7 +73,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from edecan_api.chat_context import ChatContextLimits, build_contextual_history
+from edecan_api.chat_context import (
+    ChatContextLimits,
+    build_contextual_history,
+    resumen_llm_hilo_anterior,
+)
 from edecan_api.chat_delegation import prepare_chat_delegation
 from edecan_api.config import Settings, get_settings
 from edecan_api.deps import (
@@ -88,10 +92,12 @@ from edecan_api.deps import (
     get_streaming_vault,
     get_tenant_session,
     get_tool_registry,
+    invalidate_mcp_tools_cache,
     rate_limit,
 )
 from edecan_api.llm_attribution import build_llm_usage_meta
 from edecan_api.persona_tools import conversation_persona_tools
+from edecan_api.presencia import presencia
 from edecan_api.repo import Repo
 from edecan_api.routers.perfil import profile_context_for
 from edecan_api.routers.persona import persona_from_row
@@ -109,8 +115,13 @@ router = APIRouter(
 )
 
 
-def _agent_for_request(request: Request, llm_router: Any, registry: Any) -> Agent:
-    """Construye Agent sin romper integraciones/test doubles antiguos."""
+def _agent_for_request(
+    request: Request, llm_router: Any, registry: Any, *, model_alias: str | None = None
+) -> Agent:
+    """Construye Agent sin romper integraciones/test doubles antiguos.
+
+    `model_alias` (opcional) permite que los turnos de BOTS usen el perfil
+    profundo (GLM 5.2) mientras el chat principal conserva su modelo."""
     kwargs: dict[str, Any] = {}
     try:
         supports_health = "provider_health" in inspect.signature(Agent).parameters
@@ -118,10 +129,46 @@ def _agent_for_request(request: Request, llm_router: Any, registry: Any) -> Agen
         supports_health = False
     if supports_health:
         kwargs["provider_health"] = getattr(request.app.state, "provider_health", None)
+    if model_alias is not None:
+        kwargs["model_alias"] = model_alias
     return Agent(llm_router, registry, **kwargs)
 
 
 # Mapea `AgentEvent.type` (interno, edecan_core) -> nombre de evento SSE (§10.7).
+_QUOTE_SOL_RE = re.compile(r"(^|\n)>[ \t]*")
+
+
+def _limpiar_quotes_sol(texto: str) -> str:
+    """gpt-5.6-sol escribe salidas multi-linea con prefijos '> ' por linea
+    (estilo quote de correo); el cliente los muestra crudos porque el
+    Markdown inline no interpreta blockquotes. Se retiran los marcadores:
+    cada '>' al inicio de linea (y los espacios que le siguen) desaparece,
+    dejando el salto de linea intacto."""
+    if not texto:
+        return texto
+    return _QUOTE_SOL_RE.sub(r"\1", texto)
+
+
+_MIN_CHARS_PARA_BURBUJA = 12
+"""Tramo que se fusiona con el siguiente si no cierra frase (ver
+`_segmento_cierra_burbuja`): evita burbujas rotas tipo «A» o
+«Creé una **mis» cuando el modelo llama una tool a mitad de palabra."""
+
+_PUNTUACION_FINAL = ("!", "?", "…", ".", ":")
+
+
+def _segmento_cierra_burbuja(texto: str) -> bool:
+    """¿El tramo terminó de verdad? Se cierra SOLO si remata con
+    puntuación final; un corte a mitad de frase («Creé una **mis»)
+    se fusiona con lo que sigue. Tramos muy largos (> 300 chars) se
+    cierran igual — no queremos monolitos por un modelo sin puntos."""
+    limpio = texto.strip()
+    if not limpio:
+        return False
+    if len(limpio) > 300:
+        return True
+    return limpio.endswith(_PUNTUACION_FINAL)
+
 EVENT_NAME_MAP: dict[str, str] = {
     "text_delta": "message.delta",
     "tool_start": "tool.start",
@@ -196,7 +243,7 @@ class ConversationModelIn(BaseModel):
     """
 
     model: str | None = Field(default=None, max_length=200)
-    effort: Literal["bajo", "medio", "alto"] | None = None
+    effort: Literal["bajo", "medio", "alto", "extremo"] | None = None
 
 
 class ConfirmIn(BaseModel):
@@ -592,6 +639,29 @@ async def set_message_flags(
     if updated is None:
         raise HTTPException(status_code=404, detail="Mensaje no encontrado.")
     return _message_out(updated)
+
+
+@router.delete("/{conversation_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_message(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Borra UN mensaje del historial (p. ej. al reenviar uno propio).
+
+    Solo sobre conversaciones del usuario autenticado. El borrado es real en
+    el historial: el próximo turno ya no lo ve en el contexto.
+    """
+
+    deleted = await repo.delete_message(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Mensaje no encontrado.")
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1347,6 +1417,9 @@ def _build_ctx(
                 user_id=user_id,
                 conversation_id=conversation_id,
             ),
+            "invalidate_mcp_tools_cache": functools.partial(
+                invalidate_mcp_tools_cache, request, tenant_id
+            ),
         },
     )
 
@@ -1382,6 +1455,7 @@ async def _store_pending_confirmation(
     name: str,
     args: dict[str, Any],
     pending_turn: PendingAgentTurn | dict[str, Any] | None = None,
+    snapshot_extra: dict[str, Any] | None = None,
 ) -> None:
     key = _pending_confirmation_key(
         tenant_id=tenant_id, conversation_id=conversation_id, tool_call_id=tool_call_id
@@ -1389,6 +1463,8 @@ async def _store_pending_confirmation(
     payload_data: dict[str, Any] = {"name": name, "args": args}
     if pending_turn is not None:
         payload_data["pending_turn"] = PendingAgentTurn.model_validate(pending_turn).model_dump()
+    if snapshot_extra:
+        payload_data.update(snapshot_extra)
     payload = json.dumps(payload_data, ensure_ascii=False, default=str)
     await redis_client.set(key, payload, ex=PENDING_CONFIRMATION_TTL_SECONDS)
     public_pending = PendingConfirmationOut(
@@ -1446,11 +1522,13 @@ async def _get_pending_confirmation(
     try:
         pending = json.loads(raw_pending)
         # Nombre y argumentos salen del mismo registro de un solo uso que
-        # consume /confirm. `pending_turn` nunca se copia a la respuesta.
+        # consume /confirm. `pending_turn` nunca se copia a la respuesta. Los
+        # args se proyectan enmascarando campos sensibles (BOTS-18/BOTS-19): el
+        # secreto no viaja al cliente, pero el usuario sigue viendo qué autoriza.
         return PendingConfirmationOut(
             tool_call_id=current.tool_call_id,
             name=pending["name"],
-            args=pending.get("args") or {},
+            args=_mask_sensitive_args(pending.get("args") or {}),
         )
     except Exception:  # noqa: BLE001 - dato corrupto: falla cerrado
         await redis_client.delete(current_key)
@@ -1493,6 +1571,86 @@ async def _pop_pending_confirmation(
     return json.loads(raw)
 
 
+# Claves de argumentos tratadas como sensibles (BOTS-19). La comparación es por
+# subcadena sobre el nombre en minúsculas: sobre-enmascarar es seguro (la vista
+# pública solo informa; approve/resume usa el snapshot íntegro), mientras que
+# sub-enmascarar filtraría un secreto. `key` cubre `api_key`, `secret_key`,
+# `access_key_id`, `apikey`, etc.; `authorization` cubre los headers
+# `Authorization`; `password`/`passwd`/`pwd` cubren las variantes comunes.
+_SENSITIVE_ARG_MARKERS = (
+    "token",
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "authorization",
+    "key",
+)
+
+_MASK_SUFFIX = "…"
+
+
+def _is_sensitive_key(name: str) -> bool:
+    return any(marker in name.lower() for marker in _SENSITIVE_ARG_MARKERS)
+
+
+def _mask_sensitive_value(value: Any) -> Any:
+    """Oculta un valor sensible mostrando solo sus 4 primeros caracteres.
+
+    Un secreto de 4 o menos caracteres se colapsa a ``…`` porque "los 4
+    primeros" revelarían el valor completo. Los valores no-string (números o
+    estructuras bajo una clave sensible) también se colapsan a ``…``.
+    """
+    if not isinstance(value, str):
+        return _MASK_SUFFIX
+    if len(value) <= 4:
+        return _MASK_SUFFIX
+    return value[:4] + _MASK_SUFFIX
+
+
+def _mask_sensitive_args(args: Any) -> Any:
+    """Copia recursiva de `args` con las claves sensibles enmascaradas.
+
+    No muta el payload persistido: el `agent_snapshot` conserva los argumentos
+    íntegros para que `approve` reanude con el payload ORIGINAL (verificado por
+    `args_digest`). Solo la proyección pública (tarjeta en vivo de Redis y
+    `list_approvals`) ve la vista enmascarada. Vive en este módulo (no en
+    `approvals.py`) para que la tarjeta en vivo de `_get_pending_confirmation`
+    use la MISMA función sin un import circular.
+    """
+    if isinstance(args, dict):
+        out: dict[str, Any] = {}
+        for key, value in args.items():
+            if _is_sensitive_key(str(key)):
+                out[key] = _mask_sensitive_value(value)
+            else:
+                out[key] = _mask_sensitive_args(value)
+        return out
+    if isinstance(args, list):
+        return [_mask_sensitive_args(item) for item in args]
+    return args
+
+
+def _args_digest(args: dict[str, Any]) -> str:
+    """Digest SHA-256 de los argumentos confirmados (BOTS-19).
+
+    Se guarda junto al `agent_snapshot` durable y permite que
+    `POST /v1/approvals/{id}/approve` verifique que los argumentos ORIGINALES
+    con los que se reanuda el turno no fueron alterados después de la
+    confirmación. La proyección pública enmascarada nunca se usa para reanudar,
+    así que el digest se calcula siempre sobre el payload íntegro, no sobre la
+    vista redactada.
+    """
+    canonical = json.dumps(
+        args or {},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 async def _persist_pending_approval(
     session: Any,
     *,
@@ -1503,44 +1661,161 @@ async def _persist_pending_approval(
     name: str,
     args: dict[str, Any],
     pending_turn: PendingAgentTurn | dict[str, Any] | None = None,
-) -> None:
+    snapshot_extra: dict[str, Any] | None = None,
+) -> bool:
     """Persiste el respaldo durable de una confirmación (directiva §30-32).
 
     Guarda en `pending_approvals` el MISMO payload que Redis
     (`{name, args, pending_turn}`) para que `POST /v1/approvals/{id}/approve`
-    reanude el turno después de un reload. Es best-effort y nunca debe romper
-    el camino efímero actual: si no hay sesión (dobles de prueba) o la tabla
-    aún no existe, se registra y se continúa.
+    reanude el turno después de un reload. El INSERT corre dentro de un
+    SAVEPOINT propio: si la aprobación falla (tabla ausente, SQL inválido),
+    se revierte solo ese punto y la transacción principal del turno NO queda
+    abortada.
+
+    Devuelve `True` solo cuando la fila quedó escrita en la base. `False`
+    significa que la aprobación es SOLO efímera (vive en el caché Redis, expira
+    y no sobrevive un reload): la UI/respuesta no debe presentarla como
+    recuperable por la vía durable. La fuente de verdad durable es la base;
+    Redis es caché.
     """
 
     if session is None:
-        return
-    snapshot: dict[str, Any] = {"name": name, "args": args}
+        return False
+    snapshot: dict[str, Any] = {
+        "name": name,
+        "args": args,
+        "args_digest": _args_digest(args),
+    }
     if pending_turn is not None:
         snapshot["pending_turn"] = PendingAgentTurn.model_validate(pending_turn).model_dump()
+    if snapshot_extra:
+        snapshot.update(snapshot_extra)
     try:
-        await session.execute(
-            text(
-                "INSERT INTO pending_approvals "
-                "(tenant_id, user_id, conversation_id, tool_call_id, agent_snapshot) "
-                "VALUES (:tenant_id, :user_id, :conversation_id, :tool_call_id, "
-                ":snapshot ::jsonb) "
-                "ON CONFLICT (tenant_id, conversation_id, tool_call_id) DO UPDATE SET "
-                "agent_snapshot = EXCLUDED.agent_snapshot, status = 'pending', "
-                "decided_at = NULL, decided_by = NULL, updated_at = now()"
-            ),
-            {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "conversation_id": str(conversation_id),
-                "tool_call_id": tool_call_id,
-                "snapshot": json.dumps(snapshot, ensure_ascii=False, default=str),
-            },
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    "INSERT INTO pending_approvals "
+                    "(tenant_id, user_id, conversation_id, tool_call_id, agent_snapshot) "
+                    "VALUES (:tenant_id, :user_id, :conversation_id, :tool_call_id, "
+                    ":snapshot ::jsonb) "
+                    "ON CONFLICT (tenant_id, conversation_id, tool_call_id) DO UPDATE SET "
+                    "agent_snapshot = EXCLUDED.agent_snapshot, status = 'pending', "
+                    "decided_at = NULL, decided_by = NULL, updated_at = now()"
+                ),
+                {
+                    "tenant_id": str(tenant_id),
+                    "user_id": str(user_id),
+                    "conversation_id": str(conversation_id),
+                    "tool_call_id": tool_call_id,
+                    "snapshot": json.dumps(snapshot, ensure_ascii=False, default=str),
+                },
+            )
+    except Exception:  # noqa: BLE001 - savepoint aislado; el camino Redis sigue vigente
+        logger.error(
+            "pending_approvals durable write FAILED — la aprobación queda SOLO "
+            "en Redis (efímera) y NO sobrevivirá un reload "
+            "(tenant_id=%s conversation_id=%s tool_call_id=%s)",
+            tenant_id,
+            conversation_id,
+            tool_call_id,
+            exc_info=True,
         )
-    except Exception:  # noqa: BLE001 - respaldo best-effort; el camino Redis sigue vigente
+        return False
+    return True
+
+
+async def _mark_pending_approval_decided(
+    session: Any,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+    status: Literal["approved", "denied"],
+) -> bool:
+    """Marca la fila durable de una aprobación como decidida (BOTS-11).
+
+    `POST /v1/conversations/{id}/confirm` consume la confirmación efímera de
+    Redis con GETDEL, pero sin este UPDATE la fila `pending_approvals` quedaba
+    `pending` y reaparecía como fantasma en un cold open. Idempotente: solo
+    transiciona filas aún `pending`; una ya decidida (por `/v1/approvals/...`
+    o por un reintento) no se re-marca.
+
+    Corre dentro de un SAVEPOINT propio (mismo patrón que
+    `_persist_pending_approval`): si el UPDATE falla (tabla ausente en un
+    self-host sin migrar), se revierte solo ese punto, la transacción del turno
+    sigue viva y el camino Redis ya consumió la confirmación — no se rompe la
+    respuesta al cliente por un respaldo durable best-effort. Devuelve `True`
+    solo cuando la transición se ejecutó.
+    """
+    if session is None:
+        return False
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    "UPDATE pending_approvals SET status = :status, decided_at = now(), "
+                    "decided_by = :decided_by, updated_at = now() "
+                    "WHERE tenant_id = :tenant_id AND conversation_id = :conversation_id "
+                    "AND tool_call_id = :tool_call_id AND status = 'pending'"
+                ),
+                {
+                    "status": status,
+                    "decided_by": str(user_id),
+                    "tenant_id": str(tenant_id),
+                    "conversation_id": str(conversation_id),
+                    "tool_call_id": tool_call_id,
+                },
+            )
+    except Exception:  # noqa: BLE001 - durable best-effort; el camino Redis ya consumió
         logger.warning(
-            "No se pudo persistir pending_approvals (tenant_id=%s conversation_id=%s "
-            "tool_call_id=%s)",
+            "pending_approvals mark-decided FAILED tras confirmar por SSE "
+            "(tenant_id=%s conversation_id=%s tool_call_id=%s status=%s)",
+            tenant_id,
+            conversation_id,
+            tool_call_id,
+            status,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+async def _reopen_pending_approval(
+    session: Any,
+    *,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+) -> None:
+    """Devuelve a `pending` una fila recién marcada `approved` (fail-closed).
+
+    Solo se llama cuando `_resume_approved_turn` falla en la validación previa
+    al streaming (tool caída, flag apagado, snapshot dañado): no conviene dejar
+    una aprobación marcada que nunca se ejecutó. Mismo criterio que
+    `approve_approval` (que ya hace este rollback inline).
+    """
+    if session is None:
+        return
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    "UPDATE pending_approvals SET status = 'pending', decided_at = NULL, "
+                    "decided_by = NULL, updated_at = now() "
+                    "WHERE tenant_id = :tenant_id AND conversation_id = :conversation_id "
+                    "AND tool_call_id = :tool_call_id AND status = 'approved'"
+                ),
+                {
+                    "tenant_id": str(tenant_id),
+                    "conversation_id": str(conversation_id),
+                    "tool_call_id": tool_call_id,
+                },
+            )
+    except Exception:  # noqa: BLE001 - best-effort; el error original se propaga
+        logger.warning(
+            "pending_approvals reopen-pending FAILED "
+            "(tenant_id=%s conversation_id=%s tool_call_id=%s)",
             tenant_id,
             conversation_id,
             tool_call_id,
@@ -1553,6 +1828,16 @@ async def _persist_pending_approval(
 # ---------------------------------------------------------------------------
 
 
+CHAT_IDEMPOTENCY_KEY_PREFIX = "chat_idempotency:"
+"""Prefijo Redis de la identidad in-flight de un turno interactivo (BOTS-24).
+
+Compartido con el cleanup de arranque en `edecan_api.main` para marcar como
+`interrupted` las identidades que quedaron huérfanas tras un restart.
+"""
+
+IDEMPOTENCY_INTERRUPTED = "interrupted"
+
+
 def _message_idempotency_key(
     *,
     tenant_id: uuid.UUID,
@@ -1560,7 +1845,7 @@ def _message_idempotency_key(
     conversation_id: uuid.UUID,
     idempotency_key: uuid.UUID,
 ) -> str:
-    return f"chat_idempotency:{tenant_id}:{user_id}:{conversation_id}:{idempotency_key}"
+    return f"{CHAT_IDEMPOTENCY_KEY_PREFIX}{tenant_id}:{user_id}:{conversation_id}:{idempotency_key}"
 
 
 def _message_request_hash(body: ChatMessageIn) -> str:
@@ -1601,6 +1886,24 @@ async def _replay_sse(chunks: list[str]) -> AsyncIterator[str]:
         yield chunk
 
 
+async def _stream_con_presencia(
+    stream: AsyncIterator[str], conversation_id: uuid.UUID
+) -> AsyncIterator[str]:
+    """Marca presencia SSE mientras el cliente consume el stream de la conversación.
+
+    Es la única señal que consulta `notify_important_event` (worker) antes de
+    entregar un push: dueño dentro del chat -> sin push, el aviso lo da el
+    propio stream. El `try/finally` garantiza el desregistro aunque el cliente
+    aborte la conexión a mitad del turno (cancelación de Starlette incluida).
+    """
+    await presencia.entrar(conversation_id)
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await presencia.salir(conversation_id)
+
+
 def _resume_response_for_idempotency_record(
     *,
     record: dict[str, Any],
@@ -1623,6 +1926,18 @@ def _resume_response_for_idempotency_record(
             status_code=status.HTTP_202_ACCEPTED,
             content={"status": "in_flight"},
             headers={**common_headers, "Retry-After": "1"},
+        )
+    if record.get("status") == IDEMPOTENCY_INTERRUPTED:
+        # F5: distinguir el 409 `interrupted` del 409 in-flight para que el
+        # cliente (iOS) no puntée 10 min y diga «atascada». Mismo status code
+        # por compatibilidad; la señal viaja en el header y en el body.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": "Ese turno fue interrumpido por un reinicio del servidor; vuelve a intentarlo.",
+                "run_state": IDEMPOTENCY_INTERRUPTED,
+            },
+            headers={**common_headers, "x-run-state": IDEMPOTENCY_INTERRUPTED},
         )
     if record.get("status") != "completed" or not isinstance(record.get("events"), list):
         raise HTTPException(
@@ -1752,6 +2067,20 @@ def _response_for_idempotency_record(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ese mensaje todavía se está procesando; reintenta con la misma clave.",
             headers={"Retry-After": "1", "Idempotency-Key": str(idempotency_key)},
+        )
+    if record.get("status") == IDEMPOTENCY_INTERRUPTED:
+        # F5: idem — distinguir `interrupted` del 409 in-flight sin cambiar el
+        # status code (compatibilidad); la señal viaja en header + body.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": "Ese turno fue interrumpido por un reinicio del servidor; vuelve a intentarlo.",
+                "run_state": IDEMPOTENCY_INTERRUPTED,
+            },
+            headers={
+                "x-run-state": IDEMPOTENCY_INTERRUPTED,
+                "Idempotency-Key": str(idempotency_key),
+            },
         )
     if record.get("status") != "completed" or not isinstance(record.get("events"), list):
         raise HTTPException(
@@ -2086,25 +2415,32 @@ async def _build_followup_chat_stream(
             conversations_limit=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
             messages_per_conversation=settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION,
         )
+    limits = ChatContextLimits(
+        enabled=settings.CHAT_CONTEXT_ENABLED,
+        recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
+        max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
+        max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
+        cross_chat_enabled=settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED,
+        cross_chat_conversations=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
+        cross_chat_messages_per_conversation=(
+            settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION
+        ),
+        cross_chat_max_chars=settings.CHAT_CONTEXT_CROSS_CHAT_MAX_CHARS,
+    )
+    resumen_llm = await resumen_llm_hilo_anterior(history_rows, limits, llm_router=llm_router)
     history = build_contextual_history(
         current_rows=history_rows,
         cross_chat_rows=cross_chat_rows,
-        limits=ChatContextLimits(
-            enabled=settings.CHAT_CONTEXT_ENABLED,
-            recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
-            max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
-            max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
-            cross_chat_enabled=settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED,
-            cross_chat_conversations=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
-            cross_chat_messages_per_conversation=(
-                settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION
-            ),
-            cross_chat_max_chars=settings.CHAT_CONTEXT_CROSS_CHAT_MAX_CHARS,
-        ),
+        limits=limits,
+        current_summary=resumen_llm or None,
     )
 
     persona_row = await repo.get_persona(tenant_id=tenant.tenant_id, user_id=current_user.user_id)
     persona = persona_from_row(persona_row)
+    if session is not None:
+        skills_context = await _skills_context(session, tenant.tenant_id, current_user.user_id)
+        if skills_context:
+            persona.instrucciones = (persona.instrucciones or "") + skills_context
     profile_context = (
         await profile_context_for(session, tenant.tenant_id, current_user.user_id)
         if session is not None
@@ -2290,6 +2626,8 @@ async def _stream_agent_events(
     initial_tool_log: list[dict[str, Any]] | None = None,
     session: Any = None,
     assistant_content_extra: dict[str, Any] | None = None,
+    split_messages: bool = False,
+    approval_snapshot_extra: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     text_parts: list[str] = [initial_text] if initial_text else []
     tool_log: list[dict[str, Any]] = list(initial_tool_log or [])
@@ -2297,6 +2635,17 @@ async def _stream_agent_events(
     # generar_imagen, generar_grafico…): se adjuntan al mensaje del asistente
     # para que el teléfono los muestre — así los bots entregan documentos.
     artefactos_turno: list[dict[str, str | None]] = []
+    # `split_messages` (chats de bot/equipo): cada mensaje del asistente
+    # dentro del turno (separado por tools) viaja con `message_start`/
+    # `message_end` y se persiste como FILA PROPIA — el dueño ve burbuja por
+    # mensaje, no un solo bloque pegado. El chat principal conserva su turno
+    # único (apertura + respuesta en una burbuja).
+    segmentos: list[dict[str, Any]] = []
+    texto_actual: list[str] = [initial_text] if initial_text else []
+    tools_del_mensaje: list[dict[str, Any]] = []
+    abierto = bool(initial_text)
+    message_id_actual: str | None = str(uuid.uuid4()) if initial_text else None
+    persisted_message_id: str | None = None
     try:
         async for raw_event in events:
             event = _event_to_dict(raw_event)
@@ -2308,10 +2657,55 @@ async def _stream_agent_events(
             public_event.pop("pending_turn", None)
 
             if event_type == "text_delta":
-                text_parts.append(str(event.get("text", "")))
+                delta = _limpiar_quotes_sol(str(event.get("text", "")))
+                if delta:
+                    text_parts.append(delta)
+                    if split_messages:
+                        # Si llega texto y entre medias hubo tools, el
+                        # mensaje anterior terminó: se cierra CON las tools
+                        # que pidió (las que corrieron tras su texto) y este
+                        # delta abre un mensaje nuevo. PERO un tramo
+                        # diminuto (el modelo actuando a mitad de palabra:
+                        # burbujas rotas como «A» o «Ahora») NO se cierra —
+                        # se fusiona con lo que sigue: una burbuja por
+                        # mensaje de verdad, no por capricho del modelo.
+                        if (
+                            abierto
+                            and tools_del_mensaje
+                            and _segmento_cierra_burbuja("".join(texto_actual))
+                        ):
+                            segmentos.append(
+                                {
+                                    "message_id": message_id_actual,
+                                    "text": "".join(texto_actual),
+                                    "tools": tools_del_mensaje,
+                                }
+                            )
+                            yield _format_sse(
+                                "message_end",
+                                {"type": "message_end", "message_id": message_id_actual},
+                            )
+                            texto_actual = []
+                            tools_del_mensaje = []
+                            abierto = False
+                            message_id_actual = None
+                        if not abierto:
+                            message_id_actual = str(uuid.uuid4())
+                            abierto = True
+                            yield _format_sse(
+                                "message_start",
+                                {"type": "message_start", "message_id": message_id_actual},
+                            )
+                        texto_actual.append(delta)
+                    public_event = dict(public_event)
+                    public_event["text"] = delta
                 yield _format_sse(sse_name, public_event)
             elif event_type in ("tool_start", "tool_end"):
                 tool_log.append(event)
+                if split_messages:
+                    # Las tools se acumulan: se atribuyen al mensaje cuyo
+                    # texto las pidió (el que estaba abierto cuando corrieron).
+                    tools_del_mensaje.append(event)
                 if event_type == "tool_end":
                     # Archivos generados por la tool (contrato ArtifactRef,
                     # que llega como objeto pydantic, no dict — se lee por
@@ -2365,21 +2759,80 @@ async def _stream_agent_events(
                     cached_input_tokens=int(usage.get("cached_input_tokens", 0) or 0),
                 )
                 assistant_content: dict[str, Any] = {
-                    "text": enriquecer_speech_tags("".join(text_parts)),
+                    "text": enriquecer_speech_tags(_limpiar_quotes_sol("".join(text_parts))),
                     **({"explanation": event["explanation"]} if event.get("explanation") else {}),
                     **({"attachments": artefactos_turno} if artefactos_turno else {}),
                 }
                 if assistant_content_extra:
                     assistant_content.update(assistant_content_extra)
-                await repo.add_message(
-                    tenant_id=tenant_id,
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=assistant_content,
-                    tool_calls=tool_log or None,
-                    tokens_in=input_tokens,
-                    tokens_out=output_tokens,
-                )
+                if split_messages:
+                    # Cada mensaje del turno se persiste como FILA PROPIA:
+                    # al reabrir el chat, la pantalla muestra burbuja por
+                    # mensaje — igual que en vivo. Los artefactos generados
+                    # viajan con el ÚLTIMO mensaje (el que los presenta).
+                    if abierto:
+                        segmentos.append(
+                            {
+                                "message_id": message_id_actual,
+                                "text": "".join(texto_actual),
+                                "tools": tools_del_mensaje,
+                            }
+                        )
+                        yield _format_sse(
+                            "message_end",
+                            {"type": "message_end", "message_id": message_id_actual},
+                        )
+                    if segmentos:
+                        for i, seg in enumerate(segmentos):
+                            texto_seg = str(seg.get("text") or "")
+                            if not texto_seg and not seg.get("tools"):
+                                continue
+                            content_seg: dict[str, Any] = {
+                                "text": enriquecer_speech_tags(
+                                    _limpiar_quotes_sol(texto_seg)
+                                )
+                            }
+                            if assistant_content_extra:
+                                content_seg.update(assistant_content_extra)
+                            if artefactos_turno and i == len(segmentos) - 1:
+                                content_seg["attachments"] = artefactos_turno
+                            persisted = await repo.add_message(
+                                tenant_id=tenant_id,
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                content=content_seg,
+                                tool_calls=seg.get("tools") or None,
+                                tokens_in=0,
+                                tokens_out=0,
+                            )
+                            if isinstance(persisted, dict) and persisted.get("id") is not None:
+                                persisted_message_id = str(persisted["id"])
+                    else:
+                        # Turno sin texto: se conserva la fila histórica
+                        # (con el tool_log completo) para no romper contratos.
+                        persisted = await repo.add_message(
+                            tenant_id=tenant_id,
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content=assistant_content,
+                            tool_calls=tool_log or None,
+                            tokens_in=input_tokens,
+                            tokens_out=output_tokens,
+                        )
+                        if isinstance(persisted, dict) and persisted.get("id") is not None:
+                            persisted_message_id = str(persisted["id"])
+                else:
+                    persisted = await repo.add_message(
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=assistant_content,
+                        tool_calls=tool_log or None,
+                        tokens_in=input_tokens,
+                        tokens_out=output_tokens,
+                    )
+                    if isinstance(persisted, dict) and persisted.get("id") is not None:
+                        persisted_message_id = str(persisted["id"])
                 total_tokens = input_tokens + output_tokens
                 if total_tokens > 0:
                     await repo.add_usage_event(
@@ -2430,6 +2883,9 @@ async def _stream_agent_events(
                         user_id,
                         exc_info=True,
                     )
+                if persisted_message_id is not None:
+                    public_event = dict(public_event)
+                    public_event["message_id"] = persisted_message_id
                 # El cliente solo ve `done` cuando mensaje y uso ya existen.
                 # Así recargar inmediatamente nunca pierde el turno recién cerrado.
                 yield _format_sse(sse_name, public_event)
@@ -2438,7 +2894,46 @@ async def _stream_agent_events(
                 # guarda en Redis el estado completo del loop para este
                 # `tool_call_id`; `POST /confirm` reanuda desde esa foto exacta.
                 tool_call_id = str(event.get("tool_call_id") or "")
-                if tool_call_id:
+                nombre_tool = str(event.get("name") or "")
+                reutilizada = False
+                if tool_call_id and nombre_tool and session is not None:
+                    # ANTI-SPAM de confirmaciones: si el MISMO tool ya tiene
+                    # una confirmación PENDIENTE (sin decidir) reciente para
+                    # este usuario, se REUTILIZA su tool_call_id. El cliente
+                    # ya conoce ese id y no vuelve a notificar ("Edecán pide
+                    # tu sí ..." 20 veces al día); aprobar reanuda el turno
+                    # original (mismos tool+args). Solo con id reutilizado se
+                    # evita sobrescribir el pending_turn original.
+                    previo = (
+                        await session.execute(
+                            text(
+                                "SELECT tool_call_id FROM pending_approvals "
+                                "WHERE tenant_id = :tenant_id AND user_id = :user_id "
+                                "AND agent_snapshot->>'name' = :name "
+                                "AND status = 'pending' "
+                                "AND updated_at > now() - interval '4 hours' "
+                                "ORDER BY updated_at DESC LIMIT 1"
+                            ),
+                            {
+                                "tenant_id": str(tenant_id),
+                                "user_id": str(user_id),
+                                "name": nombre_tool,
+                            },
+                        )
+                    ).mappings().first()
+                    if previo is not None and previo["tool_call_id"]:
+                        logger.info(
+                            "confirmation reutilizada (anti-spam): %s -> %s "
+                            "(user_id=%s)",
+                            nombre_tool,
+                            previo["tool_call_id"],
+                            user_id,
+                        )
+                        tool_call_id = str(previo["tool_call_id"])
+                        public_event = dict(public_event)
+                        public_event["tool_call_id"] = tool_call_id
+                        reutilizada = True
+                if tool_call_id and not reutilizada:
                     await _store_pending_confirmation(
                         redis_client,
                         tenant_id=tenant_id,
@@ -2447,12 +2942,15 @@ async def _stream_agent_events(
                         name=str(event.get("name") or ""),
                         args=event.get("args") or {},
                         pending_turn=event.get("pending_turn"),
+                        snapshot_extra=approval_snapshot_extra,
                     )
                     # Respaldo durable (directiva §30-32): además del caché de
                     # Redis, se persiste el snapshot en `pending_approvals` para
                     # que la aprobación sobreviva un reload. Best-effort: si la
                     # base no está lista (p. ej. dobles de prueba con `session=None`)
                     # se registra y se sigue, sin romper el camino Redis actual.
+                    # El bool devuelto se ignora a propósito: `_persist_pending_approval`
+                    # ya loguea a ERROR cuando la aprobación queda SOLO efímera.
                     await _persist_pending_approval(
                         session,
                         tenant_id=tenant_id,
@@ -2462,9 +2960,12 @@ async def _stream_agent_events(
                         name=str(event.get("name") or ""),
                         args=event.get("args") or {},
                         pending_turn=event.get("pending_turn"),
+                        snapshot_extra=approval_snapshot_extra,
                     )
                 # Persistir antes de publicar evita que un tap inmediato a
-                # "Confirmar" compita contra el SET de Redis.
+                # "Confirmar" compita contra el SET de Redis. Con id
+                # reutilizado NO se toca Redis ni la BD: la confirmación
+                # original (y su pending_turn) sigue intacta.
                 yield _format_sse(sse_name, public_event)
                 break
             else:
@@ -3470,6 +3971,13 @@ async def _stream_approved_confirmation(
         yield _format_sse("error", {"type": "error", "message": public_error_message(exc)})
 
 
+async def _skills_context(session: Any, tenant_id: uuid.UUID, user_id: uuid.UUID) -> str:
+    """Índice compacto de las skills instaladas del dueño para el turno."""
+    from edecan_core.bot_harness import build_skills_context
+
+    return await build_skills_context(session, tenant_id, user_id)
+
+
 async def _extra_mcp_tools_or_empty(request: Request, current_user: CurrentUser) -> list[Any]:
     """`get_mcp_tools_for_tenant` (`edecan_api.deps`) YA falla abierto
     internamente ante cualquier error (flag apagado, `edecan_mcp` no
@@ -3700,21 +4208,24 @@ async def post_message(
             conversations_limit=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
             messages_per_conversation=settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION,
         )
+    limits = ChatContextLimits(
+        enabled=settings.CHAT_CONTEXT_ENABLED,
+        recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
+        max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
+        max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
+        cross_chat_enabled=settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED,
+        cross_chat_conversations=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
+        cross_chat_messages_per_conversation=(
+            settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION
+        ),
+        cross_chat_max_chars=settings.CHAT_CONTEXT_CROSS_CHAT_MAX_CHARS,
+    )
+    resumen_llm = await resumen_llm_hilo_anterior(history_rows, limits, llm_router=llm_router)
     history = build_contextual_history(
         current_rows=history_rows,
         cross_chat_rows=cross_chat_rows,
-        limits=ChatContextLimits(
-            enabled=settings.CHAT_CONTEXT_ENABLED,
-            recent_messages=settings.CHAT_CONTEXT_RECENT_MESSAGES,
-            max_messages=settings.CHAT_CONTEXT_MAX_MESSAGES,
-            max_chars=settings.CHAT_CONTEXT_MAX_CHARS,
-            cross_chat_enabled=settings.CHAT_CONTEXT_CROSS_CHAT_ENABLED,
-            cross_chat_conversations=settings.CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS,
-            cross_chat_messages_per_conversation=(
-                settings.CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION
-            ),
-            cross_chat_max_chars=settings.CHAT_CONTEXT_CROSS_CHAT_MAX_CHARS,
-        ),
+        limits=limits,
+        current_summary=resumen_llm or None,
     )
 
     attachments = await _resolve_message_attachments(
@@ -4092,7 +4603,10 @@ async def post_message(
     )
     if idempotency_key is None:
         # Compatibilidad total: clientes existentes conservan streaming en vivo.
-        return StreamingResponse(stream, media_type="text/event-stream")
+        return StreamingResponse(
+            _stream_con_presencia(stream, conversation_id),
+            media_type="text/event-stream",
+        )
 
     # Los eventos salen en vivo. El productor queda desacoplado del socket y
     # completa el replay aun si el cliente pierde la conexión a mitad del turno.
@@ -4125,8 +4639,12 @@ async def post_message(
         ttl_seconds=idempotency_ttl,
         on_disconnected_complete=notify_when_mobile_left,
     )
+    # La presencia envuelve al stream ya desacoplado del socket: entra cuando el
+    # cliente conecta y sale cuando deja de consumir (también si se desconecta a
+    # mitad del turno) — nunca cubre el tiempo extra que el productor sigue
+    # persistiendo bajo `shield` después de una desconexión.
     return StreamingResponse(
-        live_stream,
+        _stream_con_presencia(live_stream, conversation_id),
         media_type="text/event-stream",
         headers={
             "Idempotency-Key": str(idempotency_key),
@@ -4160,6 +4678,28 @@ async def _resume_approved_turn(
     `POST /v1/approvals/{id}/approve` (durable tras reload).
     """
 
+    # F2 (resume sin filtro de autonomía): una confirmación de un turno de BOT
+    # llega con `worker_id` (lo inyecta `approval_snapshot_extra`). El registry
+    # y las extra_tools se reconstruyen acá y se re-filtran con el nivel de
+    # autonomía VIGENTE del worker — el dueño pudo bajar el bot a `read_only`
+    # entre el turno original y la confirmación. Sin esto, una tool de escritura
+    # aprobada seguía corriendo aunque el nivel actual solo permita lectura.
+    registry = get_tool_registry(request)
+    extra_tools = await _extra_conversation_tools(request, current_user)
+    worker_id_raw = pending.get("worker_id")
+    if worker_id_raw:
+        from edecan_api.bot_turn_service import (
+            _filter_extra_tools_by_autonomy,
+            _filter_registry_by_autonomy,
+            _worker_autonomy_level,
+            load_worker,
+        )
+
+        worker = await load_worker(session, current_user, uuid.UUID(str(worker_id_raw)))
+        autonomy_level = _worker_autonomy_level(worker)
+        registry = _filter_registry_by_autonomy(registry, autonomy_level)
+        extra_tools = _filter_extra_tools_by_autonomy(extra_tools, autonomy_level)
+
     serialized_turn = pending.get("pending_turn")
     if serialized_turn is not None:
         try:
@@ -4176,8 +4716,6 @@ async def _resume_approved_turn(
                 detail="La confirmación no corresponde a una acción pendiente de este lote.",
             )
 
-        registry = get_tool_registry(request)
-        extra_tools = await _extra_conversation_tools(request, current_user)
         _preflight_pending_turn(
             pending=pending_turn,
             registry=registry,
@@ -4231,17 +4769,20 @@ async def _resume_approved_turn(
             ),
         )
         return StreamingResponse(
-            _stream_agent_events(
-                events=events,
-                repo=repo,
-                tenant_id=tenant.tenant_id,
-                conversation_id=conversation_id,
-                user_id=current_user.user_id,
-                settings=settings,
-                redis_client=redis_client,
-                session=session,
-                initial_text=pending_turn.accumulated_text,
-                initial_tool_log=pending_turn.tool_log,
+            _stream_con_presencia(
+                _stream_agent_events(
+                    events=events,
+                    repo=repo,
+                    tenant_id=tenant.tenant_id,
+                    conversation_id=conversation_id,
+                    user_id=current_user.user_id,
+                    settings=settings,
+                    redis_client=redis_client,
+                    session=session,
+                    initial_text=pending_turn.accumulated_text,
+                    initial_tool_log=pending_turn.tool_log,
+                ),
+                conversation_id,
             ),
             media_type="text/event-stream",
         )
@@ -4249,16 +4790,15 @@ async def _resume_approved_turn(
     # Compatibilidad con confirmaciones creadas antes de que existiera la
     # continuación serializada (o por tests/dobles que solo emiten name/args):
     # se conserva el camino directo histórico.
-    tool = get_tool_registry(request).get(pending["name"])
+    tool = registry.get(pending["name"])
     if tool is None:
         # No está en el registry compartido: puede ser una tool MCP
         # bring-your-own (`mcp_*`, ARCHITECTURE.md §15) — esas nunca se
         # registran ahí (ver `Agent.run_turn`/`get_mcp_tools_for_tenant`), así
-        # que se resuelven recalculando las `extra_tools` de este tenant y
-        # buscando por nombre, mismo criterio "el registry base gana" que
-        # aplica `Agent.run_turn` (acá no hay colisión posible: si el
-        # registry ya la tenía, ni siquiera se llega a este bloque).
-        extra_tools = await _extra_conversation_tools(request, current_user)
+        # que se resuelven contra las `extra_tools` de este tenant, mismo
+        # criterio "el registry base gana" que aplica `Agent.run_turn` (acá no
+        # hay colisión posible: si el registry ya la tenía, ni siquiera se
+        # llega a este bloque).
         tool = next((t for t in extra_tools if t.name == pending["name"]), None)
     if tool is None:
         raise HTTPException(
@@ -4311,17 +4851,20 @@ async def _resume_approved_turn(
     )
 
     return StreamingResponse(
-        _stream_approved_confirmation(
-            tool_call_id=tool_call_id,
-            tool=tool,
-            tool_name=pending["name"],
-            tool_args=pending.get("args") or {},
-            ctx=ctx,
-            repo=repo,
-            tenant_id=tenant.tenant_id,
-            user_id=current_user.user_id,
-            conversation_id=conversation_id,
-            settings=settings,
+        _stream_con_presencia(
+            _stream_approved_confirmation(
+                tool_call_id=tool_call_id,
+                tool=tool,
+                tool_name=pending["name"],
+                tool_args=pending.get("args") or {},
+                ctx=ctx,
+                repo=repo,
+                tenant_id=tenant.tenant_id,
+                user_id=current_user.user_id,
+                conversation_id=conversation_id,
+                settings=settings,
+            ),
+            conversation_id,
         ),
         media_type="text/event-stream",
     )
@@ -4368,25 +4911,62 @@ async def confirm_tool_call(
         )
 
     if not body.approved:
+        # BOTS-11: la confirmación por SSE también decide la fila durable, para
+        # que un rechazo no deje un fantasma `pending` que reaparece en cold open.
+        await _mark_pending_approval_decided(
+            session,
+            tenant_id=tenant.tenant_id,
+            user_id=current_user.user_id,
+            conversation_id=conversation_id,
+            tool_call_id=body.tool_call_id,
+            status="denied",
+        )
         return StreamingResponse(
-            _stream_declined_confirmation(
-                repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
+            _stream_con_presencia(
+                _stream_declined_confirmation(
+                    repo=repo, tenant_id=tenant.tenant_id, conversation_id=conversation_id
+                ),
+                conversation_id,
             ),
             media_type="text/event-stream",
         )
 
-    return await _resume_approved_turn(
-        request=request,
-        current_user=current_user,
-        tenant=tenant,
+    # BOTS-11: decidir la fila durable ANTES de reanudar. Si la reanudación falla
+    # en la validación previa al streaming, se devuelve a `pending` para no dejar
+    # una aprobación marcada que nunca se ejecutó (mismo criterio que approve).
+    await _mark_pending_approval_decided(
+        session,
+        tenant_id=tenant.tenant_id,
+        user_id=current_user.user_id,
         conversation_id=conversation_id,
-        conversation=conversation,
         tool_call_id=body.tool_call_id,
-        pending=pending,
-        repo=repo,
-        session=session,
-        llm_router=llm_router,
-        vault=vault,
-        settings=settings,
-        redis_client=redis_client,
+        status="approved",
     )
+    try:
+        return await _resume_approved_turn(
+            request=request,
+            current_user=current_user,
+            tenant=tenant,
+            conversation_id=conversation_id,
+            conversation=conversation,
+            tool_call_id=body.tool_call_id,
+            pending=pending,
+            repo=repo,
+            session=session,
+            llm_router=llm_router,
+            vault=vault,
+            settings=settings,
+            redis_client=redis_client,
+        )
+    except Exception:
+        # Reabre la fila durable ante CUALQUIER fallo previo al stream (no solo
+        # `HTTPException`): un `ValueError`/`KeyError`/`TypeError` en la
+        # reanudación también dejaría una aprobación `approved` que nunca se
+        # ejecutó si no se devuelve a `pending` (fail-closed).
+        await _reopen_pending_approval(
+            session,
+            tenant_id=tenant.tenant_id,
+            conversation_id=conversation_id,
+            tool_call_id=body.tool_call_id,
+        )
+        raise

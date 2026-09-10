@@ -32,14 +32,16 @@ Dos fases separadas, ambas expuestas como métodos públicos:
   status `done`). Si un paso termina en error, `run()` intenta REPLANEAR lo
   restante una única vez (ver "Replan acotado" abajo) antes de rendirse.
 
-`run()` nunca toca una `AsyncSession`/tabla directamente: recibe `deps` (ver
-`RunDeps` abajo) con callables `save_step`/`save_mission`/`insert_steps`
-async — el `Orchestrator` no sabe ni le importa si eso termina en un `UPDATE`/
-`INSERT` SQL, un mock de test o cualquier otra cosa (`apps/worker/
-edecan_worker/handlers/run_mission.py` es quien construye esos callables
-sobre SQL real). Esto es lo que permite testear `run()` end-to-end con fakes
-puros, sin Postgres ni importar `edecan_core`/`edecan_db` en los tests
-(`ARCHITECTURE.md` §10.1).
+`run()` nunca toca una tabla directamente: recibe `deps` (ver `RunDeps`
+abajo) con callables `save_step`/`save_mission`/`insert_steps` async, un
+`session_factory`/`vault_factory` (con el que CADA paso abre su propia
+`AsyncSession` tenant-scoped, ver "Reglas de seguridad del paralelismo" #2) y
+un `cancellation_requested()` — el `Orchestrator` no sabe ni le importa si
+eso termina en un `UPDATE`/`INSERT` SQL, un mock de test o cualquier otra cosa
+(`apps/worker/edecan_worker/handlers/run_mission.py` es quien construye esos
+callables sobre SQL real). Esto es lo que permite testear `run()` end-to-end
+con fakes puros, sin Postgres ni importar `edecan_core`/`edecan_db` en los
+tests (`ARCHITECTURE.md` §10.1).
 
 ## Dependencias entre pasos y ejecución por olas (`WP-V5-05`)
 
@@ -99,16 +101,20 @@ pero `run()` nunca revienta si falta).
    producir `confirmation_required` (ninguno de sus miembros puede pedir una
    tool `dangerous`, ver `registry_view.RestrictedRegistry`) — la pausa por
    confirmación solo puede salir de una ola solitaria.
-2. **Las escrituras se serializan con un `asyncio.Lock`** (`_LockedRunDeps`,
-   envuelto una vez por llamada a `run()`): varios pasos de una misma ola
-   pueden terminar casi al mismo tiempo y llamar a `deps.save_step`/
-   `save_mission`/`insert_steps` concurrentemente, pero TODOS comparten la
-   MISMA `deps.session` (una única `AsyncSession` de SQLAlchemy por misión,
-   inyectada una sola vez por `run_mission.py` para toda la ejecución) — una
-   `AsyncSession` NO soporta que dos corutinas la usen al mismo tiempo
-   (corrompe su estado interno bajo carga real). El lock serializa solo el
-   INSTANTE de escribir cada resultado, nunca el trabajo del paso en sí
-   (LLM/tools siguen corriendo en paralelo).
+2. **Cada paso abre SU propia `AsyncSession`** (BOTS-23): `_run_step`/
+   `_run_resumed_step` ya NO reenvían una `deps.session` compartida a
+   `ToolContext`. En su lugar, cada paso abre una sesión nueva y tenant-scoped
+   (`async with deps.session_factory(mission.tenant_id) as session:`, ver
+   `RunDeps` abajo) y construye su `vault` con `deps.vault_factory(session)`
+   — una `AsyncSession` de SQLAlchemy NO soporta que dos corutinas la usen al
+   mismo tiempo (corrompe su estado interno bajo carga real), así que dos
+   pasos de una misma ola ya no comparten conexión ni estado transaccional:
+   el rollback de un paso (su tool lanzó y la sesión no sale limpia) no afecta
+   a los demás. `save_step`/`save_mission`/`insert_steps` (ver abajo) abren
+   también su propia sesión corta por invocación desde WP-V7-06; el
+   `asyncio.Lock` de `_LockedRunDeps` se conserva como serialización defensiva
+   del INSTANTE de escribir cada resultado (determinismo), nunca del trabajo
+   del paso en sí (LLM/tools siguen corriendo en paralelo).
 3. **El historial sintético es por-dependencia, no por-ola**: cada paso
    recibe (`_historial_de_dependencias`) el resultado de SUS dependencias
    declaradas, en orden de índice ascendente — nunca el de "todo lo que
@@ -122,6 +128,27 @@ pero `run()` nunca revienta si falta).
    `pending_tool_call` de ESE paso — los pasos que ni siquiera se habían
    lanzado (de olas posteriores) quedan `pending` tal cual, listos para que
    la reanudación (ver más abajo) los retome desde ahí.
+
+## Cancelación y pausa (BOTS-01, lado misión)
+
+`run()` nunca decide por su cuenta si una misión fue cancelada/pausada: consulta
+`deps.cancellation_requested()` (ver `RunDeps` abajo), que `run_mission.py`
+implementa releyendo el estado durable de `agent_missions` en una sesión corta.
+Se consulta en DOS puntos: ANTES de lanzar cada ola (`for ola in olas:`) y ANTES
+del commit terminal (`save_mission(status="done", ...)`). Si devuelve `True`:
+
+- los pasos que todavía no se lanzaron se marcan `skipped` (mismo status que usa
+  el camino de replan para "no corrió, no volverá a correr");
+- `run()` RETORNA sin sintetizar ni escribir ningún estado terminal: la API
+  (`POST /v1/missions/{id}/cancel` o `.../pause`) ya dejó `cancelled`/`paused`
+  en la fila, y `_update_mission` en `run_mission.py` además se niega a
+  SOBRESCRIBIR un estado terminal/pausado (guarda `status NOT IN (...)`) — así
+  una escritura tardía de un paso que terminaba justo cuando el usuario canceló
+  nunca revive una misión `cancelled` ni convierte una `paused` en `done`.
+
+El resultado distingue `cancel_requested` (este run observó la petición y se
+detuvo) de `cancelled` (estado terminal durable ya escrito por la API): el
+orquestador solo produce lo primero, jamás escribe `cancelled` él mismo.
 
 ## Replan acotado (`WP-V5-05`)
 
@@ -290,7 +317,7 @@ from .reputation import best_profile_for, record_objective_outcome, record_step_
 
 logger = logging.getLogger(__name__)
 
-_LLM_ALIAS = "profundo"
+_LLM_ALIAS = "orquestador"
 DEFAULT_MAX_STEPS = 8
 """Igual al default de `MISSIONS_MAX_STEPS` (`ROADMAP_V2.md` §7.5) — se
 duplica aquí como literal (no se importa `settings` real, ver `plan()`)."""
@@ -392,12 +419,21 @@ class RunDeps(Protocol):
     tipada (mismo criterio que `edecan_premium.campaigns.CampaignDeps`).
     """
 
-    session: Any  # se reenvía tal cual a `ToolContext.session` — cada Tool decide qué hacer con él.
+    session_factory: Any  # callable(tenant_id) -> AsyncContextManager[AsyncSession]; CADA paso abre la suya.
+    vault_factory: Any  # callable(session) -> vault, ligado a la sesión de ESE paso (no una compartida).
     settings: Any  # ídem, a `ToolContext.settings`. También lee `MISSIONS_PARALLEL_MAX`/
     # `MISSIONS_STEP_TIMEOUT_SECONDS` (`getattr` defensivo, ver docstring del módulo).
-    vault: Any  # ídem, a `ToolContext.vault`.
     flags: dict[str, Any]  # flags de plan del tenant (mismo dict que `Agent.run_turn(flags=...)`).
     provider_health: Any | None  # registry opcional de salud del worker.
+
+    async def cancellation_requested(self) -> bool:
+        """`True` si el trabajo activo debe detenerse YA (misión cancelada o
+        pausada por el usuario). `run()` lo consulta ANTES de lanzar cada ola
+        y ANTES del commit terminal; su implementación real (en
+        `run_mission.py`) relee el estado durable de la misión en una sesión
+        corta, nunca confía en un flag local que pueda quedar desincronizado.
+        Ver el docstring del módulo, sección "Cancelación y pausa"."""
+        ...
 
     async def save_step(
         self,
@@ -478,6 +514,9 @@ class Orchestrator:
                     messages=[ChatMessage(role="user", content=prompt_usuario)],
                     max_tokens=_PLAN_MAX_TOKENS,
                     temperature=0.2,
+                    # Astra es el JEFE: planea SIEMPRE a máxima profundidad.
+                    # El plan no lleva tools, así que Azure acepta el effort.
+                    reasoning_effort="xhigh",
                 )
                 response = await provider.complete(request)
                 data = _extraer_json(getattr(response, "text", "") or "")
@@ -595,6 +634,28 @@ class Orchestrator:
                 error_paso: _ResultadoPaso | None = None
 
                 for ola in olas:
+                    # BOTS-01: cancelar/pausar gobernando el trabajo activo.
+                    # ANTES de lanzar CADA ola (no solo cada pasada del
+                    # `while`) se relee el estado durable — así, si el usuario
+                    # canceló/pausó mientras corría una tool de la ola
+                    # anterior, los pasos que faltan NO se lanzan: quedan
+                    # `skipped` y `run()` retorna sin escribir ningún estado
+                    # terminal (la API ya dejó `cancelled`/`paused`, y
+                    # `_update_mission` no lo sobrescribe).
+                    if await deps_bloqueados.cancellation_requested():
+                        logger.info(
+                            "Orchestrator: cancelación/pausa solicitada; se detiene la misión %s "
+                            "antes de lanzar la siguiente ola.",
+                            mission.id,
+                        )
+                        for idx_viejo in list(pendientes.keys()):
+                            await deps_bloqueados.save_step(
+                                seq=idx_viejo + 1, status="skipped", resultado=None, usage=None
+                            )
+                            completados.add(idx_viejo)
+                        pendientes.clear()
+                        return
+
                     tareas = [
                         self._ejecutar_paso_de_ola(
                             paso=paso,
@@ -700,6 +761,18 @@ class Orchestrator:
                 for idx in sorted(resultados)
             ]
             conflicts = detect_conflicts(step_results)
+            # BOTS-01: último chequeo ANTES del commit terminal — el usuario
+            # pudo cancelar/pausar justo durante la síntesis (o entre el último
+            # chequeo y acá). Si ya no controlamos la misión, no escribimos
+            # `done`. La guarda de `_update_mission` en `run_mission.py`
+            # (no sobrescribir terminal/pausado) es la segunda línea de defensa.
+            if await deps_bloqueados.cancellation_requested():
+                logger.info(
+                    "Orchestrator: cancelación/pausa solicitada antes del commit terminal de la "
+                    "misión %s; no se escribe estado terminal.",
+                    mission.id,
+                )
+                return
             sintesis = await self._synthesize(
                 mission.objetivo,
                 _historial_completo(resultados, instrucciones),
@@ -835,6 +908,7 @@ class Orchestrator:
             self._registry,
             perfil.allowed_tools,
             permite_dangerous_con_confirmacion=perfil.permite_dangerous_con_confirmacion,
+            dangerous_sin_confirmacion=perfil.dangerous_sin_confirmacion,
         )
         agent_kwargs = {"model_alias": perfil.model_alias}
         if self._provider_health is not None:
@@ -849,79 +923,86 @@ class Orchestrator:
         from edecan_core.companion_access import companion_para
 
         extras: dict[str, Any] = {"flags": deps.flags, "approved_tool_calls": set()}
+        if getattr(perfil, "read_only", False):
+            extras["codigo_solo_lectura"] = True
         companion = companion_para(mission.tenant_id)
         if companion is not None:
             extras["companion"] = companion
-        ctx = ToolContext(
-            tenant_id=mission.tenant_id,
-            user_id=mission.user_id,
-            session=deps.session,
-            settings=deps.settings,
-            llm=self._llm_router,
-            vault=deps.vault,
-            extras=extras,
-        )
-
         texto_partes: list[str] = []
         usage: dict[str, Any] = {}
         herramientas_solicitadas: list[str] = []
 
-        async for event in agent.run_turn(
-            ctx=ctx,
-            persona=persona,
-            history=list(history),
-            user_text=str(paso.get("instruccion") or ""),
-            flags=deps.flags,
-        ):
-            tipo = getattr(event, "type", None)
-            if tipo == "text_delta":
-                texto_partes.append(event.text)
-            elif tipo == "tool_call":
-                tool_call = getattr(event, "tool_call", None)
-                nombre = getattr(tool_call, "name", None)
-                if nombre and str(nombre) not in herramientas_solicitadas:
-                    herramientas_solicitadas.append(str(nombre))
-            elif tipo == "confirmation_required":
-                pendiente = {"id": event.tool_call_id, "name": event.name, "args": event.args}
-                await deps.save_step(
-                    seq=seq,
-                    status="waiting_confirmation",
-                    resultado=None,
-                    usage=_timing_usage(
-                        started_at,
-                        {
-                            "pending_tool_call": pendiente,
-                            "provenance": _step_provenance(
-                                perfil,
-                                instruccion=str(paso.get("instruccion") or ""),
-                                tools=herramientas_solicitadas + [str(event.name)],
-                            ),
-                        },
-                    ),
-                )
-                return None, _PASO_WAITING
-            elif tipo == "error":
-                await deps.save_step(
-                    seq=seq,
-                    status="error",
-                    resultado=event.message,
-                    usage=_timing_usage(
-                        started_at,
-                        {
-                            "provenance": _step_provenance(
-                                perfil,
-                                instruccion=str(paso.get("instruccion") or ""),
-                                tools=herramientas_solicitadas,
-                            )
-                        },
-                    ),
-                )
-                record_step_outcome(
-                    perfil.key, success=False, duration_s=time.monotonic() - t0
-                )
-                return event.message, _PASO_ERROR
-            elif tipo == "done":
-                usage = dict(event.usage or {})
+        # BOTS-23: cada paso abre SU propia `AsyncSession` tenant-scoped (y su
+        # propio vault ligado a esa sesión) — dos pasos de una misma ola NUNCA
+        # comparten sesión/estado transaccional, así que el rollback de uno (su
+        # tool lanzó y la sesión no sale limpia) no arrastra al otro.
+        async with deps.session_factory(mission.tenant_id) as session:
+            ctx = ToolContext(
+                tenant_id=mission.tenant_id,
+                user_id=mission.user_id,
+                session=session,
+                settings=deps.settings,
+                llm=self._llm_router,
+                vault=deps.vault_factory(session),
+                extras=extras,
+            )
+
+            async for event in agent.run_turn(
+                ctx=ctx,
+                persona=persona,
+                history=list(history),
+                user_text=str(paso.get("instruccion") or ""),
+                flags=deps.flags,
+            ):
+                tipo = getattr(event, "type", None)
+                if tipo == "text_delta":
+                    texto_partes.append(event.text)
+                elif tipo == "tool_call":
+                    tool_call = getattr(event, "tool_call", None)
+                    nombre = getattr(tool_call, "name", None)
+                    if nombre and str(nombre) not in herramientas_solicitadas:
+                        herramientas_solicitadas.append(str(nombre))
+                elif tipo == "confirmation_required":
+                    pendiente = {"id": event.tool_call_id, "name": event.name, "args": event.args}
+                    await deps.save_step(
+                        seq=seq,
+                        status="waiting_confirmation",
+                        resultado=None,
+                        usage=_timing_usage(
+                            started_at,
+                            {
+                                "pending_tool_call": pendiente,
+                                "provenance": _step_provenance(
+                                    perfil,
+                                    instruccion=str(paso.get("instruccion") or ""),
+                                    tools=herramientas_solicitadas + [str(event.name)],
+                                ),
+                            },
+                        ),
+                    )
+                    return None, _PASO_WAITING
+                elif tipo == "error":
+                    await deps.save_step(
+                        seq=seq,
+                        status="error",
+                        resultado=event.message,
+                        usage=_timing_usage(
+                            started_at,
+                            {
+                                "provenance": _step_provenance(
+                                    perfil,
+                                    instruccion=str(paso.get("instruccion") or ""),
+                                    tools=herramientas_solicitadas,
+                                )
+                            },
+                        ),
+                    )
+                    record_step_outcome(
+                        perfil.key, success=False, duration_s=time.monotonic() - t0
+                    )
+                    return event.message, _PASO_ERROR
+                elif tipo == "done":
+                    usage = dict(event.usage or {})
 
         resultado = "".join(texto_partes).strip() or "(el sub-agente no devolvió texto)"
 
@@ -1031,22 +1112,25 @@ class Orchestrator:
             )
             return mensaje, _PASO_ERROR
 
-        ctx = ToolContext(
-            tenant_id=mission.tenant_id,
-            user_id=mission.user_id,
-            session=deps.session,
-            settings=deps.settings,
-            llm=self._llm_router,
-            vault=deps.vault,
-            extras={"flags": deps.flags, "approved_tool_calls": {mission.approved_tool_call_id}},
-        )
-        try:
-            result = await tool.run(ctx, tool_args)
-        except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar la misión
-            logger.warning(
-                "La herramienta aprobada %r lanzó una excepción", tool_name, exc_info=True
+        # BOTS-23: misma regla que `_run_step` — sesión propia para la tool
+        # reanudada, nunca una `AsyncSession` compartida con otros pasos.
+        async with deps.session_factory(mission.tenant_id) as session:
+            ctx = ToolContext(
+                tenant_id=mission.tenant_id,
+                user_id=mission.user_id,
+                session=session,
+                settings=deps.settings,
+                llm=self._llm_router,
+                vault=deps.vault_factory(session),
+                extras={"flags": deps.flags, "approved_tool_calls": {mission.approved_tool_call_id}},
             )
-            result = ToolResult(content=f"Error: {exc}")
+            try:
+                result = await tool.run(ctx, tool_args)
+            except Exception as exc:  # noqa: BLE001 - una tool nunca debe tumbar la misión
+                logger.warning(
+                    "La herramienta aprobada %r lanzó una excepción", tool_name, exc_info=True
+                )
+                result = ToolResult(content=f"Error: {exc}")
 
         resultado = f"Listo, ejecuté «{tool_name}». {result.content}".strip()
         await deps.save_step(
@@ -1156,21 +1240,25 @@ class Orchestrator:
 class _LockedRunDeps:
     """Envuelve un `RunDeps` real serializando sus escrituras
     (`save_step`/`save_mission`/`insert_steps`) detrás de un `asyncio.Lock`
-    COMPARTIDO por toda la ejecución de `run()` — ver el docstring del
-    módulo, sección "Reglas de seguridad del paralelismo" #2, para el
-    porqué (varias corutinas de una misma ola comparten la MISMA
-    `AsyncSession`, que no soporta uso concurrente). El resto de atributos
-    (`session`/`settings`/`vault`/`flags`) se reenvían tal cual — son solo
-    LECTURAS (o se reenvían más abajo, a `ToolContext`, que cada `Tool`
-    decide cómo usar), nunca necesitan el lock."""
+    COMPARTIDO por toda la ejecución de `run()` — serialización defensiva del
+    INSTANTE de escribir cada resultado (determinismo), ver el docstring del
+    módulo, sección "Reglas de seguridad del paralelismo" #2. `settings`/`flags`
+    se reenvían tal cual (solo lecturas); `session_factory`/`vault_factory`/
+    `cancellation_requested` también se reenvían SIN lock: cada paso abre SU
+    propia sesión/vault (BOTS-23) y `cancellation_requested` abre su propia
+    sesión corta de lectura, así que ninguno comparte estado transaccional con
+    las escrituras serializadas."""
 
     def __init__(self, inner: RunDeps, lock: asyncio.Lock) -> None:
         self._inner = inner
         self._lock = lock
-        self.session = inner.session
+        self.session_factory = inner.session_factory
+        self.vault_factory = inner.vault_factory
         self.settings = inner.settings
-        self.vault = inner.vault
         self.flags = inner.flags
+
+    async def cancellation_requested(self) -> bool:
+        return await self._inner.cancellation_requested()
 
     async def save_step(self, **kwargs: Any) -> None:
         async with self._lock:

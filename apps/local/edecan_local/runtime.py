@@ -21,7 +21,11 @@ por defecto; la app nativa activa acceso LAN solo para la API móvil.
    `AWS_SECRET_ACCESS_KEY`/`S3_BUCKET` (object store local), `DATA_DIR`,
    `LOCAL_API_PORT`, `SERVE_WEB_DIR` (si aplica), `JWT_SECRET`,
    `LOCAL_MASTER_KEY` — y `SQS_QUEUE_URL` se BORRA explícitamente (nunca
-   hereda un valor de un `.env`/shell de otro contexto). Esto es crítico:
+   hereda un valor de un `.env`/shell de otro contexto). Además, si el
+   companion de la Mac está conectado al VPS (`~/.edecan/companion.connected`),
+   se fija `EDECAN_SIN_AUTOMATIZACIONES=1` para que el worker local no
+   duplique las automatizaciones que el VPS ya corre 24/7 (hallazgo C6a).
+   Esto es crítico:
    `edecan_api.main` construye `app = create_app()` a nivel de MÓDULO, que
    lee `get_settings()` (cacheado con `lru_cache`) la primera vez que algo
    importa ese módulo en el proceso — si el entorno no está listo ANTES de
@@ -157,7 +161,6 @@ _PLATFORM_CONFIG_KEYS = frozenset(
         # organización configurada. `FYDESIGN_DIR`
         # lanza fydesign como subprocess on-demand (sin servidor, cero calor en
         # idle). Sin `FYDESIGN_DIR` cae a `FYDESIGN_URL` (servidor :3000).
-        "FYDESIGN_DIR",
         "FYDESIGN_URL",
         "EDECAN_API_KEY",
         # Publicación multi-red: credenciales de Instagram/Facebook (Meta),
@@ -461,6 +464,23 @@ def _resolve_serve_web_dir(*, no_web: bool) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _companion_conectado_al_vps(marker: Path | None = None) -> bool:
+    """`True` si el companion de ESTA Mac está conectado al VPS ahora mismo.
+
+    La señal es el marker `~/.edecan/companion.connected`, que
+    `edecan_companion.main` toca/borra SOLO según el estado del WebSocket al
+    VPS (HANDOFF.md / app.md: el watchdog launchd lo mira para distinguir
+    "proceso vivo" de "conexión real"). Con el companion conectado, el VPS ya
+    corre las automatizaciones de esta instalación 24/7; el worker local debe
+    apagarlas (`EDECAN_SIN_AUTOMATIZACIONES=1`, ver `worker_loop.py`) para no
+    duplicar posts de LinkedIn ni quemar cuota. Sin VPS/companion (instalación
+    single-user standalone), el marker no existe y el worker local SÍ corre
+    sus automatizaciones -- ese es el modo que se preserva.
+    """
+    path = marker if marker is not None else (Path.home() / ".edecan" / "companion.connected")
+    return path.is_file()
+
+
 def _build_env(
     *,
     data_dir: Path,
@@ -471,6 +491,7 @@ def _build_env(
     local_secrets: dict[str, str],
     public_base_url: str | None = None,
     phone_webhook_base_url: str | None = None,
+    sin_automatizaciones: bool = False,
 ) -> dict[str, str]:
     env = {
         "EDECAN_LOCAL_MODE": "1",
@@ -496,13 +517,19 @@ def _build_env(
     # con cwd en la raíz y hace commits locales, con jaula de rutas. Se apunta
     # al clon del dueño si existe; si no, la tool queda desactivada (gate de
     # `_raiz`) sin romper nada — es una ruta de filesystem, no un secreto.
-    repo_candidato = Path.home() / "Edecan-Nuevo" / "edecan"
+    repo_candidato = Path.home() / "edecan"
     if repo_candidato.is_dir():
         env["EDECAN_LOCAL_REPO_PATH"] = str(repo_candidato)
     if public_base_url:
         env["PUBLIC_BASE_URL"] = public_base_url
     if phone_webhook_base_url:
         env["PHONE_WEBHOOK_BASE_URL"] = phone_webhook_base_url
+    if sin_automatizaciones:
+        # Gate anti-duplicación local/VPS (hallazgo C6a): cuando hay un VPS/
+        # companion activo, el worker local NO debe correr automatizaciones.
+        # `worker_loop` lee esta variable en su import y salta el scheduler de
+        # automatizaciones/persistentes/proactivos/vida digital + los seeds.
+        env["EDECAN_SIN_AUTOMATIZACIONES"] = "1"
     return env
 
 
@@ -947,6 +974,7 @@ async def run(
                 public_base_url=(
                     _mobile_public_url(port, resolved_data_dir) if mobile_access else None
                 ),
+                sin_automatizaciones=_companion_conectado_al_vps(),
             )
         )
         logger.info(
@@ -1001,9 +1029,13 @@ async def run(
         # técnico que la persona deba entender.
         from edecan_local.companion_bridge import LocalCompanionBridge
 
-        if hasattr(api_app.state, "companion_manager"):
-            local_companion = LocalCompanionBridge(app=api_app, data_dir=resolved_data_dir)
-            api_app.state.ensure_local_companion = local_companion.ensure_registered
+        # El puente al companion NO puede crearse acá: `app.state.
+        # companion_manager` lo registra el lifespan de la API (main.py) al
+        # EMPEZAR A SERVIR, o sea DESPUÉS de esta línea. Se crea recién
+        # cuando el servidor queda sano (ver abajo) y se cuelga en los Deps
+        # del worker en caliente. Antes de ese momento `deps.companion` es
+        # None y los handlers degradan al camino local (sin la Mac).
+        local_companion = None
 
         # Ollama embebido OPCIONAL (WP-V4-09, DIRECCION_ACTUAL.md "Confirmado:
         # agregar Ollama"): arranca DESPUÉS del Postgres embebido y de tener
@@ -1023,7 +1055,8 @@ async def run(
 
         from edecan_local.worker_loop import build_local_deps, run_forever
 
-        async with build_local_deps(api_settings) as deps:
+        # El puente al companion local viaja en los Deps del worker.
+        async with build_local_deps(api_settings, companion=local_companion) as deps:
             # Las tres corren envueltas en `_run_background` (ver su
             # docstring): un `SystemExit` crudo escapándose de una de estas
             # tareas (p. ej. `uvicorn.Server.startup()` sobre un puerto
@@ -1050,6 +1083,24 @@ async def run(
             ]
             try:
                 await _wait_until_healthy(port, tasks, stop_event)
+                # Con el servidor sirviendo, el manager de companions YA
+                # existe en el state. Recién ahora el puente (y con él la
+                # acción fydesign_autopost que corre en la Mac) es real.
+                if hasattr(api_app.state, "companion_manager"):
+                    local_companion = LocalCompanionBridge(
+                        app=api_app, data_dir=resolved_data_dir
+                    )
+                    api_app.state.ensure_local_companion = local_companion.ensure_registered
+                    deps.companion = local_companion
+                    logger.info(
+                        "edecan_local.runtime: puente del companion ACTIVO en "
+                        "los deps del worker (fydesign_autopost disponible)."
+                    )
+                else:
+                    logger.warning(
+                        "edecan_local.runtime: api_app.state SIN companion_manager "
+                        "tras /healthz — deps.companion queda None."
+                    )
                 # No reclamar un trabajo antes de que /healthz responda: si el
                 # túnel cae justo durante el arranque, marcar ese job como
                 # fallido sería peor que dejarlo unos segundos más en SQS.

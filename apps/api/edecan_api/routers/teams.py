@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edecan_api.bot_turn_service import (
     list_normalized_messages,
     load_worker,
+    persist_team_assignment_event,
     stream_worker_turn,
     worker_display_name,
 )
@@ -87,7 +88,22 @@ async def _ensure_team_conversation(
     user: CurrentUser,
     team: Mapping[str, Any],
 ) -> uuid.UUID:
-    conversation_id = team.get("conversation_id")
+    current = await session.execute(
+        text(
+            "SELECT conversation_id FROM teams "
+            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id "
+            "FOR UPDATE"
+        ),
+        {
+            "tenant_id": str(user.tenant_id),
+            "user_id": str(user.user_id),
+            "id": str(team["id"]),
+        },
+    )
+    current_row = current.mappings().first()
+    if current_row is None:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado.")
+    conversation_id = current_row["conversation_id"]
     if conversation_id is not None:
         return uuid.UUID(str(conversation_id))
     created = await session.execute(
@@ -106,9 +122,15 @@ async def _ensure_team_conversation(
     await session.execute(
         text(
             "UPDATE teams SET conversation_id = :cid, updated_at = now() "
-            "WHERE tenant_id = :tenant_id AND id = :id"
+            "WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id "
+            "AND conversation_id IS NULL"
         ),
-        {"cid": str(new_id), "tenant_id": str(user.tenant_id), "id": str(team["id"])},
+        {
+            "cid": str(new_id),
+            "tenant_id": str(user.tenant_id),
+            "user_id": str(user.user_id),
+            "id": str(team["id"]),
+        },
     )
     return uuid.UUID(str(new_id))
 
@@ -276,14 +298,22 @@ async def list_team_messages(
     team_id: uuid.UUID,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
-) -> list[dict[str, Any]]:
+    limit: int = Query(default=50, ge=1, le=200),
+    before: str | None = Query(default=None),
+) -> list[dict[str, Any]] | dict[str, Any]:
     team = await _load_team(session, user, team_id)
     if team.get("conversation_id") is None:
         return []
+    # AUD-12a: misma semántica de cursor que `persistent_agents.list_worker_messages`.
+    # Sin `before` devuelve la lista plana legacy; con `before` devuelve una
+    # `HistoryPage` (`messages`, `next_cursor`, `has_more`) — iOS consume el
+    # cursor en vez de ensanchar `limit`.
     return await list_normalized_messages(
         session,
         tenant_id=user.tenant_id,
         conversation_id=uuid.UUID(str(team["conversation_id"])),
+        limit=limit,
+        before=before,
     )
 
 
@@ -296,8 +326,25 @@ async def send_team_message(
     session: AsyncSession = Depends(get_tenant_session),
     settings: Settings = Depends(get_settings),
 ):
+    from edecan_api.deps import get_redis
+    from edecan_api.routers.conversations import (
+        _claim_message_idempotency,
+        _message_idempotency_key,
+        _message_request_hash,
+        _response_for_idempotency_record,
+        _stream_and_complete_idempotency,
+        _stream_con_presencia,
+    )
+    from edecan_api.routers.persistent_agents import (
+        _stream_with_committed_terminal,
+        _turn_lock_for,
+    )
+
     team = await _load_team(session, user, team_id)
-    conversation_id = await _ensure_team_conversation(session, user, team)
+    creation_lock = _turn_lock_for(user.tenant_id, team_id)
+    async with creation_lock:
+        conversation_id = await _ensure_team_conversation(session, user, team)
+    turn_lock = _turn_lock_for(user.tenant_id, conversation_id)
     members = await _team_member_ids(session, user, team_id)
     if not members:
         raise HTTPException(
@@ -306,10 +353,23 @@ async def send_team_message(
         )
 
     member_ids = [agent_id for agent_id, _role in members]
+    coordinator_id = member_ids[0] if members else None
     speaker = body.speaker.strip()
+    assignment_reason = ""
 
     if speaker in ("user", "owner", "human"):
-        responder_id = member_ids[0]
+        team_workers = [
+            await load_worker(session, user, uuid.UUID(agent_id)) for agent_id in member_ids
+        ]
+        from edecan_core.bot_routing import select_responder_for_team
+
+        routing = select_responder_for_team(
+            team_workers,
+            body.text,
+            coordinator_id=coordinator_id,
+        )
+        responder_id = routing.agent_id
+        assignment_reason = routing.reason
         author_role, author_id, author_name = "user", "user", "Tú"
         prompt = body.text
         run_as_user = True
@@ -338,8 +398,51 @@ async def send_team_message(
 
     responder = await load_worker(session, user, uuid.UUID(responder_id))
 
+    clave_raw = request.headers.get("Idempotency-Key")
+    if clave_raw:
+        try:
+            idempotency_key = uuid.UUID(clave_raw.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Idempotency-Key debe ser un UUID válido.",
+            ) from exc
+    else:
+        idempotency_key = uuid.uuid4()
+
+    redis_client = get_redis(settings)
+    idempotency_ttl = max(60, int(settings.CHAT_IDEMPOTENCY_TTL_SECONDS))
+    redis_key = _message_idempotency_key(
+        tenant_id=user.tenant_id,
+        user_id=user.user_id,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+    )
+    request_hash = _message_request_hash(body)
+    owner_token, previous = await _claim_message_idempotency(
+        redis_client,
+        redis_key=redis_key,
+        request_hash=request_hash,
+        ttl_seconds=idempotency_ttl,
+    )
+    if previous is not None:
+        return _response_for_idempotency_record(
+            record=previous,
+            request_hash=request_hash,
+            idempotency_key=idempotency_key,
+        )
+    if owner_token is None:  # pragma: no cover - defensive against incompatible Redis
+        raise HTTPException(status_code=409, detail="No se pudo reclamar este turno idempotente.")
+
     async def _stream():
         if run_as_user:
+            await persist_team_assignment_event(
+                session,
+                tenant_id=user.tenant_id,
+                conversation_id=conversation_id,
+                assignee=responder,
+                reason=assignment_reason,
+            )
             async for chunk in stream_worker_turn(
                 request=request,
                 session=session,
@@ -365,4 +468,24 @@ async def send_team_message(
             ):
                 yield chunk
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    async def _serialized_stream():
+        async with turn_lock:
+            async for chunk in _stream_with_committed_terminal(_stream(), session=session):
+                yield chunk
+
+    live_stream = _stream_and_complete_idempotency(
+        stream=_serialized_stream(),
+        redis_client=redis_client,
+        redis_key=redis_key,
+        request_hash=request_hash,
+        owner_token=owner_token,
+        ttl_seconds=idempotency_ttl,
+    )
+    return StreamingResponse(
+        _stream_con_presencia(live_stream, conversation_id),
+        media_type="text/event-stream",
+        headers={
+            "Idempotency-Key": str(idempotency_key),
+            "Idempotency-Replayed": "false",
+        },
+    )

@@ -100,6 +100,88 @@ async def test_voice_service_reusa_agent_y_persiste_turno(monkeypatch):
     assert {row["kind"] for row in repo.usage} == {"llm_tokens", "messages"}
 
 
+async def test_voice_turn_incluye_resumen_llm_con_router(monkeypatch):
+    """El turno de voz activa el resumen del modelo barato (una vez, antes del
+    stream) y el resultado entra como mensaje de sistema del contexto."""
+    import edecan_api.routers.conversations as conversations
+    import edecan_api.routers.perfil as perfil
+    import edecan_api.routers.persona as persona_router
+    import edecan_api.voice_turn_service as service
+
+    capturado: list[list] = []
+
+    class _Agent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run_turn(self, **_kwargs):
+            capturado.append(_kwargs.get("history"))
+            yield TextDeltaEvent(text="Ok")
+            yield DoneEvent(usage={"input_tokens": 1, "output_tokens": 1})
+
+    class _Router:
+        def __init__(self):
+            self.llamadas: list[str] = []
+
+        async def complete(self, alias, flags, req):
+            self.llamadas.append(alias)
+            return SimpleNamespace(text="RESUMEN VOZ: quedó pendiente el reporte de junio.")
+
+    class _RepoConHistorial(_Repo):
+        async def list_messages(self, **_kwargs):
+            return [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": {"text": f"Voz {i}: " + ("auditoría mensual " * 40)},
+                }
+                for i in range(6)
+            ]
+
+    monkeypatch.setattr(service, "Agent", _Agent)
+    monkeypatch.setattr(conversations, "_build_ctx", lambda **_kwargs: SimpleNamespace(extras={}))
+    monkeypatch.setattr(conversations, "_extra_conversation_tools", lambda *_args: _empty())
+    monkeypatch.setattr(conversations, "_tools_con_pregunta_pendiente", lambda *_args: [])
+    monkeypatch.setattr(perfil, "profile_context_for", lambda *_args: _empty_text())
+    monkeypatch.setattr(persona_router, "persona_from_row", lambda *_args: PersonaConfig())
+    monkeypatch.setattr(service, "enqueue", _empty_enqueue)
+    monkeypatch.setattr(service, "load_unified_session", lambda *_args, **_kwargs: _session_state())
+    monkeypatch.setattr(service, "save_unified_session", _empty_save)
+
+    tenant_id, user_id, conversation_id = uuid4(), uuid4(), uuid4()
+    current_user = CurrentUser(
+        user_id=user_id,
+        tenant=TenantCtx(tenant_id=tenant_id, plan_key="hosted_basic", flags={}),
+    )
+    repo = _RepoConHistorial()
+    router = _Router()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(tool_registry=object()))
+    )
+    settings = SimpleNamespace(
+        CHAT_CONTEXT_ENABLED=True,
+        CHAT_CONTEXT_RECENT_MESSAGES=2,
+        CHAT_CONTEXT_MAX_MESSAGES=50,
+        CHAT_CONTEXT_MAX_CHARS=2_000,
+    )
+
+    await execute_voice_text_turn(
+        request=request,
+        session=object(),
+        repo=repo,
+        vault=object(),
+        current_user=current_user,
+        settings=settings,
+        llm_router=router,
+        conversation_id=conversation_id,
+        user_text="¿cómo va la auditoría?",
+    )
+
+    history = capturado[-1]
+    assert history[0].role == "system"
+    assert "RESUMEN VOZ: quedó pendiente el reporte de junio." in history[0].content
+    assert "rapido" in router.llamadas
+
+
 # ---------------------------------------------------------------------------
 # Router de intención determinista (Wave I: voice orchestration)
 # ---------------------------------------------------------------------------

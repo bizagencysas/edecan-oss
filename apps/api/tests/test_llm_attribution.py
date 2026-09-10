@@ -34,3 +34,17 @@ def test_atribucion_descarta_payloads_no_allowlisted() -> None:
 
     assert "prompt" not in meta
     assert "args" not in meta
+
+
+def test_modelo_real_del_yaml_estima_costo_distinto_de_cero() -> None:
+    """C9a: scout (precio_referencia en modelos.yml) ya produce cost_usd > 0,
+    que es lo que hace que la alerta de presupuesto diario pueda dispararse."""
+    meta = build_llm_usage_meta(
+        attribution={"model": "@cf/meta/llama-4-scout-17b-16e-instruct"},
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+    )
+
+    assert meta["cost_status"] == "known"
+    assert meta["cost_usd"] is not None
+    assert meta["cost_usd"] > 0

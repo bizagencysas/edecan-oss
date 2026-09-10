@@ -6,7 +6,7 @@ vivo** contra un servidor real (Ubuntu 26.04, escritorio XFCE sobre **X11** vía
 `i-07e64b34caa93a0db`), no se dedujo leyendo el código — incluida una segunda pasada de
 verificación escéptica, hecha por otra persona, que corrió el código YA arreglado contra
 ese mismo servidor y encontró varios hallazgos nuevos (ver §3). El manual completo de ese
-servidor vive en `Edecan-Nuevo/servidor-edecan-prod.md` (fuera de este repo).
+servidor se configura aparte, fuera de este repo (no se publica).
 
 Regla de lectura, igual que en Windows: "escrito y probado con tests" no es lo mismo que
 "confirmado en la máquina real". Cada fila de la tabla de §1 dice cuál de las dos cosas es,

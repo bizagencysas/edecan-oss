@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from edecan_core.queue import enqueue
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -191,6 +191,7 @@ async def list_direct_messages(
     chat_id: uuid.UUID,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict[str, Any]]:
     chat = await _load_direct_chat(session, user, chat_id)
     if chat.get("conversation_id") is None:
@@ -199,6 +200,7 @@ async def list_direct_messages(
         session,
         tenant_id=user.tenant_id,
         conversation_id=uuid.UUID(str(chat["conversation_id"])),
+        limit=limit,
     )
 
 
@@ -416,7 +418,7 @@ async def _run_turno_desprendido(
             "notify_important_event",
             {
                 "user_id": str(user.user_id),
-                "kind": "agent_message",
+                "kind": "agent_bot_message",
                 "event_id": str(uuid.uuid4()),
                 "chat_id": str(conversation_id),
             },

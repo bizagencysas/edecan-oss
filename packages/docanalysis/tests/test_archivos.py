@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import io
+import tarfile
+import zipfile
 from uuid import uuid4
 
 from edecan_docanalysis.archivos import EditarPdfTool, LeerArchivoTool, _render_text_pdf
@@ -81,3 +84,107 @@ async def test_editar_pdf_anexa_paginas(make_ctx, fake_s3, make_archivo):
 
     assert result.data["mime"] == "application/pdf"
     assert len(PdfReader(io.BytesIO(fake_s3.subidas[0]["contenido"])).pages) == 2
+
+
+async def test_leer_archivo_zip_lista_y_extrae_texto(make_ctx, fake_s3, make_archivo):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("plan.md", "# Plan\nmigrar a AWS")
+        zf.writestr("notas.txt", "recordatorio")
+        zf.writestr("logo.bin", b"\x00\x01\x02\x03")
+    fake_s3.archivo = make_archivo(
+        contenido=buffer.getvalue(), filename="aws.zip", mime="application/zip"
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "plan.md" in result.content
+    assert "notas.txt" in result.content
+    assert "logo.bin" in result.content
+    assert "migrar a AWS" in result.content
+    assert "recordatorio" in result.content
+    assert "binario" in result.content
+
+
+async def test_leer_archivo_targz_extrae_texto(make_ctx, fake_s3, make_archivo):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
+        contenido = b"documento dentro del tar"
+        info = tarfile.TarInfo(name="docs/nota.txt")
+        info.size = len(contenido)
+        tf.addfile(info, io.BytesIO(contenido))
+    fake_s3.archivo = make_archivo(
+        contenido=buffer.getvalue(), filename="docs.tar.gz", mime="application/gzip"
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "nota.txt" in result.content
+    assert "documento dentro del tar" in result.content
+
+
+async def test_leer_archivo_zip_preserva_ruta_relativa_de_miembros_duplicados(
+    make_ctx, fake_s3, make_archivo
+):
+    """BOTS-17: dos miembros `a/config.py` y `b/config.py` no colapsan a
+    `config.py` — la identidad (ruta relativa) se preserva sin extraer a disco."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("a/config.py", "print('a')")
+        zf.writestr("b/config.py", "print('b')")
+    fake_s3.archivo = make_archivo(
+        contenido=buffer.getvalue(), filename="proyecto.zip", mime="application/zip"
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "[a/config.py]" in result.content
+    assert "[b/config.py]" in result.content
+    assert "print('a')" in result.content
+    assert "print('b')" in result.content
+
+
+async def test_leer_archivo_zip_reporta_cobertura_de_entradas(make_ctx, fake_s3, make_archivo):
+    """BOTS-17: el resultado informa cobertura real — entradas leídas vs omitidas
+    y el motivo (aquí, el binario)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("plan.md", "# Plan")
+        zf.writestr("notas.txt", "recordatorio")
+        zf.writestr("logo.bin", b"\x00\x01")
+    fake_s3.archivo = make_archivo(
+        contenido=buffer.getvalue(), filename="aws.zip", mime="application/zip"
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "[Cobertura: 2 de 3 entradas" in result.content
+    assert "omitidas: 1" in result.content
+    assert "binarios" in result.content
+
+
+async def test_leer_archivo_pdf_reporta_cobertura_de_paginas(make_ctx, fake_s3, make_archivo):
+    """BOTS-17: PDF informa páginas leídas vs total (antes un PDF corto con la
+    página 201 fuera no activaba `truncated`)."""
+    data = _render_text_pdf("Informe", ["Contenido importante"])
+    fake_s3.archivo = make_archivo(
+        contenido=data, filename="informe.pdf", mime="application/pdf"
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "[Cobertura:" in result.content
+    assert "páginas" in result.content
+
+
+async def test_leer_archivo_gz_extrae_texto(make_ctx, fake_s3, make_archivo):
+    fake_s3.archivo = make_archivo(
+        contenido=gzip.compress(b"contenido comprimido"),
+        filename="reporte.txt.gz",
+        mime="application/gzip",
+    )
+
+    result = await LeerArchivoTool().run(make_ctx(), {"file_id": str(uuid4())})
+
+    assert "reporte.txt" in result.content
+    assert "contenido comprimido" in result.content

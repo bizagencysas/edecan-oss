@@ -47,7 +47,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                     "Hay una aprobación pendiente que requiere atención del dueño. "
                     "Revisa el contexto y, solo si hace falta un recordatorio concreto, "
                     "escríbele en el chat principal. Si ya está claro o no aporta, responde "
-                    f"exactamente: [NO_MESSAGE]"
+                    "exactamente: [NO_MESSAGE]"
                 ),
             }
             await enqueue(deps.settings, "run_companion_turn", payload, tenant_id)

@@ -118,7 +118,11 @@ final class MisionesViewModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: intervaloPolling)
                 guard !Task.isCancelled else { return }
-                guard self.detalle?.mission.estaActiva ?? false else { continue }
+                // Misión terminal: se deja de pedir sola (sin busy-loop).
+                guard let detalle = self.detalle, detalle.mission.estaActiva else {
+                    if self.detalle?.mission.esTerminal == true { return }
+                    continue
+                }
                 await self.cargarDetalle(id: id, client: client)
             }
         }

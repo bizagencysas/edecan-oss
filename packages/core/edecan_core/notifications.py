@@ -11,6 +11,7 @@ opacos necesarios para volver a la actividad, chat o artefacto correcto.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -18,6 +19,11 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from .memory._sql import sql
+
+_GROK_SHAPES: frozenset[str] = frozenset(
+    {"circle", "rounded_square", "oval", "hexagon", "squircle"}
+)
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 NotificationCategory = Literal["work", "content", "design", "files", "self_repair"]
 NotificationEventKind = Literal[
@@ -36,6 +42,12 @@ NotificationEventKind = Literal[
     "automation_failed",
     "reminder_triggered",
     "agent_message",
+    # Push de un MENSAJE DE BOT (chats de bot/equipo): kind separado del
+    # "agent_message" genérico del chat principal — el deeplink del teléfono
+    # necesita distinguirlos (un mensaje normal abre el chat principal; uno
+    # de bot abre la pestaña Bots). Bug real del 6-sep: todos los push caían
+    # en Bots porque ambos compartían el mismo kind.
+    "agent_bot_message",
 ]
 
 NOTIFICATION_CATEGORIES: tuple[NotificationCategory, ...] = (
@@ -142,6 +154,12 @@ _EVENT_DEFINITIONS: Mapping[NotificationEventKind, tuple[NotificationCategory, s
                 "Edecán tiene algo que decirte. Abre el chat para leerlo.",
                 "assistant",
             ),
+            "agent_bot_message": (
+                "work",
+                "Mensaje de tu bot",
+                "Tu bot terminó de responder. Abre su chat para leerlo.",
+                "assistant",
+            ),
         }
     )
 )
@@ -175,6 +193,11 @@ class ImportantNotificationEvent:
     resource_id: UUID | None = None
     apns_title: str | None = None
     apns_body: str | None = None
+    worker_id: UUID | None = None
+    sender_display_name: str | None = None
+    avatar_shape: str | None = None
+    avatar_fill: str | None = None
+    avatar_accent: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _EVENT_DEFINITIONS:
@@ -227,6 +250,18 @@ class ImportantNotificationEvent:
             "event": self.kind,
             "event_key": self.event_key,
         }
+        if self.kind == "agent_bot_message":
+            if self.worker_id is not None:
+                data["sender_id"] = str(self.worker_id)
+            nombre = self.sender_display_name or self.apns_title
+            if nombre:
+                data["sender_display_name"] = nombre[:80]
+            if self.avatar_shape:
+                data["avatar_shape"] = self.avatar_shape
+            if self.avatar_fill:
+                data["avatar_fill"] = self.avatar_fill
+            if self.avatar_accent:
+                data["avatar_accent"] = self.avatar_accent
         if self.chat_id is not None:
             data["chat_id"] = str(self.chat_id)
             data["deeplink"] = f"edecan://chat/{self.chat_id}"
@@ -460,6 +495,35 @@ def _mobile_kind(category: NotificationCategory) -> str:
     return {"work": "mission", "content": "content"}.get(category, category)
 
 
+def _normalizar_hex_push(valor: Any) -> str | None:
+    if not isinstance(valor, str):
+        return None
+    texto = valor.strip()
+    if len(texto) == 4 and texto.startswith("#"):
+        texto = "#" + "".join(c * 2 for c in texto[1:])
+    if not _HEX_COLOR.fullmatch(texto):
+        return None
+    return texto.lower()
+
+
+def bot_push_avatar_fields(worker: Mapping[str, Any]) -> dict[str, str]:
+    """Campos de avatar seguros para el payload APNs de un mensaje de bot."""
+    avatar = worker.get("avatar")
+    if not isinstance(avatar, dict):
+        return {}
+    campos: dict[str, str] = {}
+    forma = avatar.get("shape")
+    if isinstance(forma, str) and forma in _GROK_SHAPES:
+        campos["avatar_shape"] = forma
+    relleno = _normalizar_hex_push(avatar.get("fill"))
+    if relleno is not None:
+        campos["avatar_fill"] = relleno
+    acento = _normalizar_hex_push(avatar.get("accent"))
+    if acento is not None:
+        campos["avatar_accent"] = acento
+    return campos
+
+
 def _json(value: Any) -> str:
     # Import local para mantener el módulo barato y explícito.
     import json
@@ -537,6 +601,7 @@ __all__ = [
     "ImportantNotificationEvent",
     "NotificationCategory",
     "NotificationEventKind",
+    "bot_push_avatar_fields",
     "get_notification_preferences",
     "normalize_notification_preferences",
     "record_daily_brief_delivery",

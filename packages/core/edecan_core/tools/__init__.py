@@ -3,6 +3,6 @@
 from __future__ import annotations
 
 from .base import Tool, ToolContext, ToolResult
-from .registry import ToolRegistry
+from .registry import ToolRegistry, registry_para_tenant
 
-__all__ = ["Tool", "ToolContext", "ToolResult", "ToolRegistry"]
+__all__ = ["Tool", "ToolContext", "ToolResult", "ToolRegistry", "registry_para_tenant"]

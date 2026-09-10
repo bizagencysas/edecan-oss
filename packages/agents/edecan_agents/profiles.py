@@ -119,6 +119,8 @@ class AgentProfile:
     `registry_view.RestrictedRegistry.get`), así que dejarlo en `False` es
     más honesto que encenderlo "por si acaso"."""
     disponible: bool
+    read_only: bool = False
+    dangerous_sin_confirmacion: frozenset[str] = frozenset()
 
 
 PROFILES: dict[str, AgentProfile] = {
@@ -129,7 +131,7 @@ PROFILES: dict[str, AgentProfile] = {
     # -----------------------------------------------------------------
     "research": AgentProfile(
         key="research",
-        model_alias="profundo",
+        model_alias="worker_vision",
         nombre="Investigación",
         descripcion=(
             "Busca y sintetiza información en la web y en los documentos del "
@@ -153,13 +155,19 @@ PROFILES: dict[str, AgentProfile] = {
                 "extraer_datos_web",
                 "consultar_documentos",
                 "hora_actual",
+                # Lectura del REPO del box (auditar código real): el dueño
+                # exige que las misiones lean el código, no que respondan
+                # "no tengo acceso" (6-sep). Solo lectura, no dangerous.
+                "acceder_codigo_local",
             }
         ),
+        read_only=True,
+        dangerous_sin_confirmacion=frozenset({"acceder_codigo_local"}),
         disponible=True,
     ),
     "data_analyst": AgentProfile(
         key="data_analyst",
-        model_alias="profundo",
+        model_alias="worker_vision",
         nombre="Análisis de datos",
         descripcion=(
             "Analiza tablas, PDFs y documentos del usuario: estadística "
@@ -192,6 +200,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "content": AgentProfile(
         key="content",
+        model_alias="worker",
         nombre="Contenido",
         descripcion=(
             "Redacta y produce contenido y documentos de oficina (Word, "
@@ -224,7 +233,7 @@ PROFILES: dict[str, AgentProfile] = {
     # -----------------------------------------------------------------
     "ceo": AgentProfile(
         key="ceo",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Dirección general",
         descripcion=(
             "Visión de conjunto del negocio: sintetiza finanzas, facturación "
@@ -245,7 +254,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "developer": AgentProfile(
         key="developer",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Desarrollo",
         descripcion=(
             "Apoya tareas de programación: lee código y documentación "
@@ -266,12 +275,15 @@ PROFILES: dict[str, AgentProfile] = {
         # aprobación humana explícita vía `POST /v1/missions/{id}/confirm`
         # (ver orchestrator.py, sección "Confirmación pendiente").
         # `consultar_documentos`/`buscar_web` no son `dangerous`.
-        allowed_tools=frozenset({"usar_computadora", "consultar_documentos", "buscar_web"}),
+        allowed_tools=frozenset(
+            {"usar_computadora", "acceder_codigo_local", "consultar_documentos", "buscar_web"}
+        ),
         permite_dangerous_con_confirmacion=True,
         disponible=True,
     ),
     "marketing": AgentProfile(
         key="marketing",
+        model_alias="worker",
         nombre="Marketing",
         descripcion="Genera y publica contenido de marketing, investiga tendencias.",
         system_prompt_extra=(
@@ -291,7 +303,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "finance": AgentProfile(
         key="finance",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Finanzas",
         descripcion="Analiza finanzas, cotiza activos y gestiona presupuestos.",
         system_prompt_extra=(
@@ -323,6 +335,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "sales": AgentProfile(
         key="sales",
+        model_alias="worker",
         nombre="Ventas",
         descripcion="Gestiona contactos y prospectos, redacta seguimientos.",
         system_prompt_extra=(
@@ -338,7 +351,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "design": AgentProfile(
         key="design",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Diseño",
         descripcion="Genera imágenes y piezas visuales, arma documentos de presentación.",
         system_prompt_extra=(
@@ -355,7 +368,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "legal": AgentProfile(
         key="legal",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Legal",
         descripcion=(
             "Analiza y compara contratos, redacta borradores — SIEMPRE "
@@ -385,6 +398,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "video": AgentProfile(
         key="video",
+        model_alias="worker",
         nombre="Video",
         descripcion=(
             "Analiza y describe contenido audiovisual: imágenes sueltas "
@@ -405,6 +419,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "voice": AgentProfile(
         key="voice",
+        model_alias="worker",
         nombre="Voz",
         descripcion=(
             "Lista las voces disponibles del tenant y sintetiza audio a "
@@ -440,6 +455,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "social_media": AgentProfile(
         key="social_media",
+        model_alias="worker",
         nombre="Redes sociales",
         descripcion="Publica y programa contenido en redes, lee mensajes entrantes.",
         system_prompt_extra=(
@@ -459,7 +475,7 @@ PROFILES: dict[str, AgentProfile] = {
     ),
     "qa": AgentProfile(
         key="qa",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Calidad (QA)",
         descripcion="Prueba software: ejecuta comandos/tests en el companion, investiga fallos.",
         system_prompt_extra=(
@@ -469,13 +485,13 @@ PROFILES: dict[str, AgentProfile] = {
         ),
         # `usar_computadora` (edecan_toolkit/computadora.py) es
         # `dangerous=True`. `consultar_documentos` no lo es.
-        allowed_tools=frozenset({"usar_computadora", "consultar_documentos"}),
+        allowed_tools=frozenset({"usar_computadora", "acceder_codigo_local", "consultar_documentos"}),
         permite_dangerous_con_confirmacion=True,
         disponible=True,
     ),
     "security": AgentProfile(
         key="security",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="Seguridad",
         descripcion=(
             "Revisión de seguridad: analiza configuración, investiga vulnerabilidades conocidas."
@@ -488,13 +504,13 @@ PROFILES: dict[str, AgentProfile] = {
         ),
         # `usar_computadora` (edecan_toolkit/computadora.py) es
         # `dangerous=True`. `buscar_web` no lo es.
-        allowed_tools=frozenset({"usar_computadora", "buscar_web"}),
+        allowed_tools=frozenset({"usar_computadora", "acceder_codigo_local", "buscar_web"}),
         permite_dangerous_con_confirmacion=True,
         disponible=True,
     ),
     "devops": AgentProfile(
         key="devops",
-        model_alias="profundo",
+        model_alias="worker",
         nombre="DevOps",
         descripcion=(
             "Automatización de despliegue e infraestructura. Docker/K8s/"

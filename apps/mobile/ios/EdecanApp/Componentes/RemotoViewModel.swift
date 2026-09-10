@@ -20,6 +20,25 @@ final class RemotoViewModel {
     private(set) var sesion: RemoteSession?
     private(set) var frame: RemoteFrame?
 
+    /// Equipos del dueño contra los que se puede abrir una sesión
+    /// (`GET /v1/remote/machines`): la computadora local del runtime
+    /// (`kind="local"`, el VPS) y la Mac conectada por WebSocket
+    /// (`kind="remote"`). Los carga ``cargarMaquinas(client:)`` desde
+    /// ``RemotoView`` al abrir la pantalla.
+    private(set) var maquinas: [RemoteMachine] = []
+    private(set) var cargandoMaquinas = false
+    /// `machineId` que se manda al crear la sesión. Sobrevive a los
+    /// reintentos (``iniciar(kind:client:)`` la relee en cada intento) y se
+    /// limpia sola si desaparece de la lista refrescada. `nil` = sin
+    /// selección: la sesión se crea sin `machine` y el backend cae al box.
+    var maquinaSeleccionadaID: String?
+
+    /// Solo los equipos `connected` — los únicos contra los que tiene sentido
+    /// abrir una sesión. Es lo que ``RemotoView`` pinta en el selector.
+    var maquinasConectadas: [RemoteMachine] {
+        maquinas.filter(\.connected)
+    }
+
     private(set) var iniciando = false
     /// `true` mientras hay un `GET .../frame` en vuelo — cubre TANTO el
     /// primer pedido (que puede tardar hasta ~30s: el companion espera una
@@ -56,16 +75,47 @@ final class RemotoViewModel {
 
     // MARK: - Iniciar sesión / pedir frame
 
-    /// `kind`: `"view"` o `"control"`. Crea la sesión y de inmediato pide el
-    /// primer frame — es lo que dispara la aprobación LOCAL en el companion
-    /// (mismo orden que `handleStart` en `apps/web/.../remoto/page.tsx`).
+    /// `GET /v1/remote/machines` — carga los equipos del dueño para el
+    /// selector de ``RemotoView``. Al refrescar, conserva la selección actual
+    /// si el equipo sigue en la lista; si no había selección (o la que había
+    /// ya no existe), preselecciona el primer equipo CONECTADO. Un fallo de
+    /// red vacía la lista en silencio (sin `errorMensaje`): la pantalla se
+    /// comporta como hoy, creando la sesión sin `machine`.
+    func cargarMaquinas(client: APIClient?) async {
+        guard let client else {
+            maquinas = []
+            maquinaSeleccionadaID = nil
+            return
+        }
+        cargandoMaquinas = true
+        defer { cargandoMaquinas = false }
+        do {
+            maquinas = try await client.listRemoteMachines()
+            let conectadas = maquinasConectadas
+            if maquinaSeleccionadaID == nil
+                || !conectadas.contains(where: { $0.machineId == maquinaSeleccionadaID }) {
+                maquinaSeleccionadaID = conectadas.first?.machineId
+            }
+        } catch {
+            // Fallback silencioso por diseño: sin lista no hay selector, y la
+            // sesión se crea sin `machine` (el backend cae al box).
+            maquinas = []
+            maquinaSeleccionadaID = nil
+        }
+    }
+
+    /// `kind`: `"view"` o `"control"`. Crea la sesión (apuntando a
+    /// ``maquinaSeleccionadaID`` si hay selección — el equipo que el dueño
+    /// eligió en el selector) y de inmediato pide el primer frame — es lo que
+    /// dispara la aprobación LOCAL en el companion (mismo orden que
+    /// `handleStart` en `apps/web/.../remoto/page.tsx`).
     func iniciar(kind: String, client: APIClient?) async {
         guard let client, !iniciando else { return }
         iniciando = true
         errorMensaje = nil
         defer { iniciando = false }
         do {
-            let creada = try await client.createRemoteSession(kind: kind)
+            let creada = try await client.createRemoteSession(kind: kind, machine: maquinaSeleccionadaID)
             sesion = creada
             frame = nil
             await pedirFrame(client: client)

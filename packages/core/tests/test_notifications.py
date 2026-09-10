@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from edecan_core.notifications import (
     ImportantNotificationEvent,
+    bot_push_avatar_fields,
     get_notification_preferences,
     record_notification_event,
     record_push_delivery,
@@ -257,3 +258,44 @@ async def test_agent_message_kind_is_registered() -> None:
     )
     assert event.title == "Mensaje de Edecán"
     assert event.route == "assistant"
+
+
+def test_bot_push_avatar_fields_normaliza_hex_y_forma() -> None:
+    worker = {
+        "avatar": {
+            "shape": "squircle",
+            "fill": "#ABC",
+            "accent": "#112233",
+        }
+    }
+    campos = bot_push_avatar_fields(worker)
+    assert campos == {
+        "avatar_shape": "squircle",
+        "avatar_fill": "#aabbcc",
+        "avatar_accent": "#112233",
+    }
+
+
+def test_agent_bot_message_push_data_incluye_sender_y_avatar() -> None:
+    worker_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    event = ImportantNotificationEvent(
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        kind="agent_bot_message",
+        event_id=uuid.uuid4(),
+        chat_id=chat_id,
+        worker_id=worker_id,
+        sender_display_name="Astra",
+        avatar_shape="circle",
+        avatar_fill="#6366f1",
+        avatar_accent="#22c55e",
+    )
+    data = event.push_data()
+    assert data["event"] == "agent_bot_message"
+    assert data["sender_id"] == str(worker_id)
+    assert data["sender_display_name"] == "Astra"
+    assert data["avatar_shape"] == "circle"
+    assert data["avatar_fill"] == "#6366f1"
+    assert data["avatar_accent"] == "#22c55e"
+    assert data["chat_id"] == str(chat_id)

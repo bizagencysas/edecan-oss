@@ -483,6 +483,20 @@ async def _check_input_rate_limit(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/machines", dependencies=[Depends(rate_limit)])
+async def list_machines(
+    request: Request,
+    current_user: CurrentUser = Depends(_require_remote_view),
+) -> list[dict[str, Any]]:
+    """Máquinas disponibles para este tenant: la local (VPS) y la que se
+    conectó por WebSocket (la Mac del dueño). El selector de la app usa esta
+    lista para saber a qué escritorio conectarse."""
+    manager = _get_companion_manager(request)
+    if manager is None:
+        return []
+    return manager.list_machines(current_user.tenant_id)
+
+
 class SessionCreateIn(BaseModel):
     consent: bool = Field(
         description=(
@@ -490,6 +504,14 @@ class SessionCreateIn(BaseModel):
             "explícito, en la UI del panel, para iniciar una sesión de vista remota de "
             "su propio equipo. El companion pedirá una segunda aprobación, local, antes "
             "de entregar el primer frame — ver docs/control-remoto.md."
+        ),
+    )
+    machine: str | None = Field(
+        default=None,
+        description=(
+            "Máquina destino del control remoto (p. ej. 'Mac'). Si se omite, "
+            "el destino es la computadora de los bots (el box/VPS). Ver "
+            "GET /v1/remote/machines."
         ),
     )
     kind: Literal["view", "control"] = Field(
@@ -680,7 +702,7 @@ async def create_session(
         )
 
     session = await repo.create_remote_session(
-        tenant_id=current_user.tenant_id, user_id=current_user.user_id
+        tenant_id=current_user.tenant_id, user_id=current_user.user_id, machine=body.machine
     )
     if body.kind == "control":
         # `create_remote_session` siempre inserta kind='view' (firma sin
@@ -811,6 +833,7 @@ async def get_frame(
             _params_captura_remota(
                 session_id=session_id, quality=quality, max_width=max_width
             ),
+            machine=session.get("machine"),
         )
     except CompanionError as exc:
         raise HTTPException(
@@ -1014,6 +1037,14 @@ async def send_input(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
         )
+    # F-1: la sesión solo puede operarla QUIEN la creó. Sin esto, otro
+    # usuario del mismo tenant mandaba clic/teclado a la Mac del dueño y el
+    # auto-aprobado headless del companion lo aceptaba sin preguntar.
+    if str(session.get("user_id") or "") != str(current_user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta sesión de control remoto pertenece a otro usuario.",
+        )
     if session["kind"] != "control":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1100,7 +1131,9 @@ async def send_input(
             }
 
     try:
-        resultado = await manager.send_command(current_user.tenant_id, action, params)
+        resultado = await manager.send_command(
+            current_user.tenant_id, action, params, machine=session.get("machine")
+        )
     except CompanionError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1166,7 +1199,21 @@ async def _load_active_control_session(
     session = await repo.get_remote_session(tenant_id=current_user.tenant_id, session_id=session_id)
     if session is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de control remoto no encontrada."
+            status_code=status.HTTP_404_NOT_FOUND, detail="Sesión de vista remota no encontrada."
+        )
+    # F-1 (mismo candado que send_input): solo el dueño de la sesión opera.
+    if str(session.get("user_id") or "") != str(current_user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta sesión de control remoto pertenece a otro usuario.",
+        )
+    # F-1: la sesión solo puede operarla QUIEN la creó. Sin esto, otro
+    # usuario del mismo tenant mandaba clic/teclado a la Mac del dueño y el
+    # auto-aprobado headless del companion lo aceptaba sin preguntar.
+    if str(session.get("user_id") or "") != str(current_user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta sesión de control remoto pertenece a otro usuario.",
         )
     if session["kind"] != "control":
         raise HTTPException(

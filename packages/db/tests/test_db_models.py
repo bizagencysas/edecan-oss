@@ -129,6 +129,11 @@ EXPECTED_TABLES_GYM = {"workout_plans", "workout_sessions", "gym_checkins"}
 # de arriba.
 EXPECTED_TABLES_ACTION_EFFECTS = {"action_effects"}
 
+EXPECTED_TABLES_LINKEDIN_PERSONAL = {
+    "linkedin_personal_daily_state",
+    "linkedin_personal_signals",
+}
+
 # Respaldo durable de confirmaciones `dangerous` (migración
 # `0049_pending_approvals`, directiva §30-32).
 EXPECTED_TABLES_PENDING_APPROVALS = {"pending_approvals"}
@@ -148,9 +153,13 @@ EXPECTED_TABLES_TEAMS = {"teams", "team_members", "workspaces", "workspace_agent
 # Salud por-servidor MCP (migración `0056_mcp_server_health`, directiva §27).
 EXPECTED_TABLES_MCP_HEALTH = {"mcp_server_health"}
 
-# Mensajes inter-agente (migración `0057_agent_messages`) y
+# Mensajes inter-agente (migración `0057_agent_messages`, product design) y
 # chats directos con bots con nombre (routers/agent_direct_chats.py).
 EXPECTED_TABLES_AGENT_MESSAGES = {"agent_messages", "agent_direct_chats"}
+
+# Outbox transaccional y estado/eventos durables de corridas de bots
+# (migración `0070_job_outbox_bot_runs`).
+EXPECTED_TABLES_BOT_RUNS = {"job_outbox", "bot_runs", "run_events"}
 
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
@@ -164,12 +173,14 @@ EXPECTED_TABLES = (
     | EXPECTED_TABLES_SOCIAL_DRAFTS
     | EXPECTED_TABLES_GYM
     | EXPECTED_TABLES_ACTION_EFFECTS
+    | EXPECTED_TABLES_LINKEDIN_PERSONAL
     | EXPECTED_TABLES_PENDING_APPROVALS
     | EXPECTED_TABLES_SKILL_TEACH
     | EXPECTED_TABLES_COMPUTER_SESSIONS
     | EXPECTED_TABLES_TEAMS
     | EXPECTED_TABLES_MCP_HEALTH
     | EXPECTED_TABLES_AGENT_MESSAGES
+    | EXPECTED_TABLES_BOT_RUNS
 )
 
 
@@ -177,10 +188,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 71
+    assert len(Base.metadata.tables) == 76
 
 
-def test_hay_exactamente_71_tablas_pinned():
+def test_hay_exactamente_76_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -189,8 +200,12 @@ def test_hay_exactamente_71_tablas_pinned():
 def test_todos_los_modelos_tienen_id_created_at_updated_at():
     for model in ALL_MODELS:
         columnas = Base.metadata.tables[model.__tablename__].columns
-        for nombre in ("id", "created_at", "updated_at"):
+        for nombre in ("id", "created_at"):
             assert nombre in columnas, f"{model.__tablename__} sin columna {nombre!r}"
+        if model.__tablename__ == "run_events":
+            assert "updated_at" not in columnas
+        else:
+            assert "updated_at" in columnas, f"{model.__tablename__} sin columna 'updated_at'"
         assert columnas["id"].primary_key
 
 
@@ -204,7 +219,7 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     # de "enseñar una tarea" + 1 sesión de computadora + 1 mensajes inter-agente
     # + 1 chats directos con bots (ninguna de las tablas nuevas es global:
     # todas tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 68
+    assert len(RLS_TABLES) == 73
 
 
 def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llamada():
@@ -387,3 +402,35 @@ def test_connector_accounts_tiene_indice_unico_parcial_por_numero_twilio():
     # global.
     where_clause = str(idx.dialect_options["postgresql"]["where"])
     assert where_clause == "connector_key = 'twilio'"
+
+
+def test_job_type_check_del_modelo_es_la_union_real_de_job_types():
+    # Regresión de E-INF-1: el CHECK del modelo (y por extensión el de la
+    # migración head) debe cubrir TODOS los tipos de `edecan_schemas.queue.JOB_TYPES`.
+    # Tres listas divergieron históricamente (0068 perdió 2 tipos y este modelo
+    # 3): este test las pinea contra la fuente de verdad.
+    from edecan_schemas.queue import JOB_TYPES
+
+    checks = [c for c in Job.__table__.constraints if c.__class__.__name__ == "CheckConstraint"]
+    sqltext = " ".join(str(c.sqltext) for c in checks)
+    faltantes = [t for t in JOB_TYPES if t not in sqltext]
+    assert faltantes == [], f"El CHECK del modelo no menciona: {faltantes}"
+
+
+def test_migracion_0069_restaura_la_union_real_de_job_types():
+    # E-INF-1: 0068 ya se aplicó en entornos vivos con la lista rota (25);
+    # 0069 debe ser EXACTAMENTE la unión de JOB_TYPES para re-expandir el
+    # CHECK en vivo. Pinneada aquí para que nadie la encoja de nuevo.
+    # (Los módulos de versiones no son importables por nombre — arrancan con
+    # dígito — así que se lee la fuente, igual que los tests hermanos.)
+    from pathlib import Path
+
+    from edecan_schemas.queue import JOB_TYPES
+
+    source = (
+        Path(__file__).parents[1] / "alembic/versions/0069_job_types_union_fix.py"
+    ).read_text(encoding="utf-8")
+    for job_type in JOB_TYPES:
+        assert f'"{job_type}"' in source, f"0069 no menciona {job_type}"
+    assert "run_campaign_step" in source
+    assert "companion_wake_scan" in source

@@ -6,8 +6,9 @@ import uuid
 from datetime import UTC, datetime
 
 import edecan_worker.handlers.send_reminder as send_reminder_module
-from edecan_schemas import JobEnvelope
+import edecan_worker.universal_notifications as universal_notifications
 from edecan_core.companion_wake_enqueue import RUN_COMPANION_TURN_JOB
+from edecan_schemas import JobEnvelope
 from fakes import FakeRepo, install_companion_wake_capture, make_deps
 
 
@@ -326,7 +327,9 @@ async def test_send_reminder_channel_mobile_no_duplica_con_notify_important_even
     async def _fake_notify(deps, event) -> None:
         llamadas_notify.append({"kind": event.kind})
 
-    monkeypatch.setattr(send_reminder_module, "notify_important_event", _fake_notify)
+    # Este job no llama notify_important_event: el push de channel=mobile
+    # es `enviar_push_a_usuario`. El nombre nunca se bindea en send_reminder.
+    monkeypatch.setattr(universal_notifications, "notify_important_event", _fake_notify)
 
     async def _fake_push(deps, *, tenant_id, user_id, titulo, cuerpo, data):
         return send_reminder_module.push.ResultadoEnvioPush(enviados=1, fallidos=0)

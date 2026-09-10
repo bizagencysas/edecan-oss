@@ -27,6 +27,8 @@ public final class SessionStore {
     private var baseURLActual: URL?
     private let chatLocalState = ChatLocalStateStore()
     private let pendingChatAttemptStore = PendingChatAttemptStore()
+    private let conversationSnapshotStore = ConversationSnapshotStore()
+    private let botChatSnapshotStore = BotChatSnapshotStore()
     private let ideLocalState = IDELocalStateStore()
     private let mobileConfigCacheKey = "cc.edecan.mobile.serverConfig.v1"
 
@@ -173,6 +175,8 @@ public final class SessionStore {
     private func limpiarEstadoLocalDelChat() {
         chatLocalState.clearAll()
         pendingChatAttemptStore.clear()
+        conversationSnapshotStore.clearAll()
+        botChatSnapshotStore.clearAll()
         ideLocalState.clearAll()
     }
 

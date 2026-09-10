@@ -46,7 +46,66 @@ logger = logging.getLogger(__name__)
 EXCLUDED_TOOL_NAMES = frozenset({"delegar_mision", "gestionar_automatizacion"})
 
 
-def _build_safe_registry(full_registry: ToolRegistry, flags: dict[str, Any]) -> ToolRegistry:
+def _event_log_fn() -> Any | None:
+    """`edecan_api.event_log.log_event_con_factory`; `None` si no existe (fail-open).
+
+    Import perezoso por nombre de módulo (mismo criterio que el resto de
+    hermanos, ARCHITECTURE.md §10.1): un worker sin la API sigue despertando
+    al companion sin log de eventos.
+    """
+    try:
+        from edecan_api.event_log import log_event_con_factory
+    except ImportError:
+        logger.debug("edecan_api.event_log no disponible; wake sin log de eventos.")
+        return None
+    return log_event_con_factory
+
+
+async def _log_evento(
+    deps: Deps,
+    *,
+    tenant_id: UUID | None,
+    categoria: str,
+    accion: str,
+    detalle: dict[str, Any] | None = None,
+) -> None:
+    """Registra el hecho en `event_log` (plataforma de logging TOTAL).
+
+    Fail-open en cada eslabón: el despertar jamás depende del log — un fallo
+    acá no puede tumbar el turno ni callar un mensaje que debía salir.
+    """
+    fn = _event_log_fn()
+    if fn is None:
+        return
+    try:
+        await fn(
+            deps.session_factory,
+            tenant_id=tenant_id,
+            categoria=categoria,
+            accion=accion,
+            detalle=detalle,
+        )
+    except Exception:  # noqa: BLE001 - el log es observabilidad, no requisito
+        logger.warning(
+            "run_companion_turn: no se pudo registrar en event_log (%s/%s)",
+            categoria,
+            accion,
+            exc_info=True,
+        )
+
+
+def _build_safe_registry(
+    full_registry: ToolRegistry,
+    flags: dict[str, Any],
+    *,
+    dangerous_permitidas: set[str] | None = None,
+) -> ToolRegistry:
+    """Registry del turno con las tools `dangerous` excluidas, SALVO las
+    `dangerous_permitidas` (p. ej. `usar_computadora` + `navegar` para el
+    companion, o solo `navegar` para la vida digital -- la lectura es SOLO
+    con el navegador del box, la Mac conectada no abre Chrome delante del
+    dueño)."""
+    permitidas = dangerous_permitidas or set()
     safe = ToolRegistry()
     for spec in full_registry.specs(flags):
         if spec.name in EXCLUDED_TOOL_NAMES:
@@ -54,10 +113,7 @@ def _build_safe_registry(full_registry: ToolRegistry, flags: dict[str, Any]) -> 
         tool = full_registry.get(spec.name)
         if tool is None:
             continue
-        # `usar_computadora` es la única tool dangerous que SÍ entra en el
-        # turno del companion: Edecán como amigo necesita poder abrir/clickear/
-        # scrollear/leer la Mac (vida digital: WhatsApp, LinkedIn, Mail).
-        if tool.dangerous and tool.name != "usar_computadora":
+        if tool.dangerous and tool.name not in permitidas:
             continue
         safe.register(tool)
     return safe
@@ -96,6 +152,28 @@ def _con_reloj_y_fecha(instruction: str) -> str:
     return cabecera + "\n" + instruction
 
 
+_RESTART_FLAG = "/opt/edecan/data/restart-requested"
+
+
+def _es_despertar_de_contenido(payload: dict[str, Any]) -> bool:
+    """True para wakes de contenido (vida_digital y afines): sin empujar
+    avisos de fallo del motor — solo silencio/log/Actividad."""
+    return str(payload.get("source") or "").strip() in {
+        "vida_digital",
+    }
+# Tope del bucle de re-encolado del wake de reinicio: si el cron vigilante
+# está roto, no se generan jobs para siempre.
+_MAX_REINTENTOS_RESTART = 8
+
+
+def _reinicio_todavia_pendiente() -> bool:
+    """True si el flag del reinicio auto-gestionado sigue en disco (el cron
+    root lo borra justo antes de reiniciar el servicio)."""
+    import os
+
+    return os.path.exists(_RESTART_FLAG)
+
+
 async def run_companion_agent_turn(
     *,
     ctx: ToolContext,
@@ -106,8 +184,18 @@ async def run_companion_agent_turn(
     history: list[Any],
     instruction: str,
     provider_health: Any | None = None,
+    exigir_pregunta_opinion: bool = True,
+    priorizar_modelo_fuerte: bool = False,
+    es_vida_digital: bool = False,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any], str | None]:
-    """Run one headless companion turn. Returns (text, tool_log, usage, terminal_error)."""
+    """Run one headless companion turn. Returns (text, tool_log, usage, terminal_error).
+
+    `exigir_pregunta_opinion=False` relaja SOLO la sub-regla "voz real = trae
+    pregunta o postura personal" del portón de voz humana — pensado para wakes
+    de informe (p. ej. `phone_call_finished`: el resumen de una llamada es un
+    REPORTES de hechos, no exige opinión). Los portones anti-volcado (listas,
+    marcadores técnicos, voseo, longitud) quedan intactos.
+    """
     # El turno del dueño puede usar la computadora si hay companion emparejado
     # (vida digital: abrir apps, clic, scroll, screenshot). La aprobación por
     # acción la resuelve el bridge local (ver _DESKTOP_OWNER_ACTIONS).
@@ -115,18 +203,21 @@ async def run_companion_agent_turn(
 
     companion = companion_para(ctx.tenant_id)
     ctx.extras["approved_tool_calls"] = (
-        {"usar_computadora"} if companion is not None else set()
+        {"usar_computadora", "navegar_web_interactivo"} if companion is not None else set()
     )
     if companion is not None:
         ctx.extras["companion"] = companion
     ctx.extras.setdefault("flags", flags)
 
-    safe_registry = _build_safe_registry(registry, flags)
+    permitidas = (
+        {"navegar_web_interactivo"} if es_vida_digital else {"usar_computadora", "navegar_web_interactivo"}
+    )
+    safe_registry = _build_safe_registry(registry, flags, dangerous_permitidas=permitidas)
     agent_kwargs: dict[str, Any] = {
         # La exploración visual (abrir apps, clic, scroll, screenshots) consume
         # muchas iteraciones de tools; el presupuesto de un turno de chat
         # corto la dejaría a medio camino y Edecán escribiría que no pudo.
-        "max_tool_iterations": 20,
+        "max_tool_iterations": 40,
     }
     if provider_health is not None:
         agent_kwargs["provider_health"] = provider_health
@@ -189,7 +280,9 @@ async def run_companion_agent_turn(
             return False
         # VOZ REAL: la nota debe provocar respuesta — trae pregunta, o una
         # postura personal explícita. Un relato del estado no es voz.
-        if "?" not in t and not any(
+        # (Relajable para wakes de informe — p. ej. resumen de llamada — con
+        # `exigir_pregunta_opinion=False`; un reporte de hechos es legítimo.)
+        if exigir_pregunta_opinion and "?" not in t and not any(
             marcador in t
             for marcador in (
                 "me parece",
@@ -211,6 +304,11 @@ async def run_companion_agent_turn(
         return True
 
     async def _correr(intento: int):
+        # Vida digital (exploración visual con navegador + screenshots)
+        # Política de costos del dueño: LUNA primero SIEMPRE (la lectura de
+        # vida digital ya es determinista — el sistema pre-lee el contenido y
+        # lo inyecta). Sol queda SOLO como segundo intento si Luna viene
+        # vacía, nunca como default de los wakes.
         modelos = [modelo_luna_configurada(), modelo_sol_configurada()]
         seleccion = SeleccionDeModelo(
             modelo=modelos[intento] if intento < len(modelos) else None
@@ -332,6 +430,52 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
     wake_key = str(payload.get("wake_key") or "").strip()
     if not wake_key:
         raise ValueError("run_companion_turn requiere wake_key")
+
+    # Continuidad tras un reinicio auto-gestionado (ver la tool
+    # `reiniciar_servicio`): el wake se encola ANTES del reinicio con
+    # `restart_pending=True`; si el flag del reinicio todavía existe, el
+    # reinicio no ha pasado — se re-encola un wake fresco y se vuelve sin
+    # escribir nada (el turno corre DE VERDAD después de volver).
+    if bool(payload.get("restart_pending")) and _reinicio_todavia_pendiente():
+        from edecan_core.queue import enqueue as _enqueue
+
+        reintentos = wake_key.count("#retry")
+        if reintentos >= _MAX_REINTENTOS_RESTART:
+            logger.error(
+                "run_companion_turn: el reinicio no llegó tras %d reintentos; "
+                "abandono el wake (tenant=%s wake=%s)",
+                reintentos,
+                tenant_id,
+                wake_key,
+            )
+            return
+        await _enqueue(
+            deps.settings,
+            "run_companion_turn",
+            {
+                "user_id": str(user_id),
+                "wake_key": f"{wake_key}#retry",
+                "source": str(payload.get("source") or "post_restart"),
+                "instruction": payload.get("instruction"),
+                "require_message": bool(payload.get("require_message")),
+                "restart_pending": True,
+                "push": payload.get("push"),
+            },
+            tenant_id,
+            # Sin demora el worker re-encola cada ~2s y agota el tope ANTES
+            # de que el cron reinicie (~60s) — bug real visto en la prueba
+            # del 4-sep: 8 reintentos en 16s. Con 30s por reintento, la
+            # espera cubre el ciclo completo del cron.
+            delay_seconds=30,
+        )
+        logger.info(
+            "run_companion_turn: reinicio aún pendiente; wake re-encolado "
+            "(tenant=%s wake=%s)",
+            tenant_id,
+            wake_key,
+        )
+        return
+
     instruction = str(payload.get("instruction") or DEFAULT_WAKE_INSTRUCTION).strip()
     instruction = _con_reloj_y_fecha(instruction)
     urgent = bool(payload.get("urgent"))
@@ -352,6 +496,13 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 user_id,
                 wake_key,
             )
+            await _log_evento(
+                deps,
+                tenant_id=tenant_id,
+                categoria="companion_wake",
+                accion="diferido_horas_quietas",
+                detalle={"wake_key": wake_key, "source": payload.get("source")},
+            )
             return
 
         claimed = await record_companion_wake(
@@ -363,6 +514,13 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                 tenant_id,
                 user_id,
                 wake_key,
+            )
+            await _log_evento(
+                deps,
+                tenant_id=tenant_id,
+                categoria="companion_wake",
+                accion="wake_duplicado",
+                detalle={"wake_key": wake_key, "source": payload.get("source")},
             )
             return
 
@@ -392,7 +550,7 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         history = rows_to_chat_messages(history_rows)
 
         llm_router = await deps.llm_router_for(tenant_id)
-        base_registry = _build_registry()
+        base_registry = _build_registry(tenant_id)
         for mcp_tool in await deps.mcp_tools_para(tenant_id, session, flags):
             base_registry.register(mcp_tool)
         registry, persona = _apply_agent_profile(
@@ -414,30 +572,103 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
             },
         )
 
-        text, tool_log, usage, terminal_error = await run_companion_agent_turn(
-            ctx=ctx,
-            llm_router=llm_router,
-            registry=registry,
-            persona=persona,
-            flags=flags,
-            history=history,
-            instruction=instruction,
-            provider_health=deps.provider_health,
+        # El resumen de una llamada terminada es un REPORTE de hechos: el
+        # portón "voz real = trae pregunta o postura" lo descartaba siempre y
+        # el dueño jamás recibía el resumen (4 llamadas reproducidas en base).
+        # Para ese wake el portón se relaja (anti-volcado queda intacto).
+        es_wake_de_llamada = (
+            str(payload.get("source") or "").strip() == "phone_call_finished"
+        )
+        es_wake_de_reinicio = (
+            str(payload.get("source") or "").strip() == "post_restart"
         )
 
-        if terminal_error:
-            logger.info(
-                "run_companion_turn: turno terminó sin mensaje (%s) tenant_id=%s wake_key=%s",
+        async def _intentar_turno() -> tuple[str, list, dict, str | None]:
+            return await run_companion_agent_turn(
+                ctx=ctx,
+                llm_router=llm_router,
+                registry=registry,
+                persona=persona,
+                flags=flags,
+                history=history,
+                instruction=instruction,
+                provider_health=deps.provider_health,
+                exigir_pregunta_opinion=not es_wake_de_llamada,
+                priorizar_modelo_fuerte=str(payload.get("source") or "").strip()
+                == "vida_digital",
+                es_vida_digital=str(payload.get("source") or "").strip()
+                == "vida_digital",
+            )
+
+        text, tool_log, usage, terminal_error = await _intentar_turno()
+
+        deserto = terminal_error is not None or not is_substantive_assistant_text(text)
+        if deserto and require_message:
+            # El despertar exige mensaje y el primer intento vino vacío (fallo
+            # del proveedor, texto no sustantivo). Un reintento ÚNICO antes de
+            # declarar el corte: una racha del proveedor no puede dejar al
+            # dueño sin el reporte (p. ej. el resumen de una llamada).
+            logger.warning(
+                "run_companion_turn: despertar exige mensaje y el intento vino vacío "
+                "(terminal_error=%s); reintento único tenant_id=%s user_id=%s wake_key=%s",
                 terminal_error,
                 tenant_id,
+                user_id,
                 wake_key,
             )
-            return
+            text, tool_log, usage, terminal_error = await _intentar_turno()
+            deserto = terminal_error is not None or not is_substantive_assistant_text(
+                text
+            )
 
-        if not is_substantive_assistant_text(text):
-            if require_message:
+        if deserto and terminal_error is None and not es_wake_de_llamada and not es_wake_de_reinicio:
+            # Wake de CONTENIDO (p. ej. vida_digital): el agente no encontró
+            # nada que contar y no hubo fallo del proveedor -> SILENCIO válido.
+            # Publicar un aviso "no pude" en cada slot se volvió spam de push
+            # para el dueño. El wake calla; el detalle queda en Actividad/BD.
+            logger.info(
+                "run_companion_turn: sin novedad, silencio válido "
+                "tenant_id=%s user_id=%s wake_key=%s",
+                tenant_id,
+                user_id,
+                wake_key,
+            )
+            await _log_evento(
+                deps,
+                tenant_id=tenant_id,
+                categoria="companion_wake",
+                accion="silencio",
+                detalle={
+                    "wake_key": wake_key,
+                    "source": payload.get("source"),
+                    "motivo": "sin_novedad",
+                },
+            )
+            return
+        if deserto:
+            if require_message and not _es_despertar_de_contenido(payload):
+                # Garantía final SOLO para eventos REALES (p. ej. resumen de
+                # una llamada): si el motor falló, el dueño recibe el aviso.
+                # Los wakes de CONTENIDO (vida_digital) con el motor caído NO
+                # empujan: solo log/Actividad — el aviso horario era spam.
+                if es_wake_de_reinicio:
+                    # El wake de CONTINUIDAD tras un reinicio siempre
+                    # confirma que volvió — determinista, sin depender del
+                    # modelo (el dueño debe ver que el bot despertó).
+                    text = (
+                        "Volví del reinicio y sigo operativo. Retomo el hilo "
+                        "donde quedé."
+                    )
+                else:
+                    text = (
+                        "No pude generar el mensaje de este despertar: el motor de "
+                        "lenguaje falló dos veces seguidas. El detalle del evento "
+                        "quedó en Actividad."
+                    )
+                tool_log = tool_log if tool_log is not None else []
+                usage = usage if usage is not None else {}
                 logger.warning(
-                    "run_companion_turn: despertar exige mensaje pero el turno quedó vacío "
+                    "run_companion_turn: reintentos agotados, publico aviso honesto "
                     "tenant_id=%s user_id=%s wake_key=%s",
                     tenant_id,
                     user_id,
@@ -450,7 +681,19 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
                     user_id,
                     wake_key,
                 )
-            return
+                await _log_evento(
+                    deps,
+                    tenant_id=tenant_id,
+                    categoria="companion_wake",
+                    accion="silencio",
+                    detalle={
+                        "wake_key": wake_key,
+                        "source": payload.get("source"),
+                        "motivo": "motor_caido" if terminal_error else "texto_no_sustantivo",
+                        "terminal_error": terminal_error,
+                    },
+                )
+                return
 
         content: dict[str, Any] = {"text": text.strip()}
         presentation = payload.get("message_presentation")
@@ -539,6 +782,24 @@ async def handle(env: JobEnvelope, deps: Deps) -> None:
         message.get("id"),
         tenant_id,
         wake_key,
+    )
+    await _log_evento(
+        deps,
+        tenant_id=tenant_id,
+        categoria="companion_wake",
+        accion="mensaje_publicado",
+        detalle={
+            "wake_key": wake_key,
+            "source": source,
+            "message_id": str(message.get("id") or ""),
+            "conversation_id": str(conversation_id),
+            "event_id": str(event_id),
+            "kind": notification_kind,
+            "push_title": push_title,
+            "push_body": push_body,
+            "tokens_in": int(usage.get("prompt_tokens") or usage.get("tokens_in") or 0),
+            "tokens_out": int(usage.get("completion_tokens") or usage.get("tokens_out") or 0),
+        },
     )
 
 

@@ -129,14 +129,56 @@ public struct MobileServerConfig: Codable, Sendable, Equatable {
     public let copy: MobileCopyConfig
     public let flags: MobileFeatureFlags
     public let quickActions: [MobileActionConfig]
+    /// Server-driven UI: JSON libre del servidor (claves de la sección `ui`
+    /// de /v1/mobile/config). Cada pantalla lo lee con fallback local.
+    public let ui: [String: JSONValue]
 
     enum CodingKeys: String, CodingKey {
-        case platform, tabs, copy, flags
+        case platform, tabs, copy, flags, ui
         case schemaVersion = "schema_version"
         case configVersion = "config_version"
         case updatedAt = "updated_at"
         case minSupportedBuild = "min_supported_build"
         case quickActions = "quick_actions"
+    }
+
+    public init(
+        schemaVersion: Int,
+        configVersion: Int,
+        updatedAt: Date,
+        minSupportedBuild: Int,
+        platform: String,
+        tabs: [MobileTabConfig],
+        copy: MobileCopyConfig,
+        flags: MobileFeatureFlags,
+        quickActions: [MobileActionConfig],
+        ui: [String: JSONValue]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.configVersion = configVersion
+        self.updatedAt = updatedAt
+        self.minSupportedBuild = minSupportedBuild
+        self.platform = platform
+        self.tabs = tabs
+        self.copy = copy
+        self.flags = flags
+        self.quickActions = quickActions
+        self.ui = ui
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        configVersion = try container.decode(Int.self, forKey: .configVersion)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        minSupportedBuild = try container.decode(Int.self, forKey: .minSupportedBuild)
+        platform = try container.decode(String.self, forKey: .platform)
+        tabs = try container.decode([MobileTabConfig].self, forKey: .tabs)
+        copy = try container.decode(MobileCopyConfig.self, forKey: .copy)
+        flags = try container.decode(MobileFeatureFlags.self, forKey: .flags)
+        quickActions = try container.decode([MobileActionConfig].self, forKey: .quickActions)
+        // F3: servidor viejo sin la sección `ui` no debe tumbar el decode.
+        ui = try container.decodeIfPresent([String: JSONValue].self, forKey: .ui) ?? [:]
     }
 
     public static let fallback = MobileServerConfig(
@@ -154,6 +196,7 @@ public struct MobileServerConfig: Codable, Sendable, Equatable {
         ],
         copy: MobileCopyConfig(),
         flags: MobileFeatureFlags(),
-        quickActions: []
+        quickActions: [],
+        ui: [:]
     )
 }

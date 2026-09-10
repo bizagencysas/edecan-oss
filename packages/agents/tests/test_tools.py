@@ -26,7 +26,12 @@ def _install_fake_enqueue(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, st
         llamadas.append((settings, job_type, payload, tenant_id))
         return uuid4()
 
+    async def fake_enqueue_outbox(session, *, tenant_id, job_type, payload):
+        llamadas.append((None, job_type, payload, tenant_id))
+        return uuid4()
+
     monkeypatch.setattr(tools_module, "enqueue", fake_enqueue)
+    monkeypatch.setattr(tools_module, "enqueue_outbox", fake_enqueue_outbox)
     return llamadas
 
 

@@ -546,7 +546,7 @@ async def test_speak_usa_expresion_v3_configurada_desde_el_chat(client, app, fak
     assert response.status_code == 200
     enviado = json.loads(ruta.calls.last.request.content)
     assert enviado == {
-        "text": "[calmly] Listo, quedó configurado.",
+        "text": "Listo, quedó configurado.",
         "model_id": "eleven_v3",
     }
 

@@ -56,7 +56,6 @@ struct IDEView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .ideLightOnly()
             .task {
                 await viewModel.cargar(client: session.client)
                 viewModel.iniciarPolling(client: session.client)
@@ -75,8 +74,7 @@ struct IDEView: View {
                     .presentationDetents([.medium, .large])
             }
         }
-        .ideLightOnly()
-    }
+            }
 
     private var fondoEstudio: some View {
         ZStack {

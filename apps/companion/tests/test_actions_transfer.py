@@ -8,6 +8,7 @@ sin que un `name` malicioso escape jamás de esa carpeta.
 from __future__ import annotations
 
 import base64
+import os
 
 import pytest
 from edecan_companion import actions
@@ -80,6 +81,10 @@ def test_pull_missing_file_raises(companion_config):
 def test_list_reports_only_files_newest_first(companion_config):
     actions._transfer_push({"name": "viejo.txt", "content_b64": _b64(b"1")}, companion_config)
     actions._transfer_push({"name": "nuevo.txt", "content_b64": _b64(b"22")}, companion_config)
+    viejo = companion_config.transfer_dir / "viejo.txt"
+    nuevo = companion_config.transfer_dir / "nuevo.txt"
+    os.utime(viejo, (1, 1))
+    os.utime(nuevo, (2, 2))
     (companion_config.transfer_dir / "una_carpeta").mkdir()
 
     listado = actions._transfer_list({}, companion_config)

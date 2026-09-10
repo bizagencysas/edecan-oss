@@ -20,7 +20,9 @@ export interface WorkspaceAgent {
 export interface Workspace {
   id: string;
   name: string;
-  agents: WorkspaceAgent[];
+  description?: string | null;
+  /** El GET real puede devolver ids o `{agent_id, agent_name}`. */
+  agents: Array<WorkspaceAgent | string>;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -140,4 +142,4 @@ export async function removeWorkspaceAgent(id: string, agentId: string): Promise
   });
 }
 
-export { ApiError };
+export { ApiError, isNotFound };

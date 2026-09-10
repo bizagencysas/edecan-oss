@@ -21,6 +21,11 @@ dependencies = [
     # Recupera de forma segura un Postgres embebido que haya sobrevivido a
     # un cierre forzado del runtime temporal de PyInstaller.
     "psutil>=5.9",
+    # Navegador PROPIO de Edecán (el "yo"): Playwright en el venv congelado
+    # para que `uv sync` del auto-deploy NO lo borre (el Chromium vive aparte
+    # en el cache de playwright). Las sesiones del dueño viven en el perfil
+    # persistente (EDECAN_BROWSER_PROFILE).
+    "playwright>=1.47",
     # `python -m edecan_local` promete una base embebida sin configuración.
     # Mantener pgserver como extra hacía que el comando documentado fallara
     # inmediatamente en un clon limpio salvo que la persona conociera la

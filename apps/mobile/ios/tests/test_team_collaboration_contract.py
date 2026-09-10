@@ -3,6 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+APPS = ROOT.parents[1]
 
 
 def test_team_conversation_usa_sse_client_y_no_bloquea_input() -> None:
@@ -33,6 +34,8 @@ def test_team_conversation_superficie_colaboracion_grok() -> None:
     assert "enviar_mensaje_bot" in team
     assert "followUpTurn" in team
     assert "registrarNarracionEntreBots" in team
+    assert "asignacion" in team
+    assert "Se lo pasé a" in ui
     assert "responderDelEquipo" in team
     assert "tu Mac" in ui.lower() or "en tu Mac" in ui
     assert "desktopcomputer" in ui
@@ -64,6 +67,49 @@ def test_team_conversation_proactividad_needs_you() -> None:
     assert "promptDelegacion" in ui
     assert "Needs you" in ui
     assert "proactive_scan" in team or "automations/suggestions" in team.lower()
+
+
+def test_team_asignacion_chip_evento_sin_handoff() -> None:
+    team = (ROOT / "EdecanApp/Screens/TeamConversationView.swift").read_text(encoding="utf-8")
+    ui = (ROOT / "EdecanApp/Componentes/TeamCollaborationUI.swift").read_text(encoding="utf-8")
+    models = (ROOT / "EdecanKit/Sources/EdecanKit/CollaborationModels.swift").read_text(
+        encoding="utf-8"
+    )
+    servicio = (APPS / "api" / "edecan_api" / "bot_turn_service.py").read_text(encoding="utf-8")
+    teams = (APPS / "api" / "edecan_api" / "routers" / "teams.py").read_text(encoding="utf-8")
+    assert "AsignadoAChipView" in team
+    assert "Asignado a" in ui
+    assert "esEventoAsignacion" in models
+    assert "assigned_worker_id" in models
+    assert "assigned_worker_name" in models
+    assert "persist_team_assignment_event" in teams
+    assert 'evento == "asignacion"' in models or 'evento == \"asignacion\"' in models
+    assert "destination_worker_id" not in team
+    assert "workerAssigned" not in team
+    assert "emit_routing_assignment" not in teams
+    assert "persist_worker_assignment" not in servicio
+    assert "assigned_worker_id" in servicio
+
+
+def test_fronti_asignacion_metadata_sin_tool_routing() -> None:
+    """BotAlpha (#49) consume auto-assign bc-c294fe7e; no pisa bc-cd8fac1c tool-intent."""
+    team = (ROOT / "EdecanApp/Screens/TeamConversationView.swift").read_text(encoding="utf-8")
+    models = (ROOT / "EdecanKit/Sources/EdecanKit/CollaborationModels.swift").read_text(
+        encoding="utf-8"
+    )
+    assert "resolverAsignacionAuto" in models
+    assert "assignedWorkerId" in models
+    assert "workerId" in models
+    assert "workerDisplayName" in models
+    assert "display_name" in models
+    assert "assigned_worker_id" in models or "worker_id" in models
+    assert "destination_worker_id" not in team
+    assert "destinationWorkerId" not in models
+    assert "resolverAsignacionAuto" in team or "esEventoAsignacion" in team
+    assert "select_responder_for_team" not in team
+    assert "capability_routing" not in team
+    assert "bot_persona" not in team
+    assert "TeamQuestionCardView" in team
 
 
 def test_team_conversation_detener_turno_paridad_chat() -> None:

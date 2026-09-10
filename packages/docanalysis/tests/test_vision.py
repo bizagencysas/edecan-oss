@@ -70,7 +70,7 @@ async def test_analiza_imagen_con_proveedor_anthropic_y_pregunta_por_defecto(
 
     assert len(llm.llamadas) == 1
     alias, flags, req = llm.llamadas[0]
-    assert alias == "rapido"
+    assert alias == "worker_vision"
     assert flags == {"models.premium": True}
 
     bloques = req.messages[0].content

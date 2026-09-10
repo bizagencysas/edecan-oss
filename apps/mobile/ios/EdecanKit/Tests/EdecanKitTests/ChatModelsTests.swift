@@ -70,8 +70,8 @@ struct ChatModelsTests {
         let json = """
         {
           "default": "@cf/meta/llama-4-scout-17b-16e-instruct",
-          "esfuerzos": ["bajo", "extremo"],
-          "esfuerzo_default": "extremo",
+          "esfuerzos": ["bajo", "hiper_nuevo"],
+          "esfuerzo_default": "hiper_nuevo",
           "modelos": []
         }
         """
@@ -134,7 +134,7 @@ struct ChatModelsTests {
     /// abrir la conversación.
     @Test func conversacionConEsfuerzoDesconocidoNoRompe() throws {
         let json = """
-        {"id": "c1", "title": null, "channel": "web", "model": "m", "effort": "extremo",
+        {"id": "c1", "title": null, "channel": "web", "model": "m", "effort": "hiper_nuevo",
          "created_at": "2026-07-29T10:00:00Z", "updated_at": null}
         """
         let conversation = try APIClient.crearDecoder()
@@ -306,6 +306,7 @@ struct ChatModelsTests {
         #expect(EsfuerzoChat.bajo.nombreLegible == "Bajo")
         #expect(EsfuerzoChat.medio.nombreLegible == "Medio")
         #expect(EsfuerzoChat.alto.nombreLegible == "Alto")
-        #expect(EsfuerzoChat.allCases.map(\.rawValue) == ["bajo", "medio", "alto"])
+        #expect(EsfuerzoChat.extremo.nombreLegible == "Extremo")
+        #expect(EsfuerzoChat.allCases.map(\.rawValue) == ["bajo", "medio", "alto", "extremo"])
     }
 }

@@ -22,11 +22,10 @@ from typing import Any
 
 import edecan_worker.handlers.run_automation as run_automation_module
 import edecan_worker.handlers.run_gym_checkin as run_gym_checkin_module
-import edecan_worker.push as push_module
 import pytest
+from edecan_core.companion_wake_enqueue import RUN_COMPANION_TURN_JOB
 from edecan_schemas import JobEnvelope
 from fakes import FakeRepo, install_companion_wake_capture, make_deps
-from edecan_core.companion_wake_enqueue import RUN_COMPANION_TURN_JOB
 
 # ---------------------------------------------------------------------------
 # FakeSession para el despacho de `run_automation` (ramo gym_checkin)
@@ -171,7 +170,7 @@ def _fake_edecan_automations(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "edecan_automations", fake_package)
     monkeypatch.setitem(sys.modules, "edecan_automations.runner", fake_runner_module)
     monkeypatch.setitem(sys.modules, "edecan_automations.engine", fake_engine_module)
-    monkeypatch.setattr(run_automation_module, "_build_registry", lambda: object())
+    monkeypatch.setattr(run_automation_module, "_build_registry", lambda _tenant_id: object())
     return runner_calls
 
 

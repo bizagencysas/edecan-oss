@@ -96,6 +96,11 @@ async def test_extra_tool_mcp_visible_con_flag_on(client, monkeypatch) -> None:
         "configurar_estilo_relacion",
         "activar_estilo_romantico",
         "salir_estilo_romantico",
+        "conectar_mcp",
+        "listar_mcp",
+        "desconectar_mcp",
+        "crear_herramienta",
+        "reiniciar_servicio",
         fake_tool.name,
     ]
 
@@ -125,6 +130,11 @@ async def test_extra_tool_mcp_invisible_con_flag_off(client, monkeypatch) -> Non
         "configurar_estilo_relacion",
         "activar_estilo_romantico",
         "salir_estilo_romantico",
+        "conectar_mcp",
+        "listar_mcp",
+        "desconectar_mcp",
+        "crear_herramienta",
+        "reiniciar_servicio",
     ]
 
 
@@ -163,6 +173,11 @@ async def test_chat_sobrevive_si_get_mcp_tools_for_tenant_lanza(client, monkeypa
         "configurar_estilo_relacion",
         "activar_estilo_romantico",
         "salir_estilo_romantico",
+        "conectar_mcp",
+        "listar_mcp",
+        "desconectar_mcp",
+        "crear_herramienta",
+        "reiniciar_servicio",
     ]
     assert "event: message.done" in response.text
 

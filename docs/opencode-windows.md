@@ -371,7 +371,7 @@ bundle\nsis\Edecán_0.7.4_x64-setup.exe    359.625.655 bytes  (343,0 MB)
 ```
 
 Copia del `setup.exe` en la Mac del dueño:
-`/Users/example/Edecan-Nuevo/instaladores-windows/Edecan_0.7.4_x64-setup.exe`
+`/Users/example/instaladores-windows/Edecan_0.7.4_x64-setup.exe`
 (sha256 `63ce17def51fd927543cb4e5f860f95b...`).
 
 ## El motor va DENTRO — probado, no deducido

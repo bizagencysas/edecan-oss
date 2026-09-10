@@ -121,7 +121,10 @@ async def test_interactivo_sin_playwright_devuelve_error_claro_no_exito(
     # Forza la ausencia de Playwright sin depender del entorno (Playwright puede
     # estar instalado, p. ej. para el smoke test real): `sys.modules["playwright"]
     # = None` hace que `from playwright.async_api import ...` lance `ImportError`.
+    # El submodulo también: si otro test ya lo importó, queda cacheado en
+    # sys.modules y el `from` tiene éxito aunque el paquete padre esté anulado.
     monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
     respx.get("https://tienda.ejemplo.com/robots.txt").mock(return_value=httpx.Response(404))
     ctx = make_ctx(settings=fake_settings())
 

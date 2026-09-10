@@ -259,12 +259,18 @@ def _construir_router(*, live: bool, guion: dict[str, GuionEntry]) -> LLMRouter:
         )
         return LLMRouter(settings)
 
-    router = LLMRouter(SimpleNamespace())
-    # Inyecta el doble determinista en el atributo privado del router para
-    # evitar construir un proveedor real — mismo patrón que
-    # `packages/llm/tests/test_llm_router.py` (`router._provider = fake_provider`).
-    router._provider = FakeLLMProvider(guion)  # noqa: SLF001 (patrón de inyección, ver arriba)
-    return router
+    # Inyecta el doble determinista en AMBOS proveedores del router. Tras C9b
+    # los modelos `@cf/` (todo el catálogo de Workers AI — lo único que
+    # resuelve el modo offline) se rutean al proveedor *workers*, no al
+    # primario. Inyectar solo `_provider` dejaba ese camino construyendo un
+    # `WorkersAIProvider` real con credenciales vacías, y cada turno moría con
+    # `CredencialInvalidaError` antes de consultar el guion.
+    fake = FakeLLMProvider(guion)
+    return LLMRouter(
+        SimpleNamespace(),
+        provider=fake,
+        workers_provider_factory=lambda _settings: fake,
+    )
 
 
 def _construir_agente(router: LLMRouter, nombres_tools: Iterable[str]) -> Any:

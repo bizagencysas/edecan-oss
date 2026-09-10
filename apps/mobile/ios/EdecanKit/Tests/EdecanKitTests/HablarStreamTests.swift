@@ -77,38 +77,32 @@ struct HablarStreamTests {
 }
 
 private final class VoiceStubURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) async throws -> (Int, String, Data))?
-    private var work: Task<Void, Never>?
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (Int, String, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        work = Task {
-            do {
-                guard let handler = Self.handler, let url = request.url else {
-                    throw URLError(.badURL)
-                }
-                let (status, mime, data) = try await handler(request)
-                let response = HTTPURLResponse(
-                    url: url,
-                    statusCode: status,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": mime]
-                )!
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
-            } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+        do {
+            guard let handler = Self.handler, let url = request.url else {
+                throw URLError(.badURL)
             }
+            let (status, mime, data) = try handler(request)
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": mime]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
         }
     }
 
-    override func stopLoading() {
-        work?.cancel()
-        work = nil
-    }
+    override func stopLoading() {}
 }
 
 private final class VoiceLockedAuthTokenStore: AuthTokenStoring, @unchecked Sendable {
@@ -138,7 +132,7 @@ private final class VoiceLockedAuthTokenStore: AuthTokenStoring, @unchecked Send
 }
 
 private func voiceStubSession(
-    handler: @escaping @Sendable (URLRequest) async throws -> (Int, String, Data)
+    handler: @escaping @Sendable (URLRequest) throws -> (Int, String, Data)
 ) -> URLSession {
     VoiceStubURLProtocol.handler = handler
     let configuration = URLSessionConfiguration.ephemeral

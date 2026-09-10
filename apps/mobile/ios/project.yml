@@ -34,8 +34,8 @@ options:
 
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "123"
-    MARKETING_VERSION: "0.9.15"
+    CURRENT_PROJECT_VERSION: "188"
+    MARKETING_VERSION: "0.9.36"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
@@ -52,16 +52,20 @@ settings:
     #   EDECAN_IOS_UPDATE_CHANNEL=preview
     #   EDECAN_IOS_UPDATE_MANIFEST_URL=https://.../ios-preview.json
     EDECAN_IOS_UPDATE_CHANNEL: stable
-    EDECAN_IOS_UPDATE_MANIFEST_URL: "https://raw.githubusercontent.com/your-org/edecan-oss/update-channels/ios-stable.json"
+    EDECAN_IOS_UPDATE_MANIFEST_URL: "https://raw.githubusercontent.com/tu-organizacion/edecan-oss/update-channels/ios-stable.json"
     # Placeholder neutral que cada instalación puede sustituir desde CLI:
     #   EDECAN_IOS_BUNDLE_ID=com.suempresa.edecan
     # Mantiene sincronizados el app principal y sus extensiones sin editar
     # este archivo ni publicar identificadores privados en el OSS.
     EDECAN_IOS_BUNDLE_ID: cc.edecan.app
+    EDECAN_SENTRY_DSN: ""
 
 packages:
   EdecanKit:
     path: EdecanKit
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa
+    from: 8.0.0
 
 targets:
   EdecanApp:
@@ -82,6 +86,8 @@ targets:
         EdecanUpdateChannel: "$(EDECAN_IOS_UPDATE_CHANNEL)"
         EdecanUpdateManifestURL: "$(EDECAN_IOS_UPDATE_MANIFEST_URL)"
         UILaunchScreen: {}
+        NSUserActivityTypes:
+          - INSendMessageIntent
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -127,8 +133,10 @@ targets:
           CODE_SIGN_ENTITLEMENTS: EdecanApp/EdecanApp.entitlements
     dependencies:
       - package: EdecanKit
+      - package: Sentry
       - target: EdecanWidgetsExtension
       - target: EdecanShareExtension
+      - target: EdecanNotificationService
       - target: EdecanWatchApp
 
   EdecanWidgetsExtension:
@@ -151,6 +159,29 @@ targets:
         PRODUCT_NAME: EdecanWidgets
         SKIP_INSTALL: "YES"
         CODE_SIGN_ENTITLEMENTS: EdecanWidgets/EdecanWidgets.entitlements
+    dependencies:
+      - package: EdecanKit
+
+  EdecanNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: EdecanNotificationService
+    info:
+      path: EdecanNotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Edecán Bot Notifications
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(EDECAN_IOS_BUNDLE_ID).notificationservice"
+        PRODUCT_NAME: EdecanNotificationService
+        SKIP_INSTALL: "YES"
+        CODE_SIGN_ENTITLEMENTS: EdecanNotificationService/EdecanNotificationService.entitlements
     dependencies:
       - package: EdecanKit
 
@@ -188,10 +219,10 @@ targets:
   # (`PhoneWatchBridge` en EdecanApp → `WatchSessionManager` en la
   # extensión). Bundle ids derivados de `$(EDECAN_IOS_BUNDLE_ID)` (mismo
   # mecanismo que `.widgets`/`.share`): con el default del instalador
-  # (`EDECAN_IOS_BUNDLE_ID=org.example.edecan`, ver
+  # (`EDECAN_IOS_BUNDLE_ID=cc.edecan.app`, ver
   # `scripts/install_device.sh`) quedan en
-  # `org.example.edecan.watchkitapp` y
-  # `org.example.edecan.watchkitapp.watchkitextension`.
+  # `cc.edecan.app.watchkitapp` y
+  # `cc.edecan.app.watchkitapp.watchkitextension`.
 
   # Apple Watch — SINGLE-TARGET (watchOS 10+, el modelo app+extensión de
   # watchOS 2-9 quedó DEPRECATED por Apple; el product type

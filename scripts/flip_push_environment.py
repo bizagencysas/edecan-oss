@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -26,24 +25,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-SOCKET_DIR_RAW = os.environ.get("EDECAN_LOCAL_PG_SOCKET_DIR", "").strip()
-SECRETS_PATH_RAW = os.environ.get("EDECAN_LOCAL_SECRETS_PATH", "").strip()
-SOCKET_DIR = Path(SOCKET_DIR_RAW) if SOCKET_DIR_RAW else None
-SECRETS_PATH = Path(SECRETS_PATH_RAW) if SECRETS_PATH_RAW else None
+SOCKET_DIR = Path.home() / ".edecan-pg/8623d0b931b52eaf"
+SECRETS_PATH = (
+    Path.home() / "Library/Application Support/cc.edecan.desktop/data/secrets.json"
+)
 
 
 def _master_key() -> str:
-    if SECRETS_PATH is None or not SECRETS_PATH.is_file():
-        raise RuntimeError("Configura EDECAN_LOCAL_SECRETS_PATH con el archivo local de secretos")
     return json.loads(SECRETS_PATH.read_text(encoding="utf-8"))["LOCAL_MASTER_KEY"]
 
 
 async def main(target: str) -> int:
     if target not in ("sandbox", "production"):
         print(f"Uso: {sys.argv[0]} sandbox|production", file=sys.stderr)
-        return 2
-    if SOCKET_DIR is None:
-        print("Configura EDECAN_LOCAL_PG_SOCKET_DIR.", file=sys.stderr)
         return 2
 
     engine = create_async_engine(
@@ -56,14 +50,10 @@ async def main(target: str) -> int:
         vault = TokenVault(session, LocalKeyProvider(_master_key()))
 
         account = (
-            (
-                await session.execute(
-                    select(ConnectorAccount).where(ConnectorAccount.connector_key == "push")
-                )
+            await session.execute(
+                select(ConnectorAccount).where(ConnectorAccount.connector_key == "push")
             )
-            .scalars()
-            .first()
-        )
+        ).scalars().first()
         if account is None:
             print("No hay cuenta conectora 'push'.", file=sys.stderr)
             return 1

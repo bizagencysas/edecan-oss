@@ -108,6 +108,11 @@ struct BurbujaMensaje: View {
                 }
                 if tieneContenidoEnBurbuja {
                     contenidoBurbuja
+                    if let fecha = mensaje.createdAt {
+                        Text(fecha.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 if !textoParaAcciones.isEmpty {
                     BarraAccionesMensaje(
@@ -165,7 +170,11 @@ struct BurbujaMensaje: View {
                 campo: campo,
                 texto: texto,
                 enBurbujaPropia: mensaje.rol == .usuario,
-                estable: !mensaje.enProgreso
+                estable: !mensaje.enProgreso,
+                // Tenue SOLO cuando la apertura es un acuse real (hay texto
+                // final aparte). Sin tools todos los deltas caen en apertura:
+                // pintarla tenue volvía TODA la respuesta gris/pequeña.
+                dimmed: campo == "apertura" && !mensaje.texto.isEmpty
             )
         }
     }
@@ -231,7 +240,8 @@ struct BurbujaMensaje: View {
                         client: client,
                         onAction: onAction,
                         onResponder: onResponder,
-                        respuestaPosterior: respuestaPosterior
+                        respuestaPosterior: respuestaPosterior,
+                        fechaMensaje: mensaje.createdAt
                     )
                 }
 
@@ -731,6 +741,30 @@ func textoMarkdownCacheado(
     }
 }
 
+func transformarBloquesLigeros(_ texto: String) -> String {
+    let lineas = texto.components(separatedBy: "\n")
+    var salida: [String] = []
+    salida.reserveCapacity(lineas.count)
+    for linea in lineas {
+        let t = linea.trimmingCharacters(in: .whitespaces)
+        if t == "---" || t == "***" || t == "___" {
+            salida.append("───────────────")
+            continue
+        }
+        if let rango = t.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
+            let contenido = String(t[rango.upperBound...])
+            salida.append("**" + contenido + "**")
+            continue
+        }
+        if t.hasPrefix("- ") || t.hasPrefix("* ") {
+            salida.append("• " + String(t.dropFirst(2)))
+            continue
+        }
+        salida.append(linea)
+    }
+    return salida.joined(separator: "\n")
+}
+
 /// SwiftUI no interpreta Markdown cuando recibe un `String` normal. Esta
 /// conversión conserva saltos y espacios del chat, pero aplica el Markdown
 /// inline que una persona espera ver: negritas, cursivas, código y enlaces.
@@ -745,8 +779,14 @@ func textoMarkdown(_ texto: String, enBurbujaPropia: Bool = false) -> Attributed
         interpretedSyntax: .inlineOnlyPreservingWhitespace,
         failurePolicy: .returnPartiallyParsedIfPossible
     )
-    var resultado = (try? AttributedString(markdown: texto, options: opciones))
-        ?? AttributedString(texto)
+    // El parseo es inline-only A PROPÓSITO (el parse de bloques completo se
+    // comía los saltos de línea — lección del 28-ago). Por eso los headings
+    // (##), listas (-) y divisores (---) del LLM salían CRUDOS. Este
+    // transformador de línea los convierte a inline seguro: ## -> negrita,
+    // - -> viñeta, --- -> línea divisoria. Los saltos de línea NO se tocan.
+    let textoPreparado = transformarBloquesLigeros(texto)
+    var resultado = (try? AttributedString(markdown: textoPreparado, options: opciones))
+        ?? AttributedString(textoPreparado)
     guard enBurbujaPropia else { return resultado }
 
     // En la burbuja del usuario el fondo es el degradado morado/azul, y ahí el
@@ -798,6 +838,9 @@ private struct BloquesChatView: View {
     let onAction: (ChatAction) -> Void
     let onResponder: (String) -> Void
     let respuestaPosterior: String?
+    /// `createdAt` del mensaje que trae estos bloques — lo usa la tarjeta de
+    /// gym para distinguir "pregunta de hoy" de tarjetas viejas del historial.
+    let fechaMensaje: Date?
 
     var body: some View {
         ForEach(bloques.indices, id: \.self) { index in
@@ -816,7 +859,8 @@ private struct BloquesChatView: View {
                     onAction: onAction,
                     onResponder: onResponder,
                     respuestaPosterior: respuestaPosterior,
-                    onAbrirArtefacto: onAbrirArtefacto
+                    onAbrirArtefacto: onAbrirArtefacto,
+                    fechaMensaje: fechaMensaje
                 )
             }
         }
@@ -859,7 +903,7 @@ private func esBloqueViaje(_ bloque: ChatBlock) -> Bool {
     }
 }
 
-private struct BloqueChatView: View {
+struct BloqueChatView: View {
     let bloque: ChatBlock
     let client: APIClient?
     let onAction: (ChatAction) -> Void
@@ -873,6 +917,8 @@ private struct BloqueChatView: View {
     /// Tocar una imagen de una card la abre a tamaño completo. Es el mismo
     /// `onAbrirArtefacto` de ``BurbujaMensaje``, bajado hasta acá.
     let onAbrirArtefacto: (ArtifactRef) -> Void
+    /// `createdAt` del mensaje que trae este bloque (para la tarjeta de gym).
+    let fechaMensaje: Date?
 
     @ViewBuilder
     var body: some View {
@@ -902,7 +948,7 @@ private struct BloqueChatView: View {
                 onAbrirImagen: onAbrirArtefacto
             )
         case .gymCheckin(let gym):
-            GymCheckinCardView(bloque: gym, client: client)
+            GymCheckinCardView(bloque: gym, client: client, fechaMensaje: fechaMensaje)
         case .chart(let chart):
             ChartBlockCard(bloque: chart)
         case .sources(let sources):
@@ -1361,7 +1407,7 @@ private struct QuestionCardView: View {
 ///   `ContentStudioService.publishLinkedIn(confirmed: true, ...)`, el mismo
 ///   servicio que ya usa el Studio — publicación real, irreversible, y por
 ///   eso deshabilitada mientras corre o después de un éxito.
-private struct SocialDraftCardView: View {
+struct SocialDraftCardView: View {
     let bloque: SocialDraftBlock
     let client: APIClient?
     let onAction: (ChatAction) -> Void
@@ -1907,20 +1953,47 @@ private func segmentarTexto(_ texto: String) -> [SegmentoTexto] {
 /// usando el mismo parser de Markdown inline y el mismo caché de siempre —
 /// cuando no hay bloques de código, el camino es idéntico al original: un
 /// solo `Text` con `textoMarkdownCacheado`.
-private struct ContenidoTextoView: View {
+struct ContenidoTextoView: View {
     let id: String
     let campo: String
     let texto: String
     let enBurbujaPropia: Bool
     let estable: Bool
+    var dimmed: Bool = false
+
+    /// Mensajes MUY largos (respuestas grandes de los bots) colapsan a una
+    /// vista previa: un `Text` gigante maqueta el texto completo en el hilo
+    /// principal y disparaba App Hang de 2s+ (NSTextLayoutManager
+    /// enumerando fragmentos). El límite mantiene el layout por debajo del
+    /// presupuesto de frame; tocar "ver completo" expande a demanda.
+    private static let limiteVistaPrevia = 2_000
+    @State private var expandido = false
 
     var body: some View {
         let segmentos = segmentarTexto(texto)
-        if segmentos.count == 1, !segmentos[0].esCodigo {
+        if !expandido, texto.count > Self.limiteVistaPrevia {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(textoMarkdownCacheado(
+                    id: id, campo: campo, texto: String(texto.prefix(Self.limiteVistaPrevia)) + "…",
+                    enBurbujaPropia: enBurbujaPropia, estable: estable
+                ))
+                .font(dimmed ? .callout : nil)
+                .foregroundStyle(dimmed ? .secondary : .primary)
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { expandido = true }
+                } label: {
+                    Label("Ver el mensaje completo", systemImage: "arrow.down.circle")
+                        .font(.footnote.weight(.semibold))
+                }
+                .tint(EdecanTheme.morado)
+            }
+        } else if segmentos.count == 1, !segmentos[0].esCodigo {
             Text(textoMarkdownCacheado(
                 id: id, campo: campo, texto: texto,
                 enBurbujaPropia: enBurbujaPropia, estable: estable
             ))
+            .font(dimmed ? .callout : nil)
+            .foregroundStyle(dimmed ? .secondary : .primary)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(segmentos.enumerated()), id: \.offset) { index, segmento in

@@ -88,7 +88,8 @@ public struct Me: Codable, Sendable, Equatable {
     /// la API no manda un nombre propio (solo `email`), así que se toma lo
     /// que hay antes de la arroba, igual que hace hoy el frontend web.
     public var nombrePila: String {
-        String(user.email.split(separator: "@").first ?? Substring(user.email))
+        let prefijo = String(user.email.split(separator: "@").first ?? Substring(user.email))
+        return prefijo == "app" ? "Usuario" : prefijo
     }
 }
 
@@ -1537,6 +1538,11 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
         missionId: String? = nil
     )
     case confirmationRequired(toolCallId: String, name: String, args: [String: JSONValue])
+    /// Chats de bot/equipo: abre un mensaje nuevo del asistente dentro del
+    /// turno (burbuja por mensaje, no un bloque pegado).
+    case messageStart(messageId: String)
+    /// Cierra el mensaje abierto con `messageStart`; el turno sigue vivo.
+    case messageEnd(messageId: String)
     case done(usage: Usage?)
     case followUpTurn(pending: Int)
     case error(message: String)
@@ -1549,6 +1555,7 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
         case toolCallId = "tool_call_id"
         case blocksVersion = "blocks_version"
         case missionId = "mission_id"
+        case messageId = "message_id"
         case pending
     }
 
@@ -1612,6 +1619,18 @@ public enum ChatEvent: Decodable, Sendable, Equatable {
                 name: name,
                 args: (try? container.decode([String: JSONValue].self, forKey: .args)) ?? [:]
             )
+        case "message_start":
+            guard let messageId = try? container.decode(String.self, forKey: .messageId) else {
+                self = .unknown(type: type)
+                return
+            }
+            self = .messageStart(messageId: messageId)
+        case "message_end":
+            guard let messageId = try? container.decode(String.self, forKey: .messageId) else {
+                self = .unknown(type: type)
+                return
+            }
+            self = .messageEnd(messageId: messageId)
         case "done":
             self = .done(usage: try? container.decode(Usage.self, forKey: .usage))
         case "follow_up_turn":

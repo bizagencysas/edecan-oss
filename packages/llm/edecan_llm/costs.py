@@ -1,10 +1,18 @@
 """Estimación de costo en USD por uso de tokens (`ARCHITECTURE.md` §3).
 
-Los valores de `COSTOS` son **placeholders de referencia** (USD por millón de
-tokens, "MTok") pensados para estimar gasto/margen antes de escribir
-`usage_events`. Son configuración de negocio, no secretos: actualízalos con el
-pricing vigente de cada proveedor/modelo, o pasa tu propia tabla a
-`estimate(..., costos=mi_tabla)` sin tocar el default.
+`COSTOS` tiene dos capas:
+
+1. **Placeholders de referencia** (USD por millón de tokens, "MTok") para
+   modelos de proveedores externos (claude/gpt-4o) — actualízalos con el
+   pricing vigente de cada proveedor, o pasa tu propia tabla a
+   `estimate(..., costos=mi_tabla)` sin tocar el default.
+2. **Precios reales de Workers AI** leídos de `config/modelos.yml`
+   (`perfiles.<perfil>.precio_referencia`, a su vez leídos de la API de
+   Cloudflare — ver el encabezado de ese archivo). Se fusionan ENCIMA de los
+   placeholders para que los modelos reales del chat (scout, kimi) dejen de
+   tener `cost_usd=None` y la alerta `USAGE_ALERT_USD_PER_DAY` pueda
+   dispararse. Los modelos sin `precio_referencia` siguen devolviendo
+   `cost_status="unknown"` honesto (ver `apps/api/.../llm_attribution.py`).
 """
 
 from __future__ import annotations
@@ -21,6 +29,40 @@ COSTOS: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
 }
+
+
+def _costos_desde_modelos_yml() -> dict[str, tuple[float, float]]:
+    """Tabla de costos reales desde `perfiles.<perfil>.precio_referencia`.
+
+    Solo el par `{modelo, precio_referencia}` de cada perfil: los precios
+    viven en `config/modelos.yml` (lectura de la API de Cloudflare) y acá no
+    se copian a mano. Un YAML ausente/corrupto o un perfil sin precio devuelve
+    `{}` — jamás tumba la importación del módulo ni la estimación.
+    """
+    try:
+        from .task_router import cargar_configuracion_modelos
+    except Exception:  # noqa: BLE001 - el catálogo no puede tumbar una llamada
+        return {}
+    config = cargar_configuracion_modelos()
+    perfiles = config.get("perfiles")
+    if not isinstance(perfiles, dict):
+        return {}
+    tabla: dict[str, tuple[float, float]] = {}
+    for data in perfiles.values():
+        if not isinstance(data, dict):
+            continue
+        modelo = str(data.get("modelo") or "").strip()
+        precio = data.get("precio_referencia")
+        if not modelo or not isinstance(precio, dict):
+            continue
+        entrada = precio.get("entrada")
+        salida = precio.get("salida")
+        if isinstance(entrada, (int, float)) and isinstance(salida, (int, float)):
+            tabla[modelo] = (float(entrada), float(salida))
+    return tabla
+
+
+COSTOS.update(_costos_desde_modelos_yml())
 
 _TOKENS_POR_MTOK = 1_000_000
 

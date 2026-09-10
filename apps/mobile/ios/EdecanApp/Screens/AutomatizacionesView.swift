@@ -138,6 +138,15 @@ private struct InfoAutomatizacion: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            if let ultima = automatizacion.lastRunAt {
+                Text("Última corrida: \(ultima.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if let proxima = automatizacion.nextRunAt {
+                Text("Próxima: \(proxima.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }

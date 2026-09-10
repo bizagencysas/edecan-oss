@@ -28,7 +28,7 @@ dev = [
     # Solo para test_invoices.py::test_render_pdf_*_una_sola_pagina: parsear el PDF
     # generado y contar páginas de verdad (detectó un bug real de layout — footer que
     # empujaba una página 2 en blanco — que un simple `startswith(b"%PDF")` no atrapaba).
-    "pypdf>=5.0",
+    "pypdf>=6.16.1",
 ]
 
 [tool.uv.sources]

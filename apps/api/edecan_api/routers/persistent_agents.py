@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -19,17 +19,34 @@ from edecan_agents.persistent_policy import (
     validate_worker_budget,
     validate_worker_tools,
 )
+from edecan_core.bot_persona import worker_display_name
+from edecan_core.notifications import bot_push_avatar_fields
 from edecan_core.queue import enqueue
 from edecan_creative.avatars import avatar_para_agente
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
-from edecan_api.deps import CurrentUser, get_current_user, get_tenant_session, rate_limit
+from edecan_api.deps import (
+    CurrentUser,
+    get_current_user,
+    get_redis,
+    get_tenant_session,
+    rate_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +56,16 @@ router = APIRouter(
 
 # Lock por (tenant, worker) para serializar turnos del chat 1:1: el cliente
 # manda envíos inmediatos (chat humano) y el servidor garantiza el orden. Un
-# dict módulo-nivel es seguro: el API local corre un solo proceso/loop.
+# dict módulo-nivel es seguro SOLO porque el API local corre un único proceso/
+# loop — es un asyncio.Lock en memoria, NO un lock distribuido.
+#
+# BOTS-20 (restricción documentada): esta serialización por conversación NO
+# está garantizada con varias réplicas de API. `EDECAN_API_SINGLE_REPLICA`
+# (default `True`) declara ese supuesto; `main._lifespan` emite un warning
+# explícito si se desactiva. La clave idempotente sigue impidiendo repetir el
+# MISMO envío entre procesos (ver `_claim_message_idempotency`), pero no ordena
+# dos claves distintas. Para multi-réplica hace falta una secuencia durable por
+# conversación (claim con fencing), fuera del alcance de esta mitigación.
 _TURN_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 
@@ -51,7 +77,123 @@ def _turn_lock_for(tenant_id: uuid.UUID, worker_id: uuid.UUID) -> asyncio.Lock:
         _TURN_LOCKS[key] = lock
     return lock
 
-# Campos del perfil rico (migración 0048, grokbot.md §2). Identidad de primer nivel.
+
+def _bot_push_personalization(worker: Mapping[str, Any], worker_id: uuid.UUID) -> dict[str, str]:
+    """Campos de avatar/nombre seguros para el payload de push de un bot."""
+    campos = {
+        "worker_id": str(worker_id),
+        "sender_display_name": worker_display_name(worker),
+    }
+    campos.update(bot_push_avatar_fields(worker))
+    return campos
+
+
+async def _log_evento(
+    session_factory,
+    *,
+    tenant_id: uuid.UUID,
+    categoria: str,
+    accion: str,
+    detalle: dict[str, Any] | None = None,
+) -> None:
+    """Registra el hecho en `event_log` (plataforma de logging TOTAL).
+
+    `session_factory` es `edecan_db.session.get_session` (sesión propia del
+    log, jamás la de la petición: un INSERT fallido abortaría su transacción).
+    Fail-open por contrato de `edecan_api.event_log`: el turno del bot jamás
+    depende del log.
+    """
+    from edecan_api.event_log import log_event_con_factory
+
+    await log_event_con_factory(
+        session_factory,
+        tenant_id=tenant_id,
+        categoria=categoria,
+        accion=accion,
+        detalle=detalle,
+    )
+
+
+def _texto_de_delta_sse(chunk: str) -> str | None:
+    """Texto de un chunk SSE `message.delta`/`text_delta`; `None` si no lo es.
+
+    Solo interesan los deltas de texto del asistente (el stream del bot emite
+    `message.started`, `tool.start`, narraciones, etc.). Devuelve el texto ya
+    normalizado (whitespace colapsado) o `None` si el chunk no es un delta de
+    texto o viene vacío.
+    """
+    if "message.delta" not in chunk:
+        return None
+    marca = "\ndata: "
+    if marca not in chunk:
+        return None
+    try:
+        data = json.loads(chunk.split(marca, 1)[1].split("\n", 1)[0])
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("type") != "text_delta":
+        return None
+    texto = " ".join(str(data.get("text") or "").split())
+    return texto or None
+
+
+def _evento_sse(chunk: str) -> tuple[str, dict[str, Any]] | None:
+    """Parse one canonical SSE chunk emitted by the conversation router."""
+    event_name = ""
+    payload: dict[str, Any] | None = None
+    for line in chunk.splitlines():
+        if line.startswith("event: "):
+            event_name = line.removeprefix("event: ").strip()
+        elif line.startswith("data: "):
+            try:
+                candidate = json.loads(line.removeprefix("data: "))
+            except ValueError:
+                return None
+            if isinstance(candidate, dict):
+                payload = candidate
+    if not event_name or payload is None:
+        return None
+    return event_name, payload
+
+
+async def _stream_with_committed_terminal(
+    stream: AsyncIterator[str],
+    *,
+    session: Any,
+    before_terminal_commit: Callable[[dict[str, Any], str], Awaitable[None]] | None = None,
+    after_terminal_commit: Callable[[dict[str, Any], str], Awaitable[None]] | None = None,
+) -> AsyncIterator[str]:
+    """Commit persisted output (and optional outbox work) before exposing ``done``.
+
+    The request transaction otherwise commits only after Starlette finishes the
+    response body. That made ``message.done`` and replay observable before the
+    assistant row existed to another connection.
+    """
+    response_parts: list[str] = []
+    async for chunk in stream:
+        parsed = _evento_sse(chunk)
+        if parsed is not None:
+            event_name, payload = parsed
+            if event_name == "message.delta" and payload.get("type") == "text_delta":
+                response_parts.append(str(payload.get("text") or ""))
+            if event_name == "message.done" and payload.get("type") == "done":
+                response_text = "".join(response_parts)
+                if before_terminal_commit is not None:
+                    await before_terminal_commit(payload, response_text)
+                # No se commitea la sesión acá. `get_tenant_session` mantiene la
+                # transacción abierta con `async with session.begin():`; un
+                # `session.commit()` explícito en mitad del stream la cerraba, y
+                # cualquier `add_message` posterior (un segundo `done`, un
+                # segmento de chat dividido, etc.) reventaba con
+                # `InvalidRequestError: Can't operate on closed transaction` y
+                # dejaba el mensaje sin persistir (chats que "pierden" mensajes).
+                # El commit real lo hace `get_session` al cerrar el request; la
+                # fila queda visible en cuanto Starlette termina la respuesta.
+                if after_terminal_commit is not None:
+                    await after_terminal_commit(payload, response_text)
+        yield chunk
+
+# Campos del perfil rico (migración 0048, product design). Identidad de primer nivel.
 _PROFILE_COLUMNS = (
     "display_name, avatar, role_title, role_short, job_description, personality, "
     "communication_style, instructions, constraints, approval_policy, autonomy_level, "
@@ -128,10 +270,20 @@ class PersistentAgentTaskIn(BaseModel):
 
 
 class PersistentAgentMessageIn(BaseModel):
-    text: str = Field(min_length=1, max_length=20_000)
+    text: str = Field(default="", max_length=20_000)
     # Ids de archivos ya subidos a /v1/files (imágenes y documentos que el
     # dueño manda al bot). Mismo contrato que el chat principal.
     attachments: list[str] = Field(default_factory=list, max_length=10)
+    # Selector de modelo del chat del bot (el dueño elige con qué modelo
+    # ejecuta el bot): opcional — si falta, la política de costos decide.
+    model: str | None = None
+    effort: str | None = None
+
+    @model_validator(mode="after")
+    def _validar_texto_o_adjuntos(self) -> PersistentAgentMessageIn:
+        if not self.text.strip() and not any(item.strip() for item in self.attachments):
+            raise ValueError("Se requiere texto o al menos un archivo adjunto.")
+        return self
 
 
 class PersistentAgentHandoffIn(BaseModel):
@@ -221,15 +373,21 @@ async def create_worker(
     )
     conversation_id = conv.mappings().first()["id"]
     avatar_payload = body.avatar
-    # TODO bot nuevo nace con CARA (grok_face por seed determinista): si el
-    # cliente mandó solo un acento (o nada), se reemplaza por el descriptor
-    # completo. "cualquier bot, incluso una prueba, siempre con cara".
-    if not avatar_payload or (
-        isinstance(avatar_payload, dict)
-        and "style" not in avatar_payload
-    ):
-        seed = (body.display_name or body.name).strip() or body.name.strip()
-        avatar_payload = avatar_para_agente(seed, style="grok_face")
+    seed = (body.display_name or body.name).strip() or body.name.strip()
+    # Bot nuevo nace con CARA (grok_face por seed determinista). Si el
+    # cliente eligió figura/color (forma/accent) se RESPETAN: antes un avatar
+    # sin "style" se reemplazaba entero y se descartaban ambas elecciones.
+    if isinstance(avatar_payload, dict) and "style" in avatar_payload:
+        pass  # descriptor completo del cliente: se usa tal cual
+    else:
+        acento = None
+        forma = None
+        if isinstance(avatar_payload, dict):
+            acento = avatar_payload.get("accent") or avatar_payload.get("fill")
+            forma = avatar_payload.get("shape") or avatar_payload.get("forma")
+        avatar_payload = avatar_para_agente(
+            seed, style="grok_face", acento=acento, forma=forma
+        )
     try:
         result = await session.execute(
             text(
@@ -443,20 +601,38 @@ async def patch_worker(
 @router.get("/{worker_id}/messages")
 async def list_worker_messages(
     worker_id: uuid.UUID,
+    response: Response,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
-) -> list[dict[str, Any]]:
+    limit: int = Query(default=50, ge=1, le=200),
+    before: str | None = Query(default=None),
+    redis_client: Any = Depends(get_redis),
+) -> list[dict[str, Any]] | dict[str, Any]:
     from edecan_api.bot_turn_service import (
         ensure_worker_conversation,
+        get_conversation_epoch,
         list_normalized_messages,
         load_worker,
     )
 
     worker = await load_worker(session, user, worker_id)
     conversation_id = await ensure_worker_conversation(session, user, worker)
-    return await list_normalized_messages(
-        session, tenant_id=user.tenant_id, conversation_id=conversation_id
+    result = await list_normalized_messages(
+        session,
+        tenant_id=user.tenant_id,
+        conversation_id=conversation_id,
+        limit=limit,
+        before=before,
     )
+    # BOTS-09: el epoch de la conversación viaja en un header para que iOS lo
+    # consuma sin cambiar el cuerpo legacy. Un `/clear` o DELETE lo incrementa
+    # (`x-conversation-epoch` cambia), así el cliente detecta que su refresh/
+    # productor viejo quedó inválido. Clientes que no lo conocen lo ignoran.
+    epoch = await get_conversation_epoch(
+        redis_client, tenant_id=user.tenant_id, conversation_id=conversation_id
+    )
+    response.headers["x-conversation-epoch"] = str(epoch)
+    return result
 
 
 @router.post("/{worker_id}/clear", status_code=status.HTTP_204_NO_CONTENT)
@@ -464,6 +640,7 @@ async def clear_worker_messages(
     worker_id: uuid.UUID,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
+    redis_client: Any = Depends(get_redis),
 ) -> None:
     """Comando `/clear` en el chat de un bot: reinicia su conversación.
 
@@ -472,15 +649,31 @@ async def clear_worker_messages(
     al volver, el bot arranca de cero. No toca el hilo entre bots ni la
     memoria persistente del bot.
     """
-    from edecan_api.bot_turn_service import ensure_worker_conversation, load_worker
+    from edecan_api.bot_turn_service import (
+        ensure_worker_conversation,
+        increment_conversation_epoch,
+        load_worker,
+    )
 
     worker = await load_worker(session, user, worker_id)
     conversation_id = await ensure_worker_conversation(session, user, worker)
-    await session.execute(
-        text(
-            "DELETE FROM messages WHERE tenant_id = :tenant_id AND conversation_id = :cid"
-        ),
-        {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
+    # F4 (clear sin lock): serializar el borrado con el turno en curso del chat
+    # del bot — mismo lock que `send_worker_message`. El productor vivo de un
+    # turno anterior puede seguir persistiendo su mensaje terminal, pero el
+    # DELETE ya NO corre concurrente con el arranque de un turno nuevo.
+    async with _turn_lock_for(user.tenant_id, conversation_id):
+        await session.execute(
+            text(
+                "DELETE FROM messages WHERE tenant_id = :tenant_id AND conversation_id = :cid"
+            ),
+            {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
+        )
+    # BOTS-09: invalidar productores/refresh viejos. El DELETE de filas no basta:
+    # un productor de un turno anterior podría re-persistir una respuesta vieja o
+    # el cliente podría repintar un snapshot borrado. El epoch (Redis, compartido
+    # entre procesos) es la señal que el siguiente GET devuelve en el header.
+    await increment_conversation_epoch(
+        redis_client, tenant_id=user.tenant_id, conversation_id=conversation_id
     )
 
 
@@ -509,94 +702,199 @@ async def send_worker_message(
         _message_request_hash,
         _response_for_idempotency_record,
         _stream_and_complete_idempotency,
+        _stream_con_presencia,
     )
 
     worker = await load_worker(session, user, worker_id)
-    conversation_id = await ensure_worker_conversation(session, user, worker)
-    redis_client = get_redis(settings)
 
-    # Un lock por worker garantiza el ORDEN de los turnos aunque el cliente
+    # The turn lock used to start only inside the response iterator, after the
+    # lazy conversation had already been created. Acquire it around creation as
+    # well; the database parent-row lock in ``ensure_worker_conversation`` is
+    # the cross-process authority, while this avoids needless local contenders.
+    creation_lock = _turn_lock_for(user.tenant_id, worker_id)
+    async with creation_lock:
+        conversation_id = await ensure_worker_conversation(session, user, worker)
+
+    # Un lock por conversación garantiza el ORDEN de los turnos aunque el cliente
     # mande varios mensajes seguidos sin esperar respuesta (chat humano): los
     # turnos corren en secuencia de llegada, cada uno ve el historial con las
     # respuestas anteriores ya persistidas. Sin esto, dos POSTs concurrentes
     # producían respuestas fuera de orden.
-    lock = _turn_lock_for(user.tenant_id, worker_id)
+    lock = _turn_lock_for(user.tenant_id, conversation_id)
 
-    async def _stream():
-        async with lock:
-            async for chunk in stream_worker_turn(
-                request=request,
-                session=session,
-                user=user,
-                settings=settings,
-                worker=worker,
-                conversation_id=conversation_id,
-                user_text=body.text,
-                attachments=body.attachments,
-            ):
-                yield chunk
+    async def _turn_chunks():
+        aviso_enviado = False
+        async for chunk in stream_worker_turn(
+            request=request,
+            session=session,
+            user=user,
+            settings=settings,
+            worker=worker,
+            conversation_id=conversation_id,
+            user_text=body.text,
+            attachments=body.attachments,
+            seleccion_modelo=body.model,
+            seleccion_esfuerzo=body.effort,
+        ):
+            # Push temprano en el PRIMER delta de texto del turno, una
+            # sola vez: la bandera evita un notify por cada delta. Corre
+            # en el productor, así el aviso sale también en el camino de
+            # desconexión (el turno sigue en background).
+            if not aviso_enviado:
+                texto = _texto_de_delta_sse(chunk)
+                if texto is not None:
+                    aviso_enviado = True
+                    await _avisar_empezando(texto)
+            yield chunk
 
-    # Push SIEMPRE al terminar (regla del dueño: «cuando terminen, mándame un
-    # push»), con el resultado real del turno — el teléfono puede estar en
-    # segundo plano, bloqueado o fuera de la app; el trabajo corre en esta Mac
-    # y el push es el aviso. Best-effort: un fallo del push jamás revienta un
-    # turno que ya terminó bien.
-    async def _push_al_listo() -> None:
-        nombre = worker_display_name(worker)
-        titulo = nombre
-        cuerpo = "Terminé. Abre el chat para ver la respuesta."
-        try:
-            # La sesión de la petición pudo cerrarse (turno completado tras
-            # una desconexión del teléfono): el resultado se lee en una
-            # sesión propia.
-            async with get_session(user.tenant_id) as session_fresca:
-                fila = (
-                    await session_fresca.execute(
-                        text(
-                            "SELECT content->>'text' AS texto FROM messages "
-                            "WHERE tenant_id = :tenant_id AND conversation_id = :cid "
-                            "AND role = 'assistant' AND content->>'text' IS NOT NULL "
-                            "AND content->>'text' != '' "
-                            "ORDER BY created_at DESC LIMIT 1"
-                        ),
-                        {
-                            "tenant_id": str(user.tenant_id),
-                            "cid": str(conversation_id),
-                        },
-                    )
-                ).mappings().first()
-            if fila is not None and fila["texto"]:
-                cuerpo = " ".join(str(fila["texto"]).split())[:160] or cuerpo
-        except Exception:  # noqa: BLE001 - el push no depende de esta lectura
-            logger.warning(
-                "No pude leer la respuesta del turno para el push "
-                "(worker=%s conversation=%s)",
-                worker_id,
-                conversation_id,
-                exc_info=True,
-            )
+    # Dedup del push de turno: el aviso temprano (primer delta) y el de fin de
+    # turno comparten el MISMO event_id y kind. `record_notification_event`
+    # (edecan_core.notifications) es idempotente sobre la terna
+    # tenant+user+kind:event_id — el segundo notify que se entregue no produce
+    # un segundo push. Si el temprano fue suprimido por presencia (dueño dentro
+    # del chat), el del final sigue siendo la única oportunidad de push; por
+    # eso el final SIEMPRE se encola con la misma clave, nunca se saltea.
+    push_event_id = uuid.uuid4()
+
+    # Push temprano al PRIMER delta de texto del turno: en conversaciones
+    # largas el push del final llegaba 2-3 min después del mensaje. El cuerpo
+    # es el texto parcial con el que el bot arranca (o "Está respondiendo…").
+    # Best-effort: si falla, el push del final sigue cubriendo el aviso.
+    async def _avisar_empezando(texto: str | None) -> None:
+        preview = " ".join(str(texto).split())[:140] if texto else ""
+        cuerpo = f"«{preview}…»" if preview else "Está respondiendo…"
         try:
             await enqueue(
                 settings,
                 "notify_important_event",
                 {
                     "user_id": str(user.user_id),
-                    "kind": "agent_message",
-                    "event_id": str(uuid.uuid4()),
+                    "kind": "agent_bot_message",
+                    "event_id": str(push_event_id),
                     "chat_id": str(conversation_id),
-                    "apns_title": titulo,
+                    "apns_title": worker_display_name(worker),
                     "apns_body": cuerpo,
+                    **_bot_push_personalization(worker, worker_id),
                 },
                 user.tenant_id,
             )
-        except Exception:  # noqa: BLE001 - el turno ya terminó; push best-effort
+            await _log_evento(
+                get_session,
+                tenant_id=user.tenant_id,
+                categoria="push",
+                accion="encolado_temprano",
+                detalle={
+                    "worker_id": str(worker_id),
+                    "user_id": str(user.user_id),
+                    "kind": "agent_bot_message",
+                    "event_id": str(push_event_id),
+                    "chat_id": str(conversation_id),
+                    "apns_body": cuerpo,
+                },
+            )
+        except Exception:  # noqa: BLE001 - el stream no se frena por un push
             logger.warning(
-                "No pude encolar el push de fin de turno "
+                "No pude encolar el push temprano del turno "
                 "(worker=%s conversation=%s)",
                 worker_id,
                 conversation_id,
                 exc_info=True,
             )
+
+    # Push SIEMPRE al terminar (regla del dueño: «cuando terminen, mándame un
+    # push»), con el resultado real del turno — el teléfono puede estar en
+    # segundo plano, bloqueado o fuera de la app; el trabajo corre en esta Mac
+    # y el push es el aviso. Si el push temprano ya se entregó, este notify se
+    # deduplica con la clave compartida (ver `push_event_id` arriba).
+    # El resultado y este outbox se confirman juntos antes de exponer `done`.
+    # Si cualquiera falla, el turno no puede anunciar éxito ni cerrar su replay.
+    async def _encolar_push_final(
+        terminal_event: dict[str, Any], response_text: str
+    ) -> None:
+        from edecan_core.queue import enqueue_outbox
+
+        message_id_raw = terminal_event.get("message_id")
+        try:
+            message_id = uuid.UUID(str(message_id_raw))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "El turno terminó sin el message_id persistido de su respuesta."
+            ) from exc
+
+        nombre = worker_display_name(worker)
+        cuerpo = " ".join(response_text.split())[:160]
+        if not cuerpo:
+            cuerpo = "Terminé. Abre el chat para ver la respuesta."
+        payload = {
+            "user_id": str(user.user_id),
+            "kind": "agent_bot_message",
+            "event_id": str(push_event_id),
+            "chat_id": str(conversation_id),
+            "message_id": str(message_id),
+            "apns_title": nombre,
+            "apns_body": cuerpo,
+            **_bot_push_personalization(worker, worker_id),
+        }
+        try:
+            await enqueue_outbox(
+                session,
+                tenant_id=user.tenant_id,
+                job_type="notify_important_event",
+                payload=payload,
+            )
+        except Exception as exc:
+            # Auditoría F-2 (API): si la migración 0070 no está aplicada aún,
+            # el turno NO debe morir al final — degrada al enqueue directo
+            # (el camino anterior), sin el outbox transaccional.
+            if "job_outbox" in str(exc).lower():
+                from edecan_core.queue import enqueue
+
+                await enqueue(
+                    settings,
+                    "notify_important_event",
+                    payload,
+                    user.tenant_id,
+                )
+                logger.warning(
+                    "job_outbox no disponible; push final por enqueue directo "
+                    "(aplica 0070 para el camino transaccional)"
+                )
+            else:
+                raise
+
+    async def _registrar_push_final(
+        terminal_event: dict[str, Any], response_text: str
+    ) -> None:
+        message_id = str(terminal_event["message_id"])
+        cuerpo = " ".join(response_text.split())[:160]
+        if not cuerpo:
+            cuerpo = "Terminé. Abre el chat para ver la respuesta."
+        await _log_evento(
+            get_session,
+            tenant_id=user.tenant_id,
+            categoria="push",
+            accion="encolado_final",
+            detalle={
+                "worker_id": str(worker_id),
+                "user_id": str(user.user_id),
+                "kind": "agent_bot_message",
+                "event_id": str(push_event_id),
+                "chat_id": str(conversation_id),
+                "message_id": message_id,
+                "apns_title": worker_display_name(worker),
+                "apns_body": cuerpo,
+            },
+        )
+
+    async def _stream():
+        async with lock:
+            async for chunk in _stream_with_committed_terminal(
+                _turn_chunks(),
+                session=session,
+                before_terminal_commit=_encolar_push_final,
+                after_terminal_commit=_registrar_push_final,
+            ):
+                yield chunk
 
     # Blindaje SIEMPRE: el productor del turno vive en una tarea desacoplada
     # del socket — si el teléfono sale de la app, se bloquea o pierde red, el
@@ -642,11 +940,6 @@ async def send_worker_message(
             record=previo,
         )
 
-    async def _avisar_si_el_telefono_se_fue() -> None:
-        # El turno terminó después de que el teléfono soltara el socket:
-        # el push ES la entrega en este camino.
-        await _push_al_listo()
-
     live_stream = _stream_and_complete_idempotency(
         stream=_stream(),
         redis_client=redis_client,
@@ -654,16 +947,14 @@ async def send_worker_message(
         request_hash=request_hash,
         owner_token=owner_token,
         ttl_seconds=idempotency_ttl,
-        on_disconnected_complete=_avisar_si_el_telefono_se_fue,
     )
 
-    async def _live_con_push():
-        async for chunk in live_stream:
-            yield chunk
-        await _push_al_listo()
-
+    # Presencia SSE de ESTA conversación (chat del bot): mientras el dueño la
+    # esté viendo, el worker suprime el push de fin de turno (regla del
+    # producto: "no push si estoy dentro del chat"). La envoltura cubre también
+    # el commit del outbox final, así la supresión conserva su ventana.
     return StreamingResponse(
-        _live_con_push(),
+        _stream_con_presencia(live_stream, conversation_id),
         media_type="text/event-stream",
         headers={
             "Idempotency-Key": str(idempotency_key),
@@ -677,6 +968,7 @@ async def delete_worker(
     worker_id: uuid.UUID,
     user: CurrentUser = Depends(_current),
     session: AsyncSession = Depends(get_tenant_session),
+    redis_client: Any = Depends(get_redis),
 ) -> None:
     """Elimina un bot y su chat 1:1, de una vez y sin basura colgando.
 
@@ -686,18 +978,30 @@ async def delete_worker(
     no muere con el bot). Lo que el esquema NO limpa por sí solo es la
     conversación del bot y sus mensajes — esos se borran aquí explícitamente.
     """
-    from edecan_api.bot_turn_service import load_worker
+    from edecan_api.bot_turn_service import increment_conversation_epoch, load_worker
 
     worker = await load_worker(session, user, worker_id)
     conversation_id = worker.get("conversation_id")
     if conversation_id is not None:
-        await session.execute(
-            text("DELETE FROM messages WHERE tenant_id = :tenant_id AND conversation_id = :cid"),
-            {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
-        )
-        await session.execute(
-            text("DELETE FROM conversations WHERE tenant_id = :tenant_id AND id = :cid"),
-            {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
+        # F4 (delete sin lock): serializar el borrado con un turno en curso —
+        # mismo lock que `send_worker_message`. El productor vivo de un turno
+        # anterior puede seguir persistiendo su mensaje terminal, pero el DELETE
+        # ya NO corre concurrente con el arranque de un turno nuevo.
+        async with _turn_lock_for(user.tenant_id, conversation_id):
+            await session.execute(
+                text("DELETE FROM messages WHERE tenant_id = :tenant_id AND conversation_id = :cid"),
+                {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
+            )
+            await session.execute(
+                text("DELETE FROM conversations WHERE tenant_id = :tenant_id AND id = :cid"),
+                {"tenant_id": str(user.tenant_id), "cid": str(conversation_id)},
+            )
+        # BOTS-09: invalidar productores/refresh viejos también en DELETE. Aunque
+        # la conversación desaparece, un productor de un turno en curso puede
+        # tener el contexto cargado y un refresh del cliente puede repintar un
+        # snapshot borrado; el epoch les dice que su vista quedó vieja.
+        await increment_conversation_epoch(
+            redis_client, tenant_id=user.tenant_id, conversation_id=conversation_id
         )
     await session.execute(
         text(
@@ -749,10 +1053,10 @@ async def pause_all_workers(
         result = await session.execute(
             text(
                 "UPDATE persistent_agents SET status = 'paused', updated_at = now() "
-                "WHERE tenant_id = :tenant_id AND user_id = :user_id "
+                "WHERE tenant_id = :tenant_id "
                 "AND status IN ('idle', 'running')"
             ),
-            {"tenant_id": str(user.tenant_id), "user_id": str(user.user_id)},
+            {"tenant_id": str(user.tenant_id)},
         )
     except (ProgrammingError, SQLAlchemyError):
         logger.exception("pause_all_workers: error de base")
@@ -819,12 +1123,19 @@ async def create_worker_handoff(
         envelope["instruction"] = body.instruction.strip()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Auditoría F-1 (motor): el runner lee las COLUMNAS depth/
+    # visited_worker_ids (no el envelope). Si el INSERT no las llena, el
+    # worker reconstruye depth=0/visited=[] y la cadena se RESETEA — un
+    # bypass ejecutable de la protección de ciclos y profundidad.
+    depth = int(envelope.get("depth") or 0)
+    visited = list(envelope.get("visited_worker_ids") or [])
     result = await session.execute(
         text(
             "INSERT INTO persistent_agent_handoffs "
-            "(id, tenant_id, source_worker_id, destination_worker_id, task_id, envelope) "
+            "(id, tenant_id, source_worker_id, destination_worker_id, task_id, envelope, "
+            "depth, visited_worker_ids) "
             "VALUES (gen_random_uuid(), :tenant_id, :source, :destination, :task_id, "
-            ":envelope ::jsonb) "
+            ":envelope ::jsonb, :depth, :visited ::jsonb) "
             "RETURNING id, tenant_id, source_worker_id, destination_worker_id, task_id, "
             "envelope, status, result, created_at, updated_at"
         ),
@@ -834,6 +1145,8 @@ async def create_worker_handoff(
             "destination": str(body.destination_worker_id),
             "task_id": body.task_id,
             "envelope": json.dumps(envelope),
+            "depth": depth,
+            "visited": json.dumps(visited),
         },
     )
     row = result.mappings().first()

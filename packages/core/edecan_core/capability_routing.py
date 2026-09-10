@@ -56,6 +56,14 @@ _ALWAYS_AVAILABLE = frozenset(
         "buscar_skills",
         "buscar_web",
         "calculadora",
+        # Las misiones son la capacidad CENTRAL del orquestador (Astra): si
+        # dependen del emparejamiento por palabras clave, pedidos como
+        # «usa a Astra para que lo audite» no las ofrecen y el bot responde
+        # honestamente "no tengo la herramienta" (o peor, finge una misión
+        # que no existe con un simple mensaje). Siempre disponibles, igual
+        # que preguntar al usuario.
+        "delegar_mision",
+        "encargar_a_equipo",
         "hora_actual",
         "instalar_skill",
         "listar_skills",
@@ -73,6 +81,10 @@ _ALWAYS_AVAILABLE = frozenset(
         # del equipo (igual que hablar entre bots): no la gobierna una familia
         # de keywords, gobierna el pedido del dueño.
         "delegar_al_ide",
+        # Leer/escribir archivos del box es cómo Edecán CREA (webs, código,
+        # archivos): capacidad universal como usar_computadora — sin ella, un
+        # modelo débil que no llama al IDE alucina "zips de descarga".
+        "acceder_codigo_local",
         # El canal entre bots es una capacidad universal del equipo: hablar con
         # otro bot nace de "dile a X...", "pregúntale a Y...", "coordina con..."
         # — ninguna familia de keywords lo cubre y por eso el modelo decía "no
@@ -81,6 +93,10 @@ _ALWAYS_AVAILABLE = frozenset(
         # preguntar_al_usuario: siempre disponible.
         "enviar_mensaje_bot",
         "listar_bots",
+        # Narración en vivo del bot en su chat 1:1 (Grok SendToUser). No puede
+        # depender del emparejamiento por keywords: el modelo debe poder avisar
+        # «voy a revisar…» aunque el mensaje del dueño no diga «avance».
+        "avisar_avance",
     }
 )
 
@@ -167,6 +183,11 @@ _DESIGN_STUDIO_KEYWORDS = frozenset(
         "video",
         "videos",
         "visual",
+        # Crear un sitio/web es diseño: activa el estudio creativo (que genera
+        # landings y visuales REALES en el box), no solo navegación.
+        "web",
+        "website",
+        "sitio",
     }
 )
 _DESIGN_STUDIO_TOOL_NAMES = frozenset(
@@ -302,7 +323,22 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     ),
     (
         frozenset(
-            {"delega", "delegar", "mision", "misiones", "proyecto", "planifica", "planificar"}
+            {
+                "delega",
+                "delegar",
+                "mision",
+                "misiones",
+                "proyecto",
+                "planifica",
+                "planificar",
+                "astra",
+                "audita",
+                "audite",
+                "auditoria",
+                "orquesta",
+                "encargo",
+                "encarga",
+            }
         ),
         frozenset({"delegar_mision"}),
     ),
@@ -501,6 +537,21 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
             {
+                "branch",
+                "commit",
+                "commits",
+                "git",
+                "github",
+                "rama",
+                "repositorio",
+                "repo",
+            }
+        ),
+        frozenset({"acceder_codigo_local"}),
+    ),
+    (
+        frozenset(
+            {
                 "post",
                 "contenido",
                 "guion",
@@ -511,16 +562,24 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "publica",
                 "publicar",
                 "social",
+                "sube",
+                "subelo",
+                "subir",
             }
         ),
         # `publicar_social` publica en una red "ya conectada por el tenant" (ver docstring
-        # de `PublicarSocialTool`) -- sin `configurar_perfil_social` (accion='ver') el modelo
-        # no tiene cómo consultar qué red está conectada antes de publicar a ciegas. Mismo
-        # defecto que el de telefonía de abajo: ofrecer "actuar" sin ofrecer "consultar
-        # primero". Antes solo llegaba por casualidad cuando el mensaje también traía
-        # "linkedin"/"post"/"social" (que sí activan la familia de estudio social); un
-        # "publícalo ya" a secas se quedaba sin ella.
-        frozenset({"configurar_perfil_social", "generar_contenido", "publicar_social"}),
+        # de `PublicarSocialTool`) -- sin `estado_conectores_sociales` el modelo no sabe
+        # qué OAuth está activo antes de publicar a ciegas ni puede ser honesto al dueño.
+        # `configurar_perfil_social` (accion='ver') sigue siendo el banco editorial; la
+        # consulta OAuth real es `estado_conectores_sociales`.
+        frozenset(
+            {
+                "configurar_perfil_social",
+                "estado_conectores_sociales",
+                "generar_contenido",
+                "publicar_social",
+            }
+        ),
     ),
     (
         frozenset({"anuncio", "anuncios", "publicidad", "campana", "ads"}),
@@ -626,7 +685,7 @@ _FAMILIES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
 # verificar algo razonable antes de actuar, recibe "herramienta desconocida" y el turno se
 # confunde o se agota en vez de responder. Es exactamente lo que le pasó a la telefonía
 # (`llamar_contacto` sin `listar_agentes_llamadas`) y lo que le pasaba a la publicación
-# social (`publicar_social` sin `configurar_perfil_social`) -- ver comentarios en
+# social (`publicar_social` sin consulta OAuth) -- ver comentarios en
 # `_FAMILIES` arriba. `test_capability_routing.py` recorre este mapa contra `_FAMILIES` y
 # falla si alguien añade una familia nueva (o edita una existente) rompiendo el par: es la
 # invariante, no un caso suelto. Al añadir una tool que ACTÚA sobre un recurso ya
@@ -636,7 +695,7 @@ _ACTOR_TO_CONSULT_TOOL_NAMES: dict[str, frozenset[str]] = {
     "enviar_mensaje": frozenset({"leer_mensajes"}),
     "llamar_contacto": frozenset({"listar_agentes_llamadas"}),
     "crear_evento": frozenset({"agenda_eventos"}),
-    "publicar_social": frozenset({"configurar_perfil_social"}),
+    "publicar_social": frozenset({"estado_conectores_sociales", "configurar_perfil_social"}),
     "gestionar_contacto": frozenset({"buscar_contactos"}),
     "vehiculo_controlar": frozenset({"vehiculo_estado"}),
     "casa_controlar": frozenset({"casa_dispositivos", "casa_estado"}),
@@ -665,7 +724,9 @@ _CONNECTOR_TOOL_NAMES = frozenset(
 
 _SELF_REPAIR_PHRASES = (
     "accede al codigo",
+    "arregla el login",
     "arregla tu codigo",
+    "corrige el login",
     "corrige tu codigo",
     "edita el codigo",
     "edita tus archivos",
@@ -673,7 +734,9 @@ _SELF_REPAIR_PHRASES = (
     "implementa esa capacidad",
     "modifica el repositorio",
     "repara el codigo",
+    "repara el login",
     "repara tu codigo",
+    "fix the login",
     "fix your code",
     "modify your source",
     "repair yourself",
@@ -760,6 +823,7 @@ _ROUTED_TOOL_NAMES = frozenset().union(
     {"crear_artefactos"},
     {"configurar_credencial"},
     {"configurar_perfil_social"},
+    {"estado_conectores_sociales"},
 )
 
 
@@ -812,17 +876,26 @@ def select_tool_specs(
     creation_intent = bool(
         tokens.intersection(_CREATION_ACTION_WORDS) and tokens.intersection(_CREATION_FORMAT_WORDS)
     )
-    publish_intent = bool(tokens.intersection({"publica", "publicalo", "publicar"}))
+    publish_intent = bool(
+        tokens.intersection({"publica", "publicalo", "publicar", "sube", "subelo", "subir"})
+    )
     if creation_intent:
         # Un único contrato produce todos los formatos y el manifest. Evita
         # mezclar generadores legacy sin evidencia en una petición compuesta.
         selected_names.difference_update(_LEGACY_CREATOR_TOOL_NAMES)
         selected_names.difference_update(_CREATION_READER_TOOL_NAMES)
-        if tokens.intersection(_DESIGN_STUDIO_KEYWORDS):
+        if tokens.intersection(_DESIGN_STUDIO_KEYWORDS) - {"web", "website", "sitio"}:
             # Una landing/maqueta/prototipo visual necesita preview seguro e
             # historial; el creador universal sigue siendo la ruta para
             # sitios/apps multiparte que no piden un artefacto de diseño.
             selected_names.discard("crear_artefactos")
+            selected_names.update(_DESIGN_STUDIO_TOOL_NAMES)
+        elif tokens.intersection({"web", "website", "sitio"}):
+            # Un SITIO WEB es un proyecto multiparte real: el creador
+            # universal (que escribe de verdad en el box) y el estudio
+            # creativo conviven — el modelo elige la vía y jamás se queda sin
+            # herramienta para construir (anti-alucinación de "zips").
+            selected_names.add("crear_artefactos")
             selected_names.update(_DESIGN_STUDIO_TOOL_NAMES)
         else:
             selected_names.add("crear_artefactos")
@@ -1011,7 +1084,21 @@ def _is_self_repair_intent(normalized: str, tokens: set[str]) -> bool:
     if any(phrase in normalized for phrase in _SELF_REPAIR_PHRASES):
         return True
     repair_words = {"arregla", "corrige", "edita", "modifica", "repara", "repair", "fix"}
-    source_words = {"codigo", "code", "edecan", "repositorio", "repo", "source", "archivos"}
+    source_words = {
+        "archivos",
+        "auth",
+        "autenticacion",
+        "bug",
+        "codigo",
+        "code",
+        "edecan",
+        "login",
+        "repositorio",
+        "repo",
+        "sesion",
+        "session",
+        "source",
+    }
     return bool(tokens.intersection(repair_words) and tokens.intersection(source_words))
 
 
@@ -1058,10 +1145,33 @@ Una tool sensible se invoca una sola vez y el gate oficial debe ser la única pr
 confirmación; no preguntes "¿quieres que lo haga?" justo antes de disparar ese mismo gate. Pide
 datos adicionales solo cuando sean indispensables para ejecutar, no para decidir qué módulo usar.
 
+## Elección de herramienta por intención (sin menú al dueño)
+Infieres la intención en lenguaje cotidiano y eliges la herramienta correcta sin pedirle al
+dueño que nombre tools, módulos ni pantallas. Playbook en cada encargo: leer intención →
+elegir tool → `avisar_avance` al empezar y en cada hallazgo importante.
+
+Ejemplos de frase → herramienta (orientación interna, no copy para el usuario):
+- «arregla el login», «corrige ese bug en el repo» → `acceder_codigo_local` y/o
+  `delegar_al_ide`; autorreparación del núcleo solo si lo pidió explícitamente.
+- «sube/publica un post de esto», «postéalo en LinkedIn» → primero
+  `estado_conectores_sociales` si no sabes qué red está conectada; redactar con
+  `generar_contenido` / `crear_post_linkedin` / `crear_contenido_social`; publicar con
+  `publicar_social` solo tras aprobación explícita y cuenta OAuth real.
+- «mira qué hay en el repo», «qué cambió en git» → `acceder_codigo_local`
+  (`listar_directorio`, `git_status`, `git_diff`, `leer_archivo`).
+- «busca en la web», «precio de X» → `buscar_web` / herramientas de lectura web.
+- Encargo grande de ingeniería en la Mac con app abierta → `delegar_al_ide` y verifica
+  contra disco.
+
+Ambigüedad real (dos lecturas igual de plausibles, p. ej. publicar vs solo redactar):
+usa `preguntar_al_usuario` con 2 a 4 opciones cortas en widget tapable — NUNCA vuelques el
+catálogo completo ni pidas «elige herramienta» / «dime qué tool usar».
+
 Herramientas operativas seleccionadas para este turno: {selected}
 Catálogo disponible para resumir capacidades cuando la persona pregunte qué puedes hacer:
 {catalog}
 Solo puedes ejecutar las herramientas operativas incluidas en el campo `tools` de esta petición.
+Nunca uses el catálogo como menú de elección salvo que pregunten explícitamente qué puedes hacer.
 
 IMPORTANTE: Cuando decidas usar una herramienta, INVÓCALA por el mecanismo estructurado de
 `tool_calls`. NUNCA escribas su nombre como texto en la respuesta (ni `[nombre](arg="...")`, ni
@@ -1112,9 +1222,24 @@ Invoke a sensitive tool once and let the official gate be the only confirmation 
 ask "should I do it?" immediately before triggering the same gate. Ask for additional data only
 when execution requires it, never to make the person choose a module.
 
+## Intent-based tool choice (no menu for the owner)
+Infer intent from everyday language and pick the right tool without asking them to name tools,
+modules, or screens. Playbook every turn: read intent → choose tool → `avisar_avance` at start
+and at important findings.
+
+Phrase → tool hints (internal only, not user-facing copy):
+- "fix the login", "repair that repo bug" → `acceder_codigo_local` and/or `delegar_al_ide`.
+- "post/upload this to LinkedIn" → draft with content tools;
+  `publicar_social` only after explicit OK.
+- "what's in the repo", "what changed in git" → `acceder_codigo_local`
+  (list, git_status, diff, read).
+Real ambiguity (two equally plausible readings): use `preguntar_al_usuario` with 2–4 short tappable
+options — NEVER dump the full catalog or ask "which tool should I use".
+
 Operational tools selected for this turn: {selected}
 Available catalog for an honest capability summary when asked: {catalog}
 You may execute only the operational tools present in this request's `tools` field.
+Never use the catalog as a pick menu unless they explicitly ask what you can do.
 
 IMPORTANT: When you decide to use a tool, INVOKE it through the structured `tool_calls`
 mechanism. NEVER write its name as text in the response (not `[name](arg="...")`, not

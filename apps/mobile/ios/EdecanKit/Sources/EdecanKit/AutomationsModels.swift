@@ -32,6 +32,7 @@ public enum AutomationTrigger: Decodable, Sendable, Equatable {
     /// ``resumen``.
     case schedule(rrule: String, descripcion: String?)
     case webhook(hasSecret: Bool, hookUrl: String)
+    case unknown
 
     enum CodingKeys: String, CodingKey {
         case kind, rrule, descripcion
@@ -54,10 +55,8 @@ public enum AutomationTrigger: Decodable, Sendable, Equatable {
                 hookUrl: try container.decodeIfPresent(String.self, forKey: .hookUrl) ?? ""
             )
         default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind, in: container,
-                debugDescription: "Trigger de automatización desconocido: \(kind)"
-            )
+            // Tolerante: un kind nuevo jamás tumba el arreglo completo.
+            self = .unknown
         }
     }
 
@@ -78,6 +77,8 @@ public enum AutomationTrigger: Decodable, Sendable, Equatable {
             return texto.isEmpty ? Self.agendaSinTraducir : texto
         case .webhook:
             return "Se dispara por webhook entrante"
+        case .unknown:
+            return "Automatización"
         }
     }
 }
@@ -89,6 +90,19 @@ public struct AutomationAccion: Decodable, Sendable, Equatable {
     public let kind: String
     public let instruccion: String
     public let agente: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case instruccion
+        case agente
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        instruccion = try container.decodeIfPresent(String.self, forKey: .instruccion) ?? ""
+        agente = try container.decodeIfPresent(String.self, forKey: .agente)
+    }
 }
 
 /// Fila pública de `automations` (`automations.py::_public_automation` — sin

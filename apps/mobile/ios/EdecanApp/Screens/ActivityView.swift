@@ -10,7 +10,6 @@ struct ActivityView: View {
     @State private var eventos: [ActivityEvent] = []
     @State private var cargando = true
     @State private var error: String?
-    @State private var proximamente = false
 
     var body: some View {
         List {
@@ -20,10 +19,7 @@ struct ActivityView: View {
                     .foregroundStyle(.red)
                     .listRowSeparator(.hidden)
             }
-            if proximamente {
-                filaProximamente
-            }
-            if eventos.isEmpty && !cargando && !proximamente {
+            if eventos.isEmpty && !cargando {
                 filaEstadoVacio
             }
             ForEach(grupos) { grupo in
@@ -45,19 +41,6 @@ struct ActivityView: View {
         }
         .task { await cargar() }
         .refreshable { await cargar() }
-    }
-
-    private var filaProximamente: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Próximamente", systemImage: "hourglass")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(EdecanTheme.morado)
-            Text("El registro de actividad está llegando al servidor. Vuelve en un momento.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 4)
-        .listRowSeparator(.hidden)
     }
 
     /// Estado vacío amable: una línea corta + un atajo, no una ilustración.
@@ -120,16 +103,13 @@ struct ActivityView: View {
         }
         cargando = eventos.isEmpty
         error = nil
-        proximamente = false
         defer { cargando = false }
         do {
             eventos = try await client.listActivity()
         } catch let apiError as APIClient.APIError {
-            if apiError.esProximamente {
-                proximamente = true
-            } else {
-                self.error = apiError.localizedDescription
-            }
+            // Sin placeholder "Próximamente": lo que no aterrizó vive en
+            // Automatizaciones; acá solo queda el estado vacío amable.
+            self.error = apiError.esProximamente ? nil : apiError.localizedDescription
         } catch {
             self.error = error.localizedDescription
         }

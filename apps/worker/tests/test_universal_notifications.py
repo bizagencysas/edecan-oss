@@ -201,3 +201,45 @@ async def test_payload_de_push_sin_conversacion_no_inventa_una(
     assert len(payloads_enviados) == 1
     assert "chat_id" not in payloads_enviados[0]
     assert "deeplink" not in payloads_enviados[0]
+
+
+async def test_agent_bot_message_usa_category_mutable_y_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deps = _deps_with_session(object())
+    chat_id = uuid.uuid4()
+    event = ImportantNotificationEvent(
+        tenant_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        kind="agent_bot_message",
+        event_id=uuid.uuid4(),
+        chat_id=chat_id,
+        worker_id=uuid.uuid4(),
+        sender_display_name="Astra",
+        avatar_shape="circle",
+        avatar_fill="#6366f1",
+    )
+
+    async def record(_session, _event):
+        return DurableNotificationEvent(uuid.uuid4(), True, True)
+
+    kwargs_enviados: list[dict[str, object]] = []
+
+    async def send(_deps, **kwargs):
+        kwargs_enviados.append(kwargs)
+        return ResultadoEnvioPush(1, 0)
+
+    monkeypatch.setattr(notifications, "record_notification_event", record)
+    monkeypatch.setattr(notifications.push, "enviar_push_a_usuario", send)
+
+    await notifications.notify_important_event(deps, event)
+
+    assert len(kwargs_enviados) == 1
+    kwargs = kwargs_enviados[0]
+    assert kwargs["category"] == "EDECAN_BOT_MESSAGE"
+    assert kwargs["mutable_content"] is True
+    assert kwargs["thread_id"] == str(chat_id)
+    payload = kwargs["data"]
+    assert payload["event"] == "agent_bot_message"
+    assert payload["sender_display_name"] == "Astra"
+    assert payload["avatar_shape"] == "circle"

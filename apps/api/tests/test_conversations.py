@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from conftest import auth_headers
+from conftest import TEST_JWT_SECRET, auth_headers
 from edecan_schemas import ArtifactRef, ToolEndEvent
 
 
@@ -491,6 +491,127 @@ async def test_post_message_streams_sse_and_persists_assistant_turn(
     llm_events = [e for e in fake_repo.usage_events if e["kind"] == "llm_tokens"]
     assert len(llm_events) == 1
     assert llm_events[0]["quantity"] == 19  # 12 + 7
+
+
+async def test_post_message_incluye_resumen_llm_del_hilo_anterior(
+    app, client, fake_repo, monkeypatch
+) -> None:
+    """Con router real, el resumen del modelo barato entra al contexto del turno
+    (una sola llamada antes del stream; nunca por delta)."""
+    from types import SimpleNamespace
+
+    import edecan_api.routers.conversations as conversations_module
+    from edecan_api import deps as edecan_deps
+    from edecan_api.config import Settings, get_settings
+
+    capturados: list[list] = []
+
+    class _AgenteCaptura:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            capturados.append(kwargs.get("history"))
+            yield {"type": "text_delta", "text": "listo"}
+            yield {"type": "done", "usage": {}}
+
+    class _RouterResumen:
+        def __init__(self) -> None:
+            self.llamadas: list[tuple] = []
+
+        async def complete(self, alias, flags, req):
+            self.llamadas.append((alias, flags, req))
+            return SimpleNamespace(text="RESUMEN CHAT BARATO: quedó pendiente el post.")
+
+    monkeypatch.setattr(conversations_module, "Agent", _AgenteCaptura)
+    router = _RouterResumen()
+    app.dependency_overrides[edecan_deps.get_llm_router] = lambda: router
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,
+        JWT_SECRET=TEST_JWT_SECRET,
+        CHAT_CONTEXT_RECENT_MESSAGES=2,
+        CHAT_CONTEXT_MAX_CHARS=2_000,
+        CHAT_CONTEXT_CROSS_CHAT_ENABLED=False,
+    )
+
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+    conversation_uuid = uuid.UUID(conversation_id)
+    for i in range(6):
+        await fake_repo.add_message(
+            tenant_id=tenant_id,
+            conversation_id=conversation_uuid,
+            role="user" if i % 2 == 0 else "assistant",
+            content={"text": f"Turno {i}: " + ("plan de contenidos " * 40)},
+        )
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "hola de nuevo"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    history = capturados[-1]
+    assert history[0].role == "system"
+    assert "RESUMEN CHAT BARATO: quedó pendiente el post." in history[0].content
+    assert any(alias == "rapido" for alias, _flags, _req in router.llamadas)
+
+
+async def test_post_message_sin_router_usa_recorte_determinista(
+    app, client, fake_repo, monkeypatch
+) -> None:
+    """Sin router (fail-open), el turno conserva el recorte determinista de
+    siempre y nunca lanza."""
+    import edecan_api.routers.conversations as conversations_module
+    from edecan_api.config import Settings, get_settings
+
+    capturados: list[list] = []
+
+    class _AgenteCaptura:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def run_turn(self, **kwargs):
+            capturados.append(kwargs.get("history"))
+            yield {"type": "text_delta", "text": "listo"}
+            yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(conversations_module, "Agent", _AgenteCaptura)
+    # `get_llm_router` queda como lo dejó `conftest`: lambda -> None.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,
+        JWT_SECRET=TEST_JWT_SECRET,
+        CHAT_CONTEXT_RECENT_MESSAGES=2,
+        CHAT_CONTEXT_MAX_CHARS=2_000,
+        CHAT_CONTEXT_CROSS_CHAT_ENABLED=False,
+    )
+
+    tenant_id = uuid.uuid4()
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, headers)
+    conversation_uuid = uuid.UUID(conversation_id)
+    for i in range(6):
+        await fake_repo.add_message(
+            tenant_id=tenant_id,
+            conversation_id=conversation_uuid,
+            role="user" if i % 2 == 0 else "assistant",
+            content={"text": f"Turno {i}: " + ("plan de contenidos " * 40)},
+        )
+
+    response = await client.post(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"text": "hola de nuevo"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    history = capturados[-1]
+    assert history[0].role == "system"
+    assert "[Resumen del hilo anterior]" in history[0].content
+    assert "Turno 0:" in history[0].content
+    assert "RESUMEN CHAT BARATO" not in history[0].content
 
 
 async def test_bare_fix_runs_bounded_preflight_and_always_finishes(
@@ -1105,6 +1226,53 @@ async def test_post_message_idempotency_rejects_concurrent_in_flight_retry(
     ]
 
 
+def test_idempotency_interrupted_409_se_distingue_del_in_flight() -> None:
+    """F5: el 409 `interrupted` lleva `x-run-state` + `run_state`; el 409
+    in-flight NO. El cliente (iOS) puede así distinguir «atascada» de
+    «interrumpida por reinicio» sin cambiar el status code."""
+    from fastapi import HTTPException
+
+    import edecan_api.routers.conversations as conversations_module
+
+    key = uuid.uuid4()
+
+    # in-flight → 409 SIN x-run-state.
+    with pytest.raises(HTTPException) as exc_info:
+        conversations_module._response_for_idempotency_record(
+            record={"status": "in_flight", "request_hash": "h1"},
+            request_hash="h1",
+            idempotency_key=key,
+        )
+    assert exc_info.value.status_code == 409
+    assert "x-run-state" not in (exc_info.value.headers or {})
+
+    # interrupted → 409 CON header + run_state en el body.
+    resp = conversations_module._response_for_idempotency_record(
+        record={"status": "interrupted", "request_hash": "h1"},
+        request_hash="h1",
+        idempotency_key=key,
+    )
+    assert resp.status_code == 409
+    assert resp.headers.get("x-run-state") == "interrupted"
+    body = json.loads(resp.body)
+    assert body["run_state"] == "interrupted"
+    assert body["detail"]
+
+
+def test_resume_response_interrupted_lleva_header_y_run_state() -> None:
+    """F5: el otro resume path (voice/resume) también distingue `interrupted`."""
+    import edecan_api.routers.conversations as conversations_module
+
+    resp = conversations_module._resume_response_for_idempotency_record(
+        record={"status": "interrupted"},
+        idempotency_key=uuid.uuid4(),
+    )
+    assert resp.status_code == 409
+    assert resp.headers.get("x-run-state") == "interrupted"
+    body = json.loads(resp.body)
+    assert body["run_state"] == "interrupted"
+
+
 async def test_post_message_idempotency_is_scoped_per_conversation(client, monkeypatch) -> None:
     import edecan_api.routers.conversations as conversations_module
 
@@ -1378,7 +1546,7 @@ async def test_list_conversations_improves_existing_automatic_title(client, fake
 
 
 # --------------------------------------------------------------------------
-# GET /main -- conversación "principal" (frente 5, paridad REFERENCIA)
+# GET /main -- conversación "principal" (frente 5, paridad JARVIS)
 # --------------------------------------------------------------------------
 
 
@@ -1424,7 +1592,9 @@ async def test_main_conversation_appears_pinned_with_flag_in_list_conversations(
     assert by_id[regular_id]["is_main"] is False
 
 
-async def test_main_conversation_survives_concurrent_first_resolution(client, fake_repo) -> None:
+async def test_main_conversation_survives_concurrent_first_resolution(
+    client, fake_repo
+) -> None:
     """Dos requests concurrentes (dos eventos automáticos a la vez) nunca
     deben terminar con dos conversaciones `is_main = true` distintas -- el
     mismo contrato que garantiza el índice único parcial en Postgres
@@ -1529,7 +1699,9 @@ async def test_clear_context_no_borra_mensajes_pero_deja_de_listarlos_por_defect
     assert despues.json()["messages"] == []
     # ...pero nada se borró de verdad: sigue completo si se consulta sin el
     # límite de `/clear` (la garantía "no destructivo" del comando).
-    intacto = await fake_repo.list_messages(tenant_id=tenant_id, conversation_id=conversation_uuid)
+    intacto = await fake_repo.list_messages(
+        tenant_id=tenant_id, conversation_id=conversation_uuid
+    )
     assert len(intacto) == 2
 
 
@@ -1799,6 +1971,44 @@ async def test_delete_unknown_conversation_returns_404(client) -> None:
     assert response.status_code == 404
 
 
+async def test_delete_message_real_y_404_de_otro_usuario(client) -> None:
+    """El borrado de UN mensaje es real (desaparece del historial) y otro
+    usuario del mismo tenant no puede borrarlo (404)."""
+
+    tenant_id = uuid.uuid4()
+    owner = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    otro = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    conversation_id = await _create_conversation(client, owner)
+
+    # El POST con ScriptedAgent (conftest) persiste un mensaje de usuario.
+    await client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"text": "hola"}, headers=owner
+    )
+    detalle = await client.get(f"/v1/conversations/{conversation_id}", headers=owner)
+    assert detalle.status_code == 200
+    ids = [row["id"] for row in detalle.json()["messages"]]
+    assert len(ids) >= 1
+    objetivo = ids[0]
+
+    ajeno = await client.delete(
+        f"/v1/conversations/{conversation_id}/messages/{objetivo}", headers=otro
+    )
+    assert ajeno.status_code == 404
+
+    borrado = await client.delete(
+        f"/v1/conversations/{conversation_id}/messages/{objetivo}", headers=owner
+    )
+    assert borrado.status_code == 204
+
+    tras = await client.get(f"/v1/conversations/{conversation_id}", headers=owner)
+    assert objetivo not in [row["id"] for row in tras.json()["messages"]]
+
+    repetido = await client.delete(
+        f"/v1/conversations/{conversation_id}/messages/{objetivo}", headers=owner
+    )
+    assert repetido.status_code == 404
+
+
 # --------------------------------------------------------------------------
 # POST /{id}/confirm — gate de confirmación para tools `dangerous`.
 # --------------------------------------------------------------------------
@@ -1991,13 +2201,7 @@ async def test_confirm_continua_lote_compuesto_sin_perder_ni_duplicar_acciones(
             }
 
         async def resume_turn(
-            self,
-            *,
-            ctx,
-            pending,
-            approved_tool_call_id,
-            flags,
-            extra_tools=None,
+            self, *, ctx, pending, approved_tool_call_id, flags, extra_tools=None,
             seleccion=None,
         ):
             assert approved_tool_call_id == "mail_1"
@@ -2124,13 +2328,7 @@ async def test_continuation_can_request_a_future_dangerous_confirmation(
             self.registry = registry
 
         async def resume_turn(
-            self,
-            *,
-            ctx,
-            pending,
-            approved_tool_call_id,
-            flags,
-            extra_tools=None,
+            self, *, ctx, pending, approved_tool_call_id, flags, extra_tools=None,
             seleccion=None,
         ):
             call = next(call for call in pending.tool_calls if call.id == approved_tool_call_id)
@@ -2702,7 +2900,9 @@ async def test_put_model_es_user_y_tenant_scoped(client) -> None:
     assert otro_tenant.status_code == 404
 
 
-async def test_el_turno_corre_con_el_modelo_persistido_por_el_selector(client, monkeypatch) -> None:
+async def test_el_turno_corre_con_el_modelo_persistido_por_el_selector(
+    client, monkeypatch
+) -> None:
     import edecan_api.routers.conversations as conversations_module
 
     _SelectionCapturingAgent.capturadas = []
@@ -2905,7 +3105,9 @@ async def test_una_imagen_con_modelo_ciego_degrada_el_turno_sin_tocar_la_selecci
     assert _SelectionCapturingAgent.capturadas[-1].modelo == ciego
 
 
-async def test_una_imagen_con_modelo_que_ve_no_degrada_nada(client, fake_repo, monkeypatch) -> None:
+async def test_una_imagen_con_modelo_que_ve_no_degrada_nada(
+    client, fake_repo, monkeypatch
+) -> None:
     import edecan_api.routers.conversations as conversations_module
 
     tenant_id = uuid.uuid4()
@@ -2949,7 +3151,9 @@ async def test_una_imagen_con_modelo_que_ve_no_degrada_nada(client, fake_repo, m
     assert _SelectionCapturingAgent.capturadas[-1].esfuerzo == "medio"
 
 
-async def test_la_confirmacion_relee_la_seleccion_de_la_conversacion(client, monkeypatch) -> None:
+async def test_la_confirmacion_relee_la_seleccion_de_la_conversacion(
+    client, monkeypatch
+) -> None:
     """El `/confirm` corre en otro request HTTP: sin releer las columnas el lote
     confirmado correría con el modelo automático en silencio."""
 
@@ -2987,7 +3191,9 @@ async def test_la_confirmacion_relee_la_seleccion_de_la_conversacion(client, mon
             yield {"type": "done", "usage": {}}
 
     monkeypatch.setattr(conversations_module, "Agent", ScriptedAgent)
-    monkeypatch.setattr(conversations_module, "_preflight_pending_turn", lambda **kwargs: None)
+    monkeypatch.setattr(
+        conversations_module, "_preflight_pending_turn", lambda **kwargs: None
+    )
     headers = auth_headers(user_id=uuid.uuid4(), tenant_id=uuid.uuid4())
     conversation_id = await _create_conversation(client, headers)
     elegido = _un_principal_con_esfuerzo()

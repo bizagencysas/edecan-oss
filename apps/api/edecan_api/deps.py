@@ -30,7 +30,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from contextvars import ContextVar
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -38,6 +39,7 @@ from typing import Any
 import redis.asyncio as redis_asyncio
 from edecan_db.session import get_session
 from edecan_db.vault import KmsKeyProvider, LocalKeyProvider, TokenVault
+from edecan_llm.base import Usage
 from edecan_llm.config import LLMProviderConfig
 from edecan_llm.router import LLMRouter
 from edecan_schemas.plans import PLANES
@@ -46,6 +48,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edecan_api.config import Settings, get_settings
+from edecan_api.llm_attribution import build_llm_usage_meta
 from edecan_api.repo import Repo, SqlRepo
 from edecan_api.security import ACCESS_TOKEN_TTL_SECONDS, DecodedToken, TokenError, decode_token
 
@@ -90,6 +93,9 @@ class CurrentUser:
         return self.tenant.tenant_id
 
 
+_usage_tenant_ctx: ContextVar[uuid.UUID | None] = ContextVar("edecan_usage_tenant", default=None)
+
+
 def flags_for_plan(plan_key: str) -> dict[str, Any]:
     """`edecan_schemas.plans.PLANES[plan_key].flags`, o `{}` si el plan no existe
     (p. ej. quedó huérfano tras un cambio de catálogo de planes) — nunca lanza."""
@@ -124,46 +130,6 @@ def _extract_bearer_token(authorization: str | None) -> str:
     return token.strip()
 
 
-async def get_current_user(
-    authorization: str | None = Header(default=None),
-    settings: Settings = Depends(get_settings),
-    redis_client: redis_asyncio.Redis = Depends(get_auth_redis),
-) -> CurrentUser:
-    """Decodifica el access token y arma `CurrentUser` con flags recalculados."""
-    token = _extract_bearer_token(authorization)
-    try:
-        decoded: DecodedToken = decode_token(
-            token, secret=settings.JWT_SECRET, expected_typ="access"
-        )
-    except TokenError as exc:
-        raise _unauthorized(str(exc)) from exc
-
-    try:
-        deleted = await redis_client.get(f"auth:deleted-user:{decoded.sub}")
-    except RedisError as exc:
-        logger.error("auth_denylist_unavailable", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No se pudo validar el estado de la sesión. Inténtalo de nuevo.",
-        ) from exc
-    if deleted:
-        raise _unauthorized("La cuenta ya no está disponible.")
-
-    tenant = TenantCtx(
-        tenant_id=decoded.ten, plan_key=decoded.plan, flags=flags_for_plan(decoded.plan)
-    )
-    return CurrentUser(user_id=decoded.sub, tenant=tenant)
-
-
-async def get_tenant_ctx(current_user: CurrentUser = Depends(get_current_user)) -> TenantCtx:
-    return current_user.tenant
-
-
-# ---------------------------------------------------------------------------
-# Sesión / Repo (aislamiento multi-tenant vía RLS — ARCHITECTURE.md §2, §10.3)
-# ---------------------------------------------------------------------------
-
-
 async def get_platform_session() -> AsyncIterator[AsyncSession]:
     """Sesión "plataforma": rol dueño, sin `tenant_id` (bypassa RLS).
 
@@ -186,6 +152,110 @@ async def get_platform_repo(
     para la siguiente petición.
     """
     return SqlRepo(session)
+
+
+# Re-validación de membresía/plan por request (C10): el access token puede
+# quedar desactualizado hasta 30 días; la DB manda.
+_MEMBERSHIP_REVALIDATION_TTL_SECONDS = 60.0
+
+# (sub, ten) -> (expira_monotonic, plan_key_efectivo). Proceso-local: en un
+# deploy multi-réplica una revocación tarda como máximo el TTL en propagarse.
+_auth_revalidation_cache: dict[tuple[uuid.UUID, uuid.UUID], tuple[float, str]] = {}
+
+
+def _clear_auth_revalidation_cache() -> None:
+    """Test hook: vacía la caché de re-validación de membresía."""
+    _auth_revalidation_cache.clear()
+
+
+async def _revalidate_tenant_access(
+    repo: Repo, decoded: DecodedToken
+) -> tuple[str, bool]:
+    """Re-valida membresía + estado de tenant + plan contra la DB.
+
+    Devuelve `(plan_key_efectivo, concedido)`:
+    - `concedido=False` si el tenant existe pero no está `active`, o si el
+      usuario existe pero ya no tiene membresía para ese tenant (removido).
+    - El `plan_key` efectivo sale de la DB: el del token puede quedar
+      desactualizado hasta 30 días, así que un upgrade/downgrade de plan se
+      refleja en cuanto la caché vence.
+    - Un usuario/tenant desconocido (p. ej. un token con un id que no existe)
+      NO se rechaza aquí: los endpoints que lo necesiten hacen su propia
+      comprobación (p. ej. `/me` → 404). Eso preserva el contrato histórico y
+      evita confundir un lookup ausente con una revocación.
+    """
+    key = (decoded.sub, decoded.ten)
+    ahora = time.monotonic()
+    cacheado = _auth_revalidation_cache.get(key)
+    if cacheado is not None and cacheado[0] > ahora:
+        return cacheado[1], True
+
+    tenant = await repo.get_tenant(decoded.ten)
+    plan_key = decoded.plan
+    if tenant is not None:
+        if str(tenant.get("status") or "") != "active":
+            return plan_key, False
+        plan_key = str(tenant.get("plan_key") or decoded.plan)
+
+    user = await repo.get_user(decoded.sub)
+    if user is not None:
+        membership = await repo.get_membership(user_id=decoded.sub, tenant_id=decoded.ten)
+        if membership is None:
+            return plan_key, False
+
+    _auth_revalidation_cache[key] = (ahora + _MEMBERSHIP_REVALIDATION_TTL_SECONDS, plan_key)
+    return plan_key, True
+
+
+async def get_current_user(
+    authorization: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_auth_redis),
+    repo: Repo = Depends(get_platform_repo),
+) -> CurrentUser:
+    """Decodifica el access token y arma `CurrentUser` con flags recalculados.
+
+    Además del denylist de cuentas eliminadas, re-valida membresía + estado de
+    tenant + plan contra la DB (C10): un miembro removido o un tenant
+    desactivado deja de pasar aunque su access token no haya expirado.
+    """
+    token = _extract_bearer_token(authorization)
+    try:
+        decoded: DecodedToken = decode_token(
+            token, secret=settings.JWT_SECRET, expected_typ="access"
+        )
+    except TokenError as exc:
+        raise _unauthorized(str(exc)) from exc
+
+    try:
+        deleted = await redis_client.get(f"auth:deleted-user:{decoded.sub}")
+    except RedisError as exc:
+        logger.error("auth_denylist_unavailable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar el estado de la sesión. Inténtalo de nuevo.",
+        ) from exc
+    if deleted:
+        raise _unauthorized("La cuenta ya no está disponible.")
+
+    plan_key, concedido = await _revalidate_tenant_access(repo, decoded)
+    if not concedido:
+        raise _unauthorized("La sesión ya no tiene acceso a este tenant.")
+
+    tenant = TenantCtx(
+        tenant_id=decoded.ten, plan_key=plan_key, flags=flags_for_plan(plan_key)
+    )
+    _usage_tenant_ctx.set(decoded.ten)
+    return CurrentUser(user_id=decoded.sub, tenant=tenant)
+
+
+async def get_tenant_ctx(current_user: CurrentUser = Depends(get_current_user)) -> TenantCtx:
+    return current_user.tenant
+
+
+# ---------------------------------------------------------------------------
+# Sesión / Repo (aislamiento multi-tenant vía RLS — ARCHITECTURE.md §2, §10.3)
+# ---------------------------------------------------------------------------
 
 
 async def get_tenant_session(
@@ -309,12 +379,13 @@ async def ide_rate_limit(
 
 
 # ---------------------------------------------------------------------------
-# LLM router — sin callback de uso: la persistencia de `usage_events` de
-# tokens ocurre al recibir el evento `done` del turno (ver `routers/conversations.py`)
-# para no contar dos veces.
+# LLM router — `get_llm_router` entrega el router global de `app.state`
+# (construido en `main.py` con `on_usage=None`) y le cablea el persister de
+# `usage_events` una sola vez vía `_ensure_usage_callback` (idempotente).
 #
-# Workers AI sigue siendo el default del host. Si el tenant conectó un
-# proveedor propio, su config cifrada gana para ese request.
+# Workers AI es infraestructura del host y el Task Router decide el modelo:
+# el chat ya no resuelve proveedor por tenant. `load_tenant_llm_config` queda
+# como helper para leer la credencial LLM cifrada de un tenant (bring-your-own).
 # ---------------------------------------------------------------------------
 
 
@@ -343,21 +414,21 @@ async def load_tenant_llm_config(
 
 
 async def get_llm_router(
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session, scope="request"),
-    settings: Settings = Depends(get_settings),
 ) -> LLMRouter:
-    """Router del tenant; exige una selección explícita en Configuración."""
-    provider_config = await load_tenant_llm_config(session, settings, current_user.tenant_id)
-    if provider_config is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "No hay un proveedor de inteligencia conectado. "
-                "Elige uno en Configuración antes de conversar."
-            ),
-        )
-    return LLMRouter(settings, on_usage=None, provider_config=provider_config)
+    """Router automático global para chat, voz y herramientas ligeras.
+
+    ``current_user`` y ``session`` permanecen en la firma para conservar el
+    contrato de dependencias de FastAPI, pero la elección de modelo ya no
+    depende de una preferencia del usuario ni de credenciales por tenant.
+    La instancia vive durante todo el proceso para reutilizar conexiones HTTP.
+    """
+    del current_user, session
+    router = request.app.state.llm_router
+    _ensure_usage_callback(router)
+    return router
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +553,15 @@ async def get_mcp_tools_for_tenant(request: Request, current_user: CurrentUser) 
     return tools
 
 
+def invalidate_mcp_tools_cache(request: Request, tenant_id: uuid.UUID) -> None:
+    """Fuerza recarga de tools MCP en el siguiente turno tras conectar/desconectar."""
+    cache: dict[uuid.UUID, tuple[float, list[Any]]] | None = getattr(
+        request.app.state, "mcp_tools_cache", None
+    )
+    if cache is not None:
+        cache.pop(tenant_id, None)
+
+
 async def _build_mcp_tools_for_tenant(tenant_id: uuid.UUID) -> list[Any]:
     # Import perezoso CON GUARDIA — ver el comentario de arriba.
     try:
@@ -552,3 +632,54 @@ async def require_superadmin(
             status_code=status.HTTP_403_FORBIDDEN, detail="Requiere privilegios de superadmin."
         )
     return current_user
+
+
+
+def make_llm_usage_persister(
+    *,
+    tenant_getter: Callable[[], uuid.UUID | None],
+) -> Callable[[str, Usage], Awaitable[None]]:
+    """Arma el callback `on_usage(modelo, usage)` -> `usage_events` (fail-open).
+
+    El tenant sale de `tenant_getter` (un ContextVar del task en curso), NO del
+    callback. Cada invocacion abre su propia sesion de DB y un fallo de
+    persistencia jamas rompe la llamada LLM (solo log)."""
+
+    async def on_usage(model: str, usage: Usage) -> None:
+        tenant_id = tenant_getter()
+        if tenant_id is None:
+            return
+        total = usage.input_tokens + usage.output_tokens
+        if total <= 0:
+            return
+        meta = build_llm_usage_meta(
+            attribution={"model": model},
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+        )
+        meta["input_tokens"] = usage.input_tokens
+        meta["output_tokens"] = usage.output_tokens
+        try:
+            async with get_session(tenant_id) as session:
+                await SqlRepo(session).add_usage_event(
+                    tenant_id=tenant_id,
+                    kind="llm_tokens",
+                    quantity=float(total),
+                    meta=meta,
+                    cost_usd=meta.get("cost_usd"),
+                )
+        except Exception:
+            logger.warning(
+                "on_usage: fallo persistir usage_events (tenant_id=%s, model=%s); "
+                "telemetria best-effort.",
+                tenant_id, model, exc_info=True,
+            )
+
+    return on_usage
+
+
+def _ensure_usage_callback(router: LLMRouter) -> None:
+    """Cablea `on_usage` en el router global UNA sola vez (idempotente)."""
+    if getattr(router, "_on_usage", None) is None:
+        router._on_usage = make_llm_usage_persister(tenant_getter=_usage_tenant_ctx.get)

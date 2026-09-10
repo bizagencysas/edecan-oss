@@ -18,11 +18,7 @@ from pathlib import Path
 
 CONFIG_PATH = (
     Path.home()
-    / "Library"
-    / "Application Support"
-    / "cc.edecan.desktop"
-    / "data"
-    / "platform-config.json"
+    / "Library/Application Support/cc.edecan.desktop/data/platform-config.json"
 )
 
 VALIDOS = ("workers_ai", "azure_openai", "openai_compat")

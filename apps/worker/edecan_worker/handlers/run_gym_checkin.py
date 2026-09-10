@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, date
+from datetime import date
 from typing import Any
 
 from edecan_core.companion_wake_enqueue import enqueue_companion_wake

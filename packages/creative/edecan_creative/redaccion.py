@@ -490,13 +490,16 @@ _SIN_EVENTO_FECHABLE = (
 
 
 _TESIS_PURA = (
-    "SIN FUENTES Y SIN BANCO: no hay ninguna noticia reciente verificable sobre este tema y "
-    "esta cuenta no tiene banco de contexto configurado. Escribe TESIS PURA: cero eventos "
-    "concretos, cero cifras, cero fechas, cero nombres de productos o empresas presentados "
-    "como actualidad -- tu memoria es vieja por definición y no cuenta como fuente. Lo que sí "
-    "puedes escribir es criterio que se sostenga solo: un mecanismo, una restricción, un "
-    "incentivo o un marco de decisión explicado con precisión, formulado como razonamiento "
-    "general y no como reporte de algo que pasó."
+    "SIN FUENTES Y SIN BANCO: no hubo noticias recientes verificables sobre este tema y esta "
+    "cuenta no tiene banco de contexto configurado. NO escribas una tesis abstracta. Escribe "
+    "sobre LO QUE EL TEMA ES con los hechos públicos y ESTABLES que conoces de ÉL: qué es, qué "
+    "hace, para quién existe, por qué importa -- como se explica en una enciclopedia o en una "
+    "conversación con un amigo, no como un ensayo. CERO cifras/fechas presentadas como "
+    "actualidad reciente. PROHIBIDO: experimentos mentales, metáforas extendidas, premisas "
+    "inventadas ('una cláusula borrada serviría para...'), preguntas retóricas en cadena y "
+    "cualquier párrafo que no diga algo concreto que UNA persona real querría leer. Si el tema "
+    "es un producto/noticia del que no conoces hechos estables, NO inventes: entrega el campo "
+    "fallo con el motivo exacto ('sin_fuentes_tema_desconocido')."
 )
 
 
@@ -1041,6 +1044,11 @@ _SISTEMA_ESCRITOR = (
     + FABLE_ESCRITURA
     + "\n\n"
     + REGLAS_LINKEDIN
+    + "\n\nANTI-ABSTRACCIÓN (regla dura del dueño): en CUALQUIER modo queda prohibido "
+    "escribir prosa de ensayo: metáforas extendidas, experimentos mentales, analogías "
+    "inventadas, premisas hipotéticas para 'sonar profundo' y párrafos sin un hecho o una "
+    "idea concreta. Cada frase debe decir algo que UNA persona real se detenga a leer. "
+    "Un post abstracto es basura: el dueño lo rechaza sin leerlo."
     + "\n\nLO ÚNICO QUE UN VALIDADOR DETERMINISTA RECHAZA SIN PIEDAD, cuídalo antes de "
     "entregar: CERO primera persona -- ni yo, mi, nosotros, ni verbos como hice, aprendí, "
     "decidí, construí, creo, vi; afirma sobre el mundo, no sobre el autor.\n\n"

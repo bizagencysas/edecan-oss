@@ -10,6 +10,7 @@ alguien y decirle que sí se publicó cuando NO se publicó nada.
 
 from __future__ import annotations
 
+import socket
 from types import SimpleNamespace
 
 import httpx
@@ -29,6 +30,20 @@ def _ctx_con_linkedin_conectado(make_ctx, make_session, make_vault):
     fila_cuenta = {"id": "acc-li", "connector_key": "linkedin"}
     bundle = SimpleNamespace(access_token="tok-li")
     return make_ctx(session=make_session([[fila_cuenta]]), vault=make_vault(bundle=bundle))
+
+
+def _ctx_con_youtube_conectado(make_ctx, make_session, make_vault):
+    """`ctx` con una cuenta de YouTube conectada, para llegar a `_publicar_en_youtube`."""
+    fila_cuenta = {"id": "acc-yt", "connector_key": "youtube"}
+    bundle = SimpleNamespace(access_token="tok-yt")
+    return make_ctx(session=make_session([[fila_cuenta]]), vault=make_vault(bundle=bundle))
+
+
+def _getaddrinfo_publico(host, port, type):
+    """Fake de `socket.getaddrinfo` que resuelve cualquier host a una IP pública
+    (93.184.216.34), para ejercitar el camino feliz de la validación sin DNS real."""
+    del host, port, type
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
 
 async def test_generar_contenido_devuelve_solo_texto_del_llm(make_ctx, make_llm):
@@ -81,6 +96,7 @@ async def test_publicar_social_rechaza_redes_no_soportadas(make_ctx, make_sessio
 async def test_publicar_social_sin_cuenta_conectada_pide_conectar(make_ctx, make_session):
     ctx = make_ctx(session=make_session([[]]))
     resultado = await PublicarSocialTool().run(ctx, {"red": "x", "texto": "hola"})
+    assert "Perfil → Conectores" in resultado.content
     assert "/app/conectores" in resultado.content
 
 
@@ -170,3 +186,66 @@ async def test_publicar_social_linkedin_post_fantasma_propaga_error_sin_reportar
 
     with pytest.raises(ConnectorError):
         await PublicarSocialTool().run(ctx, {"red": "linkedin", "texto": "hola mundo"})
+
+
+URLS_VIDEO_RECHAZADAS = [
+    "http://127.0.0.1:8000/video.mp4",
+    "http://10.0.0.5/video.mp4",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://localhost/video.mp4",
+    "ftp://example.com/video.mp4",
+    "file:///etc/passwd",
+]
+
+
+@pytest.mark.parametrize("video_url", URLS_VIDEO_RECHAZADAS)
+async def test_publicar_social_youtube_url_rechazada_sin_hacer_red(
+    make_ctx, make_session, make_vault, video_url
+):
+    """C3: URL privada/loopback/link-local/metadata o esquema no-http se rechaza
+    ANTES de cualquier GET — no hay descarga ni subida a YouTube."""
+    ctx = _ctx_con_youtube_conectado(make_ctx, make_session, make_vault)
+
+    with respx.mock:
+        resultado = await PublicarSocialTool().run(
+            ctx,
+            {"red": "youtube", "texto": "desc", "titulo": "Mi video", "video_url": video_url},
+        )
+
+    assert "No publiqué el video a YouTube" in resultado.content
+    assert "subido a YouTube" not in resultado.content
+
+
+@respx.mock
+async def test_publicar_social_youtube_url_publica_pasa(
+    make_ctx, make_session, make_vault, monkeypatch
+):
+    """Camino feliz: URL https pública se valida, se descarga y se sube a YouTube."""
+    monkeypatch.setattr(
+        "edecan_toolkit.contenido.socket.getaddrinfo", _getaddrinfo_publico
+    )
+    ctx = _ctx_con_youtube_conectado(make_ctx, make_session, make_vault)
+    respx.get("https://cdn.example.com/video.mp4").mock(
+        return_value=httpx.Response(200, content=b"video-bytes-reales")
+    )
+    respx.post("https://www.googleapis.com/upload/youtube/v3/videos").mock(
+        return_value=httpx.Response(
+            200, headers={"Location": "https://upload.example.com/session"}
+        )
+    )
+    respx.put("https://upload.example.com/session").mock(
+        return_value=httpx.Response(200, json={"id": "vid-1"})
+    )
+
+    resultado = await PublicarSocialTool().run(
+        ctx,
+        {
+            "red": "youtube",
+            "texto": "desc",
+            "titulo": "Mi video",
+            "video_url": "https://cdn.example.com/video.mp4",
+        },
+    )
+
+    assert "subido a YouTube" in resultado.content
+    assert resultado.data["resultado"]["id"] == "vid-1"

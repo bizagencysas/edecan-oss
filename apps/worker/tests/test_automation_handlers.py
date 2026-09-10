@@ -18,6 +18,7 @@ en `test_run_mission_handler.py`.
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import types
@@ -296,7 +297,7 @@ def fake_runner(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "edecan_automations", fake_package)
     monkeypatch.setitem(sys.modules, "edecan_automations.runner", fake_runner_module)
     monkeypatch.setitem(sys.modules, "edecan_automations.engine", fake_engine_module)
-    monkeypatch.setattr(run_automation_module, "_build_registry", lambda: REGISTRY_SENTINEL)
+    monkeypatch.setattr(run_automation_module, "_build_registry", lambda _tenant_id: REGISTRY_SENTINEL)
     return _FakeRunner
 
 
@@ -1217,3 +1218,5 @@ async def test_run_forever_no_dispara_automation_scan_en_el_primer_tick(
 
     assert "automation_scan" not in llamadas
     assert llamadas == list(scheduler_module.JOBS_PERIODICOS)
+
+

@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # Ventana durante la cual un reintento de chat con la misma clave puede
     # recuperar exactamente el flujo SSE ya completado sin ejecutar otro turno.
     CHAT_IDEMPOTENCY_TTL_SECONDS: int = 24 * 60 * 60
+    # BOTS-20: la serialización por conversación de los turnos de chat
+    # (`_TURN_LOCKS` en `persistent_agents`) es un asyncio.Lock en memoria, no un
+    # lock distribuido. Mientras se conserve ese diseño, la API DEBE correr con
+    # UNA sola réplica. Desactivar esta bandera solo silencia el aviso de
+    # arranque — NO habilita multi-réplica segura.
+    EDECAN_API_SINGLE_REPLICA: bool = True
     # Contexto conversacional: Edecán no debe olvidar una conversación larga ni
     # tratar cada chat como una isla. Estos límites son conservadores para
     # proteger coste/latencia; el empaquetado degrada por caracteres, no por
@@ -81,8 +87,13 @@ class Settings(BaseSettings):
     # Chat 1:1 con bots (persistent_agents): un hilo humano↔bot puede crecer
     # a cientos de mensajes sin que el bot "pierda contexto". Independiente del
     # chat principal para no aumentar coste/latencia del asistente general.
-    BOT_CONTEXT_MAX_MESSAGES: int = 1_000
-    BOT_CONTEXT_MAX_CHARS: int = 200_000
+    BOT_CONTEXT_MAX_MESSAGES: int = 200
+    BOT_CONTEXT_MAX_CHARS: int = 80_000
+    # Ventana RECIENTE que viaja cruda al turno (política de costos 6-sep):
+    # lo más viejo NO se manda entero — se compacta con el resumen LLM
+    # cacheado de `resumen_llm_hilo_anterior`. Antes era == MAX_MESSAGES y
+    # cada turno cargaba TODA la historia (turnos de 400K+ tokens).
+    BOT_CONTEXT_RECENT_MESSAGES: int = 20
     CHAT_CONTEXT_CROSS_CHAT_ENABLED: bool = True
     CHAT_CONTEXT_CROSS_CHAT_CONVERSATIONS: int = 8
     CHAT_CONTEXT_CROSS_CHAT_MESSAGES_PER_CONVERSATION: int = 4
@@ -187,6 +198,13 @@ class Settings(BaseSettings):
 
     # --- Observabilidad ----------------------------------------------------------
     SENTRY_DSN: str | None = None
+
+    # --- Uso LLM: alerta de presupuesto diario ------------------------------------
+    # `GET /v1/usage/diario` compara el costo del ÚLTIMO DÍA COMPLETO contra
+    # este umbral y emite un WARNING de log si lo supera (día + costo + umbral).
+    # Solo log: sin envíos, sin integraciones externas. Configurable por env o
+    # platform-config.
+    USAGE_ALERT_USD_PER_DAY: float = 5.0
 
     # --- v2 (ROADMAP_V2.md §7.5, dueño WP-V2-01) --------------------------------
     # Convención dura de §7.5: toda tool v2 lee estos campos con

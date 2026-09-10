@@ -1,29 +1,13 @@
-"""Regresión (riesgo-legal-tos): `get_llm_router`/`load_tenant_llm_config`
-(`apps/api/edecan_api/deps.py`) NUNCA deben degradar a la credencial LLM de
-PLATAFORMA (`ANTHROPIC_API_KEY`/`.env`) cuando el tenant actual no conectó su
-propio proveedor — deben cortar la request, mismo criterio que
-`premium/edecan_premium/telephony.py::for_tenant` (`TwilioNotConnectedError`,
-sin fallback a ninguna cuenta compartida). Ver `docs/credenciales.md` y
-`DIRECCION_ACTUAL.md` "Modelo de credenciales: TODO lo trae el cliente,
-siempre".
-
-No usa el `client`/`app` de `conftest.py` (que sobreescribe `get_llm_router`
-directo a `lambda: None` para no acoplar el resto de la suite HTTP a esta
-lógica — ver `apps/api/tests/conftest.py`): llama a `get_llm_router`/
-`load_tenant_llm_config` como funciones async normales, con `session=None`
-(mismo truco que ya usa `apps/api/tests/conftest.py` al sobreescribir
-`get_tenant_session`: `SqlRepo(None).list_connector_accounts` revienta con
-`AttributeError`, que `load_tenant_llm_config` atrapa con su `except
-Exception` amplio y trata como "tenant sin nada conectado" — no hace falta
-una base de datos real para ejercitar este camino).
-"""
+"""Contrato de composición del router LLM administrado por Workers AI."""
 
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from edecan_llm import CompletionRequest, LLMError
+from edecan_llm.workers_ai import MODELO_POR_DEFECTO
 
 from edecan_api import deps as edecan_deps
 from edecan_api.config import Settings
@@ -34,28 +18,78 @@ def _current_user(tenant_id: uuid.UUID) -> edecan_deps.CurrentUser:
     return edecan_deps.CurrentUser(user_id=uuid.uuid4(), tenant=tenant)
 
 
-async def test_load_tenant_llm_config_sin_sesion_devuelve_none() -> None:
-    """`session=None` (tenant sin nada resoluble) -> `None`, nunca lanza."""
-    settings = Settings(JWT_SECRET="x" * 32)
-    resultado = await edecan_deps.load_tenant_llm_config(None, settings, uuid.uuid4())
-    assert resultado is None
+def _request(settings: Settings) -> SimpleNamespace:
+    from edecan_llm.router import LLMRouter
+    from edecan_llm.workers_ai import WorkersAIProvider
+
+    def provider_factory(s: object) -> WorkersAIProvider:
+        return WorkersAIProvider(
+            account_id=getattr(s, "CLOUDFLARE_ACCOUNT_ID", None),
+            api_token=getattr(s, "CLOUDFLARE_API_TOKEN", None),
+            timeout=float(getattr(s, "WORKERS_AI_TIMEOUT_SECONDS", 60.0)),
+            env_file=None,
+        )
+
+    router = LLMRouter(settings, on_usage=None, provider_factory=provider_factory)
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(llm_router=router))
+    )
 
 
-async def test_get_llm_router_sin_credencial_de_tenant_corta_con_400() -> None:
-    """Aunque `Settings.ANTHROPIC_API_KEY` esté configurada (simula una
-    plataforma hosted con su propia cuenta de Anthropic), un tenant sin
-    `PUT /v1/credentials/llm` propio NUNCA debe recibir un `LLMRouter`
-    construido con esa key compartida: `get_llm_router` debe cortar con
-    `HTTPException(400)` en vez de degradar en silencio (hallazgo
-    riesgo-legal-tos: bring-your-own no era real para LLM)."""
+async def test_get_llm_router_no_consulta_credencial_del_tenant() -> None:
     settings = Settings(
         JWT_SECRET="x" * 32,
-        ANTHROPIC_API_KEY="sk-ant-credencial-compartida-de-plataforma-NUNCA-SE-USA",
+        CLOUDFLARE_ACCOUNT_ID="account",
+        CLOUDFLARE_API_TOKEN="token",
     )
-    current_user = _current_user(uuid.uuid4())
 
-    with pytest.raises(HTTPException) as exc_info:
-        await edecan_deps.get_llm_router(current_user=current_user, session=None, settings=settings)
+    router = await edecan_deps.get_llm_router(
+        request=_request(settings),
+        current_user=_current_user(uuid.uuid4()),
+        session=None,
+    )
 
-    assert exc_info.value.status_code == 400
-    assert "conectado" in exc_info.value.detail.lower()
+    provider, model = router.resolve("rapido", {})
+    assert provider.name == "workers_ai"
+    assert model == MODELO_POR_DEFECTO
+
+
+async def test_resolve_worker_va_al_proveedor_workers_ai_con_modelo_cf() -> None:
+    """C9b / E-LLM-1: los pasos de misión (alias `worker`) resuelven a un modelo
+    `@cf/` sobre el proveedor de Workers AI — antes se mandaban al primario y
+    morían 400. Verifica el ruteo sin pegarle a la red."""
+    settings = Settings(
+        JWT_SECRET="x" * 32,
+        CLOUDFLARE_ACCOUNT_ID="account",
+        CLOUDFLARE_API_TOKEN="token",
+    )
+    router = await edecan_deps.get_llm_router(
+        request=_request(settings),
+        current_user=_current_user(uuid.uuid4()),
+        session=None,
+    )
+
+    provider, model = router.resolve("worker", {})
+    assert provider.name == "workers_ai"
+    assert str(model).startswith("@cf/")
+
+
+async def test_task_router_bloquea_superficie_ide() -> None:
+    settings = Settings(
+        JWT_SECRET="x" * 32,
+        CLOUDFLARE_ACCOUNT_ID="account",
+        CLOUDFLARE_API_TOKEN="token",
+    )
+    router = await edecan_deps.get_llm_router(
+        request=_request(settings),
+        current_user=_current_user(uuid.uuid4()),
+        session=None,
+    )
+
+    request = CompletionRequest(
+        model="ignorado",
+        messages=[{"role": "user", "content": "Refactoriza todo"}],
+        metadata={"surface": "ide"},
+    )
+    with pytest.raises(LLMError, match="runtime de ingeniería separado"):
+        router.route(request)

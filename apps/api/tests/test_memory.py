@@ -312,10 +312,12 @@ async def test_suggestions_sin_sesion_no_escanea_mensajes_ni_falla(client) -> No
 
 async def test_list_memory_agente_separa_memoria_del_worker(client, fake_repo) -> None:
     tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     agent_id = uuid.uuid4()
-    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    headers = auth_headers(user_id=user_id, tenant_id=tenant_id, plan_key="hosted_basic")
     fake_repo.persistent_agents[agent_id] = {
         "tenant_id": tenant_id,
+        "user_id": user_id,
         "memory": {"proyecto": "Edecán", "nota": "revisar deploys"},
     }
 
@@ -326,6 +328,71 @@ async def test_list_memory_agente_separa_memoria_del_worker(client, fake_repo) -
     assert response.status_code == 200
     body = response.json()
     assert {item["key"] for item in body} == {"proyecto", "nota"}
+
+
+# ---------------------------------------------------------------------------
+# BOTS-05: la memoria JSONB de un worker es privada de su dueño, aunque el
+# atacante comparta tenant. `get_agent_memory` exige user_id, no solo tenant.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_memory_agente_ajeno_privado_no_legible(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_a = uuid.uuid4()
+    user_b = uuid.uuid4()
+    agent_a = uuid.uuid4()
+    fake_repo.persistent_agents[agent_a] = {
+        "tenant_id": tenant_id,
+        "user_id": user_a,
+        "memory": {"secreto": "dato de A"},
+    }
+    headers_b = auth_headers(user_id=user_b, tenant_id=tenant_id, plan_key="hosted_basic")
+
+    response = await client.get(
+        "/v1/memory", params={"namespace": f"agent:{agent_a}"}, headers=headers_b
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_list_memory_agente_propio_legible(client, fake_repo) -> None:
+    tenant_id = uuid.uuid4()
+    user_a = uuid.uuid4()
+    agent_a = uuid.uuid4()
+    fake_repo.persistent_agents[agent_a] = {
+        "tenant_id": tenant_id,
+        "user_id": user_a,
+        "memory": {"proyecto": "Edecán"},
+    }
+    headers_a = auth_headers(user_id=user_a, tenant_id=tenant_id, plan_key="hosted_basic")
+
+    response = await client.get(
+        "/v1/memory", params={"namespace": f"agent:{agent_a}"}, headers=headers_a
+    )
+
+    assert response.status_code == 200
+    assert {item["key"] for item in response.json()} == {"proyecto"}
+
+
+async def test_list_memory_agente_otro_tenant_no_legible(client, fake_repo) -> None:
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    user_a = uuid.uuid4()
+    agent_a = uuid.uuid4()
+    fake_repo.persistent_agents[agent_a] = {
+        "tenant_id": tenant_a,
+        "user_id": user_a,
+        "memory": {"secreto": "dato de A"},
+    }
+    headers_c = auth_headers(user_id=user_a, tenant_id=tenant_b, plan_key="hosted_basic")
+
+    response = await client.get(
+        "/v1/memory", params={"namespace": f"agent:{agent_a}"}, headers=headers_c
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 async def test_list_memory_agente_desconocido_devuelve_vacio(client) -> None:

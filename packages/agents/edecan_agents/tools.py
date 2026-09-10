@@ -43,14 +43,15 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from edecan_core import Tool, ToolContext, ToolResult
-from edecan_core.queue import enqueue
+from edecan_core.queue import enqueue, enqueue_outbox
 from edecan_schemas.plans import LIMIT_MISSIONS_PER_DAY, UNLIMITED
 from sqlalchemy import text
 
 from .agent_bus import enviar_mensaje_agente
+from .persistent_policy import MAX_HANDOFF_DEPTH, validate_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,53 @@ _MSG_CUPO_AGOTADO = (
     "Alcanzaste tu límite de misiones por día de tu plan. Vuelve a intentarlo "
     "mañana o mejora tu plan."
 )
+
+_MSG_CONTEXTO_BOT_INVALIDO = (
+    "Esta herramienta requiere un contexto de bot válido para identificar al emisor."
+)
+
+
+def _worker_id_valido(raw: Any) -> str | None:
+    """Normaliza un UUID de worker sin convertir ausencia en texto."""
+    if raw is None:
+        return None
+    candidate = str(raw).strip()
+    if not candidate:
+        return None
+    try:
+        return str(UUID(candidate))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _cadena_padre_verificada(ctx: ToolContext) -> tuple[int, list[str]] | ToolResult:
+    """Lee la cadena del contexto interno; nunca de argumentos elegidos por el modelo."""
+    extras = ctx.extras if isinstance(ctx.extras, dict) else {}
+    depth_raw = extras.get("handoff_depth", 0)
+    if isinstance(depth_raw, bool) or not isinstance(depth_raw, int):
+        return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+    if depth_raw < 0 or depth_raw > MAX_HANDOFF_DEPTH:
+        return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+
+    visited_raw = extras.get("handoff_visited", [])
+    if isinstance(visited_raw, str):
+        try:
+            visited_raw = json.loads(visited_raw)
+        except (TypeError, ValueError):
+            return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+    if not isinstance(visited_raw, list):
+        return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+
+    visited: list[str] = []
+    for raw_worker_id in visited_raw:
+        worker_id = _worker_id_valido(raw_worker_id)
+        if worker_id is None:
+            return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+        if worker_id not in visited:
+            visited.append(worker_id)
+    if len(visited) != depth_raw or len(visited) > MAX_HANDOFF_DEPTH:
+        return ToolResult(content="El contexto verificado de la cadena de bots es inválido.")
+    return depth_raw, visited
 
 
 def _tenant_flags(ctx: ToolContext) -> dict[str, Any]:
@@ -96,18 +144,34 @@ async def _crear_handoff(
     de escribir una fila con un origen vacío (FK NOT NULL).
     """
     extras = ctx.extras if isinstance(ctx.extras, dict) else {}
-    source_worker_id = str(extras.get("worker_id") or "").strip()
-    if not source_worker_id:
+    source_worker_id = _worker_id_valido(extras.get("worker_id"))
+    destination_worker_id = _worker_id_valido(destino_worker_id)
+    if source_worker_id is None:
         return ToolResult(
             content=(
                 "Para delegar a otro worker hace falta un contexto de worker "
-                "activo (source_worker_id)."
+                "activo con un source_worker_id válido."
             )
         )
-    if source_worker_id == destino_worker_id:
-        return ToolResult(content="Un worker no puede delegarse una misión a sí mismo.")
+    if destination_worker_id is None:
+        return ToolResult(content="El worker destino debe tener un UUID válido.")
 
-    if ctx.user_id and destino_worker_id:
+    parent_chain = _cadena_padre_verificada(ctx)
+    if isinstance(parent_chain, ToolResult):
+        return parent_chain
+    parent_depth, parent_visited = parent_chain
+    try:
+        envelope = validate_handoff(
+            source_worker_id=source_worker_id,
+            destination_worker_id=destination_worker_id,
+            task_id=str(mission_id),
+            depth=parent_depth,
+            visited_worker_ids=parent_visited,
+        )
+    except ValueError as exc:
+        return ToolResult(content=str(exc))
+
+    if ctx.user_id:
         existe_destino = (
             await ctx.session.execute(
                 text(
@@ -117,38 +181,12 @@ async def _crear_handoff(
                 {
                     "tenant_id": str(ctx.tenant_id),
                     "user_id": str(ctx.user_id),
-                    "id": destino_worker_id,
+                    "id": destination_worker_id,
                 },
             )
         ).mappings().first()
         if existe_destino is None:
             return ToolResult(content="Ese bot no existe en tu equipo (o no es tuyo).")
-
-    from .persistent_policy import MAX_HANDOFF_DEPTH
-
-    profundidad_padre = int(extras.get("handoff_depth") or 0)
-    visitados = extras.get("handoff_visited") or []
-    if isinstance(visitados, str):
-        try:
-            visitados = json.loads(visitados)
-        except Exception:  # noqa: BLE001
-            visitados = []
-    visitados = [str(v) for v in visitados if str(v).strip()]
-    visitados = list(dict.fromkeys(visitados + [source_worker_id]))
-    if profundidad_padre + 1 >= MAX_HANDOFF_DEPTH:
-        return ToolResult(
-            content=(
-                "No puedo delegar: la cadena de delegación alcanzó su "
-                f"profundidad máxima ({MAX_HANDOFF_DEPTH} niveles)."
-            )
-        )
-    if destino_worker_id in visitados:
-        return ToolResult(
-            content=(
-                "No puedo delegar a ese bot: la cadena de delegación "
-                "volvería a un bot ya involucrado (ciclo)."
-            )
-        )
 
     expected_output = str(args.get("expected_output") or "").strip()
     priority = str(args.get("priority") or "").strip() or "media"
@@ -162,15 +200,16 @@ async def _crear_handoff(
     if expected_output:
         instruccion = f"{objetivo}\n\nEntregable esperado: {expected_output}"
 
-    envelope = {
-        "goal": objetivo,
-        "expected_output": expected_output or None,
-        "priority": priority,
-        "allowed_tools": allowed_tools,
-        "approval_boundary": approval_boundary or None,
-        "instruction": instruccion,
-        "requires_human_approval": True,
-    }
+    envelope.update(
+        {
+            "goal": objetivo,
+            "expected_output": expected_output or None,
+            "priority": priority,
+            "allowed_tools": allowed_tools,
+            "approval_boundary": approval_boundary or None,
+            "instruction": instruccion,
+        }
+    )
 
     fila_handoff = (
         await ctx.session.execute(
@@ -185,10 +224,10 @@ async def _crear_handoff(
             {
                 "tenant_id": str(ctx.tenant_id),
                 "source": source_worker_id,
-                "destination": destino_worker_id,
-                "task_id": str(mission_id),
-                "depth": profundidad_padre + 1,
-                "visitados": json.dumps(visitados),
+                "destination": destination_worker_id,
+                "task_id": envelope["task_id"],
+                "depth": envelope["depth"],
+                "visitados": json.dumps(envelope["visited_worker_ids"]),
                 "envelope": json.dumps(envelope, ensure_ascii=False),
             },
         )
@@ -203,22 +242,24 @@ async def _crear_handoff(
                     "SELECT id, COALESCE(display_name, name) AS nombre "
                     "FROM persistent_agents WHERE tenant_id = :tenant_id AND id = ANY(:ids)"
                 ),
-                {"tenant_id": str(ctx.tenant_id), "ids": [source_worker_id, destino_worker_id]},
+                {
+                    "tenant_id": str(ctx.tenant_id),
+                    "ids": [source_worker_id, destination_worker_id],
+                },
             )
         ).mappings().all()
         nombres_por_id = {str(f["id"]): str(f["nombre"] or "Bot") for f in filas_nombres}
-        hilo_conv = await _asegurar_hilo_directo(
+        await _asegurar_hilo_directo(
             ctx.session,
             tenant_id=str(ctx.tenant_id),
             user_id=str(ctx.user_id or ""),
             sender=source_worker_id,
-            receiver=destino_worker_id,
+            receiver=destination_worker_id,
             nombre_a=nombres_por_id.get(source_worker_id, "Bot"),
-            nombre_b=nombres_por_id.get(destino_worker_id, "Bot"),
+            nombre_b=nombres_por_id.get(destination_worker_id, "Bot"),
         )
     except Exception:  # noqa: BLE001 - el hilo es cosmético, no rompe el handoff
         logger.warning("delegar_mision: no se pudo asegurar el hilo directo.", exc_info=True)
-        hilo_conv = None
 
     # Side-record en el protocolo inter-agente (product design): el handoff
     # entre workers también queda como mensaje HANDOFF durable, con solo
@@ -228,7 +269,7 @@ async def _crear_handoff(
         ctx.session,
         tenant_id=str(ctx.tenant_id),
         sender=source_worker_id,
-        receiver=destino_worker_id,
+        receiver=destination_worker_id,
         tipo="handoff",
         task_id=str(mission_id),
         goal=objetivo,
@@ -241,7 +282,7 @@ async def _crear_handoff(
     logger.info(
         "delegar_mision: handoff %s -> %s creado (task=%s)",
         source_worker_id,
-        destino_worker_id,
+        destination_worker_id,
         mission_id,
     )
     return {"handoff_id": handoff_id, "envelope": envelope}
@@ -428,7 +469,25 @@ class DelegarMisionTool(Tool):
                 goal=objetivo,
             )
 
-        await enqueue(ctx.settings, "run_mission", {"mission_id": str(mission_id)}, ctx.tenant_id)
+        # Outbox TRANSACCIONAL: la misión se insertó arriba con ctx.session
+        # (commitea al cierre del turno). Con el `enqueue` viejo (conexión
+        # propia, commit inmediato) el worker corría el job ANTES del commit
+        # y respondía "misión no encontrada" — la misión quedaba 'planning'
+        # para siempre (bug real del 6-sep). Encolar en la MISMA sesión hace
+        # que el job solo sea visible después del commit de la misión.
+        try:
+            await enqueue_outbox(
+                ctx.session,
+                tenant_id=ctx.tenant_id,
+                job_type="run_mission",
+                payload={"mission_id": str(mission_id)},
+            )
+        except Exception:
+            # Degradación si el outbox no está disponible (p. ej. 0070 sin
+            # aplicar): el camino viejo, con su carrera conocida.
+            await enqueue(
+                ctx.settings, "run_mission", {"mission_id": str(mission_id)}, ctx.tenant_id
+            )
 
         unified_session = (ctx.extras or {}).get("unified_session")
         if unified_session is not None and hasattr(unified_session, "attach_task"):
@@ -490,7 +549,7 @@ class EnviarMensajeBotTool(Tool):
 
     name = "enviar_mensaje_bot"
     description = (
-        "Manda un mensaje a OTRO bot de Edecán por su nombre (ej. «Fronti»). Es "
+        "Manda un mensaje a OTRO bot de Edecán por su nombre (ej. «BotAlpha»). Es "
         "asíncrono, como un SMS entre colegas: el otro despierta y responde al tono "
         "de tu mensaje — un saludo genera un saludo, un encargo genera trabajo. "
         "Úsalo para presentarte, conversar, coordinar o pedirle algo. NO sirve para "
@@ -506,7 +565,7 @@ class EnviarMensajeBotTool(Tool):
         "properties": {
             "bot": {
                 "type": "string",
-                "description": "Nombre del bot destino (ej. «Fronti»). Basta una parte del nombre.",
+                "description": "Nombre del bot destino (ej. «BotAlpha»). Basta una parte del nombre.",
             },
             "mensaje": {
                 "type": "string",
@@ -520,7 +579,7 @@ class EnviarMensajeBotTool(Tool):
     }
 
     async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-        from edecan_core.queue import enqueue
+        from edecan_core.queue import enqueue, enqueue_outbox
 
         objetivo = str(args.get("bot", "")).strip()
         mensaje = str(args.get("mensaje", "")).strip()
@@ -530,25 +589,22 @@ class EnviarMensajeBotTool(Tool):
         # Destino: bot del MISMO tenant y dueño, por nombre o display_name.
         # El emisor no puede escribirse a sí mismo (un SMS a uno mismo no
         # despierta a nadie).
-        sender_raw = ctx.extras.get("worker_id") if isinstance(ctx.extras, dict) else None
-        sender = str(sender_raw).strip() or None
-        chain_depth = int(ctx.extras.get("handoff_depth") or 0) if isinstance(ctx.extras, dict) else 0
-        chain_visited = ctx.extras.get("handoff_visited") or []
-        if isinstance(chain_visited, str):
-            try:
-                chain_visited = json.loads(chain_visited)
-            except Exception:  # noqa: BLE001
-                chain_visited = []
-        from .persistent_policy import MAX_HANDOFF_DEPTH
-        if chain_depth + 1 >= MAX_HANDOFF_DEPTH:
+        extras = ctx.extras if isinstance(ctx.extras, dict) else {}
+        sender = _worker_id_valido(extras.get("worker_id"))
+        if sender is None:
+            return ToolResult(content=_MSG_CONTEXTO_BOT_INVALIDO)
+
+        parent_chain = _cadena_padre_verificada(ctx)
+        if isinstance(parent_chain, ToolResult):
+            return parent_chain
+        chain_depth, chain_visited = parent_chain
+        if chain_depth >= MAX_HANDOFF_DEPTH:
             return ToolResult(
                 content=(
                     "No puedo enviar mensajes: la cadena de delegación alcanzó su "
                     f"profundidad máxima ({MAX_HANDOFF_DEPTH} niveles)."
                 )
             )
-        if sender and sender in [str(v) for v in chain_visited]:
-            return ToolResult(content="No puedo enviar un mensaje: ciclaría la cadena.")
         result = await ctx.session.execute(
             text(
                 "SELECT id, name, display_name FROM persistent_agents "
@@ -580,12 +636,28 @@ class EnviarMensajeBotTool(Tool):
             )
 
         receiver = str(fila["id"])
+        receiver_id = _worker_id_valido(receiver)
+        if receiver_id is None:
+            return ToolResult(content="El bot encontrado no tiene una identidad válida.")
+        receiver = receiver_id
         nombre = str(fila["display_name"] or fila["name"])
         message_id = uuid4()
+        try:
+            message_envelope = validate_handoff(
+                source_worker_id=sender,
+                destination_worker_id=receiver,
+                task_id=str(message_id),
+                depth=chain_depth,
+                visited_worker_ids=chain_visited,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "ciclo" in message:
+                return ToolResult(content="No puedo enviar un mensaje: formaría un ciclo.")
+            return ToolResult(content=message)
 
         # Nombre del EMISOR (para la instrucción del receptor y la firma del
-        # mensaje en el hilo). Sin emisor (Edecán del chat principal) no hay
-        # hilo entre bots: el receptor responde al dueño en su propio chat.
+        # mensaje en el hilo).
         nombre_emisor = None
         if sender:
             fila_emisor = (
@@ -693,45 +765,60 @@ class EnviarMensajeBotTool(Tool):
                 "goal": mensaje,
             },
         )
-        await enqueue(
-            ctx.settings,
-            "run_persistent_agent",
-            {
-                "worker_id": receiver,
-                "chain_depth": chain_depth + 1,
-                "chain_visited": json.dumps(
-                    list(dict.fromkeys(
-                        [str(v) for v in chain_visited if str(v).strip()] + ([sender] if sender else [])
-                    ))
-                ),
-                "instruction": (
-                    (
-                        f"El bot {nombre_emisor} te escribe: «{mensaje}». "
-                        "Esto es una CONVERSACIÓN entre colegas: responde al tono del "
-                        "mensaje — un saludo se responde CON UN SALUDO (al menos una "
-                        "frase real, con calidez: te presentas, dices quién eres y qué "
-                        "agradeces), una pregunta con tu respuesta, un encargo con un "
-                        "plan breve. NO inventes trabajo ni arranques proyectos por tu "
-                        "cuenta: presentarse no es resolver nada. No escribas un "
-                        "resumen de lo que hiciste ni un relato en tercera persona.\n"
-                        "OBLIGATORIO — AVISA AL DUEÑO PRIMERO: tu mensaje final de este "
-                        "turno debe decirle al dueño QUÉ te dijo el otro bot, con su "
-                        "contenido, en una o dos frases de tu voz (ej.: «Fronti me "
-                        "respondió: dice que los logos sí convienen, pero hay que "
-                        "revisar las condiciones de uso de NVIDIA»). El dueño lee este "
-                        "chat: nunca lo dejes esperando a preguntarte qué pasó. Si "
-                        "además quieres contestarle al otro bot, usa "
-                        f"enviar_mensaje_bot con bot=\"{nombre_emisor}\", pero el aviso "
-                        "al dueño va SIEMPRE y es tu texto final."
-                    )
-                    if nombre_emisor
-                    else f"El dueño te encarga por medio de Edecán: «{mensaje}». "
-                    "Cuando termines, cuenta el resultado al dueño en tu chat."
-                ),
-                "task_id": str(message_id),
-            },
-            ctx.tenant_id,
-        )
+        payload = {
+            "worker_id": receiver,
+            # Los nombres canónicos coinciden con el envelope validado por
+            # el API; los aliases `chain_*` conservan el contrato vigente
+            # del runner.
+            "depth": message_envelope["depth"],
+            "visited_worker_ids": message_envelope["visited_worker_ids"],
+            "chain_depth": message_envelope["depth"],
+            "chain_visited": json.dumps(message_envelope["visited_worker_ids"]),
+            "instruction": (
+                (
+                    f"El bot {nombre_emisor} te escribe: «{mensaje}». "
+                    "Esto es una CONVERSACIÓN entre colegas: responde al tono del "
+                    "mensaje — un saludo se responde CON UN SALUDO (al menos una "
+                    "frase real, con calidez: te presentas, dices quién eres y qué "
+                    "agradeces), una pregunta con tu respuesta, un encargo con un "
+                    "plan breve. NO inventes trabajo ni arranques proyectos por tu "
+                    "cuenta: presentarse no es resolver nada. No escribas un "
+                    "resumen de lo que hiciste ni un relato en tercera persona.\n"
+                    "OBLIGATORIO — AVISA AL DUEÑO PRIMERO: tu mensaje final de este "
+                    "turno debe decirle al dueño QUÉ te dijo el otro bot, con su "
+                    "contenido, en una o dos frases de tu voz (ej.: «BotAlpha me "
+                    "respondió: dice que los logos sí convienen, pero hay que "
+                    "revisar las condiciones de uso de NVIDIA»). El dueño lee este "
+                    "chat: nunca lo dejes esperando a preguntarte qué pasó. Si "
+                    "además quieres contestarle al otro bot, usa "
+                    f"enviar_mensaje_bot con bot=\"{nombre_emisor}\", pero el aviso "
+                    "al dueño va SIEMPRE y es tu texto final."
+                )
+                if nombre_emisor
+                else f"El dueño te encarga por medio de Edecán: «{mensaje}». "
+                "Cuando termines, cuenta el resultado al dueño en tu chat."
+            ),
+            "task_id": str(message_id),
+        }
+        # Outbox TRANSACCIONAL (mismo criterio que `DelegarMisionTool` y
+        # `agent_messages.send_message`, BOTS-08): el INSERT de `agent_messages`
+        # + chat de arriba vive en `ctx.session` y commitea al cierre del turno.
+        # Con el `enqueue` viejo (conexión propia, commit inmediato) el receptor
+        # corría el job ANTES de ese commit y leía el mensaje aún no visible —
+        # narración perdida y fila `pending` para siempre (hallazgo C8a).
+        # Encolar en la MISMA sesión hace que el job solo sea visible después
+        # del commit del mensaje.
+        try:
+            await enqueue_outbox(
+                ctx.session,
+                tenant_id=ctx.tenant_id,
+                job_type="run_persistent_agent",
+                payload=payload,
+            )
+        except Exception:
+            # Degradación si el outbox no está disponible (migración no
+            # aplicada): el camino viejo, con su carrera conocida.
+            await enqueue(ctx.settings, "run_persistent_agent", payload, ctx.tenant_id)
         # Evento en el CHAT DEL EMISOR: «Escribió a X» — fila pequeña y
         # centrada con la cara del otro bot. Es un hecho, no opinión del
         # modelo: lo escribe la herramienta, no el LLM.

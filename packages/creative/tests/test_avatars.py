@@ -37,8 +37,8 @@ def test_grok_face_devuelve_forma_ojos_y_relleno():
 
 
 def test_mismo_seed_da_el_mismo_descriptor_grok_face():
-    assert avatars.generar_avatar_grok_face("Malandri") == avatars.generar_avatar_grok_face(
-        "Malandri"
+    assert avatars.generar_avatar_grok_face("BotBeta") == avatars.generar_avatar_grok_face(
+        "BotBeta"
     )
 
 

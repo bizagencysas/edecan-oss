@@ -20,9 +20,11 @@ Logging estructurado (job_id/type/tenant_id/attempt) en cada paso vía
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import signal
+import time
 import uuid
 from typing import Any
 
@@ -56,6 +58,45 @@ async def _delete_message(deps: Deps, receipt_handle: str) -> None:
     await deps.sqs.delete_message(
         QueueUrl=deps.settings.SQS_QUEUE_URL, ReceiptHandle=receipt_handle
     )
+
+
+async def _log_poison_message(deps: Deps, body: str) -> None:
+    """F-3: persistir el cuerpo de un mensaje poison en `event_log` antes de
+    descartarlo, para poder auditar post-mortem qué productor mandó basura.
+    Fail-open: NUNCA lanza — si la tabla no existe o no hay tenant válido,
+    el descarte sigue (el logger ya guardó el body en el sistema de logs)."""
+    try:
+        from edecan_api.event_log import log_event
+    except Exception:
+        return
+    detalle: dict[str, Any] = {"body_len": len(body or "")}
+    tenant_id = None
+    try:
+        raw = json.loads(body)
+        if isinstance(raw, dict):
+            if raw.get("tenant_id"):
+                tenant_id = raw["tenant_id"]
+            # H-4: NUNCA el body crudo (un poison puede traer PII/secretos):
+            # solo metadatos para reconocer al productor.
+            detalle["type"] = str(raw.get("type") or "?")[:100]
+            detalle["job_id"] = str(raw.get("job_id") or "?")[:64]
+    except Exception:
+        pass
+    if tenant_id is None:
+        return
+    try:
+        async with deps.session_factory(None) as session:
+            resultado = log_event(
+                session,
+                tenant_id=uuid.UUID(str(tenant_id)),
+                categoria="jobs",
+                accion="poison_message",
+                detalle=detalle,
+            )
+            if inspect.isawaitable(resultado):
+                await resultado
+    except Exception:
+        logger.warning("no se pudo registrar el poison message en event_log", exc_info=True)
 
 
 async def _requeue(deps: Deps, env: JobEnvelope) -> None:
@@ -115,12 +156,17 @@ async def _handle_message(deps: Deps, message: dict[str, Any]) -> None:
         env = JobEnvelope.model_validate(json.loads(body))
     except Exception:
         logger.exception("mensaje SQS inválido, se descarta sin reintentar: %r", body)
+        # F-3: antes de perderlo para siempre, el cuerpo crudo queda en
+        # event_log (fail-open) para poder auditar post-mortem qué produjo
+        # el poison y por qué ningún handler lo reconoció.
+        await _log_poison_message(deps, body)
         await _delete_message(deps, receipt_handle)
         return
 
     handler = HANDLERS.get(env.type)
     if handler is None:
         logger.error("sin handler registrado, se descarta sin reintentar: %s", _job_ctx(env))
+        await _log_poison_message(deps, body)
         await _delete_message(deps, receipt_handle)
         return
 
@@ -175,8 +221,25 @@ async def poll_once(deps: Deps) -> int:
 async def run_forever(deps: Deps, *, stop_event: asyncio.Event | None = None) -> None:
     stop_event = stop_event or asyncio.Event()
     logger.info("edecan_worker escuchando SQS_QUEUE_URL=%s", deps.settings.SQS_QUEUE_URL)
+    from edecan_core.queue import QueueTransport, dispatch_outbox
+
+    outbox_transport = QueueTransport(deps.settings)
+    ultimo_dispatch = time.monotonic()
     while not stop_event.is_set():
         try:
+            # Auditoría F1 (HIGH): el outbox SOLO se despachaba en el loop
+            # local. En despliegues SQS, cada fila quedaba 'queued' para
+            # siempre (scheduler y push final muertos). Se despacha aquí,
+            # cada 2s, antes del poll de mensajes.
+            if time.monotonic() - ultimo_dispatch >= 2:
+                ultimo_dispatch = time.monotonic()
+                try:
+                    await dispatch_outbox(
+                        session_factory=deps.session_factory,
+                        transport=outbox_transport,
+                    )
+                except Exception:
+                    logger.exception("fallo despachando job_outbox; se reintenta en el próximo tick")
             await poll_once(deps)
         except Exception:
             logger.exception("fallo en el ciclo de poll de SQS; se reintenta")

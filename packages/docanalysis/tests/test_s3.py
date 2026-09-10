@@ -14,9 +14,17 @@ from edecan_docanalysis import _s3
 class _FakeBody:
     def __init__(self, data: bytes) -> None:
         self._data = data
+        self._pos = 0
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, amt: int | None = None) -> bytes:
+        # StreamingBody real avanza un cursor y devuelve b"" en EOF; además
+        # puede devolver MENOS de `amt` antes del EOF (por eso el productor
+        # lee en loop — ACT-01). El fake modela ambos comportamientos.
+        if amt is None:
+            amt = len(self._data) - self._pos
+        trozo = self._data[self._pos : self._pos + amt]
+        self._pos += len(trozo)
+        return trozo
 
 
 class _FakeS3Client:
@@ -105,6 +113,32 @@ async def test_descargar_archivo_lee_fila_y_baja_bytes(make_ctx, make_session, f
     sql, params = session.llamadas[0]
     assert "SELECT" in sql and "files" in sql
     assert params == {"tenant_id": str(tenant_id), "id": str(file_id)}
+
+
+async def test_descargar_archivo_limita_la_lectura_del_body(make_ctx, make_session, fake_aioboto3):
+    """BOTS-17: la descarga NO trae el objeto entero a memoria antes del control
+    de tamaño — el `read` se acota a `MAX_DESCARGABLE_BYTES + 1` bytes."""
+    tenant_id = uuid4()
+    file_id = uuid4()
+    s3_key = f"tenants/{tenant_id}/files/{file_id}/grande.bin"
+    fila = {
+        "id": file_id,
+        "s3_key": s3_key,
+        "filename": "grande.bin",
+        "mime": "application/octet-stream",
+        "size_bytes": _s3.MAX_DESCARGABLE_BYTES + 1000,
+    }
+    session = make_session([[fila]])
+    ctx = make_ctx(session=session, tenant_id=tenant_id)
+    fake_aioboto3.almacen[("edecan-files-test", s3_key)] = b"x" * (
+        _s3.MAX_DESCARGABLE_BYTES + 1000
+    )
+
+    resultado = await _s3.descargar_archivo(ctx, file_id)
+
+    assert resultado is not None
+    assert len(resultado.contenido) == _s3.MAX_DESCARGABLE_BYTES + 1
+    assert resultado.size_bytes == _s3.MAX_DESCARGABLE_BYTES + 1000
 
 
 async def test_descargar_archivo_devuelve_none_si_no_existe(make_ctx, make_session, fake_aioboto3):

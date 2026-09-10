@@ -205,6 +205,61 @@ def test_run_command_missing_param_raises(companion_config):
         actions._run_command({}, companion_config)
 
 
+def test_run_command_blocks_dangerous_command_even_with_allow_all_commands(
+    companion_config, monkeypatch
+):
+    companion_config.allow_all_commands = True
+
+    def _run_falso(*_args, **_kwargs):
+        raise AssertionError("un comando peligroso no debe llegar a subprocess.run")
+
+    monkeypatch.setattr(actions.subprocess, "run", _run_falso)
+
+    with pytest.raises(actions.ActionError, match="seguridad"):
+        actions._run_command({"command": "rm -rf /"}, companion_config)
+
+
+def test_run_command_blocks_dangerous_command_even_if_executable_is_allowed(
+    companion_config, monkeypatch
+):
+    companion_config.allowed_commands.append("rm")
+
+    def _run_falso(*_args, **_kwargs):
+        raise AssertionError("un comando peligroso no debe llegar a subprocess.run")
+
+    monkeypatch.setattr(actions.subprocess, "run", _run_falso)
+
+    with pytest.raises(actions.ActionError, match="seguridad"):
+        actions._run_command({"command": "rm -rf /"}, companion_config)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["rm  -rf /", "rm -Rf /", "\\rm -rf /", "rm -rfv /", "rm --force /"],
+)
+def test_run_command_blocks_rm_evasion_variants(companion_config, monkeypatch, command):
+    companion_config.allow_all_commands = True
+
+    def _run_falso(*_args, **_kwargs):
+        raise AssertionError("un comando peligroso no debe llegar a subprocess.run")
+
+    monkeypatch.setattr(actions.subprocess, "run", _run_falso)
+
+    with pytest.raises(actions.ActionError, match="seguridad"):
+        actions._run_command({"command": command}, companion_config)
+
+
+def test_run_command_allow_all_commands_still_runs_safe_commands(companion_config):
+    companion_config.allow_all_commands = True
+
+    result = actions._run_command(
+        {"command": f"{sys.executable} -c \"print('ok')\""}, companion_config
+    )
+
+    assert result["returncode"] == 0
+    assert "ok" in result["stdout"]
+
+
 def test_run_command_runs_with_cwd_pinned_to_sandbox(companion_config):
     companion_config.allowed_commands.append(sys.executable)
     (companion_config.sandbox_dir / "marker.txt").write_text("x")
@@ -507,3 +562,5 @@ def test_open_app_on_linux_still_reports_success_when_process_stays_alive(
     resultado = actions._open_app({"app": "firefox"}, companion_config)
 
     assert resultado == {"app": "firefox", "launched": True}
+
+

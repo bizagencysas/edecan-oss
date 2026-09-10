@@ -636,6 +636,11 @@ class FakeS3:
             raise KeyError(f"objeto S3 no encontrado: s3://{Bucket}/{Key}")
         return {"Body": FakeS3Body(data)}
 
+    async def delete_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+        # Idempotente como S3 real: borrar una key inexistente no es error.
+        self.objects.pop((Bucket, Key), None)
+        return {}
+
 
 class FakeSQS:
     """SQS falso en memoria: guarda los mensajes enviados/borrados para asserts."""

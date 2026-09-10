@@ -257,10 +257,13 @@ def test_build_env_shape_completo_sin_serve_web_dir(tmp_path: Path) -> None:
         serve_web_dir=None,
         local_secrets=_local_secrets(),
     )
-    # La ruta del repo local se resuelve desde el cwd de la corrida: se
-    # verifica aparte (debe apuntar al checkout) y el resto se pineea exacto.
-    repo_path = env.pop("EDECAN_LOCAL_REPO_PATH", "")
-    assert repo_path.endswith("/edecan")
+    # Solo se fija si el clon canónico del dueño existe en este home.
+    # En CI / este workspace no está: la tool queda desactivada, no se inventa.
+    repo_candidato = Path.home() / "edecan"
+    if repo_candidato.is_dir():
+        assert env.pop("EDECAN_LOCAL_REPO_PATH") == str(repo_candidato)
+    else:
+        assert "EDECAN_LOCAL_REPO_PATH" not in env
     assert env == {
         "EDECAN_LOCAL_MODE": "1",
         "DATABASE_URL": "postgresql+asyncpg://u:p@h/d",
@@ -288,6 +291,43 @@ def test_build_env_incluye_serve_web_dir_cuando_se_pasa(tmp_path: Path) -> None:
         local_secrets=_local_secrets(),
     )
     assert env["SERVE_WEB_DIR"] == "/ruta/al/web"
+
+
+def test_build_env_incluye_edecan_sin_automatizaciones_cuando_hay_vps(tmp_path: Path) -> None:
+    """C6a: con un VPS/companion activo, el env resultante lleva el gate para
+    que el worker local no duplique las automatizaciones del VPS."""
+    env = rt._build_env(
+        data_dir=tmp_path,
+        port=8765,
+        objectstore_port=8767,
+        database_url="postgresql+asyncpg://u:p@h/d",
+        serve_web_dir=None,
+        local_secrets=_local_secrets(),
+        sin_automatizaciones=True,
+    )
+    assert env["EDECAN_SIN_AUTOMATIZACIONES"] == "1"
+
+
+def test_build_env_sin_vps_no_incluye_edecan_sin_automatizaciones(tmp_path: Path) -> None:
+    """Sin VPS (single-user standalone), NO se fija el gate: el worker local
+    SÍ debe correr sus automatizaciones."""
+    env = rt._build_env(
+        data_dir=tmp_path,
+        port=8765,
+        objectstore_port=8767,
+        database_url="postgresql+asyncpg://u:p@h/d",
+        serve_web_dir=None,
+        local_secrets=_local_secrets(),
+        sin_automatizaciones=False,
+    )
+    assert "EDECAN_SIN_AUTOMATIZACIONES" not in env
+
+
+def test_companion_conectado_al_vps_lee_el_marker(tmp_path: Path) -> None:
+    marker = tmp_path / "companion.connected"
+    assert rt._companion_conectado_al_vps(marker=marker) is False
+    marker.touch()
+    assert rt._companion_conectado_al_vps(marker=marker) is True
 
 
 def test_mobile_public_url_prefiere_override_explicito(
@@ -662,7 +702,7 @@ async def test_run_orquesta_todo_en_orden_y_apaga_limpio(
     worker_loop_calls: list[Any] = []
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             self._settings = settings
 
         async def __aenter__(self) -> Any:
@@ -763,7 +803,7 @@ async def test_run_arranca_ollama_tras_settings_y_lo_detiene_en_finally(
     monkeypatch.setattr(ollama_supervisor_module, "maybe_start_ollama", fake_maybe_start_ollama)
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             pass
 
         async def __aenter__(self) -> Any:
@@ -842,7 +882,7 @@ async def test_run_detiene_ollama_en_finally_incluso_con_excepcion(
     )
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             pass
 
         async def __aenter__(self) -> Any:
@@ -912,7 +952,7 @@ async def test_run_normaliza_systemexit_de_uvicorn_por_puerto_ocupado_y_no_deja_
     monkeypatch.setattr(rt, "HEALTHZ_MAX_ATTEMPTS", 30)
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             pass
 
         async def __aenter__(self) -> Any:
@@ -981,7 +1021,7 @@ async def test_run_sin_ollama_arrancado_no_intenta_detenerlo(
     monkeypatch.setattr(ollama_supervisor_module, "maybe_start_ollama", lambda settings: None)
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             pass
 
         async def __aenter__(self) -> Any:
@@ -1051,7 +1091,7 @@ async def test_run_sirve_healthz_real_y_objectstore_real_mientras_corre(
     monkeypatch.setattr(rt, "HEALTHZ_INTERVAL_SECONDS", 0.02)
 
     class _FakeDepsCM:
-        def __init__(self, settings: Any) -> None:
+        def __init__(self, settings: Any, companion: Any = None) -> None:
             pass
 
         async def __aenter__(self) -> Any:

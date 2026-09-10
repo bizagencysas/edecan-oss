@@ -542,6 +542,7 @@ function OAuthConnectorCard({
             <Badge variant={status.variant}>{status.label}</Badge>
             <Button
               size="sm"
+              className="min-h-11 touch-manipulation sm:min-h-0"
               onClick={() => onConnect(connector.key)}
               loading={connecting}
               disabled={!connector.app_configured}
@@ -692,7 +693,7 @@ function ConectoresContent({ embedded }: { embedded: boolean }) {
   }
 
   return (
-    <div>
+    <div className={embedded ? "pb-6" : "pb-safe max-w-3xl mx-auto px-1 sm:px-0"}>
       {!embedded && (
         <PageHeader
           title="Conectores"

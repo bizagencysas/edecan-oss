@@ -22,6 +22,7 @@ class _Sesion:
         self.filas: list[Any] = []
         self.rowcounts: list[int] = []
         self.llamadas: list[tuple[str, dict[str, Any]]] = []
+        self._mission_row: Any = None
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = str(stmt)
@@ -45,7 +46,10 @@ class _Sesion:
                 return self._count if self._count is not None else 1
 
         if "SELECT r.team_mission_id" in sql:
-            return R(self.filas.pop(0) if self.filas else [])
+            self._mission_row = self.filas.pop(0) if self.filas else None
+            return R(self._mission_row)
+        if "FROM team_missions" in sql and "FOR UPDATE" in sql:
+            return R(self._mission_row)
         if "UPDATE team_mission_results SET estado" in sql:
             rc = self.rowcounts.pop(0) if self.rowcounts else 1
             return R(None, rc)
@@ -86,8 +90,13 @@ def _install_queue(monkeypatch: pytest.MonkeyPatch, captura: list[dict[str, Any]
         captura.append({"job_type": job_type, "payload": payload, "tenant_id": tenant_id})
         return uuid.uuid4()
 
+    async def _enqueue_outbox(_session, *, tenant_id, job_type, payload):
+        captura.append({"job_type": job_type, "payload": payload, "tenant_id": tenant_id})
+        return uuid.uuid4()
+
     q = types.ModuleType("edecan_core.queue")
     q.enqueue = _enqueue
+    q.enqueue_outbox = _enqueue_outbox
     core = types.ModuleType("edecan_core")
     core.queue = q
     monkeypatch.setitem(sys.modules, "edecan_core", core)
@@ -105,7 +114,7 @@ def _mision_y_resultados(n_miembros: int) -> dict[str, Any]:
         "esperados": n_miembros,
     }
     resultados: dict[str, dict[str, Any]] = {}
-    for i in range(n_miembros):
+    for _i in range(n_miembros):
         agente = str(uuid.uuid4())
         resultados.setdefault(mision, {})[agente] = "pending"
     return {"mision": mision, "tm": tm, "resultados": resultados}
@@ -139,7 +148,7 @@ async def test_parcial_no_despierta_al_coordinador(sesion, monkeypatch):
 async def test_todos_terminados_merge_una_sola_vez(sesion, monkeypatch):
     datos = _mision_y_resultados(2)
     nombres = [
-        {"nombre": "Fronti", "estado": "done", "resumen": "r1"},
+        {"nombre": "BotAlpha", "estado": "done", "resumen": "r1"},
         {"nombre": "Analista", "estado": "done", "resumen": "r2"},
     ]
     cas_row = [{"id": datos["mision"]}]
@@ -164,9 +173,9 @@ async def test_todos_terminados_merge_una_sola_vez(sesion, monkeypatch):
 async def test_error_de_un_miembro_tambien_llega_al_merge(sesion, monkeypatch):
     datos = _mision_y_resultados(3)
     nombres = [
-        {"nombre": "Fronti", "estado": "error", "resumen": "cayó"},
+        {"nombre": "BotAlpha", "estado": "error", "resumen": "cayó"},
         {"nombre": "Analista", "estado": "done", "resumen": "r2"},
-        {"nombre": "Backendsito", "estado": "done", "resumen": "r3"},
+        {"nombre": "BotBeta", "estado": "done", "resumen": "r3"},
     ]
     sesion.filas = [dict(datos["tm"]), {"fin": 3}, [{"id": datos["mision"]}], nombres]
     sesion.rowcounts = [1]
@@ -181,7 +190,7 @@ async def test_error_de_un_miembro_tambien_llega_al_merge(sesion, monkeypatch):
 
 async def test_idempotente_por_estado_pending(sesion, monkeypatch):
     datos = _mision_y_resultados(1)
-    nombres = [{"nombre": "Fronti", "estado": "done", "resumen": "r1"}]
+    nombres = [{"nombre": "BotAlpha", "estado": "done", "resumen": "r1"}]
     sesion.filas = [dict(datos["tm"]), {"fin": 1}, [{"id": datos["mision"]}], nombres]
     sesion.rowcounts = [1]
     captura: list[dict[str, Any]] = []

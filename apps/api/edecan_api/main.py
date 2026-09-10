@@ -85,16 +85,22 @@ from __future__ import annotations
 
 import functools
 import importlib.util
+import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import redis.asyncio as redis_asyncio
 from edecan_core.provider_health import ProviderHealth
+from edecan_core.tools import Tool, ToolContext, ToolRegistry, ToolResult
 from edecan_llm.router import LLMRouter
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -139,6 +145,185 @@ from edecan_api.routers import (
 )
 
 logger = logging.getLogger("edecan_api")
+
+_REQUEST_USER_ID: ContextVar[uuid.UUID | None] = ContextVar(
+    "edecan_request_user_id", default=None
+)
+_REQUEST_TENANT_ID: ContextVar[uuid.UUID | None] = ContextVar(
+    "edecan_request_tenant_id", default=None
+)
+
+
+class _LocalOwnerTool(Tool):
+    """Execution-time owner boundary for tools from the complete catalog."""
+
+    def __init__(self, delegate: Tool) -> None:
+        self._delegate = delegate
+        for attribute in (
+            "name",
+            "description",
+            "input_schema",
+            "requires_flags",
+            "dangerous",
+            "category",
+            "risk_level",
+            "latency_class",
+            "cost_class",
+            "timeout_seconds",
+            "retry_policy",
+            "idempotent",
+            "inverse",
+        ):
+            setattr(self, attribute, getattr(delegate, attribute))
+
+    async def run(self, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        from edecan_api.persona_tools import is_local_installation_owner
+
+        if not await is_local_installation_owner(ctx):
+            return ToolResult(
+                content=(
+                    "Esta herramienta pertenece al dueño de esta instalación de Edecán. "
+                    "La cuenta actual no puede usarla."
+                ),
+                data={"authorized": False},
+                is_error=True,
+            )
+        return await self._delegate.run(ctx, args)
+
+
+class _OwnerGatedToolRegistry(ToolRegistry):
+    def __init__(self, *, local_mode: bool) -> None:
+        super().__init__()
+        self._local_mode = local_mode
+
+    def register(self, tool: Tool) -> None:
+        if self._local_mode and not isinstance(tool, _LocalOwnerTool):
+            tool = _LocalOwnerTool(tool)
+        super().register(tool)
+
+
+class InstallationToolRegistry:
+    """Request-scoped catalog and plugin view, isolated by tenant."""
+
+    def __init__(self, *, local_mode: bool, configured_owner_user_id: str | None = None) -> None:
+        self._local_mode = local_mode
+        self._base = _OwnerGatedToolRegistry(local_mode=local_mode)
+        self._tenant_registries: dict[uuid.UUID, _OwnerGatedToolRegistry] = {}
+        self._entry_points_loaded = False
+        self._persisted_owner: tuple[uuid.UUID, uuid.UUID] | None = None
+        self._configured_owner: uuid.UUID | None = None
+        self._configured_owner_invalid = False
+        if configured_owner_user_id:
+            try:
+                self._configured_owner = uuid.UUID(configured_owner_user_id.strip())
+            except ValueError:
+                self._configured_owner_invalid = True
+
+    def remember_local_owner(self, *, user_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+        self._persisted_owner = (user_id, tenant_id)
+
+    def _request_is_owner(self) -> bool:
+        if not self._local_mode:
+            return True
+        user_id = _REQUEST_USER_ID.get()
+        tenant_id = _REQUEST_TENANT_ID.get()
+        if user_id is None or self._configured_owner_invalid:
+            return False
+        if self._configured_owner is not None:
+            return user_id == self._configured_owner
+        return self._persisted_owner == (user_id, tenant_id)
+
+    def _registry_for_tenant(self, tenant_id: uuid.UUID) -> _OwnerGatedToolRegistry:
+        registry = self._tenant_registries.get(tenant_id)
+        if registry is None:
+            registry = _OwnerGatedToolRegistry(local_mode=self._local_mode)
+            if self._entry_points_loaded:
+                registry.load_entry_points(group="edecan.tools")
+            self._tenant_registries[tenant_id] = registry
+        return registry
+
+    def _active_registry(self) -> _OwnerGatedToolRegistry | None:
+        if self._local_mode and not self._request_is_owner():
+            return None
+        tenant_id = _REQUEST_TENANT_ID.get()
+        if tenant_id is None:
+            return self._base if not self._local_mode else None
+        return self._registry_for_tenant(tenant_id)
+
+    def register(self, tool: Tool) -> None:
+        self._base.register(tool)
+        for registry in self._tenant_registries.values():
+            registry.register(tool)
+
+    def load_entry_points(self, group: str = "edecan.tools") -> None:
+        self._base.load_entry_points(group=group)
+        self._entry_points_loaded = True
+        for registry in self._tenant_registries.values():
+            registry.load_entry_points(group=group)
+
+    def load_plugin_dir(self, path: str | Path | None) -> int:
+        tenant_id = _REQUEST_TENANT_ID.get()
+        if tenant_id is None or (self._local_mode and not self._request_is_owner()):
+            return 0
+        root = Path(path) if path else None
+        return self._registry_for_tenant(tenant_id).load_plugin_dir(
+            root / str(tenant_id) if root is not None else None,
+            tenant_id=tenant_id,
+        )
+
+    def all(self) -> list[Tool]:
+        registry = self._active_registry()
+        return registry.all() if registry is not None else []
+
+    def get(self, name: str) -> Tool | None:
+        registry = self._active_registry()
+        return registry.get(name) if registry is not None else None
+
+    def specs(self, flags: dict[str, Any]) -> list[Any]:
+        registry = self._active_registry()
+        return registry.specs(flags) if registry is not None else []
+
+    def __contains__(self, name: str) -> bool:
+        return self.get(name) is not None
+
+    def __len__(self) -> int:
+        return len(self.all())
+
+
+class InstallationIdentityMiddleware:
+    """Bind a verified JWT identity to registry lookup for the full response."""
+
+    def __init__(self, app: ASGIApp, *, settings: Settings) -> None:
+        self.app = app
+        self.settings = settings
+
+    async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
+        user_id: uuid.UUID | None = None
+        tenant_id: uuid.UUID | None = None
+        if scope["type"] == "http":
+            headers = {key.lower(): value for key, value in scope.get("headers", [])}
+            authorization = headers.get(b"authorization", b"").decode("latin-1")
+            if authorization.startswith("Bearer "):
+                from edecan_api.security import TokenError, decode_token
+
+                try:
+                    decoded = decode_token(
+                        authorization[7:].strip(),
+                        secret=self.settings.JWT_SECRET,
+                        expected_typ="access",
+                    )
+                except TokenError:
+                    pass
+                else:
+                    user_id = decoded.sub
+                    tenant_id = decoded.ten
+        user_token = _REQUEST_USER_ID.set(user_id)
+        tenant_token = _REQUEST_TENANT_ID.set(tenant_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _REQUEST_TENANT_ID.reset(tenant_token)
+            _REQUEST_USER_ID.reset(user_token)
 
 # v2 (ROADMAP_V2.md §7.6, dueño WP-V2-01): nombres EXACTOS de los routers que
 # se montan de forma defensiva más abajo — módulo constante (en vez de un
@@ -408,13 +593,112 @@ def _configure_logging(settings: Settings) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
+async def _cleanup_orphan_inflight_turns(
+    redis_client: redis_asyncio.Redis, *, ttl_seconds: int
+) -> int:
+    """BOTS-24: marca `interrupted` las identidades in-flight de turnos
+    interactivos que quedaron huérfanas tras un restart.
+
+    Un turno interactivo reclama su identidad con `_claim_message_idempotency`
+    (status `in_flight`) o la encola (`queued`). Si el proceso muere
+    (OOM/restart/deploy), el productor desaparece y esas identidades quedan
+    colgadas: un `resume` con la misma clave devolvería `202 in_flight` para
+    siempre — un turno fantasma que nadie está ejecutando. Al arrancar se las
+    re-etiqueta `interrupted` para que el resume responda honestamente "se
+    interrumpió, vuelve a intentarlo".
+
+    NUNCA se marca `completed` lo que no terminó de persistir: un turno
+    interrumpido no es un turno terminado. Best-effort: un fallo de Redis o del
+    scan no debe impedir el arranque.
+    """
+    scan_iter = getattr(redis_client, "scan_iter", None)
+    if scan_iter is None:
+        return 0
+    marcadas = 0
+    async for key in scan_iter(match=f"{conversations.CHAT_IDEMPOTENCY_KEY_PREFIX}*"):
+        try:
+            raw = await redis_client.get(key)
+        except Exception:  # noqa: BLE001 - best-effort
+            continue
+        if raw is None:
+            continue
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("status") not in ("in_flight", "queued"):
+            continue
+        record["status"] = conversations.IDEMPOTENCY_INTERRUPTED
+        record["interrupted_at"] = datetime.now(UTC).isoformat()
+        try:
+            await redis_client.set(
+                key, json.dumps(record, ensure_ascii=False), ex=ttl_seconds
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            continue
+        marcadas += 1
+    return marcadas
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    from edecan_core.tools import ToolRegistry
-
-    registry = ToolRegistry()
+    registry = app.state.tool_registry
     registry.load_entry_points(group="edecan.tools")
-    app.state.tool_registry = registry
+    settings = app.state.settings
+    if not getattr(settings, "EDECAN_API_SINGLE_REPLICA", True):
+        # BOTS-20: aviso explícito, no un bloqueo. La serialización por
+        # conversación (`_TURN_LOCKS`) es un asyncio.Lock en memoria; desactivar
+        # la bandera solo admite que esa garantía deja de existir en despliegues
+        # multi-réplica. La clave idempotente sigue evitando repetir el MISMO
+        # envío, pero no ordena dos claves distintas.
+        logger.warning(
+            "EDECAN_API_SINGLE_REPLICA=False: la serialización por conversación "
+            "(_TURN_LOCKS en persistent_agents) es un asyncio.Lock en memoria y NO "
+            "está garantizada con varias réplicas de API. Dos procesos pueden "
+            "intercalar turnos del mismo chat."
+        )
+    # BOTS-24: al arrancar, re-etiquetar como `interrupted` las identidades
+    # in-flight de turnos interactivos que quedaron huérfanas (su productor murió
+    # con el proceso anterior). Best-effort: el arranque no depende de esto.
+    try:
+        redis_client = get_redis(settings)
+        marcadas = await _cleanup_orphan_inflight_turns(
+            redis_client, ttl_seconds=int(settings.CHAT_IDEMPOTENCY_TTL_SECONDS)
+        )
+        if marcadas:
+            logger.warning(
+                "BOTS-24: %d turno(s) interactivo(s) in-flight huérfanos marcados "
+                "como interrupted al arrancar.",
+                marcadas,
+            )
+    except Exception:  # noqa: BLE001 - el arranque no depende de la limpieza
+        logger.warning("BOTS-24: no se pudo limpiar turnos in-flight huérfanos.", exc_info=True)
+    if settings.EDECAN_LOCAL_MODE and not (
+        getattr(settings, "LOCAL_OWNER_USER_ID", None)
+        or os.environ.get("LOCAL_OWNER_USER_ID", "").strip()
+    ):
+        try:
+            from edecan_db.session import get_session
+
+            from edecan_api.repo import SqlRepo
+
+            async with get_session(None) as session:
+                repo = SqlRepo(session)
+                owner = await repo.get_local_owner()
+                if owner is None:
+                    owner = await repo.get_first_active_owner()
+                if owner is not None:
+                    registry.remember_local_owner(
+                        user_id=owner["user_id"], tenant_id=owner["tenant_id"]
+                    )
+        except Exception:  # noqa: BLE001 - fail closed: catalog remains unavailable
+            logger.warning(
+                "No se pudo resolver el dueño local al iniciar; el catálogo completo "
+                "permanece cerrado hasta una autenticación local válida.",
+                exc_info=True,
+            )
     logger.info("edecan_api listo: ToolRegistry construido desde entry points 'edecan.tools'.")
     health_store = getattr(app.state, "provider_health_store", None)
     if health_store is not None:
@@ -434,6 +718,15 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Edecán API", version=__version__, lifespan=_lifespan)
 
+    registry = InstallationToolRegistry(
+        local_mode=settings.EDECAN_LOCAL_MODE,
+        configured_owner_user_id=(
+            getattr(settings, "LOCAL_OWNER_USER_ID", None)
+            or os.environ.get("LOCAL_OWNER_USER_ID")
+        ),
+    )
+    app.state.tool_registry = registry
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.WEB_BASE_URL],
@@ -441,6 +734,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(InstallationIdentityMiddleware, settings=settings)
     app.add_middleware(LocalTunnelGuardMiddleware, enabled=settings.EDECAN_LOCAL_MODE)
     app.add_middleware(RequestContextMiddleware)
 

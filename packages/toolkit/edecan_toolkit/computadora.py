@@ -240,6 +240,8 @@ def _bloqueo_por_plan(accion: str, flags: dict[str, Any]) -> str | None:
 
 
 class UsarComputadoraTool(Tool):
+    # Acciones sobre la Mac del dueño (pantalla/clic) con esperas reales.
+    timeout_seconds = 300.0
     name = "usar_computadora"
     description = (
         "Controla ESTA Mac del dueño: abrir apps, capturar pantalla (la foto llega "
@@ -313,16 +315,14 @@ class UsarComputadoraTool(Tool):
         # `workspace_scope` durable del agente; el modelo nunca puede elegirlo
         # porque su valor se descarta incondicionalmente aquí.
         parametros.pop(_CLAVE_WORKSPACE_ROOT, None)
-        # Aprobación del DUEÑO (server-side, no manipulable por el modelo):
-        # el turno proactivo del companion (vida digital) tiene
-        # `usar_computadora` pre-aprobada y `companion_wake=True` en extras.
-        # Con ella, el bridge permite input_key/input_pointer/clipboard
-        # (scrollear y leer WhatsApp/LinkedIn es EL propósito de la visita).
-        # Se SOBREESCRIBE lo que el modelo mandara en `parametros` — el valor
-        # sale de `extras`, que el modelo no controla.
+        # Aprobación del DUEÑO (server-side, no manipulable por el modelo): el bridge
+        # permite input_key/input_pointer/clipboard/screenshot solo cuando
+        # `usar_computadora` pasó por la confirmación humana del chat (esta
+        # tool es `dangerous`), ya sea en un turno normal o en el proactivo de
+        # vida digital. Se SOBREESCRIBE lo que el modelo mandara en
+        # `parametros` — el valor sale de `extras`, que el modelo no controla.
         parametros["owner_approved"] = bool(
             "usar_computadora" in (extras.get("approved_tool_calls") or set())
-            and extras.get("companion_wake") is True
         )
         if workspace_root and superficie in ("files", "terminal"):
             parametros[_CLAVE_WORKSPACE_ROOT] = workspace_root

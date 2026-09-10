@@ -124,46 +124,6 @@ def _extract_bearer_token(authorization: str | None) -> str:
     return token.strip()
 
 
-async def get_current_user(
-    authorization: str | None = Header(default=None),
-    settings: Settings = Depends(get_settings),
-    redis_client: redis_asyncio.Redis = Depends(get_auth_redis),
-) -> CurrentUser:
-    """Decodifica el access token y arma `CurrentUser` con flags recalculados."""
-    token = _extract_bearer_token(authorization)
-    try:
-        decoded: DecodedToken = decode_token(
-            token, secret=settings.JWT_SECRET, expected_typ="access"
-        )
-    except TokenError as exc:
-        raise _unauthorized(str(exc)) from exc
-
-    try:
-        deleted = await redis_client.get(f"auth:deleted-user:{decoded.sub}")
-    except RedisError as exc:
-        logger.error("auth_denylist_unavailable", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No se pudo validar el estado de la sesión. Inténtalo de nuevo.",
-        ) from exc
-    if deleted:
-        raise _unauthorized("La cuenta ya no está disponible.")
-
-    tenant = TenantCtx(
-        tenant_id=decoded.ten, plan_key=decoded.plan, flags=flags_for_plan(decoded.plan)
-    )
-    return CurrentUser(user_id=decoded.sub, tenant=tenant)
-
-
-async def get_tenant_ctx(current_user: CurrentUser = Depends(get_current_user)) -> TenantCtx:
-    return current_user.tenant
-
-
-# ---------------------------------------------------------------------------
-# Sesión / Repo (aislamiento multi-tenant vía RLS — ARCHITECTURE.md §2, §10.3)
-# ---------------------------------------------------------------------------
-
-
 async def get_platform_session() -> AsyncIterator[AsyncSession]:
     """Sesión "plataforma": rol dueño, sin `tenant_id` (bypassa RLS).
 
@@ -186,6 +146,109 @@ async def get_platform_repo(
     para la siguiente petición.
     """
     return SqlRepo(session)
+
+
+# Re-validación de membresía/plan por request (C10): el access token puede
+# quedar desactualizado hasta 30 días; la DB manda.
+_MEMBERSHIP_REVALIDATION_TTL_SECONDS = 60.0
+
+# (sub, ten) -> (expira_monotonic, plan_key_efectivo). Proceso-local: en un
+# deploy multi-réplica una revocación tarda como máximo el TTL en propagarse.
+_auth_revalidation_cache: dict[tuple[uuid.UUID, uuid.UUID], tuple[float, str]] = {}
+
+
+def _clear_auth_revalidation_cache() -> None:
+    """Test hook: vacía la caché de re-validación de membresía."""
+    _auth_revalidation_cache.clear()
+
+
+async def _revalidate_tenant_access(
+    repo: Repo, decoded: DecodedToken
+) -> tuple[str, bool]:
+    """Re-valida membresía + estado de tenant + plan contra la DB.
+
+    Devuelve `(plan_key_efectivo, concedido)`:
+    - `concedido=False` si el tenant existe pero no está `active`, o si el
+      usuario existe pero ya no tiene membresía para ese tenant (removido).
+    - El `plan_key` efectivo sale de la DB: el del token puede quedar
+      desactualizado hasta 30 días, así que un upgrade/downgrade de plan se
+      refleja en cuanto la caché vence.
+    - Un usuario/tenant desconocido (p. ej. un token con un id que no existe)
+      NO se rechaza aquí: los endpoints que lo necesiten hacen su propia
+      comprobación (p. ej. `/me` → 404). Eso preserva el contrato histórico y
+      evita confundir un lookup ausente con una revocación.
+    """
+    key = (decoded.sub, decoded.ten)
+    ahora = time.monotonic()
+    cacheado = _auth_revalidation_cache.get(key)
+    if cacheado is not None and cacheado[0] > ahora:
+        return cacheado[1], True
+
+    tenant = await repo.get_tenant(decoded.ten)
+    plan_key = decoded.plan
+    if tenant is not None:
+        if str(tenant.get("status") or "") != "active":
+            return plan_key, False
+        plan_key = str(tenant.get("plan_key") or decoded.plan)
+
+    user = await repo.get_user(decoded.sub)
+    if user is not None:
+        membership = await repo.get_membership(user_id=decoded.sub, tenant_id=decoded.ten)
+        if membership is None:
+            return plan_key, False
+
+    _auth_revalidation_cache[key] = (ahora + _MEMBERSHIP_REVALIDATION_TTL_SECONDS, plan_key)
+    return plan_key, True
+
+
+async def get_current_user(
+    authorization: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+    redis_client: redis_asyncio.Redis = Depends(get_auth_redis),
+    repo: Repo = Depends(get_platform_repo),
+) -> CurrentUser:
+    """Decodifica el access token y arma `CurrentUser` con flags recalculados.
+
+    Además del denylist de cuentas eliminadas, re-valida membresía + estado de
+    tenant + plan contra la DB (C10): un miembro removido o un tenant
+    desactivado deja de pasar aunque su access token no haya expirado.
+    """
+    token = _extract_bearer_token(authorization)
+    try:
+        decoded: DecodedToken = decode_token(
+            token, secret=settings.JWT_SECRET, expected_typ="access"
+        )
+    except TokenError as exc:
+        raise _unauthorized(str(exc)) from exc
+
+    try:
+        deleted = await redis_client.get(f"auth:deleted-user:{decoded.sub}")
+    except RedisError as exc:
+        logger.error("auth_denylist_unavailable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo validar el estado de la sesión. Inténtalo de nuevo.",
+        ) from exc
+    if deleted:
+        raise _unauthorized("La cuenta ya no está disponible.")
+
+    plan_key, concedido = await _revalidate_tenant_access(repo, decoded)
+    if not concedido:
+        raise _unauthorized("La sesión ya no tiene acceso a este tenant.")
+
+    tenant = TenantCtx(
+        tenant_id=decoded.ten, plan_key=plan_key, flags=flags_for_plan(plan_key)
+    )
+    return CurrentUser(user_id=decoded.sub, tenant=tenant)
+
+
+async def get_tenant_ctx(current_user: CurrentUser = Depends(get_current_user)) -> TenantCtx:
+    return current_user.tenant
+
+
+# ---------------------------------------------------------------------------
+# Sesión / Repo (aislamiento multi-tenant vía RLS — ARCHITECTURE.md §2, §10.3)
+# ---------------------------------------------------------------------------
 
 
 async def get_tenant_session(

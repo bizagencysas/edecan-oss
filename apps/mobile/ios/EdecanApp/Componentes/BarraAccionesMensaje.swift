@@ -27,6 +27,10 @@ struct BarraAccionesMensaje: View {
     @State private var mostrarCopiado = false
     @State private var mostrarShareSheet = false
     @State private var mostrarMas = false
+    /// Voz elegida por el usuario (mismo `@AppStorage` que ``LlamadaView`` y
+    /// ``VocesView``): el altavoz del chat habla con la voz que eligió, no con
+    /// un ID fijo.
+    @AppStorage("vozElegidaId") private var vozElegidaId = "0uHpKhb0ymsdvmCtPV8y"
     @StateObject private var voz = ReproductorVoz()
 
     /// Texto sin speech tags ni efectos — para copiar y compartir.
@@ -103,7 +107,7 @@ struct BarraAccionesMensaje: View {
     private var botonEscuchar: some View {
         Button {
             hapticSuccess()
-            voz.alternar(texto: textoSinTags, client: client)
+            voz.alternar(texto: textoSinTags, client: client, voiceId: vozElegidaId)
         } label: {
             Image(systemName: voz.hablando ? "stop.fill" : "speaker.wave.2")
         }
@@ -263,18 +267,17 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
     private let streamPlayer = ReproductorMPEGStream()
     private var tarea: Task<Void, Never>?
 
-    /// Caché del audio TTS por texto del mensaje (compartido entre todas las
-    /// burbujas): reproducir otra vez NO vuelve a llamar a
+    /// Caché del audio TTS por (voz, texto) del mensaje (compartido entre todas
+    /// las burbujas): reproducir otra vez NO vuelve a llamar a
     /// `POST /v1/voice/speak/stream`. Acotado por recuento para no crecer sin
-    /// límite en memoria.
+    /// límite en memoria. La clave incluye la voz para no devolver audio de
+    /// una voz vieja si el usuario la cambia.
     private static let cacheAudio: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.countLimit = 60
         return cache
     }()
 
-    /// Voice ID de ElevenLabs para el altavoz del chat. Modelo eleven_turbo_v2_5.
-    private let voiceId = "0uHpKhb0ymsdvmCtPV8y"
     private let modelId = "eleven_turbo_v2_5"
 
     override init() {
@@ -288,7 +291,7 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
         try? sesion.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
-    func alternar(texto: String, client: APIClient?) {
+    func alternar(texto: String, client: APIClient?, voiceId: String) {
         errorVoz = nil
         if hablando {
             detener()
@@ -301,8 +304,9 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
             hablarLocalmente(textoLimpio)
             return
         }
+        let claveCache = "\(voiceId)#\(textoLimpio)" as NSString
         // Replay desde el caché: sin llamada a la API de TTS.
-        if let data = Self.cacheAudio.object(forKey: textoLimpio as NSString) {
+        if let data = Self.cacheAudio.object(forKey: claveCache) {
             reproducir(data: data as Data, texto: textoLimpio)
             return
         }
@@ -321,7 +325,7 @@ private final class ReproductorVoz: NSObject, ObservableObject, AVSpeechSynthesi
                 )
                 let data = try await streamPlayer.reproducir(stream: stream)
                 if !Task.isCancelled, !data.isEmpty {
-                    Self.cacheAudio.setObject(data as NSData, forKey: textoLimpio as NSString)
+                    Self.cacheAudio.setObject(data as NSData, forKey: claveCache)
                 }
             } catch is CancellationError {
                 return

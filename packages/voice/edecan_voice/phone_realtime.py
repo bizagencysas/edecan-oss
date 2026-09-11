@@ -12,7 +12,7 @@ import base64
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -30,12 +30,24 @@ _BARGE_IN_IGNORE_S = 0.7
 _BARGE_IN_FRAMES = 10
 _BARGE_IN_ENERGY = 18.0
 
-DEEPGRAM_LIVE_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    "?encoding=mulaw&sample_rate=8000&channels=1&model=nova-2"
-    "&language=es&punctuate=true&interim_results=true"
-    "&endpointing=300&utterance_end_ms=1200"
+DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen"
+
+# Parámetros fijos del WS live de Deepgram (español, modelo nova-2, puntuación,
+# interims y endpointing): los mismos que usó siempre el flujo telefónico. Solo
+# el códec (`encoding`) y la tasa de muestreo (`sample_rate`) cambian según el
+# canal — μ-law 8 kHz para Twilio, linear16 16 kHz para la voz web.
+_DEEPGRAM_LIVE_FIXED_QUERY = (
+    "channels=1&model=nova-2&language=es&punctuate=true"
+    "&interim_results=true&endpointing=300&utterance_end_ms=1200"
 )
+
+
+def _deepgram_live_url(encoding: str, sample_rate: int) -> str:
+    """Arma la URL del WS live de Deepgram para `encoding`/`sample_rate`."""
+    return (
+        f"{DEEPGRAM_LIVE_URL}?encoding={encoding}&sample_rate={sample_rate}"
+        f"&{_DEEPGRAM_LIVE_FIXED_QUERY}"
+    )
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 FLASH_MODEL = "eleven_flash_v2_5"
 _MULAW_FRAME = 160  # 20 ms a 8 kHz
@@ -166,10 +178,18 @@ async def synthesize_ulaw_8000(
 
 
 class DeepgramLive:
-    """Cliente mínimo del WebSocket live de Deepgram para μ-law 8 kHz."""
+    """Cliente mínimo del WebSocket live de Deepgram.
 
-    def __init__(self, api_key: str) -> None:
+    μ-law 8 kHz por defecto (Twilio Media Streams); linear16 16 kHz para la voz
+    web (PCM crudo s16le mono, que se manda con `send_raw`).
+    """
+
+    def __init__(
+        self, api_key: str, *, encoding: str = "mulaw", sample_rate: int = 8000
+    ) -> None:
         self._api_key = api_key
+        self._encoding = encoding
+        self._sample_rate = sample_rate
         self._ws: Any = None
 
     async def connect(self) -> None:
@@ -178,12 +198,20 @@ class DeepgramLive:
         except ImportError:  # pragma: no cover - uvicorn trae websockets
             from websockets.client import connect  # type: ignore[no-redef]
         headers = {"Authorization": f"Token {self._api_key}"}
+        url = _deepgram_live_url(self._encoding, self._sample_rate)
         try:
-            self._ws = await connect(DEEPGRAM_LIVE_URL, additional_headers=headers)
+            self._ws = await connect(url, additional_headers=headers)
         except TypeError:
-            self._ws = await connect(DEEPGRAM_LIVE_URL, extra_headers=headers)
+            self._ws = await connect(url, extra_headers=headers)
 
     async def send_mulaw(self, payload: bytes) -> None:
+        if self._ws is None or not payload:
+            return
+        await self._ws.send(payload)
+
+    async def send_raw(self, payload: bytes) -> None:
+        """Envía PCM crudo (s16le) por el WebSocket — el equivalente de
+        `send_mulaw` para el encoding `linear16` de la voz web."""
         if self._ws is None or not payload:
             return
         await self._ws.send(payload)
@@ -215,6 +243,24 @@ class DeepgramLive:
             text = str(alt.get("transcript") or "").strip()
             if text and data.get("is_final"):
                 yield text
+
+    async def eventos(self) -> AsyncIterator[tuple[str, bool]]:
+        """Rinde `(texto, is_final)` de cada transcripción de Deepgram Live,
+        incluyendo los PARCIALES (`is_final=False`) — a diferencia de
+        `utterances()`, que solo entrega finales (el flujo telefónico)."""
+        if self._ws is None:
+            return
+        async for raw in self._ws:
+            if isinstance(raw, bytes):
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            alt = ((data.get("channel") or {}).get("alternatives") or [{}])[0]
+            text = str(alt.get("transcript") or "").strip()
+            if text:
+                yield text, bool(data.get("is_final"))
 
 
 ReplyFn = Callable[[str], Awaitable[str]]

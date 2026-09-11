@@ -1,6 +1,12 @@
 import Foundation
 
 /// Evento público del transporte `WS /v1/voice/realtime`.
+///
+/// Cubre tanto el protocolo TTS realtime original (`ready` → `speak` →
+/// `audio`* → `done`) como la llamada continua: `ready` ahora trae las
+/// capacidades `stt_live`/`tts_pcm`, el cliente envía frames `audio/pcm16`
+/// y recibe interims `transcript.partial` antes del `transcript` final, y el
+/// `speak` con `"pcm": true` responde chunks `audio/pcm24` (s16le 24 kHz).
 public struct RealtimeVoiceEvent: Sendable, Equatable {
     public let type: String
     public let turnId: Int?
@@ -9,6 +15,13 @@ public struct RealtimeVoiceEvent: Sendable, Equatable {
     public let audio: Data?
     public let text: String?
     public let state: String?
+    /// `stt_live` del `ready`: el servidor admite STT en vivo (frames PCM16
+    /// con parciales). `false`/`nil` → el cliente captura por turnos.
+    public let sttLive: Bool?
+    /// `tts_pcm` del `ready`: el servidor devuelve `audio/pcm24` en streaming.
+    public let ttsPCM: Bool?
+    /// `sample_rate` de los chunks `audio/pcm24` (típicamente 24000).
+    public let sampleRate: Int?
 
     init(json: [String: Any]) {
         type = json["type"] as? String ?? "unknown"
@@ -22,6 +35,9 @@ public struct RealtimeVoiceEvent: Sendable, Equatable {
         }
         text = json["text"] as? String
         state = json["state"] as? String
+        sttLive = json["stt_live"] as? Bool
+        ttsPCM = json["tts_pcm"] as? Bool
+        sampleRate = json["sample_rate"] as? Int
     }
 }
 
@@ -70,14 +86,69 @@ public final class RealtimeVoiceClient: @unchecked Sendable {
         return try await receive()
     }
 
-    public func speak(text: String) async throws {
-        try await send(["type": "speak", "text": text])
+    public func speak(text: String, voiceId: String? = nil, pcm: Bool = false) async throws {
+        var mensaje: [String: Any] = ["type": "speak", "text": text]
+        if let voiceId { mensaje["voice_id"] = voiceId }
+        if pcm { mensaje["pcm"] = true }
+        try await send(mensaje)
+    }
+
+    /// `speak` en PCM streaming: el servidor responde chunks `audio/pcm24`
+    /// (s16le 24 kHz mono) y cierra con el `done` que ya usa el transporte.
+    ///
+    /// Devuelve un `AsyncThrowingStream` de los bytes de audio crudos: el
+    /// llamador los encola en su reproductor a medida que llegan (habla de
+    /// inmediato, sin esperar el mp3 completo). Cancelar la iteración corta
+    /// el loop interno, pero NO manda `interrupt`: para barge-in el llamador
+    /// debe invocar ``interrupt()`` por su cuenta antes de empezar un turno
+    /// nuevo (el servidor dejaría de emitir chunks del TTS viejo).
+    public func speakPCM(text: String, voiceId: String? = nil) async throws -> AsyncThrowingStream<Data, Error> {
+        var mensaje: [String: Any] = ["type": "speak", "text": text, "pcm": true]
+        if let voiceId { mensaje["voice_id"] = voiceId }
+        try await send(mensaje)
+        return AsyncThrowingStream { continuation in
+            let tarea = Task { [weak self] in
+                do {
+                    while !Task.isCancelled {
+                        guard let self else { throw CancellationError() }
+                        let evento = try await self.receive()
+                        if evento.type == "audio",
+                           evento.mime == "audio/pcm24",
+                           let audio = evento.audio {
+                            continuation.yield(audio)
+                        } else if evento.type == "done" {
+                            continuation.finish()
+                            return
+                        } else if evento.type == "error" {
+                            continuation.finish(throwing: ClientError.serverClosed(-1))
+                            return
+                        }
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                tarea.cancel()
+            }
+        }
     }
 
     public func sendAudio(_ data: Data, mime: String = "audio/wav") async throws {
         try await send([
             "type": "audio",
             "mime": mime,
+            "data": data.base64EncodedString()
+        ])
+    }
+
+    /// Envía un frame de audio en vivo como PCM crudo s16le 16 kHz mono
+    /// (`audio/pcm16`). Es el transporte de la llamada continua: muchos
+    /// frames pequeños durante el turno, en vez de un único WAV.
+    public func sendPCM16(_ data: Data) async throws {
+        try await send([
+            "type": "audio",
+            "mime": "audio/pcm16",
             "data": data.base64EncodedString()
         ])
     }
@@ -91,6 +162,12 @@ public final class RealtimeVoiceClient: @unchecked Sendable {
     }
 
     public func commitAudio() async throws {
+        try await send(["type": "commit"])
+    }
+
+    /// Alias explícito de ``commitAudio()`` para el flujo de llamada continua:
+    /// cierra el turno de audio en vivo y dispara el `transcript` final.
+    public func commit() async throws {
         try await send(["type": "commit"])
     }
 

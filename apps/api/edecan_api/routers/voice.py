@@ -56,6 +56,7 @@ import base64
 import json
 import logging
 import re
+import struct
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -70,6 +71,7 @@ from edecan_schemas.plans import FLAG_VOICE_WEB, LIMIT_VOICE_MINUTES_MONTH
 from edecan_voice.base import STTProvider, TTSProvider
 from edecan_voice.deepgram import DeepgramSTT
 from edecan_voice.elevenlabs import DEFAULT_MODEL_ID, ElevenLabsTTS
+from edecan_voice.phone_realtime import DeepgramLive
 from edecan_voice.polly import PollyTTS
 from edecan_voice.realtime import RealtimeVoiceSession
 from edecan_voice.stubs import StubSTT, StubTTS
@@ -571,6 +573,42 @@ _REALTIME_CLOSE_AUTH = 4401
 _REALTIME_CLOSE_FORBIDDEN = 4403
 _REALTIME_CLOSE_PROTOCOL = 4400
 
+# PCM16 en vivo (Deepgram Live linear16): s16le, 16 kHz, mono.
+_PCM16_SAMPLE_RATE = 16000
+_PCM16_BYTES_PER_SAMPLE = 2  # 16 bits
+_PCM16_CHANNELS = 1
+
+
+def _pcm16_a_wav(pcm: bytes) -> bytes:
+    """Envuelve PCM crudo (s16le, 16 kHz, mono) en un WAV RIFF de 44 bytes.
+
+    Útil como fallback: si Deepgram Live no entregó texto final, este WAV se
+    transcribe con el flujo batch (`process_audio` con mime `audio/wav`).
+    """
+    byte_rate = _PCM16_SAMPLE_RATE * _PCM16_BYTES_PER_SAMPLE  # 32000 bytes/s
+    block_align = _PCM16_CHANNELS * _PCM16_BYTES_PER_SAMPLE  # 2
+    bits_per_sample = _PCM16_BYTES_PER_SAMPLE * 8
+    data_size = len(pcm)
+    header = (
+        b"RIFF"
+        + struct.pack("<I", 36 + data_size)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<I", 16)
+        + struct.pack(
+            "<HHIIHH",
+            1,  # audio_format: PCM
+            _PCM16_CHANNELS,
+            _PCM16_SAMPLE_RATE,
+            byte_rate,
+            block_align,
+            bits_per_sample,
+        )
+        + b"data"
+        + struct.pack("<I", data_size)
+    )
+    return header + pcm
+
 
 def _realtime_user_from_token(token: str, settings: Settings) -> CurrentUser:
     try:
@@ -655,6 +693,13 @@ async def realtime_voice(websocket: WebSocket) -> None:
             audio_turn_id: int | None = None
             audio_mime = "audio/wav"
             visual_content: dict[str, Any] | None = None
+            # PCM16 en vivo (Deepgram Live linear16): turno concurrente con
+            # parciales estilo ChatGPT. `stt_live`/`tts_pcm` se calculan una vez
+            # para el handshake `ready` y para decidir las rutas del loop.
+            stt_live = isinstance(stt, DeepgramSTT)
+            tts_pcm = isinstance(tts, ElevenLabsTTS)
+            pcm16_queue: asyncio.Queue[bytes | None] | None = None
+            pcm16_task: asyncio.Task[Any] | None = None
 
             await websocket.send_json(
                 {
@@ -662,25 +707,45 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     "protocol": "edecan.voice.realtime.v1",
                     "state": session.state,
                     "mime": "audio/wav" if isinstance(tts, StubTTS) else "audio/mpeg",
+                    "stt_live": stt_live,
+                    "tts_pcm": tts_pcm,
                     "conversation_id": (
                         str(voice_conversation_id) if voice_conversation_id else None
                     ),
                 }
             )
 
-            async def synthesize(turn_id: int, text: str) -> None:
-                media_type = "audio/wav" if isinstance(tts, StubTTS) else "audio/mpeg"
+            async def synthesize(turn_id: int, text: str, *, pcm: bool = False) -> None:
+                if pcm and isinstance(tts, ElevenLabsTTS):
+                    # TTS progresivo en PCM s16le 24 kHz mono: el cliente iOS
+                    # empieza a reproducir de inmediato (PHASE3 voz web).
+                    media_type = "audio/pcm24"
+                    sample_rate: int | None = 24000
+                    output_format = "pcm_24000"
+                else:
+                    media_type = "audio/wav" if isinstance(tts, StubTTS) else "audio/mpeg"
+                    sample_rate = None
+                    output_format = None
                 model_id = getattr(tts, "_model_id", None) or DEFAULT_MODEL_ID
                 sequence = 0
                 started_at = time.perf_counter()
                 first_audio_at: float | None = None
                 total_bytes = 0
                 try:
-                    async for chunk in tts.synthesize_stream(
-                        rewrite_for_voice(text),
-                        model_id=model_id,
-                        mime=media_type,
-                    ):
+                    if output_format is not None:
+                        stream = tts.synthesize_stream(
+                            rewrite_for_voice(text),
+                            model_id=model_id,
+                            mime=media_type,
+                            output_format=output_format,
+                        )
+                    else:
+                        stream = tts.synthesize_stream(
+                            rewrite_for_voice(text),
+                            model_id=model_id,
+                            mime=media_type,
+                        )
+                    async for chunk in stream:
                         if not session.is_current(turn_id):
                             return
                         if first_audio_at is None:
@@ -692,15 +757,16 @@ async def realtime_voice(websocket: WebSocket) -> None:
                                 type(tts).__name__,
                             )
                         total_bytes += len(chunk)
-                        await websocket.send_json(
-                            {
-                                "type": "audio",
-                                "turn_id": turn_id,
-                                "sequence": sequence,
-                                "mime": media_type,
-                                "data": base64.b64encode(chunk).decode("ascii"),
-                            }
-                        )
+                        frame: dict[str, Any] = {
+                            "type": "audio",
+                            "turn_id": turn_id,
+                            "sequence": sequence,
+                            "mime": media_type,
+                            "data": base64.b64encode(chunk).decode("ascii"),
+                        }
+                        if sample_rate is not None:
+                            frame["sample_rate"] = sample_rate
+                        await websocket.send_json(frame)
                         sequence += 1
                     if session.finish(turn_id):
                         logger.info(
@@ -723,6 +789,81 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             websocket, "No pude generar el audio de esta respuesta."
                         )
 
+            async def _continue_after_transcript(
+                turn_id: int,
+                text: str,
+                language: str,
+                image_for_turn: dict[str, Any] | None,
+            ) -> None:
+                """Emite `transcript` y, si hay conversación asociada, corre el
+                turno de voz (LLM → TTS). Compartido por el flujo batch
+                (`process_audio`) y el flujo en vivo (PCM16) para que la forma
+                del evento sea idéntica."""
+                await websocket.send_json(
+                    {
+                        "type": "transcript",
+                        "turn_id": turn_id,
+                        "text": text,
+                        "language": language,
+                        "state": session.state,
+                    }
+                )
+                if voice_conversation_id is None:
+                    session.complete_input(turn_id)
+                    return
+
+                from edecan_api.voice_turn_service import execute_voice_text_turn
+
+                result = await execute_voice_text_turn(
+                    request=websocket,
+                    session=db_session,
+                    repo=repo,
+                    vault=vault,
+                    current_user=current_user,
+                    settings=settings,
+                    llm_router=websocket.app.state.llm_router,
+                    conversation_id=voice_conversation_id,
+                    user_text=text,
+                    direct_user_content=(
+                        [
+                            {"type": "text", "text": text},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": image_for_turn["mime"],
+                                    "data": image_for_turn["data"],
+                                },
+                            },
+                        ]
+                        if image_for_turn is not None
+                        else None
+                    ),
+                )
+                for event in result.events:
+                    event_type = event.get("type")
+                    if event_type in {
+                        "text_delta",
+                        "tool_start",
+                        "tool_end",
+                        "tool_progress",
+                        "confirmation_required",
+                    }:
+                        await websocket.send_json({"type": "agent_event", "event": event})
+                if result.confirmation_required or not result.text.strip():
+                    session.complete_input(turn_id)
+                    return
+                tts_seconds = _estimate_seconds_from_text(result.text)
+                await _check_voice_quota(repo, current_user.tenant, tts_seconds)
+                await repo.add_usage_event(
+                    tenant_id=current_user.tenant_id,
+                    kind="voice_seconds",
+                    quantity=tts_seconds,
+                )
+                if not session.begin_speaking(turn_id):
+                    raise RuntimeError("el turno de voz perdió su token antes del TTS")
+                await synthesize(turn_id, result.text)
+
             async def process_audio(
                 turn_id: int,
                 audio: bytes,
@@ -740,70 +881,9 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         quantity=estimated_seconds,
                     )
                     transcript = await stt.transcribe(audio, mime)
-                    await websocket.send_json(
-                        {
-                            "type": "transcript",
-                            "turn_id": turn_id,
-                            "text": transcript.text,
-                            "language": transcript.language,
-                            "state": session.state,
-                        }
+                    await _continue_after_transcript(
+                        turn_id, transcript.text, transcript.language, image_for_turn
                     )
-                    if voice_conversation_id is None:
-                        session.complete_input(turn_id)
-                        return
-
-                    from edecan_api.voice_turn_service import execute_voice_text_turn
-
-                    result = await execute_voice_text_turn(
-                        request=websocket,
-                        session=db_session,
-                        repo=repo,
-                        vault=vault,
-                        current_user=current_user,
-                        settings=settings,
-                        llm_router=websocket.app.state.llm_router,
-                        conversation_id=voice_conversation_id,
-                        user_text=transcript.text,
-                        direct_user_content=(
-                            [
-                                {"type": "text", "text": transcript.text},
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": image_for_turn["mime"],
-                                        "data": image_for_turn["data"],
-                                    },
-                                },
-                            ]
-                            if image_for_turn is not None
-                            else None
-                        ),
-                    )
-                    for event in result.events:
-                        event_type = event.get("type")
-                        if event_type in {
-                            "text_delta",
-                            "tool_start",
-                            "tool_end",
-                            "tool_progress",
-                            "confirmation_required",
-                        }:
-                            await websocket.send_json({"type": "agent_event", "event": event})
-                    if result.confirmation_required or not result.text.strip():
-                        session.complete_input(turn_id)
-                        return
-                    tts_seconds = _estimate_seconds_from_text(result.text)
-                    await _check_voice_quota(repo, current_user.tenant, tts_seconds)
-                    await repo.add_usage_event(
-                        tenant_id=current_user.tenant_id,
-                        kind="voice_seconds",
-                        quantity=tts_seconds,
-                    )
-                    if not session.begin_speaking(turn_id):
-                        raise RuntimeError("el turno de voz perdió su token antes del TTS")
-                    await synthesize(turn_id, result.text)
                 except asyncio.CancelledError:
                     raise
                 except HTTPException as exc:
@@ -812,6 +892,102 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 except Exception:
                     session.interrupt("voice_turn_error")
                     logger.warning("fallo en turno realtime de voz", exc_info=True)
+                    await _send_realtime_error(
+                        websocket, "No pude completar este turno de voz."
+                    )
+
+            async def _deepgram_pump(
+                turn_id: int,
+                deepgram: DeepgramLive,
+                queue: asyncio.Queue,
+            ) -> str | None:
+                """Alimenta Deepgram Live con el PCM16 del turno y reenvía al WS
+                los parciales (`transcript.partial`); devuelve el texto final
+                cuando el stream cierra (o `None` si nunca llegó un final)."""
+                final_text: str | None = None
+                await deepgram.connect()
+
+                async def _feeder() -> None:
+                    while True:
+                        payload = await queue.get()
+                        if payload is None:
+                            break
+                        await deepgram.send_raw(payload)
+                    # Sentinela recibido: cierra el stream (CloseStream + close),
+                    # lo que a su vez termina `eventos()`.
+                    await deepgram.finish()
+
+                async def _consumer() -> None:
+                    nonlocal final_text
+                    async for texto, es_final in deepgram.eventos():
+                        if not session.is_current(turn_id):
+                            break
+                        if es_final:
+                            final_text = texto
+                        else:
+                            await websocket.send_json(
+                                {
+                                    "type": "transcript.partial",
+                                    "turn_id": turn_id,
+                                    "text": texto,
+                                }
+                            )
+
+                try:
+                    await asyncio.gather(_feeder(), _consumer())
+                finally:
+                    await deepgram.finish()
+                return final_text
+
+            async def _process_pcm16_live(
+                turn_id: int,
+                pcm: bytes,
+                image_for_turn: dict[str, Any] | None,
+                queue: asyncio.Queue,
+                pump_task: asyncio.Task[Any],
+            ) -> None:
+                try:
+                    queue.put_nowait(None)  # sentinel: cierra el feed y dispara finish()
+                    final_text: str | None = None
+                    try:
+                        final_text = await pump_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning(
+                            "Deepgram Live falló; cae al flujo batch (WAV).",
+                            exc_info=True,
+                        )
+                        final_text = None
+                    if final_text:
+                        # Cuota del STT en vivo, estimada del PCM (32000 bytes/s,
+                        # s16le 16 kHz mono). Se cobra UNA sola vez: el fallback
+                        # de abajo NO pasa por acá, sino que `process_audio` cobra
+                        # su propia cuota batch.
+                        estimated_seconds = len(pcm) / 32000.0
+                        await _check_voice_quota(
+                            repo, current_user.tenant, estimated_seconds
+                        )
+                        await repo.add_usage_event(
+                            tenant_id=current_user.tenant_id,
+                            kind="voice_seconds",
+                            quantity=estimated_seconds,
+                        )
+                        await _continue_after_transcript(
+                            turn_id, final_text, "es", image_for_turn
+                        )
+                    else:
+                        await process_audio(
+                            turn_id, _pcm16_a_wav(pcm), "audio/wav", image_for_turn
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except HTTPException as exc:
+                    session.interrupt("quota")
+                    await _send_realtime_error(websocket, str(exc.detail))
+                except Exception:
+                    session.interrupt("voice_turn_error")
+                    logger.warning("fallo en turno realtime de voz (pcm16)", exc_info=True)
                     await _send_realtime_error(
                         websocket, "No pude completar este turno de voz."
                     )
@@ -839,10 +1015,82 @@ async def realtime_voice(websocket: WebSocket) -> None:
                                 await active_task
                             except asyncio.CancelledError:
                                 pass
+                        if pcm16_task is not None and not pcm16_task.done():
+                            pcm16_task.cancel()
+                            try:
+                                await pcm16_task
+                            except asyncio.CancelledError:
+                                pass
                         continue
                     if message_type == "audio":
                         raw_data = message.get("data")
                         requested_mime = message.get("mime", "audio/wav")
+                        if requested_mime == "audio/pcm16":
+                            # Ruta en vivo (Deepgram Live linear16): parciales
+                            # estilo ChatGPT. Solo si el tenant tiene STT real.
+                            if not stt_live:
+                                await _send_realtime_error(
+                                    websocket,
+                                    "El STT en vivo no está disponible para tu plan.",
+                                )
+                                continue
+                            if not isinstance(raw_data, str):
+                                await _send_realtime_error(
+                                    websocket, "Frame de audio inválido."
+                                )
+                                continue
+                            try:
+                                chunk = base64.b64decode(raw_data, validate=True)
+                            except (ValueError, base64.binascii.Error):
+                                await _send_realtime_error(
+                                    websocket,
+                                    "El frame de audio no está codificado correctamente.",
+                                )
+                                continue
+                            if not chunk or len(chunk) > _REALTIME_MAX_AUDIO_FRAME_BYTES:
+                                await _send_realtime_error(
+                                    websocket, "El frame de audio excede el límite permitido."
+                                )
+                                continue
+                            if session.state == "idle":
+                                audio_turn_id = session.begin_listening()
+                                audio_mime = "audio/pcm16"
+                                audio_buffer.clear()
+                                pcm16_queue = asyncio.Queue()
+                                deepgram = DeepgramLive(
+                                    stt._api_key, encoding="linear16", sample_rate=16000
+                                )
+                                pcm16_task = asyncio.create_task(
+                                    _deepgram_pump(audio_turn_id, deepgram, pcm16_queue)
+                                )
+                            if session.state != "listening" or audio_turn_id is None:
+                                await _send_realtime_error(
+                                    websocket, "Inicia un turno de audio antes de enviar frames."
+                                )
+                                continue
+                            if len(audio_buffer) + len(chunk) > _REALTIME_MAX_AUDIO_BYTES:
+                                session.interrupt("audio_too_large")
+                                audio_buffer.clear()
+                                audio_turn_id = None
+                                if pcm16_task is not None and not pcm16_task.done():
+                                    pcm16_task.cancel()
+                                await _send_realtime_error(
+                                    websocket,
+                                    "El audio del turno excede el límite permitido.",
+                                )
+                                continue
+                            session.append_audio(len(chunk))
+                            audio_buffer.extend(chunk)
+                            if pcm16_queue is not None:
+                                pcm16_queue.put_nowait(chunk)
+                            await websocket.send_json(
+                                {
+                                    "type": "audio.accepted",
+                                    "turn_id": audio_turn_id,
+                                    "bytes": len(audio_buffer),
+                                }
+                            )
+                            continue
                         if not isinstance(raw_data, str) or requested_mime not in {
                             "audio/wav",
                             "audio/webm",
@@ -940,12 +1188,25 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         audio_turn_id = None
                         image_for_turn = visual_content
                         visual_content = None
+                        if audio_mime == "audio/pcm16":
+                            if pcm16_queue is None or pcm16_task is None:
+                                await _send_realtime_error(
+                                    websocket, "No hay audio pendiente para transcribir."
+                                )
+                                continue
+                            active_task = asyncio.create_task(
+                                _process_pcm16_live(
+                                    turn_id, audio, image_for_turn, pcm16_queue, pcm16_task
+                                )
+                            )
+                            continue
                         active_task = asyncio.create_task(
                             process_audio(turn_id, audio, audio_mime, image_for_turn)
                         )
                         continue
                     if message_type == "speak":
                         text = message.get("text")
+                        pcm_requested = message.get("pcm") is True
                         if not isinstance(text, str) or not text.strip():
                             await _send_realtime_error(
                                 websocket, "Falta el texto para sintetizar."
@@ -990,7 +1251,9 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         await websocket.send_json(
                             {"type": "speaking", "turn_id": turn_id, "state": session.state}
                         )
-                        active_task = asyncio.create_task(synthesize(turn_id, text.strip()))
+                        active_task = asyncio.create_task(
+                            synthesize(turn_id, text.strip(), pcm=pcm_requested)
+                        )
                         continue
                     await websocket.close(code=_REALTIME_CLOSE_PROTOCOL)
                     return
@@ -1000,6 +1263,12 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     active_task.cancel()
                     try:
                         await active_task
+                    except asyncio.CancelledError:
+                        pass
+                if pcm16_task is not None and not pcm16_task.done():
+                    pcm16_task.cancel()
+                    try:
+                        await pcm16_task
                     except asyncio.CancelledError:
                         pass
                 session.close()

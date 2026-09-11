@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var mostrandoVoz = false
+    @State private var mostrandoLlamada = false
     @State private var mostrandoHistorial = false
     @State private var mostrandoSelectorArchivos = false
     @State private var mostrandoSelectorFotos = false
@@ -84,6 +85,9 @@ struct ChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $mostrandoVoz) {
                 VozView(chat: viewModel)
+            }
+            .fullScreenCover(isPresented: $mostrandoLlamada) {
+                LlamadaView(chat: viewModel)
             }
             .sheet(isPresented: $mostrandoHistorial) {
                 HistorialChatView(
@@ -630,7 +634,7 @@ struct ChatView: View {
                     .disabled(!botonHabilitado)
                     .accessibilityLabel("Enviar")
                 } else if !viewModel.estaGenerando {
-                    Button { mostrandoVoz = true } label: {
+                    Button { mostrandoLlamada = true } label: {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 18, weight: .semibold))
                             .frame(width: 42, height: 42)
@@ -638,7 +642,7 @@ struct ChatView: View {
                             .tarjetaVidrio(esquina: 18)
                     }
                     .disabled(viewModel.confirmacionPendiente != nil)
-                    .accessibilityLabel("Hablar con Edecan")
+                    .accessibilityLabel("Llamar a Edecán")
                 }
             }
         }

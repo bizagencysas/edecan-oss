@@ -102,6 +102,7 @@ class ElevenLabsTTS(TTSProvider, ProveedorDeclarado):
         voice_id: str | None = None,
         model_id: str,
         mime: str,
+        output_format: str | None = None,
     ) -> AsyncIterator[bytes]:
         """Sintetiza `text` con el endpoint de streaming de ElevenLabs y rinde
         los bytes de audio conforme llegan de la red (time-to-first-audio,
@@ -109,11 +110,19 @@ class ElevenLabsTTS(TTSProvider, ProveedorDeclarado):
         termine.
 
         El endpoint `POST /v1/text-to-speech/{voice_id}/stream` devuelve el
-        mismo mp3 que el endpoint no-streaming, pero fragmentado: `httpx`
-        expone cada trozo vía `response.aiter_bytes()` y acá se reenvía tal
-        cual al consumidor. El formato del audio se negocia con la cabecera
-        `Accept` (=`mime`), no con `output_format` en la query, para seguir
-        el contrato histórico de este endpoint (`Accept: audio/mpeg`)."""
+        audio fragmentado: `httpx` expone cada trozo vía `response.aiter_bytes()`
+        y acá se reenvía tal cual al consumidor.
+
+        El formato se negocia de dos formas, mutuamente excluyentes:
+
+        - Por defecto (`output_format=None`), con la cabecera `Accept`
+          (=`mime`), el contrato histórico de este endpoint (`Accept:
+          audio/mpeg`).
+        - Si viene `output_format` (p. ej. `"pcm_24000"` para PCM s16le 24 kHz
+          mono, PHASE3 voz web), se manda como QUERY PARAM de ElevenLabs (ver
+          docs oficiales: `output_format` es query param, no campo del body) y
+          se OMITE la cabecera `Accept` — ambos canales no deben coexistir.
+        """
         resolved_voice_id = voice_id or self._default_voice_id
         if not resolved_voice_id:
             raise ValueError(
@@ -125,10 +134,16 @@ class ElevenLabsTTS(TTSProvider, ProveedorDeclarado):
             expressive_eleven_v3_text(text) if self._expressive else plain_text_for_speech(text)
         )
         logger.info(
-            "[ElevenLabs][stream] _expressive=%s model_id=%s mime=%s spoken_preview=%r",
-            self._expressive, model_id, mime, spoken_text[:300],
+            "[ElevenLabs][stream] _expressive=%s model_id=%s mime=%s output_format=%s "
+            "spoken_preview=%r",
+            self._expressive, model_id, mime, output_format, spoken_text[:300],
         )
-        headers = {"xi-api-key": self._api_key, "Accept": mime}
+        if output_format:
+            headers = {"xi-api-key": self._api_key}
+            params = {"output_format": output_format}
+        else:
+            headers = {"xi-api-key": self._api_key, "Accept": mime}
+            params = None
         payload = {
             "text": spoken_text,
             "model_id": model_id,
@@ -137,7 +152,9 @@ class ElevenLabsTTS(TTSProvider, ProveedorDeclarado):
         url = ELEVENLABS_TTS_STREAM_URL_TEMPLATE.format(voice_id=resolved_voice_id)
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
+            async with client.stream(
+                "POST", url, headers=headers, params=params, json=payload
+            ) as response:
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes():
                     yield chunk

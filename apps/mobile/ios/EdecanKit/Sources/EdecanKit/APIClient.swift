@@ -1187,6 +1187,12 @@ public actor APIClient {
         }
     }
 
+    /// `GET /v1/voz/voces` — catálogo de voces del tenant (ElevenLabs reales o
+    /// stubs offline si no hay credencial de voz conectada).
+    public func listarVoces() async throws -> [VozElegible] {
+        try await conAutoRefresh { try await self.obtener("/v1/voz/voces") }
+    }
+
     /// `POST /v1/voice/speak {text, voice_id?}` — devuelve bytes de audio
     /// crudos (`audio/wav` si el tenant no conectó una credencial de voz
     /// propia — cae al `StubTTS`; `audio/mpeg` con un proveedor real).

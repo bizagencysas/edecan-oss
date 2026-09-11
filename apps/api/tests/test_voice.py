@@ -31,6 +31,9 @@ import respx
 from conftest import TEST_JWT_SECRET, auth_headers
 from edecan_schemas import TokenBundle
 from edecan_voice.base import Transcript, TTSProvider
+from edecan_voice.deepgram import DeepgramSTT
+from edecan_voice.elevenlabs import ElevenLabsTTS
+from edecan_voice.stubs import StubSTT, StubTTS
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -625,3 +628,188 @@ async def test_speak_tenant_sin_config_no_reusa_credencial_de_plataforma(
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/wav"
     assert response.content[:4] == b"RIFF"
+
+
+# ---------------------------------------------------------------------------
+# PCM16 en vivo (Deepgram Live linear16) + TTS PCM 24 kHz (PHASE3 voz web)
+# ---------------------------------------------------------------------------
+
+
+def test_pcm16_a_wav_header_correcto() -> None:
+    pcm = bytes(range(256))  # 256 bytes de PCM crudo
+
+    wav = voice_module._pcm16_a_wav(pcm)
+
+    assert wav[:4] == b"RIFF"
+    assert wav[8:12] == b"WAVE"
+    assert wav[12:16] == b"fmt "
+    # chunk_size = 36 + data_size
+    assert int.from_bytes(wav[4:8], "little") == 36 + len(pcm)
+    # subchunk1 size = 16 (PCM)
+    assert int.from_bytes(wav[16:20], "little") == 16
+    # audio_format = 1 (PCM) y canales = 1 (mono)
+    assert int.from_bytes(wav[20:22], "little") == 1
+    assert int.from_bytes(wav[22:24], "little") == 1
+    # sample rate 16000, byte rate 32000 (16000 * 2 bytes/sample)
+    assert int.from_bytes(wav[24:28], "little") == 16000
+    assert int.from_bytes(wav[28:32], "little") == 32000
+    # block align 2, bits por sample 16 (s16le)
+    assert int.from_bytes(wav[32:34], "little") == 2
+    assert int.from_bytes(wav[34:36], "little") == 16
+    # chunk de datos
+    assert wav[36:40] == b"data"
+    assert int.from_bytes(wav[40:44], "little") == len(pcm)
+    # longitud total = 44 bytes de header + payload
+    assert len(wav) == 44 + len(pcm)
+    assert wav[44:] == pcm
+
+
+def test_realtime_voice_pcm16_emite_parciales_y_transcript_final(
+    app, test_settings, monkeypatch
+) -> None:
+    """Ruta en vivo (Deepgram Live linear16): frames `audio/pcm16` + `commit`
+    entregan `transcript.partial` (interim) y el `transcript` final — con
+    `DeepgramLive` monkeypatcheado, cero red real."""
+    class _FakeDeepgramLive:
+        def __init__(self, api_key, *, encoding="mulaw", sample_rate=8000):  # noqa: ANN001
+            self.api_key = api_key
+            self.encoding = encoding
+            self.sample_rate = sample_rate
+
+        async def connect(self):  # noqa: ANN001
+            pass
+
+        async def send_raw(self, payload):  # noqa: ANN001
+            pass
+
+        async def finish(self):  # noqa: ANN001
+            pass
+
+        async def eventos(self):  # noqa: ANN001
+            yield "parcial", False
+            yield "texto final", True
+
+    @asynccontextmanager
+    async def fake_session(_tenant_id):  # noqa: ANN001
+        yield object()
+
+    async def no_quota(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def no_usage(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def fake_stt(*_args):  # noqa: ANN001
+        return DeepgramSTT(api_key="dg_tenant_key")
+
+    async def fake_tts(*_args):  # noqa: ANN001
+        return StubTTS()
+
+    monkeypatch.setattr(voice_module, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(voice_module, "get_session", fake_session)
+    monkeypatch.setattr(voice_module, "build_key_provider", lambda _settings: object())
+    monkeypatch.setattr(voice_module, "_tts_para_tenant", fake_tts)
+    monkeypatch.setattr(voice_module, "_stt_para_tenant", fake_stt)
+    monkeypatch.setattr(voice_module, "DeepgramLive", _FakeDeepgramLive)
+    monkeypatch.setattr(voice_module, "_check_voice_quota", no_quota)
+    monkeypatch.setattr(voice_module.SqlRepo, "add_usage_event", no_usage)
+
+    token = create_access_token(
+        user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        plan_key="hosted_basic",
+        secret=test_settings.JWT_SECRET,
+    )
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            ready = websocket.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["stt_live"] is True
+
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"pcm16-bytes").decode("ascii"),
+                }
+            )
+            accepted = websocket.receive_json()
+            assert accepted["type"] == "audio.accepted"
+
+            websocket.send_json({"type": "commit"})
+
+            partial = websocket.receive_json()
+            assert partial["type"] == "transcript.partial"
+            assert partial["text"] == "parcial"
+
+            final = websocket.receive_json()
+            assert final["type"] == "transcript"
+            assert final["text"] == "texto final"
+
+
+@respx.mock
+def test_realtime_voice_speak_pcm_emite_audio_pcm24(app, test_settings, monkeypatch) -> None:
+    """`speak` con `pcm: true` y TTS ElevenLabs emite `audio/pcm24` (PCM s16le
+    24 kHz) en vez del flujo mp3 — respx mockea el POST `/stream` de ElevenLabs."""
+    ruta = respx.post(
+        "https://api.elevenlabs.io/v1/text-to-speech/voz-tenant/stream"
+    ).mock(return_value=httpx.Response(200, content=b"PCM-FAKE-BYTES"))
+
+    @asynccontextmanager
+    async def fake_session(_tenant_id):  # noqa: ANN001
+        yield object()
+
+    async def no_quota(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def no_usage(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def fake_tts(*_args):  # noqa: ANN001
+        return ElevenLabsTTS(api_key="el_tenant_key", default_voice_id="voz-tenant")
+
+    async def fake_stt(*_args):  # noqa: ANN001
+        return StubSTT()
+
+    monkeypatch.setattr(voice_module, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(voice_module, "get_session", fake_session)
+    monkeypatch.setattr(voice_module, "build_key_provider", lambda _settings: object())
+    monkeypatch.setattr(voice_module, "_tts_para_tenant", fake_tts)
+    monkeypatch.setattr(voice_module, "_stt_para_tenant", fake_stt)
+    monkeypatch.setattr(voice_module, "_check_voice_quota", no_quota)
+    monkeypatch.setattr(voice_module.SqlRepo, "add_usage_event", no_usage)
+
+    token = create_access_token(
+        user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        plan_key="hosted_basic",
+        secret=test_settings.JWT_SECRET,
+    )
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            ready = websocket.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["tts_pcm"] is True
+
+            websocket.send_json({"type": "speak", "text": "Hola", "pcm": True})
+            assert websocket.receive_json()["type"] == "speaking"
+
+            audio_frames = []
+            data_parts = []
+            while True:
+                msg = websocket.receive_json()
+                if msg["type"] == "audio":
+                    audio_frames.append(msg)
+                    data_parts.append(base64.b64decode(msg["data"]))
+                elif msg["type"] == "done":
+                    break
+
+            assert audio_frames, "deben llegar chunks de audio PCM"
+            assert all(f["mime"] == "audio/pcm24" for f in audio_frames)
+            assert all(f["sample_rate"] == 24000 for f in audio_frames)
+            assert b"".join(data_parts) == b"PCM-FAKE-BYTES"
+            # output_format viaja como query param (ver edecan_voice.elevenlabs).
+            assert ruta.called
+            assert ruta.calls.last.request.url.params["output_format"] == "pcm_24000"

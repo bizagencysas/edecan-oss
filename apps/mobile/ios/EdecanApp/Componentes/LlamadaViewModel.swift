@@ -30,6 +30,7 @@ final class LlamadaViewModel {
         case inactivo
         case inicializando
         case escuchando
+        case transcribiendo
         case pensando
         case hablando
     }
@@ -76,6 +77,14 @@ final class LlamadaViewModel {
     private var tareaTurno: Task<Void, Never>?
     private var continuacionFinal: CheckedContinuation<String, Error>?
     private var tareaTimeoutFinal: Task<Void, Never>?
+    /// Final que llegó antes de que `esperarTranscripcionFinal` registrara su
+    /// continuación (el `commit` y la respuesta pueden cruzarse): se guarda
+    /// acá y la espera lo consume de inmediato. Sin esto, el turno se perdía.
+    private var transcriptPendiente: String?
+    /// El turno descartado por ruido también dispara un `transcript` en el
+    /// servidor; esta bandera lo tira para que no lo recoja el turno REAL
+    /// siguiente desde `transcriptPendiente`.
+    private var ignorarSiguienteTranscript = false
     nonisolated(unsafe) private var tokensAudio: [NSObjectProtocol] = []
 
     init() {
@@ -121,6 +130,8 @@ final class LlamadaViewModel {
             continuacionFinal = nil
             continuacion.resume(throwing: CancellationError())
         }
+        transcriptPendiente = nil
+        ignorarSiguienteTranscript = false
         recorderContinuo.detener()
         reproductorPCM.detener()
         reproductorMPEG.detener()
@@ -195,75 +206,135 @@ final class LlamadaViewModel {
         }
     }
 
-    /// Consume el stream del micrófono continuo: la puerta de ruido adaptativa
-    /// decide qué es voz, un turno exige racha sostenida (no golpes sueltos),
-    /// el `commit` llega tras el silencio o el turno máximo, y los turnos de
-    /// puro ruido se descartan. Mientras Edecán habla o piensa NO se abren
-    /// turnos (solo barge-in tras la gracia inicial).
+    /// Consume el stream del micrófono continuo. El VAD solo decide CUÁNDO
+    /// abre y cierra el turno; dentro del turno se envía TODO el audio (voz y
+    /// silencio — recortar por umbral mutilaba sílabas y pausas). Un pre-roll
+    /// de ~400 ms conserva el arranque de la frase que disparó el turno.
     private func bucleDeEscucha(client: APIClient) async {
         guard let stream = streamAudio else { return }
         var turnoActivo = false
         var inicioTurno = Date()
         var acumuladoPCM = Data()
+        var framesEnviados = 0
+        var preRoll: [Data] = []
 
         for await chunk in stream {
             if Task.isCancelled { break }
             nivelEntrada = chunk.rms
-            let hayVoz = vad.alimentar(rms: chunk.rms)
+            _ = vad.alimentar(rms: chunk.rms)
+
+            preRoll.append(chunk.datos)
+            if preRoll.count > 4 { preRoll.removeFirst() }
 
             if estado == .hablando {
-                // Barge-in: solo con racha sostenida y después de la gracia.
-                if hayVoz,
-                   vad.racha >= VadAdaptativo.rachaBargeIn,
+                // Barge-in: solo con voz reciente (mayoría en ventana) y
+                // después de la gracia de arranque del audio de Edecán.
+                if vad.vozReciente,
                    Date().timeIntervalSince(inicioHabla) >= graciaBargeIn {
                     bargeIn()
                 }
                 continue
             }
-            if estado == .pensando || estado == .inicializando {
+            if estado != .escuchando {
+                // transcribiendo / pensando / inicializando: el turno en
+                // vuelo tiene la palabra; no se abren turnos nuevos.
+                continue
+            }
+            if chat?.confirmacionPendiente != nil {
+                // Edecán espera una aprobación de tool: la tarjeta manda.
                 continue
             }
 
             if !turnoActivo {
-                if hayVoz, vad.racha >= VadAdaptativo.rachaInicio {
+                if vad.vozReciente {
                     turnoActivo = true
                     inicioTurno = Date()
-                    acumuladoPCM = Data()
                     textoParcial = nil
+                    // Pre-roll: los chunks que dispararon el turno también son
+                    // parte de él — sin esto se perdía el arranque de la frase.
+                    acumuladoPCM = Data(preRoll.joined())
+                    framesEnviados = 0
+                    for trozo in preRoll where sttLive {
+                        await enviarFrame(trozo, contador: &framesEnviados)
+                    }
                 }
                 continue
             }
 
-            if hayVoz {
-                acumuladoPCM.append(chunk.datos)
-                if sttLive, let realtime {
-                    try? await realtime.sendPCM16(chunk.datos)
-                }
-                if Date().timeIntervalSince(inicioTurno) >= maxSegundosTurno {
-                    await cerrarTurno(client: client, acumulado: acumuladoPCM)
-                    turnoActivo = false
-                    acumuladoPCM = Data()
-                    vad.reiniciarTurno()
-                }
-            } else if vad.silencioMs >= VadAdaptativo.silencioMaxMs {
-                await cerrarTurno(client: client, acumulado: acumuladoPCM)
+            // Dentro del turno va TODO el audio; Deepgram segmenta solo.
+            acumuladoPCM.append(chunk.datos)
+            if sttLive {
+                await enviarFrame(chunk.datos, contador: &framesEnviados)
+            }
+
+            let excedioTurno = Date().timeIntervalSince(inicioTurno) >= maxSegundosTurno
+            let cerroPorSilencio = vad.silencioMs >= VadAdaptativo.silencioMaxMs
+            if excedioTurno || cerroPorSilencio {
+                await cerrarTurno(
+                    client: client, acumulado: acumuladoPCM,
+                    framesEnviados: framesEnviados
+                )
                 turnoActivo = false
                 acumuladoPCM = Data()
+                framesEnviados = 0
                 vad.reiniciarTurno()
+                preRoll.removeAll()
             }
         }
     }
 
-    /// Cierra el turno actual: con STT live manda `commit` (el `transcript`
-    /// final llega por el loop de recepción); sin STT live transcribe la toma
-    /// acumulada. Los turnos que no juntaron voz mínima real se descartan como
-    /// ruido. En ambos casos corre el agente y el TTS en `tareaTurno`.
-    private func cerrarTurno(client: APIClient, acumulado: Data) async {
+    /// Envía un frame por el WS; si el transporte falla, degrada al camino
+    /// WAV/HTTP de una sola toma (el audio acumulado localmente es el
+    /// respaldo completo del turno).
+    private func enviarFrame(_ datos: Data, contador: inout Int) async {
+        guard let realtime else { return }
+        do {
+            try await realtime.sendPCM16(datos)
+            contador += 1
+        } catch {
+            degradarTransporte(motivo: "Se cayó la conexión de voz en vivo.")
+        }
+    }
+
+    /// WS muerto: la llamada NO muere — sigue por los caminos de respaldo
+    /// (transcripción WAV de una toma + `hablarStream` HTTP). Solo se avisa
+    /// una vez para no llenar la pantalla del mismo error.
+    private func degradarTransporte(motivo: String) {
+        guard sttLive || ttsPCM else { return }
+        sttLive = false
+        ttsPCM = false
+        realtime?.close()
+        realtime = nil
+        transcriptPendiente = nil
+        if let continuacion = continuacionFinal {
+            continuacionFinal = nil
+            tareaTimeoutFinal?.cancel()
+            tareaTimeoutFinal = nil
+            continuacion.resume(throwing: ErrorLlamada.conexionCerrada)
+        }
+        if estado != .inactivo, errorMensaje == nil {
+            errorMensaje = motivo
+        }
+    }
+
+    /// Cierra el turno actual. Con STT live manda `commit` (el `transcript`
+    /// final llega por el loop de recepción; si llega antes de que la espera
+    /// se registre, queda en `transcriptPendiente`); con fallo de commit o sin
+    /// STT live transcribe la toma acumulada con ``TranscripcionVoz``. Los
+    /// turnos de puro ruido se descartan sin esperar nada.
+    private func cerrarTurno(client: APIClient, acumulado: Data, framesEnviados: Int) async {
         guard vad.turnoValido else {
-            if sttLive, let realtime {
+            if sttLive, let realtime, framesEnviados > 0 {
                 // Cierra el turno abierto en el servidor (limpia su buffer);
                 // el `transcript` que emita se ignora porque nadie lo espera.
-                try? await realtime.commit()
+                // La bandera solo se fija si el commit SALIÓ: si falló, el
+                // transcript que ignoraría sería el de un turno real.
+                do {
+                    try await realtime.commit()
+                    ignorarSiguienteTranscript = true
+                } catch {
+                    degradarTransporte(motivo: "Se cayó la conexión de voz en vivo.")
+                }
             }
             return
         }
@@ -272,12 +343,21 @@ final class LlamadaViewModel {
         reproductorPCM.detener()
         reproductorMPEG.detener()
 
+        if sttLive, let realtime, framesEnviados > 0 {
+            estado = .transcribiendo
+            do {
+                try await realtime.commit()
+            } catch {
+                degradarTransporte(motivo: "Se cayó la conexión de voz en vivo.")
+            }
+        }
         if sttLive, realtime != nil {
-            try? await realtime?.commit()
             tareaTurno = Task { [weak self] in
                 await self?.procesarTurnoLive(client: client)
             }
         } else {
+            // Respaldo completo: TODO el audio del turno se acumuló local.
+            estado = .transcribiendo
             tareaTurno = Task { [weak self] in
                 await self?.procesarTurnoWAV(client: client, acumulado: acumulado)
             }
@@ -293,7 +373,7 @@ final class LlamadaViewModel {
         } catch is CancellationError {
             return
         } catch {
-            guard estado == .escuchando || estado == .pensando || estado == .hablando else { return }
+            guard estado == .transcribiendo || estado == .pensando || estado == .hablando else { return }
             errorMensaje = error.localizedDescription
             estado = .escuchando
         }
@@ -316,7 +396,7 @@ final class LlamadaViewModel {
         } catch is CancellationError {
             return
         } catch {
-            guard estado == .escuchando || estado == .pensando || estado == .hablando else { return }
+            guard estado == .transcribiendo || estado == .pensando || estado == .hablando else { return }
             errorMensaje = error.localizedDescription
             estado = .escuchando
         }
@@ -338,10 +418,44 @@ final class LlamadaViewModel {
         estado = .pensando
 
         let enviado = await chat?.enviar(texto: textoLimpio, client: client) ?? false
-        guard enviado, let respuesta = chat?.ultimaRespuestaDelAsistente,
+        guard enviado else {
+            if !Task.isCancelled { estado = .escuchando }
+            return
+        }
+        // Edecán pidió aprobación de una tool: la tarjeta se muestra en la
+        // pantalla y la llamada espera la decisión (el loop no abre turnos
+        // mientras haya una confirmación pendiente).
+        if chat?.confirmacionPendiente != nil {
+            if let pregunta = chat?.ultimaRespuestaDelAsistente,
+               !pregunta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ultimaRespuesta = pregunta
+                await hablarRespuesta(pregunta, client: client)
+            } else {
+                estado = .escuchando
+            }
+            return
+        }
+        guard let respuesta = chat?.ultimaRespuestaDelAsistente,
               !respuesta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             if !Task.isCancelled { estado = .escuchando }
+            return
+        }
+        ultimaRespuesta = respuesta
+        await hablarRespuesta(respuesta, client: client)
+    }
+
+    /// Resuelve la confirmación pendiente de una tool (Aprobar/Rechazar de la
+    /// tarjeta) y retoma el turno: la respuesta de Edecán se habla igual que
+    /// cualquier otra.
+    func resolverConfirmacion(aprobado: Bool, client: APIClient) async {
+        guard chat?.confirmacionPendiente != nil else { return }
+        estado = .pensando
+        await chat?.resolverConfirmacion(aprobado: aprobado, client: client)
+        guard let respuesta = chat?.ultimaRespuestaDelAsistente,
+              !respuesta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            estado = .escuchando
             return
         }
         ultimaRespuesta = respuesta
@@ -366,7 +480,10 @@ final class LlamadaViewModel {
                 self?.terminarHabla()
             }
             do {
-                try await realtime.speak(text: textoHablar, voiceId: vozId, pcm: true)
+                try await realtime.speak(
+                    text: textoHablar, voiceId: vozId,
+                    modelId: "eleven_turbo_v2_5", pcm: true
+                )
             } catch is CancellationError {
                 if estado == .hablando { estado = .escuchando }
                 return
@@ -405,12 +522,20 @@ final class LlamadaViewModel {
         tareaTurno = nil
         reproductorPCM.detener()
         reproductorMPEG.detener()
-        // Avisa al servidor para que pare el TTS viejo y no mande un `done`
-        // huérfano que el loop confunda con el fin del próximo turno.
+        // Avisa al servidor para que pare el TTS viejo y sane el turno abierto
+        // (descarta el audio a medias y su pump) antes del próximo frame.
         if let realtime {
             Task { try? await realtime.interrupt() }
         }
         ultimaRespuesta = nil
+        transcriptPendiente = nil
+        ignorarSiguienteTranscript = false
+        if let continuacion = continuacionFinal {
+            continuacionFinal = nil
+            tareaTimeoutFinal?.cancel()
+            tareaTimeoutFinal = nil
+            continuacion.resume(throwing: CancellationError())
+        }
         estado = .escuchando
     }
 
@@ -433,15 +558,10 @@ final class LlamadaViewModel {
         } catch is CancellationError {
             return
         } catch {
-            if let continuacion = continuacionFinal {
-                continuacionFinal = nil
-                tareaTimeoutFinal?.cancel()
-                tareaTimeoutFinal = nil
-                continuacion.resume(throwing: ErrorLlamada.conexionCerrada)
-            }
-            if estado != .inactivo {
-                errorMensaje = "Se perdió la conexión de voz."
-            }
+            // El WS murió: la llamada SIGUE por los caminos de respaldo
+            // (WAV de una toma + `hablarStream` HTTP). Sin esto el micrófono
+            // seguía abierto sin canal operativo.
+            degradarTransporte(motivo: "Se perdió la conexión de voz en vivo.")
         }
     }
 
@@ -452,12 +572,23 @@ final class LlamadaViewModel {
         case "transcript":
             if let texto = evento.text {
                 textoParcial = nil
+                // El turno descartado por ruido también produce un `transcript`:
+                // se tira para que no lo recoja el turno real siguiente.
+                if ignorarSiguienteTranscript {
+                    ignorarSiguienteTranscript = false
+                    return
+                }
                 if let continuacion = continuacionFinal {
                     continuacionFinal = nil
                     tareaTimeoutFinal?.cancel()
                     tareaTimeoutFinal = nil
                     ultimaTranscripcion = texto
                     continuacion.resume(returning: texto)
+                } else {
+                    // Llegó antes de que la espera se registrara (el commit y
+                    // la respuesta se cruzaron): queda acá para que la espera
+                    // lo consuma de inmediato. Sin esto el turno se perdía.
+                    transcriptPendiente = texto
                 }
             }
         case "audio" where evento.mime == "audio/pcm24":
@@ -482,9 +613,14 @@ final class LlamadaViewModel {
         }
     }
 
-    /// Espera (con timeout) el `transcript` final tras el `commit`.
+    /// Espera (con timeout) el `transcript` final tras el `commit`. Primero
+    /// consume el que ya haya llegado adelantado (`transcriptPendiente`).
     private func esperarTranscripcionFinal() async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+        if let pendiente = transcriptPendiente {
+            transcriptPendiente = nil
+            return pendiente
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             continuacionFinal = continuation
             tareaTimeoutFinal?.cancel()
             tareaTimeoutFinal = Task { [weak self] in

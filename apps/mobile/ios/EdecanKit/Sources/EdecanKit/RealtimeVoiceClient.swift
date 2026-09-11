@@ -86,9 +86,15 @@ public final class RealtimeVoiceClient: @unchecked Sendable {
         return try await receive()
     }
 
-    public func speak(text: String, voiceId: String? = nil, pcm: Bool = false) async throws {
+    public func speak(
+        text: String,
+        voiceId: String? = nil,
+        modelId: String? = nil,
+        pcm: Bool = false
+    ) async throws {
         var mensaje: [String: Any] = ["type": "speak", "text": text]
         if let voiceId { mensaje["voice_id"] = voiceId }
+        if let modelId { mensaje["model_id"] = modelId }
         if pcm { mensaje["pcm"] = true }
         try await send(mensaje)
     }

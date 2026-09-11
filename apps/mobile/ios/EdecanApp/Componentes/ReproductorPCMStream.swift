@@ -26,6 +26,10 @@ final class ReproductorPCMStream: @unchecked Sendable {
     private var enMarcha = false
     private var pendientes = 0
     private var esperandoTermino = false
+    /// Los chunks de red NO terminan justo entre muestras: si llega un número
+    /// impar de bytes, el sobrante espera al próximo chunk. Sin esto el
+    /// `memcpy` copiaba más bytes de los reservados (desbordamiento).
+    private var sobrante = Data()
 
     /// Avisa (en MainActor) cuando la reproducción terminó y no queda nada
     /// pendiente. Se limpia en `detener()`.
@@ -60,16 +64,24 @@ final class ReproductorPCMStream: @unchecked Sendable {
     func agregar(_ data: Data) {
         if !enMarcha { try? preparar() }
         guard let formato else { return }
-        let frames = data.count / 2
-        guard frames > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: formato, frameCapacity: AVAudioFrameCount(frames))
+        let combinado = sobrante + data
+        let bytesCompletos = (combinado.count / 2) * 2
+        guard bytesCompletos > 0 else {
+            // Un byte suelto no es una muestra: espera al próximo chunk.
+            sobrante = combinado
+            return
+        }
+        sobrante = Data(combinado.suffix(combinado.count - bytesCompletos))
+        let datos = Data(combinado.prefix(bytesCompletos))
+        let frames = bytesCompletos / 2
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: formato, frameCapacity: AVAudioFrameCount(frames))
         else { return }
         buffer.frameLength = AVAudioFrameCount(frames)
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        datos.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let origen = raw.baseAddress else { return }
             let destino = buffer.audioBufferList.pointee.mBuffers
             guard let datosDestino = destino.mData else { return }
-            memcpy(datosDestino, origen, data.count)
+            memcpy(datosDestino, origen, bytesCompletos)
         }
         pendientes += 1
         player.scheduleBuffer(buffer) { [weak self] in
@@ -113,6 +125,7 @@ final class ReproductorPCMStream: @unchecked Sendable {
         enMarcha = false
         esperandoTermino = false
         pendientes = 0
+        sobrante = Data()
         alTerminar = nil
         if estabaEnMarcha {
             player.stop()

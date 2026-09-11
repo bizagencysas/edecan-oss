@@ -40,13 +40,31 @@ struct LlamadaView: View {
 
                 ondaDeVoz
 
-                // Burbuja EN VIVO del usuario: el parcial mientras habla y, si
-                // ya cerró el turno, la última transcripción confirmada.
-                if let textoUsuario = textoUsuarioVisible {
-                    burbuja(titulo: "Tú", texto: textoUsuario, alineacionDerecha: true)
-                }
-                if let respuesta = respuestaVisible {
-                    burbuja(titulo: "Edecán", texto: respuesta, alineacionDerecha: false)
+                // Confirmación de tool pendiente: la tarjeta manda — el
+                // micrófono no abre turnos hasta que el usuario decida.
+                if let confirmacion = chat.confirmacionPendiente {
+                    TarjetaConfirmacion(
+                        confirmacion: confirmacion,
+                        deshabilitada: viewModel.estado == .pensando
+                    ) { aprobado in
+                        guard let client = session.client else { return }
+                        Task {
+                            await viewModel.resolverConfirmacion(
+                                aprobado: aprobado, client: client
+                            )
+                        }
+                    }
+                    .frame(maxWidth: 340)
+                    .padding(.horizontal, 8)
+                } else {
+                    // Burbuja EN VIVO del usuario: el parcial mientras habla y,
+                    // si ya cerró el turno, la última transcripción confirmada.
+                    if let textoUsuario = textoUsuarioVisible {
+                        burbuja(titulo: "Tú", texto: textoUsuario, alineacionDerecha: true)
+                    }
+                    if let respuesta = respuestaVisible {
+                        burbuja(titulo: "Edecán", texto: respuesta, alineacionDerecha: false)
+                    }
                 }
 
                 if let error = viewModel.errorMensaje {
@@ -128,9 +146,16 @@ struct LlamadaView: View {
             HStack(spacing: 8) {
                 puntoPulsante
                 Text("Escuchando…")
+                Text(String(format: "· nivel %.3f", viewModel.nivelEntrada))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(EdecanTheme.azul)
+        case .transcribiendo:
+            HStack(spacing: 8) { ProgressView(); Text("Transcribiendo…") }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         case .pensando:
             HStack(spacing: 8) {
                 ProgressView()
@@ -187,7 +212,7 @@ struct LlamadaView: View {
         let activo = viewModel.estado == .escuchando || viewModel.estado == .hablando
         guard activo else { return 10 }
         let base: [CGFloat] = [26, 40, 30, 44, 24]
-        let aporteRMS = CGFloat(min(1.0, max(0.0, viewModel.nivelEntrada * 6)))
+        let aporteRMS = CGFloat(min(1.0, max(0.0, viewModel.nivelEntrada * 10)))
         let factor: CGFloat = max(0.4, (0.5 + aporteRMS) * (pulso ? 1.0 : 0.8))
         return base[indice] * factor
     }

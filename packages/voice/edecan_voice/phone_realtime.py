@@ -54,6 +54,15 @@ _MULAW_FRAME = 160  # 20 ms a 8 kHz
 _LIVE: dict[str, LiveCall] = {}
 
 
+class PhoneHangup(Exception):
+    """El agente pidió colgar (`[[colgar]]`) durante una llamada en tiempo real.
+
+    No es un error. Puede transportar el texto de despedida en sus argumentos.
+    GPT-Live permite reproducirlo antes del cierre y confirma la cola de audio
+    con un mark de Twilio. El router cierra el WebSocket y finaliza la llamada.
+    """
+
+
 @dataclass
 class TranscriptTurn:
     quien: str
@@ -216,6 +225,23 @@ class DeepgramLive:
             return
         await self._ws.send(payload)
 
+    async def close_stream(self) -> None:
+        """Pide el cierre limpio (`CloseStream`) SIN cerrar el WebSocket.
+
+        El PORQUÉ: `finish()` enviaba `CloseStream` y cerraba el socket en
+        el mismo instante, así que un `is_final` que Deepgram emite justo
+        después del flush se perdía con el corte — el turno terminaba sin
+        transcripción. Con `close_stream()` el servidor entrega los finales
+        pendientes y cierra él solo; el drenaje lo espera `_deepgram_pump`.
+        `finish()` sigue siendo el cierre total (timeout o cancelación).
+        """
+        if self._ws is None:
+            return
+        try:
+            await self._ws.send(json.dumps({"type": "CloseStream"}))
+        except Exception:
+            pass
+
     async def finish(self) -> None:
         if self._ws is None:
             return
@@ -362,7 +388,25 @@ async def pump_twilio_audio(
         except Exception:
             logger.warning("phone_opening_failed call_id=%s", live.call_id, exc_info=True)
     try:
-        await twilio_task
+        # Espera al primero que termine. El camino normal es Twilio mandando
+        # `stop`/`closed`; el alternativo es el oído (Deepgram) terminando solo,
+        # o —cuando el agente pidió colgar con `[[colgar]]`— `stt_task` subiendo
+        # `PhoneHangup`, que hay que propagar YA sin esperar a Twilio.
+        done, pending = await asyncio.wait(
+            {twilio_task, stt_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            exc = task.exception()
+            if isinstance(exc, PhoneHangup):
+                for other in pending:
+                    other.cancel()
+                raise exc
+            if exc is not None:
+                logger.warning(
+                    "phone_pump_task_failed call_id=%s", live.call_id, exc_info=exc
+                )
+        for other in pending:
+            other.cancel()
     finally:
         stt_task.cancel()
         if play_task:

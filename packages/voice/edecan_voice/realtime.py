@@ -67,6 +67,25 @@ class RealtimeVoiceSession:
         self.turn_id += 1
         return True
 
+    def reset(self) -> bool:
+        """Recupera una sesión interrumpida y la devuelve a reposo.
+
+        El PORQUÉ: `interrupt` es el único estado sin salida — ni
+        `begin_listening` (exige `idle`) ni `commit_audio` (exige
+        `listening`) la aceptan, así que tras un barge-in el transporte
+        rechazaba TODO el audio siguiente con "Inicia un turno de audio
+        antes de enviar frames" y la llamada quedaba sorda. El resultado
+        en vuelo ya quedó invalidado por el `turn_id += 1` de `interrupt`;
+        acá solo se devuelve el estado a `idle` para que el próximo frame
+        abra un turno limpio.
+        """
+        if self.state != "interrupted":
+            return False
+        self.state = "idle"
+        self.buffered_audio_bytes = 0
+        self.interruption_reason = None
+        return True
+
     def finish(self, turn_id: int) -> bool:
         if self.state != "speaking" or not self.is_current(turn_id):
             return False

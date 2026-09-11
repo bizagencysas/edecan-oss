@@ -715,7 +715,14 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 }
             )
 
-            async def synthesize(turn_id: int, text: str, *, pcm: bool = False) -> None:
+            async def synthesize(
+                turn_id: int,
+                text: str,
+                *,
+                pcm: bool = False,
+                voice_id: str | None = None,
+                model_id: str | None = None,
+            ) -> None:
                 if pcm and isinstance(tts, ElevenLabsTTS):
                     # TTS progresivo en PCM s16le 24 kHz mono: el cliente iOS
                     # empieza a reproducir de inmediato (PHASE3 voz web).
@@ -726,7 +733,10 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     media_type = "audio/wav" if isinstance(tts, StubTTS) else "audio/mpeg"
                     sample_rate = None
                     output_format = None
-                model_id = getattr(tts, "_model_id", None) or DEFAULT_MODEL_ID
+                # `voice_id`/`model_id` vienen del `speak` del cliente: sin
+                # esto la voz/modelo que el usuario eligió en la app se
+                # ignoraba y sonaba siempre la default del proveedor.
+                modelo = model_id or getattr(tts, "_model_id", None) or DEFAULT_MODEL_ID
                 sequence = 0
                 started_at = time.perf_counter()
                 first_audio_at: float | None = None
@@ -735,14 +745,16 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     if output_format is not None:
                         stream = tts.synthesize_stream(
                             rewrite_for_voice(text),
-                            model_id=model_id,
+                            voice_id=voice_id,
+                            model_id=modelo,
                             mime=media_type,
                             output_format=output_format,
                         )
                     else:
                         stream = tts.synthesize_stream(
                             rewrite_for_voice(text),
-                            model_id=model_id,
+                            voice_id=voice_id,
+                            model_id=modelo,
                             mime=media_type,
                         )
                     async for chunk in stream:
@@ -903,19 +915,19 @@ async def realtime_voice(websocket: WebSocket) -> None:
             ) -> str | None:
                 """Alimenta Deepgram Live con el PCM16 del turno y reenvía al WS
                 los parciales (`transcript.partial`); devuelve el texto final
-                cuando el stream cierra (o `None` si nunca llegó un final)."""
-                final_text: str | None = None
+                cuando el stream cierra (o `None` si nunca llegó un final).
+
+                Los `is_final` de Deepgram son SEGMENTOS de utterance: una
+                frase larga llega como varios finales y se CONCATENAN, no se
+                sobreescriben (el último segmento solo era la cola de la
+                frase). Al terminar el feed se pide `close_stream()` (sin tirar
+                el socket) y se drena al consumidor un tope corto: el cierre
+                inmediato anterior mataba el final pendiente.
+                """
+                final_text = ""
                 await deepgram.connect()
 
-                async def _feeder() -> None:
-                    while True:
-                        payload = await queue.get()
-                        if payload is None:
-                            break
-                        await deepgram.send_raw(payload)
-                    # Sentinela recibido: cierra el stream (CloseStream + close),
-                    # lo que a su vez termina `eventos()`.
-                    await deepgram.finish()
+                consumer: asyncio.Task[None] | None = None
 
                 async def _consumer() -> None:
                     nonlocal final_text
@@ -923,7 +935,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         if not session.is_current(turn_id):
                             break
                         if es_final:
-                            final_text = texto
+                            final_text = f"{final_text} {texto}".strip()
                         else:
                             await websocket.send_json(
                                 {
@@ -934,10 +946,34 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             )
 
                 try:
-                    await asyncio.gather(_feeder(), _consumer())
+                    consumer = asyncio.create_task(_consumer())
+                    while True:
+                        payload = await queue.get()
+                        if payload is None:
+                            break
+                        await deepgram.send_raw(payload)
+                    await deepgram.close_stream()
+                    # Drena los finales que Deepgram emite tras el flush; si
+                    # no cierra solo, el timeout lo corta y el finally cierra.
+                    try:
+                        assert consumer is not None
+                        await asyncio.wait_for(asyncio.shield(consumer), timeout=3.0)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        if consumer is not None:
+                            consumer.cancel()
+                            try:
+                                await consumer
+                            except asyncio.CancelledError:
+                                pass
                 finally:
+                    if consumer is not None and not consumer.done():
+                        consumer.cancel()
+                        try:
+                            await consumer
+                        except asyncio.CancelledError:
+                            pass
                     await deepgram.finish()
-                return final_text
+                return final_text or None
 
             async def _process_pcm16_live(
                 turn_id: int,
@@ -1021,6 +1057,22 @@ async def realtime_voice(websocket: WebSocket) -> None:
                                 await pcm16_task
                             except asyncio.CancelledError:
                                 pass
+                        # Sanea el turno de escucha que pueda quedar abierto
+                        # (barge-in entre frames y commit): sin esto la sesión
+                        # quedaba `listening` con un pump ya cancelado — el
+                        # audio siguiente alimentaba un turno muerto y el
+                        # commit no producía nada. También devuelve `interrupted`
+                        # a `idle` (el estado muerto del barge-in durante el
+                        # TTS, que rechazaba todo el audio siguiente).
+                        if session.state == "listening":
+                            session.interrupt("user")
+                        if session.state == "interrupted":
+                            session.reset()
+                        if session.state == "idle":
+                            audio_turn_id = None
+                            audio_buffer.clear()
+                            pcm16_queue = None
+                            pcm16_task = None
                         continue
                     if message_type == "audio":
                         raw_data = message.get("data")
@@ -1052,6 +1104,11 @@ async def realtime_voice(websocket: WebSocket) -> None:
                                     websocket, "El frame de audio excede el límite permitido."
                                 )
                                 continue
+                            if session.state == "interrupted":
+                                # Barge-in reciente: sin esto el estado muerto
+                                # (`interrupted` no tiene salida en la máquina)
+                                # rechazaba TODO el audio siguiente.
+                                session.reset()
                             if session.state == "idle":
                                 audio_turn_id = session.begin_listening()
                                 audio_mime = "audio/pcm16"
@@ -1112,6 +1169,9 @@ async def realtime_voice(websocket: WebSocket) -> None:
                                 websocket, "El frame de audio excede el límite permitido."
                             )
                             continue
+                        if session.state == "interrupted":
+                            # Misma sanación que la ruta pcm16 (ver arriba).
+                            session.reset()
                         if session.state == "idle":
                             audio_turn_id = session.begin_listening()
                             audio_mime = requested_mime
@@ -1207,6 +1267,16 @@ async def realtime_voice(websocket: WebSocket) -> None:
                     if message_type == "speak":
                         text = message.get("text")
                         pcm_requested = message.get("pcm") is True
+                        speak_voice_id = message.get("voice_id")
+                        speak_model_id = message.get("model_id")
+                        if not isinstance(speak_voice_id, str) or not speak_voice_id.strip():
+                            speak_voice_id = None
+                        else:
+                            speak_voice_id = speak_voice_id.strip()
+                        if not isinstance(speak_model_id, str) or not speak_model_id.strip():
+                            speak_model_id = None
+                        else:
+                            speak_model_id = speak_model_id.strip()
                         if not isinstance(text, str) or not text.strip():
                             await _send_realtime_error(
                                 websocket, "Falta el texto para sintetizar."
@@ -1252,7 +1322,13 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             {"type": "speaking", "turn_id": turn_id, "state": session.state}
                         )
                         active_task = asyncio.create_task(
-                            synthesize(turn_id, text.strip(), pcm=pcm_requested)
+                            synthesize(
+                                turn_id,
+                                text.strip(),
+                                pcm=pcm_requested,
+                                voice_id=speak_voice_id,
+                                model_id=speak_model_id,
+                            )
                         )
                         continue
                     await websocket.close(code=_REALTIME_CLOSE_PROTOCOL)

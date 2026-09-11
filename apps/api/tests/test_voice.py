@@ -569,6 +569,124 @@ async def test_speak_tenant_sin_config_de_voz_cae_a_stub(client, app, fake_repo)
     assert response.content[:4] == b"RIFF"
 
 
+def _texto_largo_sin_resumir(palabras: int = 200) -> str:
+    """Genera un texto >150 palabras para probar que voice_rewrite=False no recorta."""
+    oraciones = [
+        f"Oración número {i} con contenido único para verificar que el TTS no resume."
+        for i in range(1, palabras + 1)
+    ]
+    return " ".join(oraciones)
+
+
+def _texto_enviado_a_elevenlabs(ruta: respx.Route) -> str:
+    """Concatena el texto de todas las peticiones TTS registradas por respx."""
+    partes = [json.loads(call.request.content)["text"] for call in ruta.calls]
+    return " ".join(partes)
+
+
+@respx.mock
+async def test_speak_voice_rewrite_true_trunca_texto_largo(client, app, fake_repo) -> None:
+    """Default voice_rewrite=True aplica rewrite_for_voice (≤150 palabras)."""
+    ruta = respx.post("https://api.elevenlabs.io/v1/text-to-speech/voz-tenant").mock(
+        return_value=httpx.Response(200, content=b"FAKE-MP3-BYTES")
+    )
+    fake_vault = FakeVault()
+    tenant_id = uuid.uuid4()
+    await _conectar_voz_tenant(
+        app,
+        fake_repo,
+        fake_vault,
+        tenant_id=tenant_id,
+        connector_key="voice_tts",
+        config={"provider": "elevenlabs", "api_key": "el_tenant_key", "voice_id": "voz-tenant"},
+    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    largo = _texto_largo_sin_resumir(200)
+
+    response = await client.post("/v1/voice/speak", json={"text": largo}, headers=headers)
+
+    assert response.status_code == 200
+    enviado = json.loads(ruta.calls.last.request.content)["text"]
+    assert len(enviado.split()) <= 150
+
+
+@respx.mock
+async def test_speak_voice_rewrite_false_no_trunca_texto_largo(client, app, fake_repo) -> None:
+    """Reproducción de burbuja de chat: voice_rewrite=False manda el texto completo."""
+    ruta = respx.post("https://api.elevenlabs.io/v1/text-to-speech/voz-tenant").mock(
+        return_value=httpx.Response(200, content=b"FAKE-MP3-BYTES")
+    )
+    fake_vault = FakeVault()
+    tenant_id = uuid.uuid4()
+    await _conectar_voz_tenant(
+        app,
+        fake_repo,
+        fake_vault,
+        tenant_id=tenant_id,
+        connector_key="voice_tts",
+        config={"provider": "elevenlabs", "api_key": "el_tenant_key", "voice_id": "voz-tenant"},
+    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    largo = _texto_largo_sin_resumir(200)
+
+    response = await client.post(
+        "/v1/voice/speak",
+        json={"text": largo, "voice_rewrite": False},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    enviado = _texto_enviado_a_elevenlabs(ruta)
+    assert "Oración número 1" in enviado
+    assert "Oración número 200" in enviado
+    assert len(enviado.split()) > 150
+
+
+@respx.mock
+async def test_speak_stream_voice_rewrite_false_no_trunca_texto_largo(
+    client, app, fake_repo
+) -> None:
+    """El streaming de Escuchar debe respetar voice_rewrite=False igual que /speak."""
+    ruta = respx.post("https://api.elevenlabs.io/v1/text-to-speech/voz-tenant/stream").mock(
+        return_value=httpx.Response(200, content=b"FAKE-MP3-STREAM")
+    )
+    fake_vault = FakeVault()
+    tenant_id = uuid.uuid4()
+    await _conectar_voz_tenant(
+        app,
+        fake_repo,
+        fake_vault,
+        tenant_id=tenant_id,
+        connector_key="voice_tts",
+        config={"provider": "elevenlabs", "api_key": "el_tenant_key", "voice_id": "voz-tenant"},
+    )
+    headers = auth_headers(user_id=uuid.uuid4(), tenant_id=tenant_id, plan_key="hosted_basic")
+    largo = _texto_largo_sin_resumir(200)
+
+    response = await client.post(
+        "/v1/voice/speak/stream",
+        json={"text": largo, "voice_rewrite": False},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    enviado = _texto_enviado_a_elevenlabs(ruta)
+    assert "Oración número 1" in enviado
+    assert "Oración número 200" in enviado
+    assert len(enviado.split()) > 150
+
+
+def test_split_text_for_tts_parte_por_oraciones() -> None:
+    corto = "Primera oración. Segunda oración."
+    assert voice_module._split_text_for_tts(corto) == [corto]
+
+    largo = ". ".join(f"Oración {i} con texto." for i in range(500))
+    chunks = voice_module._split_text_for_tts(largo, max_chars=200)
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks)
+    assert "".join(chunks).replace(" ", "") == largo.replace(" ", "")
+
+
 # ---------------------------------------------------------------------------
 # Regresión (riesgo-legal-tos, ver docstring del módulo): un tenant sin
 # credencial propia NUNCA debe reutilizar una credencial real de voz
@@ -675,6 +793,7 @@ def test_realtime_voice_pcm16_emite_parciales_y_transcript_final(
             self.api_key = api_key
             self.encoding = encoding
             self.sample_rate = sample_rate
+            self.cerro_stream = False
 
         async def connect(self):  # noqa: ANN001
             pass
@@ -682,12 +801,18 @@ def test_realtime_voice_pcm16_emite_parciales_y_transcript_final(
         async def send_raw(self, payload):  # noqa: ANN001
             pass
 
+        async def close_stream(self):  # noqa: ANN001
+            self.cerro_stream = True
+
         async def finish(self):  # noqa: ANN001
             pass
 
         async def eventos(self):  # noqa: ANN001
             yield "parcial", False
-            yield "texto final", True
+            # Varios `is_final` en un mismo turno: son SEGMENTOS de utterance
+            # y el pump debe CONCATENARLOS, no quedarse con el último.
+            yield "texto", True
+            yield "final", True
 
     @asynccontextmanager
     async def fake_session(_tenant_id):  # noqa: ANN001
@@ -745,7 +870,49 @@ def test_realtime_voice_pcm16_emite_parciales_y_transcript_final(
 
             final = websocket.receive_json()
             assert final["type"] == "transcript"
+            # Finales concatenados (segmentos de utterance), no el último.
             assert final["text"] == "texto final"
+
+            # Regresión del barge-in: interrupt con un turno de escucha
+            # ABIERTO (pump vivo) debe descartar ese turno y dejar la sesión
+            # limpia — antes el audio siguiente alimentaba el turno muerto
+            # y el commit no producía nada. Señal observable: el frame
+            # posterior abre un turno NUEVO (turn_id mayor).
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"pcm16-turno-abierto").decode("ascii"),
+                }
+            )
+            aceptado_abierto = websocket.receive_json()
+            assert aceptado_abierto["type"] == "audio.accepted"
+            # El consumer del pump emite su parcial apenas arranca.
+            assert websocket.receive_json()["type"] == "transcript.partial"
+
+            websocket.send_json({"type": "interrupt"})
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"pcm16-tras-interrupt").decode("ascii"),
+                }
+            )
+            aceptado_nuevo = websocket.receive_json()
+            assert aceptado_nuevo["type"] == "audio.accepted", (
+                "el audio tras un interrupt debe ser aceptado, no rechazado"
+            )
+            assert aceptado_nuevo["turn_id"] > aceptado_abierto["turn_id"], (
+                "el audio tras un interrupt debe abrir un turno NUEVO, no engancharse "
+                "al turno cancelado"
+            )
+            assert websocket.receive_json()["type"] == "transcript.partial"
+
+            # Ese turno nuevo debe ser funcional de punta a punta.
+            websocket.send_json({"type": "commit"})
+            final_nuevo = websocket.receive_json()
+            assert final_nuevo["type"] == "transcript"
+            assert final_nuevo["text"] == "texto final"
 
 
 @respx.mock
@@ -813,3 +980,68 @@ def test_realtime_voice_speak_pcm_emite_audio_pcm24(app, test_settings, monkeypa
             # output_format viaja como query param (ver edecan_voice.elevenlabs).
             assert ruta.called
             assert ruta.calls.last.request.url.params["output_format"] == "pcm_24000"
+
+
+@respx.mock
+def test_realtime_voice_speak_respeta_voice_id_y_model_id_del_cliente(
+    app, test_settings, monkeypatch
+) -> None:
+    """Regresión: el `speak` del WS ignoraba `voice_id`/`model_id` y sonaba
+    siempre la voz/modelo default del proveedor. Ahora viajan al TTS."""
+    ruta_voz_elegida = respx.post(
+        "https://api.elevenlabs.io/v1/text-to-speech/voz-elegida/stream"
+    ).mock(return_value=httpx.Response(200, content=b"PCM-VOZ-ELEGIDA"))
+
+    @asynccontextmanager
+    async def fake_session(_tenant_id):  # noqa: ANN001
+        yield object()
+
+    async def no_quota(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def no_usage(*_args, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def fake_tts(*_args):  # noqa: ANN001
+        return ElevenLabsTTS(api_key="el_tenant_key", default_voice_id="voz-default")
+
+    async def fake_stt(*_args):  # noqa: ANN001
+        return StubSTT()
+
+    monkeypatch.setattr(voice_module, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(voice_module, "get_session", fake_session)
+    monkeypatch.setattr(voice_module, "build_key_provider", lambda _settings: object())
+    monkeypatch.setattr(voice_module, "_tts_para_tenant", fake_tts)
+    monkeypatch.setattr(voice_module, "_stt_para_tenant", fake_stt)
+    monkeypatch.setattr(voice_module, "_check_voice_quota", no_quota)
+    monkeypatch.setattr(voice_module.SqlRepo, "add_usage_event", no_usage)
+
+    token = create_access_token(
+        user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        plan_key="hosted_basic",
+        secret=test_settings.JWT_SECRET,
+    )
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            websocket.send_json(
+                {
+                    "type": "speak",
+                    "text": "Hola",
+                    "pcm": True,
+                    "voice_id": "voz-elegida",
+                    "model_id": "eleven_turbo_v2_5",
+                }
+            )
+            assert websocket.receive_json()["type"] == "speaking"
+            while websocket.receive_json()["type"] != "done":
+                pass
+
+    assert ruta_voz_elegida.called, "el TTS debe usar la voz que envió el cliente"
+    import json as _json
+
+    cuerpo = _json.loads(ruta_voz_elegida.calls.last.request.content)
+    assert cuerpo["model_id"] == "eleven_turbo_v2_5"

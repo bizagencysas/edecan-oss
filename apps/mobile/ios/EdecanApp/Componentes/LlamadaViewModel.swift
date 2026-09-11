@@ -53,10 +53,15 @@ final class LlamadaViewModel {
     /// RMS (0…1) del último chunk de micrófono, para la onda de la pantalla.
     private(set) var nivelEntrada: Float = 0
 
-    // Configuración de VAD (s16le normalizado: RMS relativo a escala completa).
-    private let umbralHabla: Float = 0.02
-    private let silencioMaxMs = 800
+    // Configuración de VAD: puerta de ruido adaptativa + rachas sostenidas (ver
+    // ``VadAdaptativo``). El micrófono "solo se enfoca en la voz": el umbral
+    // sube con el ruido de fondo del ambiente y un turno necesita voz real.
+    private var vad = VadAdaptativo()
     private let maxSegundosTurno: TimeInterval = 30
+    /// Tiempo mínimo de reproducción antes de aceptar un barge-in (evita que
+    /// el arranque del audio de Edecán se cuele al micrófono y se corte solo).
+    private let graciaBargeIn: TimeInterval = 0.6
+    private var inicioHabla = Date()
 
     // Transporte y estado interno de la llamada.
     private var realtime: RealtimeVoiceClient?
@@ -190,58 +195,78 @@ final class LlamadaViewModel {
         }
     }
 
-    /// Consume el stream del micrófono continuo: mide RMS, detecta voz/silencio,
-    /// manda los chunks por WS cuando hay STT live, y dispara el `commit` en
-    /// cuanto hay silencio o se agota el turno máximo.
+    /// Consume el stream del micrófono continuo: la puerta de ruido adaptativa
+    /// decide qué es voz, un turno exige racha sostenida (no golpes sueltos),
+    /// el `commit` llega tras el silencio o el turno máximo, y los turnos de
+    /// puro ruido se descartan. Mientras Edecán habla o piensa NO se abren
+    /// turnos (solo barge-in tras la gracia inicial).
     private func bucleDeEscucha(client: APIClient) async {
         guard let stream = streamAudio else { return }
         var turnoActivo = false
         var inicioTurno = Date()
-        var silencioMs = 0
         var acumuladoPCM = Data()
 
         for await chunk in stream {
             if Task.isCancelled { break }
             nivelEntrada = chunk.rms
-            let hayVoz = chunk.rms > umbralHabla
+            let hayVoz = vad.alimentar(rms: chunk.rms)
 
-            if hayVoz {
-                if estado == .hablando {
+            if estado == .hablando {
+                // Barge-in: solo con racha sostenida y después de la gracia.
+                if hayVoz,
+                   vad.racha >= VadAdaptativo.rachaBargeIn,
+                   Date().timeIntervalSince(inicioHabla) >= graciaBargeIn {
                     bargeIn()
                 }
-                if !turnoActivo {
+                continue
+            }
+            if estado == .pensando || estado == .inicializando {
+                continue
+            }
+
+            if !turnoActivo {
+                if hayVoz, vad.racha >= VadAdaptativo.rachaInicio {
                     turnoActivo = true
                     inicioTurno = Date()
                     acumuladoPCM = Data()
                     textoParcial = nil
                 }
-                silencioMs = 0
+                continue
+            }
+
+            if hayVoz {
                 acumuladoPCM.append(chunk.datos)
                 if sttLive, let realtime {
                     try? await realtime.sendPCM16(chunk.datos)
                 }
                 if Date().timeIntervalSince(inicioTurno) >= maxSegundosTurno {
-                    await lanzarTurno(client: client, acumulado: acumuladoPCM)
+                    await cerrarTurno(client: client, acumulado: acumuladoPCM)
                     turnoActivo = false
                     acumuladoPCM = Data()
-                    silencioMs = 0
+                    vad.reiniciarTurno()
                 }
-            } else if turnoActivo {
-                silencioMs += 100
-                if silencioMs >= silencioMaxMs {
-                    await lanzarTurno(client: client, acumulado: acumuladoPCM)
-                    turnoActivo = false
-                    acumuladoPCM = Data()
-                    silencioMs = 0
-                }
+            } else if vad.silencioMs >= VadAdaptativo.silencioMaxMs {
+                await cerrarTurno(client: client, acumulado: acumuladoPCM)
+                turnoActivo = false
+                acumuladoPCM = Data()
+                vad.reiniciarTurno()
             }
         }
     }
 
     /// Cierra el turno actual: con STT live manda `commit` (el `transcript`
     /// final llega por el loop de recepción); sin STT live transcribe la toma
-    /// acumulada. En ambos casos corre el agente y el TTS en `tareaTurno`.
-    private func lanzarTurno(client: APIClient, acumulado: Data) async {
+    /// acumulada. Los turnos que no juntaron voz mínima real se descartan como
+    /// ruido. En ambos casos corre el agente y el TTS en `tareaTurno`.
+    private func cerrarTurno(client: APIClient, acumulado: Data) async {
+        guard vad.turnoValido else {
+            if sttLive, let realtime {
+                // Cierra el turno abierto en el servidor (limpia su buffer);
+                // el `transcript` que emita se ignora porque nadie lo espera.
+                try? await realtime.commit()
+            }
+            return
+        }
         tareaTurno?.cancel()
         tareaTurno = nil
         reproductorPCM.detener()
@@ -333,6 +358,7 @@ final class LlamadaViewModel {
             return
         }
         estado = .hablando
+        inicioHabla = Date()
         if ttsPCM, let realtime {
             // El loop de recepción enruta los chunks pcm24 al reproductor y el
             // `done` llama `finalizar()`, que dispara `alTerminar` al drenar.
@@ -342,6 +368,7 @@ final class LlamadaViewModel {
             do {
                 try await realtime.speak(text: textoHablar, voiceId: vozId, pcm: true)
             } catch is CancellationError {
+                if estado == .hablando { estado = .escuchando }
                 return
             } catch {
                 errorMensaje = error.localizedDescription
@@ -355,6 +382,7 @@ final class LlamadaViewModel {
                 _ = try await reproductorMPEG.reproducir(stream: stream)
                 if !Task.isCancelled { estado = .escuchando }
             } catch is CancellationError {
+                if estado == .hablando { estado = .escuchando }
                 return
             } catch {
                 errorMensaje = error.localizedDescription
@@ -383,6 +411,7 @@ final class LlamadaViewModel {
             Task { try? await realtime.interrupt() }
         }
         ultimaRespuesta = nil
+        estado = .escuchando
     }
 
     // MARK: - Recepción del WS (loop unificado)
@@ -423,11 +452,11 @@ final class LlamadaViewModel {
         case "transcript":
             if let texto = evento.text {
                 textoParcial = nil
-                ultimaTranscripcion = texto
                 if let continuacion = continuacionFinal {
                     continuacionFinal = nil
                     tareaTimeoutFinal?.cancel()
                     tareaTimeoutFinal = nil
+                    ultimaTranscripcion = texto
                     continuacion.resume(returning: texto)
                 }
             }

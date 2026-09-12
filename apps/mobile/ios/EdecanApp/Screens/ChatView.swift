@@ -16,8 +16,9 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
-    @State private var mostrandoVoz = false
-    @State private var mostrandoLlamada = false
+    @State private var llamada = LlamadaViewModel()
+    @State private var mostrandoVoces = false
+    @AppStorage("vozElegidaId") private var vozElegidaId = "0uHpKhb0ymsdvmCtPV8y"
     @State private var mostrandoHistorial = false
     @State private var mostrandoSelectorArchivos = false
     @State private var mostrandoSelectorFotos = false
@@ -71,24 +72,26 @@ struct ChatView: View {
                             .animation(.easeInOut(duration: 0.25), value: monitorRed.estaConectado)
                             .animation(.easeInOut(duration: 0.25), value: servidorInaccesible)
                     }
-                if let error = viewModel.errorMensaje {
+                if let error = viewModel.errorMensaje ?? llamada.errorMensaje {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
                         .padding(.horizontal)
                         .padding(.top, 6)
                 }
+                if llamada.estado != .inactivo {
+                    VozEnChatBarra(llamada: llamada) { mostrandoVoces = true }
+                        .padding(.horizontal)
+                }
                 barraDeEntrada
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $mostrandoVoz) {
-                VozView(chat: viewModel)
+            .sheet(isPresented: $mostrandoVoces) {
+                VocesView(client: session.client)
             }
-            .fullScreenCover(isPresented: $mostrandoLlamada) {
-                LlamadaView(chat: viewModel)
-            }
+            .onChange(of: vozElegidaId) { _, nueva in llamada.vozId = nueva }
             .sheet(isPresented: $mostrandoHistorial) {
                 HistorialChatView(
                     viewModel: viewModel,
@@ -206,6 +209,7 @@ struct ChatView: View {
                 )
             }
             .onChange(of: viewModel.conversacionId) { anterior, nueva in
+                if anterior != nil, anterior != nueva { llamada.terminarLlamada() }
                 guardarBorrador(textoActual, conversationId: anterior)
                 estadoLocal.currentConversationId = nueva
                 textoActual = cargarBorrador(conversationId: nueva)
@@ -245,7 +249,6 @@ struct ChatView: View {
                 campoEnfocado = true
                 if tabRouter.abrirVozPendiente {
                     tabRouter.abrirVozPendiente = false
-                    mostrandoVoz = true
                 }
             }
             .onChange(of: tabRouter.compartidoPendiente?.id) { _, nuevaId in
@@ -266,6 +269,7 @@ struct ChatView: View {
                 Task { await viewModel.abrirConversacion(id: solicitada.conversationId, client: client) }
             }
             .onDisappear {
+                llamada.terminarLlamada()
                 cancelarTodasLasSubidas()
             }
         }
@@ -306,6 +310,15 @@ struct ChatView: View {
                             respuestaPosterior: respuestas[mensaje.id],
                             esUltimaRespuesta: mensaje.id == idUltimaRespuesta
                         )
+                    }
+                    if let parcial = llamada.textoParcial, !parcial.isEmpty {
+                        Text(parcial)
+                            .font(.body)
+                            .padding(12)
+                            .background(EdecanTheme.azul.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .accessibilityLabel("Transcripción en curso: \(parcial)")
+                            .accessibilityIdentifier("voice-live-transcript")
                     }
                     if let mision = viewModel.misionViva {
                         TarjetaMisionEnHilo(
@@ -354,6 +367,7 @@ struct ChatView: View {
             .onChange(of: viewModel.mensajes.last) { _, _ in
                 desplazarAlFinal(proxy)
             }
+            .onChange(of: llamada.textoParcial) { _, _ in desplazarAlFinal(proxy) }
             .onChange(of: viewModel.confirmacionPendiente?.id) { _, _ in
                 desplazarAlFinal(proxy)
             }
@@ -633,8 +647,13 @@ struct ChatView: View {
                     }
                     .disabled(!botonHabilitado)
                     .accessibilityLabel("Enviar")
-                } else if !viewModel.estaGenerando {
-                    Button { mostrandoLlamada = true } label: {
+                } else if !viewModel.estaGenerando && llamada.estado == .inactivo {
+                    Button {
+                        campoEnfocado = false
+                        llamada.chat = viewModel
+                        llamada.vozId = vozElegidaId
+                        llamada.iniciar(client: session.client)
+                    } label: {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 18, weight: .semibold))
                             .frame(width: 42, height: 42)
@@ -819,7 +838,11 @@ struct ChatView: View {
             return
         }
         if aprobado { Haptico.medio() } else { Haptico.advertencia() }
-        viewModel.resolverConfirmacionDesdeVista(aprobado: aprobado, client: client)
+        if llamada.estado != .inactivo {
+            Task { await llamada.resolverConfirmacion(aprobado: aprobado, client: client) }
+        } else {
+            viewModel.resolverConfirmacionDesdeVista(aprobado: aprobado, client: client)
+        }
     }
 
     /// Unica puerta de ejecucion para acciones venidas del servidor. Los
@@ -1150,6 +1173,7 @@ struct ChatView: View {
     }
 
     private func crearChatNuevo() {
+        llamada.terminarLlamada()
         guardarBorrador(textoActual, conversationId: viewModel.conversacionId)
         viewModel.nuevaConversacion()
         textoActual = cargarBorrador(conversationId: nil)
@@ -1170,6 +1194,7 @@ struct ChatView: View {
     }
 
     private func abrirConversacion(_ id: String) {
+        llamada.terminarLlamada()
         guard let client = session.client else { return }
         mostrandoHistorial = false
         Task { await viewModel.abrirConversacion(id: id, client: client) }

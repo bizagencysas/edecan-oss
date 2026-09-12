@@ -459,7 +459,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         if sesion.isReachable {
             sesion.sendMessage(payload, replyHandler: { _ in }, errorHandler: { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.sesion.transferUserInfo(payload)
+                    _ = self?.sesion.transferUserInfo(payload)
                 }
             })
         } else {

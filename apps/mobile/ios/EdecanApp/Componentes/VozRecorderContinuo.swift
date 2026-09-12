@@ -38,6 +38,7 @@ final class VozRecorderContinuo: @unchecked Sendable {
         case yaGrabando
         case sinGrabacionActiva
         case formatoInvalido
+        case audioAtrasado
 
         var errorDescription: String? {
             switch self {
@@ -49,18 +50,20 @@ final class VozRecorderContinuo: @unchecked Sendable {
                 return "No hay ninguna escucha activa para detener."
             case .formatoInvalido:
                 return "No se pudo preparar el formato de audio."
+            case .audioAtrasado:
+                return "La conexión no pudo seguir el audio en vivo. Activa la voz de nuevo."
             }
         }
     }
 
-    /// Bytes de un chunk de 100 ms a 16 kHz mono s16le (32000 muestras/s ×
+    /// Bytes de un chunk de 100 ms a 16 kHz mono s16le (16000 muestras/s ×
     /// 2 bytes × 0.1 s).
     private static let bytesPorChunk = 3_200
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var formatoSalida: AVAudioFormat?
-    private var continuacion: AsyncStream<ChunkAudioPCM16>.Continuation?
+    private var continuacion: AsyncThrowingStream<ChunkAudioPCM16, Error>.Continuation?
     private var acumulador = Data()
     private var tieneTap = false
     private(set) var grabando = false
@@ -80,7 +83,7 @@ final class VozRecorderContinuo: @unchecked Sendable {
     /// La sesión usa `.voiceChat` (mejor esfuerzo de cancelación de eco: sin
     /// esto, la voz de Edecán que sale por el altavoz se cuela al micrófono y
     /// dispara barge-in sola).
-    func iniciar() throws -> AsyncStream<ChunkAudioPCM16> {
+    func iniciar() throws -> AsyncThrowingStream<ChunkAudioPCM16, Error> {
         guard !grabando else { throw ErrorRecorder.yaGrabando }
 
         let sesion = AVAudioSession.sharedInstance()
@@ -88,20 +91,26 @@ final class VozRecorderContinuo: @unchecked Sendable {
         try sesion.setActive(true)
 
         let inputNode = engine.inputNode
+        // El modo de la sesion no activa por si solo Voice Processing en AVAudioEngine.
+        try inputNode.setVoiceProcessingEnabled(true)
+        if sesion.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
+            try sesion.overrideOutputAudioPort(.speaker)
+        }
         let formatoEntrada = inputNode.outputFormat(forBus: 0)
-        guard formatoEntrada.sampleRate > 0 else { throw ErrorRecorder.formatoInvalido }
+        guard formatoEntrada.sampleRate > 0, formatoEntrada.channelCount > 0 else {
+            throw ErrorRecorder.formatoInvalido
+        }
         guard let salida = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true),
               let convertidor = AVAudioConverter(from: formatoEntrada, to: salida)
         else { throw ErrorRecorder.formatoInvalido }
 
-        let (stream, continuation) = AsyncStream<ChunkAudioPCM16>.makeStream()
+        let (stream, continuation) = AsyncThrowingStream<ChunkAudioPCM16, Error>.makeStream(bufferingPolicy: .bufferingNewest(20))
         self.formatoSalida = salida
         self.converter = convertidor
         self.continuacion = continuation
         self.acumulador = Data()
 
-        // Mismo guardia que ``VozRecorder``: `removeTap` levanta una excepción
-        // de Objective-C si NO hay tap instalado (instalación nueva).
+        // Retira solo el tap instalado por esta instancia.
         if tieneTap {
             inputNode.removeTap(onBus: 0)
             tieneTap = false
@@ -150,7 +159,10 @@ final class VozRecorderContinuo: @unchecked Sendable {
             estado.pointee = .haveData
             return buffer
         }
-        guard error == nil else { return }
+        if let error {
+            continuacion?.finish(throwing: error)
+            return
+        }
 
         let mBuffers = salida.audioBufferList.pointee.mBuffers
         guard let dataPtr = mBuffers.mData, mBuffers.mDataByteSize > 0 else { return }
@@ -160,7 +172,10 @@ final class VozRecorderContinuo: @unchecked Sendable {
         while acumulador.count >= objetivo {
             let trozo = Data(acumulador.prefix(objetivo))
             acumulador.removeFirst(objetivo)
-            continuacion?.yield(ChunkAudioPCM16(datos: trozo, rms: Self.rmsPCM16(trozo)))
+            if case .dropped = continuacion?.yield(ChunkAudioPCM16(datos: trozo, rms: Self.rmsPCM16(trozo))) {
+                continuacion?.finish(throwing: ErrorRecorder.audioAtrasado)
+                return
+            }
         }
     }
 
@@ -173,6 +188,8 @@ final class VozRecorderContinuo: @unchecked Sendable {
             tieneTap = false
         }
         engine.stop()
+        do { try engine.inputNode.setVoiceProcessingEnabled(false) }
+        catch { NSLog("Voice Processing teardown failed: %@", error.localizedDescription) }
         let continuation = continuacion
         continuacion = nil
         converter = nil

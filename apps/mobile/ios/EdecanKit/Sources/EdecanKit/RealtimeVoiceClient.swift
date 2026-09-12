@@ -14,6 +14,7 @@ public struct RealtimeVoiceEvent: Sendable, Equatable {
     public let mime: String?
     public let audio: Data?
     public let text: String?
+    public let message: String?
     public let state: String?
     /// `stt_live` del `ready`: el servidor admite STT en vivo (frames PCM16
     /// con parciales). `false`/`nil` → el cliente captura por turnos.
@@ -34,6 +35,7 @@ public struct RealtimeVoiceEvent: Sendable, Equatable {
             audio = nil
         }
         text = json["text"] as? String
+        message = json["message"] as? String
         state = json["state"] as? String
         sttLive = json["stt_live"] as? Bool
         ttsPCM = json["tts_pcm"] as? Bool

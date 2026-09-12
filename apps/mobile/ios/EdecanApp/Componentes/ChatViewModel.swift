@@ -398,6 +398,14 @@ final class ChatViewModel {
         mensajes.last(where: { $0.rol == .asistente })?.texto
     }
 
+    /// Mismo texto visible que utiliza el altavoz del chat, incluida la apertura.
+    var ultimaRespuestaHablada: String? {
+        guard let mensaje = mensajes.last(where: { $0.rol == .asistente }) else { return nil }
+        return [mensaje.textoApertura, mensaje.texto]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+    }
+
     /// Ficha del modelo activo. `nil` mientras el catálogo no haya llegado o
     /// si la conversación está en automático.
     var modeloActivo: ChatModelInfo? { catalogoModelos?.modelo(id: modeloElegido) }

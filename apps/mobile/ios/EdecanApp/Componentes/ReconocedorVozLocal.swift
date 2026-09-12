@@ -13,15 +13,9 @@ enum TranscripcionVoz {
         audio: Data, client: APIClient, sttConectado: Bool, reconocedorLocal: ReconocedorVozLocal
     ) async throws -> String {
         if sttConectado {
-            do {
-                return try await transcribirRealtime(audio: audio, client: client)
-            } catch {
-                // El endpoint HTTP sigue siendo el fallback operativo si un
-                // proxy o una versión vieja del backend no soporta WS.
-                return try await client.transcribir(
-                    audioData: audio, mimeType: "audio/wav", language: nil
-                )
-            }
+            // Una toma ya cerrada no necesita abrir otro WS, especialmente
+            // cuando llegamos aqui porque se perdio el transporte en vivo.
+            return try await client.transcribir(audioData: audio, mimeType: "audio/wav", language: nil)
         }
         return try await reconocedorLocal.transcribir(wav: audio)
     }

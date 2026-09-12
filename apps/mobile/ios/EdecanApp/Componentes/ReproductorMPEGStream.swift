@@ -18,7 +18,7 @@ final class ReproductorMPEGStream: NSObject, AVAudioPlayerDelegate {
         continuacion = nil
     }
 
-    func reproducir(stream: AsyncThrowingStream<TrozoHablar, Error>) async throws -> Data {
+    func reproducir(stream: AsyncThrowingStream<TrozoHablar, Error>, mantenerMicrofono: Bool = false) async throws -> Data {
         cancelado = false
         var audio = Data()
         var mime = "audio/mpeg"
@@ -33,16 +33,16 @@ final class ReproductorMPEGStream: NSObject, AVAudioPlayerDelegate {
         if mime.contains("wav"), audio.count < 2_000 {
             return audio
         }
-        try await reproducir(data: audio)
+        try await reproducir(data: audio, mantenerMicrofono: mantenerMicrofono)
         return audio
     }
 
     /// Reproduce un audio ya completo (p. ej. desde el caché del mensaje) sin
     /// volver a la API. Misma lógica que el stream acumulado.
-    func reproducir(data: Data) async throws {
+    func reproducir(data: Data, mantenerMicrofono: Bool = false) async throws {
         cancelado = false
         guard data.count > 64 else { return }
-        configurarSesion()
+        try configurarSesion(mantenerMicrofono: mantenerMicrofono)
         let player = try AVAudioPlayer(data: data)
         player.delegate = self
         reproductor = player
@@ -60,10 +60,14 @@ final class ReproductorMPEGStream: NSObject, AVAudioPlayerDelegate {
         }
     }
 
-    private func configurarSesion() {
+    private func configurarSesion(mantenerMicrofono: Bool) throws {
         let sesion = AVAudioSession.sharedInstance()
-        try? sesion.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? sesion.setActive(true, options: .notifyOthersOnDeactivation)
+        if mantenerMicrofono {
+            try sesion.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+        } else {
+            try sesion.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        }
+        try sesion.setActive(true)
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

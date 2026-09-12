@@ -44,6 +44,12 @@ final class LlamadaViewModel {
     private let reconocedorLocal = ReconocedorVozLocal()
     private let reproductorPCM = ReproductorPCMStream()
     private let reproductorMPEG = ReproductorMPEGStream()
+    private let vozLocal = VozRespuestaLocal()
+    private var ttsConectado = false
+    private var generacion: UInt64 = 0
+    private var bytesRespuesta = 0
+    private var turnoSalida: Int?
+    private var turnoEntrada: Int?
 
     private(set) var estado: Estado = .inactivo
     /// Texto en vivo del turno del usuario (interim `transcript.partial`).
@@ -69,7 +75,7 @@ final class LlamadaViewModel {
     private var sttLive = false
     private var ttsPCM = false
     private var sttConectado = false
-    private var streamAudio: AsyncStream<ChunkAudioPCM16>?
+    private var streamAudio: AsyncThrowingStream<ChunkAudioPCM16, Error>?
 
     private var tareaPrincipal: Task<Void, Never>?
     private var tareaAudio: Task<Void, Never>?
@@ -100,11 +106,14 @@ final class LlamadaViewModel {
     /// Entra a la llamada: pide permiso, abre el WS realtime (best effort),
     /// arranca el micrófono continuo y los loops de escucha/recepción.
     func iniciar(client: APIClient?) {
+        guard estado == .inactivo else { return }
         guard let client else {
             errorMensaje = "No hay sesión activa."
             return
         }
         estado = .inicializando
+        generacion &+= 1
+        vad = VadAdaptativo()
         errorMensaje = nil
         textoParcial = nil
         ultimaTranscripcion = nil
@@ -116,6 +125,7 @@ final class LlamadaViewModel {
 
     /// Corta TODO: micrófono continuo, players, WS y tareas en vuelo.
     func terminarLlamada() {
+        generacion &+= 1
         tareaPrincipal?.cancel()
         tareaPrincipal = nil
         tareaAudio?.cancel()
@@ -135,6 +145,9 @@ final class LlamadaViewModel {
         recorderContinuo.detener()
         reproductorPCM.detener()
         reproductorMPEG.detener()
+        vozLocal.detener()
+        turnoSalida = nil
+        turnoEntrada = nil
         if let realtime {
             realtime.close()
         }
@@ -142,6 +155,8 @@ final class LlamadaViewModel {
         streamAudio = nil
         textoParcial = nil
         estado = .inactivo
+        do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+        catch { errorMensaje = "No se pudo cerrar la sesión de audio: \(error.localizedDescription)" }
     }
 
     private func arrancar(client: APIClient) async {
@@ -156,7 +171,9 @@ final class LlamadaViewModel {
 
         // Capacidades del tenant para los fallbacks de transcripción.
         let credenciales = try? await client.credenciales()
+        guard !Task.isCancelled else { return }
         sttConectado = credenciales?.voiceStt != nil
+        ttsConectado = credenciales?.voiceTts != nil
 
         // Abrir el WS realtime y leer sus capacidades del `ready`.
         var realtimeAbierto: RealtimeVoiceClient?
@@ -178,6 +195,11 @@ final class LlamadaViewModel {
         }
 
         realtime = realtimeAbierto
+        guard !Task.isCancelled else {
+            realtimeAbierto?.close()
+            realtime = nil
+            return
+        }
         sttLive = sttLiveDetectado
         ttsPCM = ttsPCMDetectado
 
@@ -202,7 +224,13 @@ final class LlamadaViewModel {
     private func iniciarBucleAudio(client: APIClient) {
         tareaAudio?.cancel()
         tareaAudio = Task { [weak self] in
-            await self?.bucleDeEscucha(client: client)
+            do {
+                try await self?.bucleDeEscucha(client: client)
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.terminarLlamada()
+                self.errorMensaje = error.localizedDescription
+            }
         }
     }
 
@@ -210,7 +238,7 @@ final class LlamadaViewModel {
     /// abre y cierra el turno; dentro del turno se envía TODO el audio (voz y
     /// silencio — recortar por umbral mutilaba sílabas y pausas). Un pre-roll
     /// de ~400 ms conserva el arranque de la frase que disparó el turno.
-    private func bucleDeEscucha(client: APIClient) async {
+    private func bucleDeEscucha(client: APIClient) async throws {
         guard let stream = streamAudio else { return }
         var turnoActivo = false
         var inicioTurno = Date()
@@ -218,7 +246,7 @@ final class LlamadaViewModel {
         var framesEnviados = 0
         var preRoll: [Data] = []
 
-        for await chunk in stream {
+        for try await chunk in stream {
             if Task.isCancelled { break }
             nivelEntrada = chunk.rms
             _ = vad.alimentar(rms: chunk.rms)
@@ -238,22 +266,27 @@ final class LlamadaViewModel {
             if estado != .escuchando {
                 // transcribiendo / pensando / inicializando: el turno en
                 // vuelo tiene la palabra; no se abren turnos nuevos.
+                vad.reiniciarTurno()
+                preRoll.removeAll()
                 continue
             }
             if chat?.confirmacionPendiente != nil {
                 // Edecán espera una aprobación de tool: la tarjeta manda.
                 continue
             }
+            if chat?.estaGenerando == true { continue }
 
             if !turnoActivo {
                 if vad.vozReciente {
                     turnoActivo = true
+                    errorMensaje = nil
                     inicioTurno = Date()
                     textoParcial = nil
                     // Pre-roll: los chunks que dispararon el turno también son
                     // parte de él — sin esto se perdía el arranque de la frase.
                     acumuladoPCM = Data(preRoll.joined())
                     framesEnviados = 0
+                    turnoEntrada = nil
                     for trozo in preRoll where sttLive {
                         await enviarFrame(trozo, contador: &framesEnviados)
                     }
@@ -330,8 +363,8 @@ final class LlamadaViewModel {
                 // La bandera solo se fija si el commit SALIÓ: si falló, el
                 // transcript que ignoraría sería el de un turno real.
                 do {
-                    try await realtime.commit()
-                    ignorarSiguienteTranscript = true
+                    // No producir una transcripcion huérfana de un turno descartado.
+                    try await realtime.interrupt()
                 } catch {
                     degradarTransporte(motivo: "Se cayó la conexión de voz en vivo.")
                 }
@@ -342,6 +375,7 @@ final class LlamadaViewModel {
         tareaTurno = nil
         reproductorPCM.detener()
         reproductorMPEG.detener()
+        transcriptPendiente = nil
 
         if sttLive, let realtime, framesEnviados > 0 {
             estado = .transcribiendo
@@ -353,7 +387,7 @@ final class LlamadaViewModel {
         }
         if sttLive, realtime != nil {
             tareaTurno = Task { [weak self] in
-                await self?.procesarTurnoLive(client: client)
+                await self?.procesarTurnoLive(client: client, acumulado: acumulado)
             }
         } else {
             // Respaldo completo: TODO el audio del turno se acumuló local.
@@ -366,7 +400,7 @@ final class LlamadaViewModel {
 
     // MARK: - Turno: transcripción → agente → TTS
 
-    private func procesarTurnoLive(client: APIClient) async {
+    private func procesarTurnoLive(client: APIClient, acumulado: Data) async {
         do {
             let texto = try await esperarTranscripcionFinal()
             await procesarTextoFinal(texto, client: client)
@@ -374,8 +408,8 @@ final class LlamadaViewModel {
             return
         } catch {
             guard estado == .transcribiendo || estado == .pensando || estado == .hablando else { return }
-            errorMensaje = error.localizedDescription
-            estado = .escuchando
+            degradarTransporte(motivo: "Reintentando la transcripción del turno por HTTP.")
+            await procesarTurnoWAV(client: client, acumulado: acumulado)
         }
     }
 
@@ -405,6 +439,8 @@ final class LlamadaViewModel {
     /// Con el texto final del turno: corre el chat completo (tools incluidas)
     /// y manda la respuesta a hablar por el transporte que toque.
     private func procesarTextoFinal(_ texto: String, client: APIClient) async {
+        guard !Task.isCancelled, estado != .inactivo else { return }
+        let ciclo = generacion
         let textoLimpio = texto.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !textoLimpio.isEmpty else {
             ultimaTranscripcion = nil
@@ -418,7 +454,9 @@ final class LlamadaViewModel {
         estado = .pensando
 
         let enviado = await chat?.enviar(texto: textoLimpio, client: client) ?? false
+        guard !Task.isCancelled, generacion == ciclo, estado != .inactivo else { return }
         guard enviado else {
+            errorMensaje = chat?.errorMensaje ?? "El chat no pudo completar este turno."
             if !Task.isCancelled { estado = .escuchando }
             return
         }
@@ -426,7 +464,7 @@ final class LlamadaViewModel {
         // pantalla y la llamada espera la decisión (el loop no abre turnos
         // mientras haya una confirmación pendiente).
         if chat?.confirmacionPendiente != nil {
-            if let pregunta = chat?.ultimaRespuestaDelAsistente,
+            if let pregunta = chat?.ultimaRespuestaHablada,
                !pregunta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ultimaRespuesta = pregunta
                 await hablarRespuesta(pregunta, client: client)
@@ -435,9 +473,10 @@ final class LlamadaViewModel {
             }
             return
         }
-        guard let respuesta = chat?.ultimaRespuestaDelAsistente,
+        guard let respuesta = chat?.ultimaRespuestaHablada,
               !respuesta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
+            errorMensaje = "El chat terminó sin texto para reproducir."
             if !Task.isCancelled { estado = .escuchando }
             return
         }
@@ -450,9 +489,14 @@ final class LlamadaViewModel {
     /// cualquier otra.
     func resolverConfirmacion(aprobado: Bool, client: APIClient) async {
         guard chat?.confirmacionPendiente != nil else { return }
+        let ciclo = generacion
+        reproductorPCM.detener()
+        reproductorMPEG.detener()
+        vozLocal.detener()
         estado = .pensando
         await chat?.resolverConfirmacion(aprobado: aprobado, client: client)
-        guard let respuesta = chat?.ultimaRespuestaDelAsistente,
+        guard !Task.isCancelled, generacion == ciclo, estado != .inactivo else { return }
+        guard let respuesta = chat?.ultimaRespuestaHablada,
               !respuesta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             estado = .escuchando
@@ -466,18 +510,43 @@ final class LlamadaViewModel {
     /// (chunks pcm24 → ``ReproductorPCMStream``, habla de inmediato); sin él
     /// cae a `hablarStream` + ``ReproductorMPEGStream``.
     private func hablarRespuesta(_ respuesta: String, client: APIClient) async {
+        guard !Task.isCancelled, estado != .inactivo else { return }
+        let ciclo = generacion
         let textoHablar = SpeechTags.ocultar(respuesta).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !textoHablar.isEmpty else {
             estado = .escuchando
             return
         }
         estado = .hablando
+        bytesRespuesta = 0
+        turnoSalida = nil
         inicioHabla = Date()
+        if !ttsConectado {
+            do {
+                try await vozLocal.hablar(textoHablar)
+                guard !Task.isCancelled, generacion == ciclo else { return }
+                terminarHabla()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generacion == ciclo else { return }
+                errorMensaje = "No se pudo reproducir la voz del dispositivo: \(error.localizedDescription)"
+                terminarHabla()
+            }
+            return
+        }
         if ttsPCM, let realtime {
             // El loop de recepción enruta los chunks pcm24 al reproductor y el
             // `done` llama `finalizar()`, que dispara `alTerminar` al drenar.
             reproductorPCM.alTerminar = { [weak self] in
-                self?.terminarHabla()
+                guard let self, self.generacion == ciclo else { return }
+                self.terminarHabla()
+            }
+            reproductorPCM.alError = { [weak self] error in
+                guard let self, self.generacion == ciclo else { return }
+                self.errorMensaje = "No se pudo reproducir el audio: \(error.localizedDescription)"
+                self.reproductorPCM.detener()
+                self.terminarHabla()
             }
             do {
                 try await realtime.speak(
@@ -496,8 +565,8 @@ final class LlamadaViewModel {
                 let stream = try await client.hablarStream(
                     texto: textoHablar, voiceId: vozId, modelId: "eleven_turbo_v2_5"
                 )
-                _ = try await reproductorMPEG.reproducir(stream: stream)
-                if !Task.isCancelled { estado = .escuchando }
+                _ = try await reproductorMPEG.reproducir(stream: stream, mantenerMicrofono: true)
+                if !Task.isCancelled, generacion == ciclo { estado = .escuchando }
             } catch is CancellationError {
                 if estado == .hablando { estado = .escuchando }
                 return
@@ -522,6 +591,8 @@ final class LlamadaViewModel {
         tareaTurno = nil
         reproductorPCM.detener()
         reproductorMPEG.detener()
+        vozLocal.detener()
+        turnoSalida = nil
         // Avisa al servidor para que pare el TTS viejo y sane el turno abierto
         // (descarta el audio a medias y su pump) antes del próximo frame.
         if let realtime {
@@ -537,6 +608,10 @@ final class LlamadaViewModel {
             continuacion.resume(throwing: CancellationError())
         }
         estado = .escuchando
+    }
+
+    func interrumpirDesdeChat() {
+        if estado == .hablando { bargeIn() }
     }
 
     // MARK: - Recepción del WS (loop unificado)
@@ -566,10 +641,16 @@ final class LlamadaViewModel {
     }
 
     private func manejarEvento(_ evento: RealtimeVoiceEvent) {
+        guard estado != .inactivo else { return }
         switch evento.type {
+        case "speaking":
+            if estado == .hablando { turnoSalida = evento.turnId }
+        case "audio.accepted":
+            if estado == .escuchando || estado == .transcribiendo { turnoEntrada = evento.turnId }
         case "transcript.partial":
-            if let texto = evento.text { textoParcial = texto }
+            if evento.turnId == turnoEntrada, let texto = evento.text { textoParcial = texto }
         case "transcript":
+            guard estado == .transcribiendo, evento.turnId == turnoEntrada else { return }
             if let texto = evento.text {
                 textoParcial = nil
                 // El turno descartado por ruido también produce un `transcript`:
@@ -592,11 +673,17 @@ final class LlamadaViewModel {
                 }
             }
         case "audio" where evento.mime == "audio/pcm24":
-            if estado == .hablando, let audio = evento.audio {
+            if estado == .hablando, evento.turnId == turnoSalida, let audio = evento.audio {
+                bytesRespuesta += audio.count
                 reproductorPCM.agregar(audio)
             }
         case "done":
-            if estado == .hablando {
+            if estado == .hablando, evento.turnId == turnoSalida {
+                if bytesRespuesta == 0 {
+                    errorMensaje = "El proveedor de voz terminó sin enviar audio."
+                    terminarHabla()
+                    return
+                }
                 reproductorPCM.finalizar()
             }
         case "error":
@@ -606,7 +693,11 @@ final class LlamadaViewModel {
                 tareaTimeoutFinal = nil
                 continuacion.resume(throwing: ErrorLlamada.transcripcionFallida)
             } else {
-                errorMensaje = "La conexión de voz falló."
+                errorMensaje = evento.message ?? "La conexión de voz falló."
+                if estado == .hablando {
+                    reproductorPCM.detener()
+                    terminarHabla()
+                }
             }
         default:
             break
@@ -624,7 +715,8 @@ final class LlamadaViewModel {
             continuacionFinal = continuation
             tareaTimeoutFinal?.cancel()
             tareaTimeoutFinal = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(20))
+                do { try await Task.sleep(for: .seconds(20)) }
+                catch { return }
                 guard let self, let pendiente = self.continuacionFinal else { return }
                 self.continuacionFinal = nil
                 pendiente.resume(throwing: ErrorLlamada.tiempoAgotado)

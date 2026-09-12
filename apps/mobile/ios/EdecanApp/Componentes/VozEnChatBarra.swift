@@ -5,8 +5,26 @@ struct VozEnChatBarra: View {
     let llamada: LlamadaViewModel
     let onVoces: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(SessionStore.self) private var session
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            controles
+            if llamada.puedeReintentar {
+                HStack(spacing: 16) {
+                    Button("Reintentar") { llamada.reintentarTurno(client: session.client) }
+                        .accessibilityIdentifier("voice-retry-turn")
+                    Button("Descartar") { llamada.descartarTurno() }
+                        .accessibilityIdentifier("voice-discard-turn")
+                }
+                .font(.subheadline)
+                .padding(.leading, 54)
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var controles: some View {
         HStack(spacing: 10) {
             Button {
                 llamada.interrumpirDesdeChat()
@@ -46,13 +64,14 @@ struct VozEnChatBarra: View {
 
     private var estadoTexto: String {
         if llamada.chat?.confirmacionPendiente != nil { return "Esperando tu aprobación" }
+        if let error = llamada.errorMensaje { return error }
         switch llamada.estado {
         case .inactivo: return "Voz desactivada"
         case .inicializando: return "Activando voz…"
         case .escuchando: return "Te escucho"
         case .transcribiendo: return "Transcribiendo…"
         case .pensando: return llamada.chat?.herramientaActiva.map { "Usando \($0.nombre)…" } ?? "Preparando respuesta…"
-        case .hablando: return "Edecán está hablando"
+        case .hablando: return "Hablando · toca el orb para interrumpir"
         }
     }
 }

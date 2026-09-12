@@ -19,6 +19,7 @@ vault que lanza (tampoco rompe la request, cae al mismo stub).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import uuid
@@ -782,6 +783,12 @@ def test_pcm16_a_wav_header_correcto() -> None:
     assert wav[44:] == pcm
 
 
+def test_wav_pcm_no_se_contabiliza_como_audio_comprimido() -> None:
+    wav = voice_module._pcm16_a_wav(bytes(32000))
+    assert voice_module._estimate_seconds_from_audio(wav) == 1.0
+    assert voice_module._estimate_seconds_from_audio(voice_module._pcm16_a_wav(bytes(16000))) == 0.5
+
+
 def test_realtime_voice_pcm16_emite_parciales_y_transcript_final(
     app, test_settings, monkeypatch
 ) -> None:
@@ -1045,3 +1052,461 @@ def test_realtime_voice_speak_respeta_voice_id_y_model_id_del_cliente(
 
     cuerpo = _json.loads(ruta_voz_elegida.calls.last.request.content)
     assert cuerpo["model_id"] == "eleven_turbo_v2_5"
+
+
+# ---------------------------------------------------------------------------
+# Regresiones de secuenciación del pump PCM16 en vivo (voz web realtime).
+#
+# Estos dobles NO son contratos estáticos: modelan el protocolo real de
+# Deepgram Live (los parciales llegan durante el feed y el final SOLO se emite
+# tras `CloseStream`; el proveedor puede cerrar el stream antes de tiempo por
+# endpointing; o fallar del todo) y se ejercitan por el WebSocket real de
+# `/v1/voice/realtime`, de punta a punta.
+# ---------------------------------------------------------------------------
+
+
+class _RealisticDeepgramLive:
+    """Doble de `DeepgramLive` con el protocolo real: el parcial llega durante
+    el feed y el final SOLO después de `close_stream()` (el socket cierra al
+    terminar)."""
+
+    def __init__(self, api_key, *, encoding="mulaw", sample_rate=8000):  # noqa: ANN001
+        self.api_key = api_key
+        self.encoding = encoding
+        self.sample_rate = sample_rate
+        self._closed_stream = asyncio.Event()
+        self.finished = False
+
+    async def connect(self):  # noqa: ANN001
+        pass
+
+    async def send_raw(self, payload):  # noqa: ANN001
+        pass
+
+    async def close_stream(self):  # noqa: ANN001
+        self._closed_stream.set()
+
+    async def finish(self):  # noqa: ANN001
+        self.finished = True
+
+    async def eventos(self):  # noqa: ANN001
+        yield "parcial", False
+        await self._closed_stream.wait()
+        yield "texto", True
+        yield "final", True
+
+
+class _CloseAfterOneDeepgramLive:
+    """Corte de TRANSPORTE a mitad del feed (no endpointing): el proveedor
+    procesa el PRIMER frame y emite un final PARCIAL, pero el socket muere; el
+    segundo frame nunca llega al STT (`send_raw` revienta)."""
+
+    def __init__(self, api_key, *, encoding="mulaw", sample_rate=8000):  # noqa: ANN001
+        self.api_key = api_key
+        self._stream_ended = asyncio.Event()
+
+    async def connect(self):  # noqa: ANN001
+        pass
+
+    async def send_raw(self, payload):  # noqa: ANN001
+        if self._stream_ended.is_set():
+            raise ConnectionError("transport disconnect")
+        # Primer frame entregado; el proveedor "cierra" tras procesarlo.
+        self._stream_ended.set()
+
+    async def close_stream(self):  # noqa: ANN001
+        self._stream_ended.set()
+
+    async def finish(self):  # noqa: ANN001
+        pass
+
+    async def eventos(self):  # noqa: ANN001
+        # Final PARCIAL: solo lo que el proveedor alcanzó a recibir.
+        yield "envíalo", True
+
+
+class _FlakyDeepgramLive:
+    """Falla en `connect()` UNA vez (turno) y funciona en los siguientes."""
+
+    fail_next = False
+
+    def __init__(self, api_key, *, encoding="mulaw", sample_rate=8000):  # noqa: ANN001
+        self.api_key = api_key
+        self._closed_stream = asyncio.Event()
+
+    async def connect(self):  # noqa: ANN001
+        if type(self).fail_next:
+            type(self).fail_next = False
+            raise ConnectionError("deepgram caído")
+
+    async def send_raw(self, payload):  # noqa: ANN001
+        pass
+
+    async def close_stream(self):  # noqa: ANN001
+        self._closed_stream.set()
+
+    async def finish(self):  # noqa: ANN001
+        pass
+
+    async def eventos(self):  # noqa: ANN001
+        yield "parcial", False
+        await self._closed_stream.wait()
+        yield "texto final en vivo", True
+
+
+class _ConnectFailsDeepgramLive:
+    """Falla siempre en `connect()`: fuerza el fallback WAV por turno."""
+
+    def __init__(self, api_key, *, encoding="mulaw", sample_rate=8000):  # noqa: ANN001
+        self.api_key = api_key
+
+    async def connect(self):  # noqa: ANN001
+        raise ConnectionError("deepgram caído")
+
+    async def send_raw(self, payload):  # noqa: ANN001
+        pass
+
+    async def close_stream(self):  # noqa: ANN001
+        pass
+
+    async def finish(self):  # noqa: ANN001
+        pass
+
+    async def eventos(self):  # noqa: ANN001
+        if False:  # pragma: no cover
+            yield None
+
+
+class _FakeLiveSTT(DeepgramSTT):
+    """`stt_live=True` (subclase de DeepgramSTT) pero `transcribe` offline para
+    el fallback WAV — sin red real."""
+
+    async def transcribe(self, audio, mime, language=None):  # noqa: ANN001
+        return Transcript(text="texto del fallback", language="es")
+
+
+class _CapturingLiveSTT(DeepgramSTT):
+    """Como `_FakeLiveSTT`, pero registra el audio que recibe el fallback batch,
+    para verificar QUÉ (y CUÁNTO) audio llegó al reintento WAV."""
+
+    def __init__(self, api_key: str) -> None:
+        super().__init__(api_key=api_key)
+        self.received_audio: list[bytes] = []
+
+    async def transcribe(self, audio, mime, language=None):  # noqa: ANN001
+        self.received_audio.append(audio)
+        return Transcript(text="texto del fallback", language="es")
+
+
+class _FakeStreamingTTS(TTSProvider):
+    """TTS que emite un chunk y queda "hablando" (para probar interrupt)."""
+
+    async def synthesize(self, text, voice_id=None, fmt="mp3"):  # noqa: ANN001
+        return b"audio"
+
+    async def synthesize_stream(self, text, *, voice_id=None, model_id, mime):  # noqa: ANN001
+        yield b"chunk-1"
+        await asyncio.sleep(3600)
+
+
+def _configurar_realtime(
+    monkeypatch,
+    test_settings,
+    *,
+    deepgram_cls,
+    stt=None,
+    tts=None,
+    quota=None,
+    usage=None,
+):
+    """Instala los dobles comunes del transporte realtime (sin red real)."""
+
+    @asynccontextmanager
+    async def fake_session(_tenant_id):  # noqa: ANN001
+        yield object()
+
+    async def _no_quota(*_a, **_k):  # noqa: ANN001
+        return None
+
+    async def _no_usage(*_a, **_k):  # noqa: ANN001
+        return None
+
+    async def _stt(*_a):  # noqa: ANN001
+        return _FakeLiveSTT(api_key="dg_tenant_key")
+
+    async def _tts(*_a):  # noqa: ANN001
+        return StubTTS()
+
+    monkeypatch.setattr(voice_module, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(voice_module, "get_session", fake_session)
+    monkeypatch.setattr(voice_module, "build_key_provider", lambda _settings: object())
+    monkeypatch.setattr(voice_module, "_tts_para_tenant", tts or _tts)
+    monkeypatch.setattr(voice_module, "_stt_para_tenant", stt or _stt)
+    monkeypatch.setattr(voice_module, "DeepgramLive", deepgram_cls)
+    monkeypatch.setattr(voice_module, "_check_voice_quota", quota or _no_quota)
+    monkeypatch.setattr(voice_module.SqlRepo, "add_usage_event", usage or _no_usage)
+
+
+def _realtime_token(test_settings) -> str:
+    return create_access_token(
+        user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        plan_key="hosted_basic",
+        secret=test_settings.JWT_SECRET,
+    )
+
+
+def test_realtime_pcm16_final_llega_solo_tras_close_stream(
+    app, test_settings, monkeypatch
+) -> None:
+    """El final real de Deepgram SOLO se emite tras `CloseStream`. Con todo el
+    PCM alimentado y drenaje normal, el final se REUTILIZA y NO hay fallback WAV."""
+    capturando = _CapturingLiveSTT(api_key="dg_tenant_key")
+
+    async def fake_stt(*_a):  # noqa: ANN001
+        return capturando
+
+    _configurar_realtime(
+        monkeypatch,
+        test_settings,
+        deepgram_cls=_RealisticDeepgramLive,
+        stt=fake_stt,
+    )
+    token = _realtime_token(test_settings)
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"uno").decode("ascii"),
+                }
+            )
+            assert websocket.receive_json()["type"] == "audio.accepted"
+            # El parcial llega apenas arranca el feed.
+            assert websocket.receive_json()["type"] == "transcript.partial"
+
+            websocket.send_json({"type": "commit"})
+            final = websocket.receive_json()
+            assert final["type"] == "transcript"
+            assert final["text"] == "texto final"  # finales concatenados
+
+    # El final completo se reutilizó: el fallback batch NUNCA se invocó.
+    assert capturando.received_audio == []
+
+
+def test_realtime_pcm16_cierre_temprano_reintenta_el_wav_integro(
+    app, test_settings, monkeypatch
+) -> None:
+    """Corte de transporte a mitad del feed: el proveedor procesó solo el primer
+    frame y su final es PARCIAL. El pump NO debe presentarlo como transcripción:
+    reintenta el WAV íntegro (con TODO el PCM committeado) y la duración real."""
+    capturando = _CapturingLiveSTT(api_key="dg_tenant_key")
+    quota_calls: list[float] = []
+    usage_quantities: list[float] = []
+
+    async def fake_stt(*_a):  # noqa: ANN001
+        return capturando
+
+    async def capture_quota(_repo, _tenant, extra_seconds=0.0):  # noqa: ANN001
+        quota_calls.append(extra_seconds)
+        return None
+
+    async def capture_usage(*_args, **_kwargs):  # noqa: ANN001
+        usage_quantities.append(_kwargs.get("quantity"))
+
+    _configurar_realtime(
+        monkeypatch,
+        test_settings,
+        deepgram_cls=_CloseAfterOneDeepgramLive,
+        stt=fake_stt,
+        quota=capture_quota,
+        usage=capture_usage,
+    )
+    token = _realtime_token(test_settings)
+    frame1 = b"A" * 160
+    frame2 = b"B" * 160
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            for frame in (frame1, frame2):
+                websocket.send_json(
+                    {
+                        "type": "audio",
+                        "mime": "audio/pcm16",
+                        "data": base64.b64encode(frame).decode("ascii"),
+                    }
+                )
+                assert websocket.receive_json()["type"] == "audio.accepted"
+
+            websocket.send_json({"type": "commit"})
+            transcript = websocket.receive_json()
+            assert transcript["type"] == "transcript"
+            assert transcript["text"] == "texto del fallback", (
+                "un final PARCIAL (solo el primer fragmento) jamás se presenta "
+                "como transcripción completa"
+            )
+
+    # El reintento recibió el WAV con el PCM COMPLETO (frame1+frame2), no el
+    # fragmento que alcanzó a ver el proveedor.
+    assert capturando.received_audio, "el fallback debió transcribir el WAV"
+    wav = capturando.received_audio[0]
+    assert wav[:4] == b"RIFF"
+    assert frame1 + frame2 in wav
+    assert len(wav) == 44 + len(frame1) + len(frame2)
+    # Duración real del PCM (32 kB/s), no la estimación de códec comprimido.
+    esperado = len(frame1 + frame2) / 32000.0
+    assert quota_calls == [pytest.approx(esperado)]
+    assert usage_quantities == [pytest.approx(esperado)]
+
+
+def test_realtime_pcm16_ciclo_completo_entrada_speak_interrupt_nueva_entrada(
+    app, test_settings, monkeypatch
+) -> None:
+    """Dos turnos de entrada consecutivos, un `speak`, un `interrupt` y un turno
+    nuevo: el interrupt debe sanear la sesión y el siguiente audio debe abrir un
+    turno limpio de punta a punta."""
+    async def fake_tts(*_a):  # noqa: ANN001
+        return _FakeStreamingTTS()
+
+    _configurar_realtime(
+        monkeypatch,
+        test_settings,
+        deepgram_cls=_RealisticDeepgramLive,
+        tts=fake_tts,
+    )
+    token = _realtime_token(test_settings)
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            def _turno(payload: bytes) -> None:
+                websocket.send_json(
+                    {
+                        "type": "audio",
+                        "mime": "audio/pcm16",
+                        "data": base64.b64encode(payload).decode("ascii"),
+                    }
+                )
+                assert websocket.receive_json()["type"] == "audio.accepted"
+                assert websocket.receive_json()["type"] == "transcript.partial"
+                websocket.send_json({"type": "commit"})
+                final = websocket.receive_json()
+                assert final["type"] == "transcript"
+                assert final["text"] == "texto final"
+
+            _turno(b"primero")   # turno 1
+            _turno(b"segundo")   # turno 2 consecutivo
+
+            # speak → speaking → audio (en vuelo)
+            websocket.send_json({"type": "speak", "text": "Hola"})
+            assert websocket.receive_json()["type"] == "speaking"
+            assert websocket.receive_json()["type"] == "audio"
+
+            # interrupt durante el habla
+            websocket.send_json({"type": "interrupt"})
+            assert websocket.receive_json() == {
+                "type": "interrupted",
+                "state": "interrupted",
+            }
+
+            # turno nuevo tras el interrupt
+            _turno(b"tercero")
+
+
+def test_realtime_pcm16_fallo_del_proveedor_no_envenena_el_siguiente_turno(
+    app, test_settings, monkeypatch
+) -> None:
+    """Un turno con el proveedor caído cae al fallback WAV; el turno SIGUIENTE
+    debe transcribir en vivo normalmente (sin heredar el estado del fallo)."""
+    _FlakyDeepgramLive.fail_next = True
+    _configurar_realtime(
+        monkeypatch, test_settings, deepgram_cls=_FlakyDeepgramLive
+    )
+    token = _realtime_token(test_settings)
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            # Turno 1: el proveedor falla → fallback WAV (STT batch offline).
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"uno").decode("ascii"),
+                }
+            )
+            assert websocket.receive_json()["type"] == "audio.accepted"
+            websocket.send_json({"type": "commit"})
+            fallback = websocket.receive_json()
+            assert fallback["type"] == "transcript"
+            assert fallback["text"] == "texto del fallback"
+
+            # Turno 2: el proveedor ya funciona → transcripción en vivo.
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(b"dos").decode("ascii"),
+                }
+            )
+            assert websocket.receive_json()["type"] == "audio.accepted"
+            assert websocket.receive_json()["type"] == "transcript.partial"
+            websocket.send_json({"type": "commit"})
+            en_vivo = websocket.receive_json()
+            assert en_vivo["type"] == "transcript"
+            assert en_vivo["text"] == "texto final en vivo"
+
+
+def test_realtime_pcm16_fallback_cobra_la_duracion_real_del_pcm(
+    app, test_settings, monkeypatch
+) -> None:
+    """El fallback envuelve PCM crudo s16le 16 kHz (32 kB/s) en WAV; la cuota/uso
+    deben ser la duración REAL del PCM (~1 s), no la estimación de códec
+    comprimido de `_estimate_seconds_from_audio` (~16x mayor)."""
+    quota_calls: list[float] = []
+    usage_quantities: list[float] = []
+
+    async def capture_quota(_repo, _tenant, extra_seconds=0.0):  # noqa: ANN001
+        quota_calls.append(extra_seconds)
+        return None
+
+    async def capture_usage(*_args, **_kwargs):  # noqa: ANN001
+        usage_quantities.append(_kwargs.get("quantity"))
+
+    _configurar_realtime(
+        monkeypatch,
+        test_settings,
+        deepgram_cls=_ConnectFailsDeepgramLive,
+        quota=capture_quota,
+        usage=capture_usage,
+    )
+    token = _realtime_token(test_settings)
+    pcm = b"\x00" * 32000  # 1 s de PCM s16le 16 kHz mono
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/v1/voice/realtime") as websocket:
+            websocket.send_json({"type": "authenticate", "token": token})
+            assert websocket.receive_json()["type"] == "ready"
+
+            websocket.send_json(
+                {
+                    "type": "audio",
+                    "mime": "audio/pcm16",
+                    "data": base64.b64encode(pcm).decode("ascii"),
+                }
+            )
+            assert websocket.receive_json()["type"] == "audio.accepted"
+            websocket.send_json({"type": "commit"})
+            transcript = websocket.receive_json()
+            assert transcript["type"] == "transcript"
+            assert transcript["text"] == "texto del fallback"
+
+    assert quota_calls == [pytest.approx(1.0)]
+    assert usage_quantities == [pytest.approx(1.0)]

@@ -53,12 +53,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import re
 import struct
 import time
 import uuid
+import wave
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -161,8 +163,13 @@ async def _check_voice_quota(repo: Repo, tenant: TenantCtx, extra_seconds: float
 
 
 def _estimate_seconds_from_audio(raw_audio: bytes) -> float:
-    """Aproximación: sin decodificar el audio no conocemos su duración exacta;
-    se estima el tamaño asumiendo ~16 kbps (códec de voz comprimido típico)."""
+    """WAV PCM lleva duracion exacta; solo los formatos opacos usan estimacion."""
+    if raw_audio.startswith(b"RIFF") and raw_audio[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(raw_audio), "rb") as audio:
+                return round(audio.getnframes() / audio.getframerate(), 3)
+        except (wave.Error, EOFError, ZeroDivisionError):
+            pass  # Formato WAV no soportado: conserva la estimacion anterior.
     return round((len(raw_audio) * 8) / 16000.0, 2)
 
 
@@ -881,8 +888,10 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 audio: bytes,
                 mime: str,
                 image_for_turn: dict[str, Any] | None = None,
+                estimated_seconds: float | None = None,
             ) -> None:
-                estimated_seconds = _estimate_seconds_from_audio(audio)
+                if estimated_seconds is None:
+                    estimated_seconds = _estimate_seconds_from_audio(audio)
                 try:
                     await _check_voice_quota(
                         repo, current_user.tenant, estimated_seconds
@@ -912,10 +921,21 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 turn_id: int,
                 deepgram: DeepgramLive,
                 queue: asyncio.Queue,
-            ) -> str | None:
+            ) -> tuple[str | None, int, bool]:
                 """Alimenta Deepgram Live con el PCM16 del turno y reenvía al WS
-                los parciales (`transcript.partial`); devuelve el texto final
-                cuando el stream cierra (o `None` si nunca llegó un final).
+                los parciales (`transcript.partial`). Devuelve
+                `(final, bytes_alimentados, drenado_normal)`:
+
+                - `final`: texto final concatenado, o `None` si no llegó.
+                - `bytes_alimentados`: bytes del PCM que `send_raw` SÍ pudo
+                  entregar al proveedor. Un `transport disconnect` a mitad del
+                  feed lo deja por debajo del total committeado, y ese final es
+                  PARCIAL: el llamador NO debe presentarlo como transcripción
+                  completa (reintenta el WAV íntegro). NO confundir endpointing
+                  con corte del socket.
+                - `drenado_normal`: el consumer terminó porque el proveedor
+                  cerró el stream tras el `CloseStream` (no porque lo cancelara
+                  el timeout de drenaje).
 
                 Los `is_final` de Deepgram son SEGMENTOS de utterance: una
                 frase larga llega como varios finales y se CONCATENAN, no se
@@ -925,6 +945,8 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 inmediato anterior mataba el final pendiente.
                 """
                 final_text = ""
+                fed_bytes = 0
+                drained = False
                 await deepgram.connect()
 
                 consumer: asyncio.Task[None] | None = None
@@ -951,14 +973,38 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         payload = await queue.get()
                         if payload is None:
                             break
-                        await deepgram.send_raw(payload)
+                        # Un `send_raw` que revienta es un CORTE de transporte
+                        # (socket muerto), no endpointing: el proveedor nunca
+                        # recibió lo que queda del feed, así que cualquier
+                        # final capturado es PARCIAL. Cortamos el feed y
+                        # dejamos que el llamador reintente el WAV íntegro.
+                        try:
+                            await deepgram.send_raw(payload)
+                        except Exception:
+                            logger.warning(
+                                "Deepgram Live transport disconnect mid-feed "
+                                "turn_id=%s fed_bytes=%d",
+                                turn_id,
+                                fed_bytes,
+                            )
+                            break
+                        fed_bytes += len(payload)
+                        # El consumer termina cuando el WS del proveedor se
+                        # cierra: si ya terminó, seguir alimentando frames es
+                        # inútil (y en un doble de prueba puede no lanzar).
+                        if consumer.done():
+                            break
+                    # `close_stream()` es tolerante a un socket ya cerrado
+                    # (except pass): si el stream aún vive, entrega los finales
+                    # pendientes; si ya murió, no rompe nada.
                     await deepgram.close_stream()
                     # Drena los finales que Deepgram emite tras el flush; si
                     # no cierra solo, el timeout lo corta y el finally cierra.
                     try:
                         assert consumer is not None
                         await asyncio.wait_for(asyncio.shield(consumer), timeout=3.0)
-                    except (asyncio.TimeoutError, TimeoutError):
+                        drained = True
+                    except TimeoutError:
                         if consumer is not None:
                             consumer.cancel()
                             try:
@@ -973,7 +1019,7 @@ async def realtime_voice(websocket: WebSocket) -> None:
                         except asyncio.CancelledError:
                             pass
                     await deepgram.finish()
-                return final_text or None
+                return final_text or None, fed_bytes, drained
 
             async def _process_pcm16_live(
                 turn_id: int,
@@ -985,8 +1031,10 @@ async def realtime_voice(websocket: WebSocket) -> None:
                 try:
                     queue.put_nowait(None)  # sentinel: cierra el feed y dispara finish()
                     final_text: str | None = None
+                    fed_bytes = 0
+                    drained = False
                     try:
-                        final_text = await pump_task
+                        final_text, fed_bytes, drained = await pump_task
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -995,7 +1043,16 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             exc_info=True,
                         )
                         final_text = None
-                    if final_text:
+                        fed_bytes = 0
+                        drained = False
+                    # El final en vivo SOLO es válido si TODO el PCM committeado
+                    # llegó al proveedor y el consumer drenó normal (el proveedor
+                    # cerró el stream tras el CloseStream). Un corte a mitad del
+                    # feed (`fed_bytes < len(pcm)`) es transport disconnect, no
+                    # endpointing: ese final es PARCIAL y jamás se presenta como
+                    # transcripción completa — se reintenta el WAV íntegro con la
+                    # duración real del PCM (32 kB/s, s16le 16 kHz mono).
+                    if final_text and fed_bytes == len(pcm) and drained:
                         # Cuota del STT en vivo, estimada del PCM (32000 bytes/s,
                         # s16le 16 kHz mono). Se cobra UNA sola vez: el fallback
                         # de abajo NO pasa por acá, sino que `process_audio` cobra
@@ -1013,8 +1070,27 @@ async def realtime_voice(websocket: WebSocket) -> None:
                             turn_id, final_text, "es", image_for_turn
                         )
                     else:
+                        if final_text:
+                            logger.warning(
+                                "Deepgram Live final descartado turn_id=%s "
+                                "fed_bytes=%d/%d drained=%s — feed incompleto "
+                                "o drenaje anómalo; se transcribe el WAV íntegro.",
+                                turn_id,
+                                fed_bytes,
+                                len(pcm),
+                                drained,
+                            )
+                        # El WAV de fallback envuelve PCM crudo s16le 16 kHz
+                        # (32 kB/s), NO un códec comprimido ~16 kbps: dejar que
+                        # `process_audio` lo estime con
+                        # `_estimate_seconds_from_audio` sobrecontaría la cuota
+                        # ~16x. Se pasa la duración real del PCM.
                         await process_audio(
-                            turn_id, _pcm16_a_wav(pcm), "audio/wav", image_for_turn
+                            turn_id,
+                            _pcm16_a_wav(pcm),
+                            "audio/wav",
+                            image_for_turn,
+                            estimated_seconds=len(pcm) / 32000.0,
                         )
                 except asyncio.CancelledError:
                     raise

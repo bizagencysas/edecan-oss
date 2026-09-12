@@ -9,10 +9,12 @@ public struct ChunkAudioPCM16: Sendable, Equatable {
     public let datos: Data
     /// Energía media del chunk: 0 (silencio) … 1 (escala completa).
     public let rms: Float
+    public let capturadoEn: TimeInterval
 
-    public init(datos: Data, rms: Float) {
+    public init(datos: Data, rms: Float, capturadoEn: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         self.datos = datos
         self.rms = rms
+        self.capturadoEn = capturadoEn
     }
 }
 

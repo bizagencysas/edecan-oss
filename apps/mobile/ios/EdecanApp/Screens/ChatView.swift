@@ -72,14 +72,14 @@ struct ChatView: View {
                             .animation(.easeInOut(duration: 0.25), value: monitorRed.estaConectado)
                             .animation(.easeInOut(duration: 0.25), value: servidorInaccesible)
                     }
-                if let error = viewModel.errorMensaje ?? llamada.errorMensaje {
+                if let error = viewModel.errorMensaje {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
                         .padding(.horizontal)
                         .padding(.top, 6)
                 }
-                if llamada.estado != .inactivo {
+                if llamada.estado != .inactivo || llamada.errorMensaje != nil {
                     VozEnChatBarra(llamada: llamada) { mostrandoVoces = true }
                         .padding(.horizontal)
                 }

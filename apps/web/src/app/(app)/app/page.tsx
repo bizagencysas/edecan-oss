@@ -1616,6 +1616,7 @@ function ChatPage() {
               liveTranscript={liveTranscript}
               ttsPlaying={speakingState !== null}
               onInterruptTts={stopSpeaking}
+              conversationId={activeId}
             />
           </>
         )}

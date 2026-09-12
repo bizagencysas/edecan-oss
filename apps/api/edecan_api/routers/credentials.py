@@ -192,6 +192,8 @@ _SEARCH_PROVIDERS = frozenset({"brave", "tavily"})
 _LLM_DISPLAY_NAME = "Proveedor LLM"
 _VOICE_STT_DISPLAY_NAME = "Voz — transcripción (STT)"
 _VOICE_TTS_DISPLAY_NAME = "Voz — síntesis (TTS)"
+_SPEECH_ENGINE_DISPLAY_NAME = "Voz gestionada — Speech Engine"
+_SPEECH_ENGINE_CONNECTOR_KEY = "speech_engine"
 _IMAGES_DISPLAY_NAME = "Generación de imágenes"
 _SEARCH_DISPLAY_NAME = "Búsqueda web"
 
@@ -256,6 +258,21 @@ class VoiceTTSCredentialsIn(BaseModel):
     provider: str
     api_key: str | None = None
     voice_id: str | None = None
+    validate_: bool = Field(default=True, alias="validate")
+
+
+class SpeechEngineCredentialsIn(BaseModel):
+    """Credencial del proveedor PAGO de voz gestionada (docs/speech-engine.md).
+
+    Solo `elevenlabs`: Speech Engine es un proveedor explícito y facturado a la
+    cuenta del tenant. Guardar la key NO activa nada — la activación la decide
+    `enabled=true` en `/v1/voice/preferences` y cada sesión exige
+    `paid_consent=true`."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: str
+    api_key: str
     validate_: bool = Field(default=True, alias="validate")
 
 
@@ -709,12 +726,20 @@ async def get_credentials(
     llm_cfg = await _read_config(repo, vault, current_user.tenant_id, LLM_CONNECTOR_KEY)
     stt_cfg = await _read_config(repo, vault, current_user.tenant_id, VOICE_STT_CONNECTOR_KEY)
     tts_cfg = await _read_config(repo, vault, current_user.tenant_id, VOICE_TTS_CONNECTOR_KEY)
+    speech_engine_cfg = await _read_config(
+        repo, vault, current_user.tenant_id, _SPEECH_ENGINE_CONNECTOR_KEY
+    )
     images_cfg = await _read_config(repo, vault, current_user.tenant_id, IMAGES_CONNECTOR_KEY)
     search_cfg = await _read_config(repo, vault, current_user.tenant_id, SEARCH_CONNECTOR_KEY)
     return {
         "llm": _llm_out(llm_cfg),
         "voice_stt": _voice_stt_out(stt_cfg),
         "voice_tts": _voice_tts_out(tts_cfg),
+        "speech_engine": (
+            {"provider": speech_engine_cfg.get("provider"), "masked": _masked(speech_engine_cfg.get("api_key"))}
+            if speech_engine_cfg is not None
+            else None
+        ),
         "images": _images_out(images_cfg),
         "search": _search_out(search_cfg),
     }
@@ -1109,7 +1134,56 @@ async def put_voice_tts_credentials(
     )
 
 
-_VOICE_CANAL_TO_CONNECTOR_KEY = {"stt": VOICE_STT_CONNECTOR_KEY, "tts": VOICE_TTS_CONNECTOR_KEY}
+_VOICE_CANAL_TO_CONNECTOR_KEY = {
+    "stt": VOICE_STT_CONNECTOR_KEY,
+    "tts": VOICE_TTS_CONNECTOR_KEY,
+    "speech-engine": _SPEECH_ENGINE_CONNECTOR_KEY,
+}
+
+
+@router.put("/voice/speech-engine", status_code=status.HTTP_204_NO_CONTENT)
+async def put_speech_engine_credentials(
+    payload: SpeechEngineCredentialsIn,
+    current_user: CurrentUser = Depends(get_current_user),
+    repo: Repo = Depends(get_repo),
+    vault: TokenVault = Depends(get_vault),
+) -> None:
+    """Conecta la API key de ElevenLabs para la voz GESTIONADA (Speech Engine).
+
+    Guardar la key NO activa facturación: `enabled=true` en
+    `/v1/voice/preferences` + `paid_consent=true` por sesión son los otros dos
+    candados explícitos (docs/speech-engine.md)."""
+    provider = payload.provider.strip().lower()
+    if provider != "elevenlabs":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provider debe ser 'elevenlabs' para Speech Engine.",
+        )
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="api_key no puede estar vacío."
+        )
+    if payload.validate_:
+        await _ping_elevenlabs(api_key)
+    account = await _find_or_create_account(
+        repo, current_user.tenant_id, _SPEECH_ENGINE_CONNECTOR_KEY, _SPEECH_ENGINE_DISPLAY_NAME
+    )
+    await vault.put(
+        current_user.tenant_id,
+        account["id"],
+        TokenBundle(
+            access_token=json.dumps({"provider": "elevenlabs", "api_key": api_key}),
+            token_type="config",
+            scopes=["elevenlabs"],
+        ),
+    )
+    await repo.add_audit_log(
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.user_id,
+        action="credentials.speech_engine.connected",
+        target="elevenlabs",
+    )
 
 
 @router.delete("/voice/{canal}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1122,7 +1196,7 @@ async def delete_voice_credentials(
     if connector_key is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"canal desconocido: {canal!r}. Debe ser 'stt' o 'tts'.",
+            detail=f"canal desconocido: {canal!r}. Debe ser 'stt', 'tts' o 'speech-engine'.",
         )
     account = await _find_account(repo, current_user.tenant_id, connector_key)
     if account is None:

@@ -79,12 +79,23 @@ async def execute_voice_text_turn(
     conversation_id: UUID,
     user_text: str,
     direct_user_content: Any | None = None,
+    already_persisted_input: bool = False,
+    seleccion: Any | None = None,
+    on_text_delta: Any | None = None,
 ) -> VoiceAgentTurnResult:
     """Ejecuta y persiste un turno de voz usando `Agent.run_turn`.
 
     El texto se redacta antes de persistirse o entrar al modelo. Las tools
     dangerous siguen detenidas en `confirmation_required`; el transporte no
     auto-aprueba acciones solo por venir de un micrófono.
+
+    `already_persisted_input=True` lo usa el flujo gestionado (Speech Engine)
+    cuando el mismo enunciado YA quedó persistido por el interlocutor rápido
+    antes de delegar: evita duplicar el mensaje del usuario en la
+    conversación canónica. `seleccion` (opcional, `SeleccionDeModelo`) fija el
+    modelo del turno sin tocar `conversations.chat_model` — es la única vía
+    por la que el turno de voz delegado puede correr con el modelo de
+    delegación configurado.
     """
 
     from edecan_api.routers.conversations import (
@@ -181,12 +192,13 @@ async def execute_voice_text_turn(
     ctx.extras["lo_pidio_una_persona"] = True
     ctx.extras["tools_con_pregunta_pendiente"] = _tools_con_pregunta_pendiente(history_rows)
 
-    await repo.add_message(
-        tenant_id=current_user.tenant_id,
-        conversation_id=conversation_id,
-        role="user",
-        content={"text": clean_text},
-    )
+    if not already_persisted_input:
+        await repo.add_message(
+            tenant_id=current_user.tenant_id,
+            conversation_id=conversation_id,
+            role="user",
+            content={"text": clean_text},
+        )
     extra_tools = await _extra_conversation_tools(request, current_user)
     agent = _agent_for_request(request, llm_router, request.app.state.tool_registry)
 
@@ -211,12 +223,16 @@ async def execute_voice_text_turn(
             user_text=effective_text,
             flags=current_user.tenant.flags,
             extra_tools=extra_tools,
+            seleccion=seleccion,
         ):
             event = _event_to_dict(raw_event)
             result.events.append(event)
             event_type = event.get("type")
             if event_type == "text_delta":
-                result.text += str(event.get("text") or "")
+                delta_text = str(event.get("text") or "")
+                result.text += delta_text
+                if on_text_delta is not None:
+                    await on_text_delta(delta_text)
             elif event_type == "done":
                 usage = event.get("usage") or {}
                 result.attribution = build_llm_usage_meta(

@@ -26,6 +26,10 @@ dependencies = [
     "edecan-connectors",
     "edecan-voice",
     "edecan-toolkit",
+    # Voz gestionada por Speech Engine (docs/speech-engine.md). Versión fijada
+    # en uv.lock: el contrato `verify_speech_engine_jwt`/`speech_engine` está
+    # verificado contra la fuente de 2.68.0.
+    "elevenlabs==2.68.0",
     # Domain packages are direct dependencies because production images use
     # `uv sync --package edecan-api`; entry points are only discoverable when
     # their distributions are installed in that isolated environment.

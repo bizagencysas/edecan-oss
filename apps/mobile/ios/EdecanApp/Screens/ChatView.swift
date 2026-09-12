@@ -17,7 +17,9 @@ struct ChatView: View {
     @State private var viewModel = ChatViewModel()
     @State private var textoActual = ""
     @State private var llamada = LlamadaViewModel()
+    @State private var vozGestionada = VozGestionadaViewModel()
     @State private var mostrandoVoces = false
+    @State private var mostrandoConfigVozGestionada = false
     @AppStorage("vozElegidaId") private var vozElegidaId = "0uHpKhb0ymsdvmCtPV8y"
     @State private var mostrandoHistorial = false
     @State private var mostrandoSelectorArchivos = false
@@ -83,6 +85,20 @@ struct ChatView: View {
                     VozEnChatBarra(llamada: llamada) { mostrandoVoces = true }
                         .padding(.horizontal)
                 }
+                if llamada.estado == .inactivo {
+                    // Voz GESTIONADA (Speech Engine, docs/speech-engine.md):
+                    // solo aparece cuando el modo legacy está apagado — los dos
+                    // modos nunca corren a la vez. Se ata a la conversación
+                    // canónica ABIERTA, no a la principal del backend.
+                    VozGestionadaBarra(
+                        gestionada: vozGestionada,
+                        client: session.client,
+                        conversationIdActual: viewModel.conversacionId
+                    ) {
+                        mostrandoConfigVozGestionada = true
+                    }
+                    .padding(.horizontal)
+                }
                 barraDeEntrada
             }
             .background(EdecanTheme.degradado.opacity(0.05).ignoresSafeArea())
@@ -90,6 +106,9 @@ struct ChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $mostrandoVoces) {
                 VocesView(client: session.client)
+            }
+            .sheet(isPresented: $mostrandoConfigVozGestionada) {
+                VozGestionadaConfigView(client: session.client)
             }
             .onChange(of: vozElegidaId) { _, nueva in llamada.vozId = nueva }
             .sheet(isPresented: $mostrandoHistorial) {
@@ -209,7 +228,13 @@ struct ChatView: View {
                 )
             }
             .onChange(of: viewModel.conversacionId) { anterior, nueva in
-                if anterior != nil, anterior != nueva { llamada.terminarLlamada() }
+                if anterior != nil, anterior != nueva {
+                    llamada.terminarLlamada()
+                    // Cambiar de conversación invalida los callbacks de la voz
+                    // gestionada: su sesión quedó atada a la conversación
+                    // anterior y no debe seguir inyectando texto acá.
+                    Task { await vozGestionada.detener(client: session.client) }
+                }
                 guardarBorrador(textoActual, conversationId: anterior)
                 estadoLocal.currentConversationId = nueva
                 textoActual = cargarBorrador(conversationId: nueva)
@@ -235,6 +260,11 @@ struct ChatView: View {
             .onChange(of: scenePhase, initial: true) { _, nuevaFase in
                 let activa = nuevaFase == .active
                 viewModel.actualizarEstadoAplicacion(activa: activa)
+                if !activa {
+                    // Voz gestionada: el proveedor factura por minuto y el
+                    // micrófono no debe quedar vivo en background.
+                    Task { await vozGestionada.detener(client: session.client) }
+                }
                 guard activa, let client = session.client else { return }
                 Task {
                     await viewModel.reanudarIntentoPendienteSiNecesario(client: client)
@@ -270,6 +300,9 @@ struct ChatView: View {
             }
             .onDisappear {
                 llamada.terminarLlamada()
+                // La voz gestionada no debe sobrevivir a salir del chat:
+                // micrófono y facturación por minuto incluidos.
+                Task { await vozGestionada.detener(client: session.client) }
                 cancelarTodasLasSubidas()
             }
         }

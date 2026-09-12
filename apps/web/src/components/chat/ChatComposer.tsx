@@ -16,6 +16,7 @@ import {
   XIcon,
 } from "@/components/icons";
 import { Button, Spinner, Textarea } from "@/components/ui";
+import { VozGestionadaComposer } from "@/components/chat/VozGestionadaComposer";
 import { canSubmitChat, MAX_CHAT_ATTACHMENTS } from "@/lib/chat-attachments";
 import { captureCameraPhoto, captureDisplayFrame } from "@/lib/desktop-capture";
 import type { ChatAttachmentDraft } from "@/lib/types";
@@ -102,6 +103,7 @@ export function ChatComposer({
   liveTranscript = null,
   ttsPlaying = false,
   onInterruptTts,
+  conversationId = null,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -138,6 +140,8 @@ export function ChatComposer({
   liveTranscript?: string | null;
   ttsPlaying?: boolean;
   onInterruptTts?: () => void;
+  /** Conversación canónica abierta: la voz gestionada se ata a ESTA. */
+  conversationId?: string | null;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -538,6 +542,7 @@ export function ChatComposer({
                   <MicIcon className="h-4 w-4" />
                 )}
               </Button>
+              <VozGestionadaComposer disabled={sending || recording || transcribing} conversationId={conversationId} />
               {onWorkModeChange && (
                 <button
                   type="button"

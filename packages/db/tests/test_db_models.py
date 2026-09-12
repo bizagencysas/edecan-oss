@@ -161,6 +161,14 @@ EXPECTED_TABLES_AGENT_MESSAGES = {"agent_messages", "agent_direct_chats"}
 # (migración `0070_job_outbox_bot_runs`).
 EXPECTED_TABLES_BOT_RUNS = {"job_outbox", "bot_runs", "run_events"}
 
+# Voz gestionada por Speech Engine (`docs/speech-engine.md`, migración
+# `0073_speech_engine`): preferencias, sesiones y claims anti-replay.
+EXPECTED_TABLES_SPEECH_ENGINE = {
+    "voice_preferences",
+    "speech_engine_sessions",
+    "speech_engine_events",
+}
+
 EXPECTED_TABLES = (
     EXPECTED_TABLES_V1
     | EXPECTED_TABLES_V2
@@ -181,6 +189,7 @@ EXPECTED_TABLES = (
     | EXPECTED_TABLES_MCP_HEALTH
     | EXPECTED_TABLES_AGENT_MESSAGES
     | EXPECTED_TABLES_BOT_RUNS
+    | EXPECTED_TABLES_SPEECH_ENGINE
 )
 
 
@@ -188,10 +197,10 @@ def test_import_no_falla_y_registra_metadata():
     # El solo hecho de haber podido importar `edecan_db.models` (arriba, a
     # nivel de módulo) ya ejercita la parte más importante de este test: que
     # construir todas las tablas/constraints/FKs no lanza ninguna excepción.
-    assert len(Base.metadata.tables) == 76
+    assert len(Base.metadata.tables) == 79
 
 
-def test_hay_exactamente_76_tablas_pinned():
+def test_hay_exactamente_79_tablas_pinned():
     nombres = {model.__tablename__ for model in ALL_MODELS}
     assert nombres == EXPECTED_TABLES
     assert set(Base.metadata.tables) == EXPECTED_TABLES
@@ -219,7 +228,7 @@ def test_global_y_rls_particionan_todas_las_tablas_sin_solaparse():
     # de "enseñar una tarea" + 1 sesión de computadora + 1 mensajes inter-agente
     # + 1 chats directos con bots (ninguna de las tablas nuevas es global:
     # todas tenant-scoped, sin excepción declarada).
-    assert len(RLS_TABLES) == 73
+    assert len(RLS_TABLES) == 76
 
 
 def test_phone_agent_templates_tiene_un_default_por_usuario_y_snapshots_en_llamada():

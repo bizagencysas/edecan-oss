@@ -156,6 +156,22 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
     ELEVENLABS_VOICE_ID: str | None = None
+
+    # --- Speech Engine (voz gestionada por ElevenLabs, docs/speech-engine.md) --
+    # Base pública WSS por la que ElevenLabs entra al callback de ESTE backend.
+    # Cada instalación OSS trae la suya (túnel/dominio propio); vacío = el
+    # proveedor gestionado queda desactivado en las sesiones (fail-closed).
+    SPEECH_ENGINE_CALLBACK_BASE: str | None = None
+    SPEECH_ENGINE_DEFAULT_MAX_DURATION_SECONDS: int = 900
+    SPEECH_ENGINE_TOKEN_TTL_SECONDS: int = 3600
+    # Defaults de configuración del engine por sesión. `voice_id` NO tiene
+    # default hardcodeado (se hereda de la credencial TTS del tenant o lo deja
+    # al proveedor); el `tts_model_id` es un modelo público de ElevenLabs
+    # (`eleven_turbo_v2_5`), no un endpoint privado de ningún operador.
+    SPEECH_ENGINE_DEFAULT_TTS_MODEL_ID: str = "eleven_turbo_v2_5"
+    SPEECH_ENGINE_PRIVACY_RETENTION_DAYS: int = 30
+    SPEECH_ENGINE_MAX_ACTIVE_SESSIONS: int = 3
+    SPEECH_ENGINE_TURN_TIMEOUT_SECONDS: float = 120.0
     # Webhook post-call ConvAI (ElevenLabs): pegar el signing secret al crear el
     POLLY_VOICE: str = "Lupe"
     # Máximo de respuestas LLM por llamada. Evita un Gather/LLM sin límite

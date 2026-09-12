@@ -2632,6 +2632,120 @@ class ActionEffect(IDMixin, TenantScopedMixin, TimestampMixin, Base):
 
 
 # ---------------------------------------------------------------------------
+# Speech Engine (voz gestionada por ElevenLabs, `docs/speech-engine.md`,
+# migración `0073_speech_engine`).
+#
+# - `voice_preferences`: preferencias de voz gestionada por usuario. El
+#   proveedor es "elevenlabs" (Speech Engine es un proveedor PAGO explícito;
+#   activarlo requiere la credencial del tenant en el vault bajo el
+#   connector_key `speech_engine` y `enabled=true`). Los ids de modelo de voz
+#   (`voice_model_id`), delegación (`delegation_model_id`) y TTS
+#   (`tts_model_id`/`voice_id`) son DATO del catálogo declarado, no se validan
+#   contra literales acá (misma regla que `conversations.chat_model`).
+#   NULL en `delegation_model_id` = hereda la selección de la conversación.
+# - `speech_engine_sessions`: mapeo durable sesión-Edecan ↔ recurso del
+#   proveedor, con expiración y máquina de estados explícita. Es la AUTORIDAD
+#   de ownership para el callback WSS del proveedor: el path solo lleva el
+#   `session_id`, nunca el tenant/chat.
+# - `speech_engine_events`: claims durables por `(session_id, event_id)` del
+#   proveedor — replays no pueden duplicar mensajes ni efectos de tools.
+# ---------------------------------------------------------------------------
+
+
+class VoicePreference(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`voice_preferences(tenant_id, user_id, provider, enabled, ...)` — una fila
+    por usuario (unique parcial con el mismo criterio de `personas`)."""
+
+    __tablename__ = "voice_preferences"
+    __table_args__ = (
+        Index("uq_voice_preferences_tenant_user", "tenant_id", "user_id", unique=True),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False, server_default="elevenlabs")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    voice_model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    delegation_model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    delegation_effort: Mapped[str | None] = mapped_column(String, nullable=True)
+    voice_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tts_model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    max_duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("900")
+    )
+
+
+class SpeechEngineSession(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`speech_engine_sessions(...)` — una sesión de voz gestionada.
+
+    `provider_engine_id` es el recurso del proveedor creado POR sesión (un
+    engine por sesión, callback `.../ws/{session_id}`); `provider_conversation_id`
+    llega en el evento `init` del proveedor. `generation` invalida callbacks
+    viejos cuando la conversación cambia de contexto (no los commits de tools).
+    `plan_key` es una SNAPSHOT del plan del usuario al crear la sesión: el
+    callback WSS no tiene JWT de usuario, así que sus flags salen de acá
+    (nunca del payload del proveedor)."""
+
+    __tablename__ = "speech_engine_sessions"
+    __table_args__ = (
+        _enum_check(
+            "status", ("provisioning", "active", "ended", "expired", "failed")
+        ),
+        Index("ix_speech_engine_sessions_tenant_user", "tenant_id", "user_id"),
+        Index("ix_speech_engine_sessions_expires", "tenant_id", "expires_at"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    plan_key: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    provider_engine_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="provisioning")
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    max_duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("900")
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+
+class SpeechEngineEvent(IDMixin, TenantScopedMixin, TimestampMixin, Base):
+    """`speech_engine_events(...)` — claim durable por evento del proveedor.
+
+    `user_text` es el último enunciado final del turno (solo el NUEVO texto, el
+    payload completo del proveedor es dato no confiable de reconocimiento);
+    `assistant_text` conserva el texto generado por Edecán aunque el turno se
+    interrumpiera a mitad de streaming (persistencia coherente, sin reclamar
+    que lo no hablado se escuchó)."""
+
+    __tablename__ = "speech_engine_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "event_id", name="uq_speech_engine_events_session_event"),
+        _enum_check("status", ("processing", "persisted", "interrupted", "failed")),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("speech_engine_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assistant_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="processing")
+
+
+# ---------------------------------------------------------------------------
 # Registro explícito de todas las tablas — útil para tests de "import de
 # modelos" y para que `alembic`/scripts puedan iterar `Base.metadata` sin
 # tener que enumerar clases a mano en más de un lugar.
@@ -2696,6 +2810,10 @@ ALL_MODELS: tuple[type[Base], ...] = (
     SocialDraft,
     LinkedinPersonalDailyState,
     LinkedinPersonalSignal,
+    # --- Speech Engine (`docs/speech-engine.md`, 0073) ------------------------
+    VoicePreference,
+    SpeechEngineSession,
+    SpeechEngineEvent,
     # --- gimnasio (feature /v1/gym) -------------------------------------------
     WorkoutPlan,
     WorkoutSession,

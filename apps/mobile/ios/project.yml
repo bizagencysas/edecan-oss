@@ -34,8 +34,8 @@ options:
 
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "197"
-    MARKETING_VERSION: "0.9.42"
+    CURRENT_PROJECT_VERSION: "199"
+    MARKETING_VERSION: "0.9.43"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
@@ -66,6 +66,13 @@ packages:
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa
     from: 8.0.0
+  # Voz gestionada por Speech Engine (`docs/speech-engine.md`): SDK oficial de
+  # ElevenLabs (MIT), versión EXACTA verificada el 2026-09-11 (v3.3.1, último
+  # tag estable). WebRTC (LiveKit) para audio/turnos/interrupciones — la app
+  # NO usa un segundo motor de audio en modo gestionado.
+  ElevenLabs:
+    url: https://github.com/elevenlabs/elevenlabs-swift-sdk.git
+    exactVersion: 3.3.1
 
 targets:
   EdecanApp:
@@ -134,6 +141,7 @@ targets:
     dependencies:
       - package: EdecanKit
       - package: Sentry
+      - package: ElevenLabs
       - target: EdecanWidgetsExtension
       - target: EdecanShareExtension
       - target: EdecanNotificationService

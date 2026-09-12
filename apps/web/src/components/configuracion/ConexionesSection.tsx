@@ -24,6 +24,7 @@ import { SelectorImagenes } from "@/components/configuracion/SelectorImagenes";
 import { SelectorLLM } from "@/components/configuracion/SelectorLLM";
 import { SelectorModeloLLM } from "@/components/configuracion/SelectorModeloLLM";
 import { SelectorVoz } from "@/components/configuracion/SelectorVoz";
+import { SpeechEngineSettings } from "@/components/configuracion/SpeechEngineSettings";
 import { BrainIcon, MicIcon, PlugIcon, SearchIcon, SparklesIcon } from "@/components/icons";
 import { Alert, Spinner } from "@/components/ui";
 import {
@@ -158,6 +159,7 @@ export function ConexionesSection({
 
   const llmEstado: EstadoCredencial = credentials?.llm ? "conectado" : "sin_conectar";
   const vozEstado: EstadoCredencial = credentials?.voice_stt || credentials?.voice_tts ? "conectado" : "sin_conectar";
+  const vozGestionadaEstado: EstadoCredencial = credentials?.speech_engine ? "conectado" : "sin_conectar";
   const casaEstado: EstadoCredencial = smarthome?.configured ? "conectado" : "sin_conectar";
   const imagenesEstado: EstadoCredencial = credentials?.images ? "conectado" : "sin_conectar";
   const busquedaEstado: EstadoCredencial = credentials?.search ? "conectado" : "sin_conectar";
@@ -253,6 +255,20 @@ export function ConexionesSection({
             }
           >
             <SelectorVoz localMode={detect?.local_mode === true} onSttConnected={load} onTtsConnected={load} />
+          </CardCredencial>
+
+          <CardCredencial
+            icon={<MicIcon className="h-4 w-4 text-brand-600" />}
+            titulo="Voz gestionada — Speech Engine"
+            descripcion="Conversación por voz con detección de turno e interrupciones de ElevenLabs sobre el mismo chat. Proveedor pagado: requiere tu API key y activación explícita."
+            estado={vozGestionadaEstado}
+            resumen={
+              credentials?.speech_engine
+                ? `ElevenLabs${credentials.speech_engine.masked ? ` · ${credentials.speech_engine.masked}` : ""}`
+                : "Sin conectar"
+            }
+          >
+            <SpeechEngineSettings onChanged={load} />
           </CardCredencial>
 
           <CardCredencial

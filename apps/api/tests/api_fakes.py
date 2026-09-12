@@ -51,6 +51,9 @@ class FakeRepo:
         self.missions: dict[uuid.UUID, Row] = {}
         self.automations: dict[uuid.UUID, Row] = {}
         self.devices: dict[uuid.UUID, Row] = {}
+        self.voice_preferences: dict[tuple[uuid.UUID, uuid.UUID], Row] = {}
+        self.speech_engine_sessions: dict[uuid.UUID, Row] = {}
+        self.speech_engine_events: dict[tuple[uuid.UUID, int], Row] = {}
 
     # -- tenants / users / memberships ------------------------------------
 
@@ -931,6 +934,146 @@ class FakeRepo:
                 item["conversation_updated_at"] = conversation["updated_at"]
                 rows.append(item)
         return rows
+
+    # -- Speech Engine (docs/speech-engine.md) ---------------------------------
+
+    async def get_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        row = self.voice_preferences.get((tenant_id, user_id))
+        return dict(row) if row else None
+
+    async def upsert_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row:
+        key = (tenant_id, user_id)
+        if key not in self.voice_preferences:
+            self.voice_preferences[key] = {
+                "id": uuid.uuid4(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "provider": "elevenlabs",
+                "enabled": False,
+                "voice_model_id": None,
+                "delegation_model_id": None,
+                "delegation_effort": None,
+                "voice_id": None,
+                "tts_model_id": None,
+                "max_duration_seconds": 900,
+                "created_at": _now(),
+            }
+        row = self.voice_preferences[key]
+        for field, value in fields.items():
+            if field in row:
+                row[field] = value
+        row["updated_at"] = _now()
+        return dict(row)
+
+    async def delete_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool:
+        return self.voice_preferences.pop((tenant_id, user_id), None) is not None
+
+    async def create_speech_engine_session(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        expires_at: datetime,
+        max_duration_seconds: int,
+        plan_key: str = "",
+    ) -> Row:
+        row: Row = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "plan_key": plan_key,
+            "provider_engine_id": None,
+            "provider_conversation_id": None,
+            "status": "provisioning",
+            "expires_at": expires_at,
+            "token_expires_at": None,
+            "ended_at": None,
+            "max_duration_seconds": max_duration_seconds,
+            "generation": 0,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        self.speech_engine_sessions[row["id"]] = row
+        return dict(row)
+
+    async def get_speech_engine_session(self, *, session_id: uuid.UUID) -> Row | None:
+        row = self.speech_engine_sessions.get(session_id)
+        return dict(row) if row else None
+
+    async def get_speech_engine_session_scoped(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, session_id: uuid.UUID
+    ) -> Row | None:
+        row = self.speech_engine_sessions.get(session_id)
+        if row is not None and row["tenant_id"] == tenant_id and row["user_id"] == user_id:
+            return dict(row)
+        return None
+
+    async def update_speech_engine_session(
+        self, *, session_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None:
+        row = self.speech_engine_sessions.get(session_id)
+        if row is None:
+            return None
+        row.update(fields)
+        row["updated_at"] = _now()
+        return dict(row)
+
+    async def list_active_speech_engine_sessions(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> list[Row]:
+        rows = [
+            row
+            for row in self.speech_engine_sessions.values()
+            if row["tenant_id"] == tenant_id
+            and row["user_id"] == user_id
+            and row["status"] in {"provisioning", "active"}
+            and row["expires_at"] > now
+        ]
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        return [dict(row) for row in rows]
+
+    async def claim_speech_engine_event(
+        self, *, tenant_id: uuid.UUID, session_id: uuid.UUID, event_id: int
+    ) -> bool:
+        key = (session_id, event_id)
+        if key in self.speech_engine_events:
+            return False
+        self.speech_engine_events[key] = {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "session_id": session_id,
+            "event_id": event_id,
+            "user_text": None,
+            "assistant_text": None,
+            "status": "processing",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        return True
+
+    async def get_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int
+    ) -> Row | None:
+        row = self.speech_engine_events.get((session_id, event_id))
+        return dict(row) if row else None
+
+    async def update_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int, fields: dict[str, Any]
+    ) -> Row | None:
+        row = self.speech_engine_events.get((session_id, event_id))
+        if row is None:
+            return None
+        row.update(fields)
+        row["updated_at"] = _now()
+        return dict(row)
 
     # -- uso / cuotas ---------------------------------------------------------
 

@@ -128,10 +128,16 @@ export interface SearchCredentialStatus {
   masked: string | null;
 }
 
+export interface SpeechEngineCredentialStatus {
+  provider: string | null;
+  masked: string | null;
+}
+
 export interface CredentialsOut {
   llm: LlmCredentialStatus | null;
   voice_stt: VoiceSttStatus | null;
   voice_tts: VoiceTtsStatus | null;
+  speech_engine: SpeechEngineCredentialStatus | null;
   images: ImagesCredentialStatus | null;
   search: SearchCredentialStatus | null;
 }
@@ -211,6 +217,7 @@ const CREDENTIALS_EMPTY: CredentialsOut = {
   llm: null,
   voice_stt: null,
   voice_tts: null,
+  speech_engine: null,
   images: null,
   search: null,
 };

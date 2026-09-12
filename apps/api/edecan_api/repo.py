@@ -257,6 +257,48 @@ class Repo(Protocol):
         messages_per_conversation: int = 4,
     ) -> list[Row]: ...
 
+    # -- Speech Engine (voz gestionada, docs/speech-engine.md) -----------------
+    async def get_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None: ...
+    async def upsert_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row: ...
+    async def delete_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool: ...
+    async def create_speech_engine_session(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        expires_at: datetime,
+        max_duration_seconds: int,
+        plan_key: str = "",
+    ) -> Row: ...
+    async def get_speech_engine_session(
+        self, *, session_id: uuid.UUID
+    ) -> Row | None: ...
+    async def get_speech_engine_session_scoped(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, session_id: uuid.UUID
+    ) -> Row | None: ...
+    async def update_speech_engine_session(
+        self, *, session_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None: ...
+    async def list_active_speech_engine_sessions(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> list[Row]: ...
+    async def claim_speech_engine_event(
+        self, *, tenant_id: uuid.UUID, session_id: uuid.UUID, event_id: int
+    ) -> bool: ...
+    async def get_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int
+    ) -> Row | None: ...
+    async def update_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int, fields: dict[str, Any]
+    ) -> Row | None: ...
+
     # -- llamadas como canal conversacional -----------------------------------
     async def create_phone_agent_template(
         self,
@@ -1435,6 +1477,250 @@ class SqlRepo:
                 "conversations_limit": max(0, conversations_limit),
                 "messages_per_conversation": max(1, messages_per_conversation),
             },
+        )
+
+    # -- Speech Engine (voz gestionada, docs/speech-engine.md) -----------------
+
+    async def get_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM voice_preferences
+            WHERE tenant_id = :tenant_id AND user_id = :user_id
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id},
+        )
+
+    async def upsert_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO voice_preferences (
+                id, tenant_id, user_id, provider, enabled, voice_model_id,
+                delegation_model_id, delegation_effort, voice_id, tts_model_id,
+                max_duration_seconds, created_at, updated_at
+            )
+            VALUES (
+                :id, :tenant_id, :user_id, :provider, :enabled, :voice_model_id,
+                :delegation_model_id, :delegation_effort, :voice_id, :tts_model_id,
+                :max_duration_seconds, :now, :now
+            )
+            ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+                provider = EXCLUDED.provider,
+                enabled = EXCLUDED.enabled,
+                voice_model_id = EXCLUDED.voice_model_id,
+                delegation_model_id = EXCLUDED.delegation_model_id,
+                delegation_effort = EXCLUDED.delegation_effort,
+                voice_id = EXCLUDED.voice_id,
+                tts_model_id = EXCLUDED.tts_model_id,
+                max_duration_seconds = EXCLUDED.max_duration_seconds,
+                updated_at = :now
+            RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "provider": str(fields.get("provider") or "elevenlabs"),
+                "enabled": bool(fields.get("enabled", False)),
+                "voice_model_id": fields.get("voice_model_id"),
+                "delegation_model_id": fields.get("delegation_model_id"),
+                "delegation_effort": fields.get("delegation_effort"),
+                "voice_id": fields.get("voice_id"),
+                "tts_model_id": fields.get("tts_model_id"),
+                "max_duration_seconds": int(fields.get("max_duration_seconds") or 900),
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def delete_voice_preference(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool:
+        return (
+            await self._exec(
+                """
+                DELETE FROM voice_preferences
+                WHERE tenant_id = :tenant_id AND user_id = :user_id
+                """,
+                {"tenant_id": tenant_id, "user_id": user_id},
+            )
+        ) > 0
+
+    async def create_speech_engine_session(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        expires_at: datetime,
+        max_duration_seconds: int,
+        plan_key: str = "",
+    ) -> Row:
+        row = await self._first(
+            """
+            INSERT INTO speech_engine_sessions (
+                id, tenant_id, user_id, conversation_id, plan_key, status,
+                expires_at, max_duration_seconds, created_at, updated_at
+            )
+            VALUES (
+                :id, :tenant_id, :user_id, :conversation_id, :plan_key, 'provisioning',
+                :expires_at, :max_duration_seconds, :now, :now
+            )
+            RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "plan_key": plan_key,
+                "expires_at": expires_at,
+                "max_duration_seconds": max_duration_seconds,
+                "now": _now(),
+            },
+        )
+        assert row is not None
+        return row
+
+    async def get_speech_engine_session(self, *, session_id: uuid.UUID) -> Row | None:
+        """Lookup global para el callback WSS del proveedor (sin JWT de usuario).
+
+        El path solo lleva el `session_id`; la autorización la da el JWT del
+        proveedor verificado con la API key del TENANT de esta fila, y el
+        tenant se lee de la fila (nunca del payload)."""
+        return await self._first(
+            "SELECT * FROM speech_engine_sessions WHERE id = :id", {"id": session_id}
+        )
+
+    async def get_speech_engine_session_scoped(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, session_id: uuid.UUID
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM speech_engine_sessions
+            WHERE tenant_id = :tenant_id AND user_id = :user_id AND id = :id
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id, "id": session_id},
+        )
+
+    async def update_speech_engine_session(
+        self, *, session_id: uuid.UUID, fields: dict[str, Any]
+    ) -> Row | None:
+        """UPDATE dinámico con allowlist de columnas (el llamador nunca arma el
+        SQL): `status`, `provider_engine_id`, `provider_conversation_id`,
+        `token_expires_at`, `expires_at`, `ended_at`, `generation`."""
+        allowed = {
+            "status",
+            "provider_engine_id",
+            "provider_conversation_id",
+            "token_expires_at",
+            "expires_at",
+            "ended_at",
+            "generation",
+        }
+        updates: list[str] = []
+        params: dict[str, Any] = {"id": session_id, "now": _now()}
+        for key, value in fields.items():
+            if key not in allowed:
+                raise ValueError(f"campo no permitido en update de sesión: {key}")
+            updates.append(f"{key} = :{key}")
+            params[key] = value
+        if not updates:
+            return await self.get_speech_engine_session(session_id=session_id)
+        updates.append("updated_at = :now")
+        return await self._first(
+            f"""
+            UPDATE speech_engine_sessions
+            SET {", ".join(updates)}
+            WHERE id = :id
+            RETURNING *
+            """,
+            params,
+        )
+
+    async def list_active_speech_engine_sessions(
+        self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> list[Row]:
+        return await self._all(
+            """
+            SELECT * FROM speech_engine_sessions
+            WHERE tenant_id = :tenant_id
+              AND user_id = :user_id
+              AND status IN ('provisioning', 'active')
+              AND expires_at > :now
+            ORDER BY created_at DESC
+            """,
+            {"tenant_id": tenant_id, "user_id": user_id, "now": now},
+        )
+
+    async def claim_speech_engine_event(
+        self, *, tenant_id: uuid.UUID, session_id: uuid.UUID, event_id: int
+    ) -> bool:
+        """Claim atómico `(session_id, event_id)`: `True` solo la primera vez.
+
+        Un replay del proveedor cae en `ON CONFLICT DO NOTHING` y devuelve
+        fila vacía → `False` → el turno no vuelve a ejecutarse. La columna
+        `tenant_id` queda implícita en la FK de la sesión; se exige como
+        parámetro para que un llamador sin contexto de tenant no pueda
+        reclamar eventos de otra sesión."""
+        row = await self._first(
+            """
+            INSERT INTO speech_engine_events (
+                id, tenant_id, session_id, event_id, status, created_at, updated_at
+            )
+            VALUES (:id, :tenant_id, :session_id, :event_id, 'processing', :now, :now)
+            ON CONFLICT (session_id, event_id) DO NOTHING
+            RETURNING *
+            """,
+            {
+                "id": _uuid(),
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "event_id": event_id,
+                "now": _now(),
+            },
+        )
+        return row is not None
+
+    async def get_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int
+    ) -> Row | None:
+        return await self._first(
+            """
+            SELECT * FROM speech_engine_events
+            WHERE session_id = :session_id AND event_id = :event_id
+            """,
+            {"session_id": session_id, "event_id": event_id},
+        )
+
+    async def update_speech_engine_event(
+        self, *, session_id: uuid.UUID, event_id: int, fields: dict[str, Any]
+    ) -> Row | None:
+        """UPDATE con allowlist (`status`, `user_text`, `assistant_text`)."""
+        allowed = {"status", "user_text", "assistant_text"}
+        updates: list[str] = []
+        params: dict[str, Any] = {"session_id": session_id, "event_id": event_id}
+        for key, value in fields.items():
+            if key not in allowed:
+                raise ValueError(f"campo no permitido en update de evento: {key}")
+            updates.append(f"{key} = :{key}")
+            params[key] = value
+        if not updates:
+            return await self.get_speech_engine_event(
+                session_id=session_id, event_id=event_id
+            )
+        return await self._first(
+            f"""
+            UPDATE speech_engine_events
+            SET {", ".join(updates)}
+            WHERE session_id = :session_id AND event_id = :event_id
+            RETURNING *
+            """,
+            params,
         )
 
     # -- llamadas como canal conversacional -----------------------------------

@@ -140,6 +140,7 @@ from edecan_api.routers import (
     privacy,
     provider_health,
     reminders,
+    speech_engine,
     usage,
     voice,
 )
@@ -808,6 +809,9 @@ def create_app() -> FastAPI:
     app.include_router(finance.router)
     app.include_router(voice.router)
     app.include_router(voice.realtime_router)
+    app.include_router(speech_engine.preferences_router)
+    app.include_router(speech_engine.router)
+    app.include_router(speech_engine.ws_router)
     app.include_router(consents.router)
     app.include_router(content_studio.router)
     app.include_router(phone.router)

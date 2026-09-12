@@ -1245,6 +1245,58 @@ public actor APIClient {
         )
     }
 
+    // MARK: - Voz gestionada (Speech Engine, `docs/speech-engine.md`)
+
+    /// `GET /v1/voice/preferences` — preferencias efectivas, catálogos y estado
+    /// de la credencial del proveedor pagado. Sin credencial conectada,
+    /// `credentialConnected=false` y los catálogos TTS llegan vacíos.
+    public func preferenciasVozGestionada() async throws -> PreferenciasVozGestionada {
+        try await conAutoRefresh { try await self.obtener("/v1/voice/preferences") }
+    }
+
+    /// `PUT /v1/voice/preferences` — valida ids contra el catálogo del chat en
+    /// el servidor; `enabled=true` exige la API key del tenant conectada.
+    public func actualizarPreferenciasVozGestionada(
+        _ body: PutPreferenciasVozGestionada
+    ) async throws -> PreferenciaVozGestionada {
+        try await conAutoRefresh {
+            let respuesta: PutPreferenciasRespuesta = try await self.enviar(
+                "/v1/voice/preferences", method: "PUT", body: body
+            )
+            return respuesta.preference
+        }
+    }
+
+    /// `POST /v1/voice/speech-engine/sessions` — provisiona el engine del
+    /// proveedor con el callback de ESTA conversación y devuelve SOLO el
+    /// `conversation_token` efímero de WebRTC (nunca la API key). Exige
+    /// `paid_consent=true`: la voz gestionada factura minutos a la cuenta de
+    /// ElevenLabs del tenant.
+    public func crearSesionVozGestionada(
+        conversationId: String?,
+        paidConsent: Bool
+    ) async throws -> SesionVozGestionada {
+        try await conAutoRefresh {
+            try await self.enviar(
+                "/v1/voice/speech-engine/sessions",
+                method: "POST",
+                body: CrearSesionVozGestionada(
+                    conversationId: conversationId, paidConsent: paidConsent
+                )
+            )
+        }
+    }
+
+    /// `POST /v1/voice/speech-engine/sessions/{id}/end` — idempotente; elimina
+    /// el recurso del proveedor y cierra la sesión.
+    public func terminarSesionVozGestionada(sessionId: String) async throws -> FinSesionVozGestionada {
+        try await conAutoRefresh {
+            try await self.enviarSinCuerpoConRespuesta(
+                "/v1/voice/speech-engine/sessions/\(sessionId)/end", method: "POST"
+            )
+        }
+    }
+
     /// `GET /v1/phone/calls` — feed real de llamadas del usuario actual.
     /// El servidor aplica tanto el aislamiento por tenant como el flag de
     /// telefonía; un plan sin esa capacidad recibe 403 tipado.
